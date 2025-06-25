@@ -25,7 +25,7 @@ This bot allows authorized users to schedule posts to their Telegram channels.
 - /scheduled - show scheduled posts with target channel names
 - /history - recent posts
 - /tz <offset> - set timezone offset (e.g., +02:00)
-- /addbutton <post_url> <text> <url> - add inline button to existing post
+- /addbutton <post_url> <text> <url> - add inline button to existing post (button text may contain spaces)
 
 ## User Stories
 

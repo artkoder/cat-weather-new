@@ -494,8 +494,8 @@ class Bot:
             if not self.is_authorized(user_id):
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Not authorized'})
                 return
-            parts = text.split(maxsplit=3)
-            if len(parts) != 4:
+            parts = text.split()
+            if len(parts) < 4:
                 await self.api_request('sendMessage', {
                     'chat_id': user_id,
                     'text': 'Usage: /addbutton <post_url> <text> <url>'
@@ -506,7 +506,8 @@ class Bot:
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Invalid post URL'})
                 return
             chat_id, msg_id = parsed
-            keyboard = {'inline_keyboard': [[{'text': parts[2], 'url': parts[3]}]]}
+            keyboard_text = " ".join(parts[2:-1])
+            keyboard = {'inline_keyboard': [[{'text': keyboard_text, 'url': parts[-1]}]]}
             resp = await self.api_request('editMessageReplyMarkup', {
                 'chat_id': chat_id,
                 'message_id': msg_id,

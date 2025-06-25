@@ -317,4 +317,17 @@ async def test_add_button(tmp_path):
 
     assert any(c[0] == "editMessageReplyMarkup" for c in calls)
 
+    await bot.handle_update({
+        "message": {
+            "text": "/addbutton https://t.me/c/123/5 ask locals https://example.com",
+            "from": {"id": 1},
+        }
+    })
+
+    # check that button text with spaces is parsed correctly
+    edit_calls = [c for c in calls if c[0] == "editMessageReplyMarkup"]
+    assert len(edit_calls) == 2
+    payload = edit_calls[-1][1]
+    assert payload["reply_markup"]["inline_keyboard"][0][0]["text"] == "ask locals"
+
     await bot.close()

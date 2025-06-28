@@ -47,16 +47,6 @@ def weather_emoji(code: int, is_day: int | None) -> str:
 WEATHER_SEPARATOR = "\u2219"  # "∙" used to split header from original text
 
 
-def weather_emoji(code: int, is_day: int | None) -> str:
-    emoji = WMO_EMOJI.get(code, "")
-    if code == 0 and is_day == 0:
-        return "\U0001F319"  # crescent moon
-    return emoji
-
-
-WEATHER_SEPARATOR = "\u2219"  # "∙" used to split header from original text
-
-
 CREATE_TABLES = [
     """CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -142,6 +132,23 @@ CREATE_TABLES = [
 
             UNIQUE(chat_id, message_id)
         )""",
+
+    """CREATE TABLE IF NOT EXISTS asset_images (
+            message_id INTEGER PRIMARY KEY,
+            hashtags TEXT,
+            template TEXT,
+            used_at TEXT
+        )""",
+
+    """CREATE TABLE IF NOT EXISTS asset_channel (
+            channel_id INTEGER PRIMARY KEY
+        )""",
+
+    """CREATE TABLE IF NOT EXISTS weather_publish_channels (
+            channel_id INTEGER PRIMARY KEY,
+            post_time TEXT NOT NULL,
+            last_published_at TEXT
+        )""",
 ]
 
 
@@ -179,6 +186,7 @@ class Bot:
         self.db.commit()
         self.pending = {}
         self.failed_fetches: dict[int, tuple[int, datetime]] = {}
+        self.asset_channel_id = self.get_asset_channel()
         self.session: ClientSession | None = None
         self.running = False
 
@@ -400,8 +408,9 @@ class Bot:
             await self.update_weather_posts()
 
     async def handle_update(self, update):
-        if 'message' in update:
-            await self.handle_message(update['message'])
+        message = update.get('message') or update.get('channel_post')
+        if message:
+            await self.handle_message(message)
         elif 'callback_query' in update:
             await self.handle_callback(update['callback_query'])
         elif 'my_chat_member' in update:
@@ -596,7 +605,11 @@ class Bot:
             return ""
 
         try:
-            return re.sub(r"{(\d+)\|(\w+)}", repl, template)
+            rendered = re.sub(r"{(\d+)\|(\w+)}", repl, template)
+            tomorrow = date.today() + timedelta(days=1)
+            rendered = rendered.replace("{next-day-date}", tomorrow.strftime("%d"))
+            rendered = rendered.replace("{next-day-month}", tomorrow.strftime("%B"))
+            return rendered
         except ValueError as e:
             logging.info("%s", e)
             return None
@@ -665,8 +678,113 @@ class Bot:
                     "Failed to update weather post %s: %s", r["id"], resp
                 )
 
+    def add_weather_channel(self, channel_id: int, post_time: str):
+        self.db.execute(
+            "INSERT OR REPLACE INTO weather_publish_channels (channel_id, post_time) VALUES (?, ?)",
+            (channel_id, post_time),
+        )
+        self.db.commit()
+
+    def remove_weather_channel(self, channel_id: int):
+        self.db.execute(
+            "DELETE FROM weather_publish_channels WHERE channel_id=?",
+            (channel_id,),
+        )
+        self.db.commit()
+
+    def list_weather_channels(self):
+        cur = self.db.execute(
+            "SELECT w.channel_id, w.post_time, w.last_published_at, c.title FROM weather_publish_channels w LEFT JOIN channels c ON c.chat_id=w.channel_id ORDER BY w.channel_id"
+        )
+        return cur.fetchall()
+
+    def set_asset_channel(self, channel_id: int):
+        self.db.execute("DELETE FROM asset_channel")
+        self.db.execute(
+            "INSERT INTO asset_channel (channel_id) VALUES (?)",
+            (channel_id,),
+        )
+        self.db.commit()
+        self.asset_channel_id = channel_id
+
+    def get_asset_channel(self) -> int | None:
+        cur = self.db.execute("SELECT channel_id FROM asset_channel LIMIT 1")
+        row = cur.fetchone()
+        return row["channel_id"] if row else None
+
+    def add_asset(self, message_id: int, hashtags: str, template: str | None = None):
+        self.db.execute(
+            "INSERT OR REPLACE INTO asset_images (message_id, hashtags, template) VALUES (?, ?, ?)",
+            (message_id, hashtags, template),
+        )
+        self.db.commit()
+
+    def next_asset(self, tags: set[str] | None):
+        cur = self.db.execute(
+            "SELECT message_id, hashtags, template FROM asset_images WHERE used_at IS NULL ORDER BY message_id"
+        )
+        rows = cur.fetchall()
+        first_no_tag = None
+        for r in rows:
+            tagset = set(r["hashtags"].split()) if r["hashtags"] else set()
+            if tags and tagset & tags:
+                self.db.execute(
+                    "UPDATE asset_images SET used_at=? WHERE message_id=?",
+                    (datetime.utcnow().isoformat(), r["message_id"]),
+                )
+                self.db.commit()
+                return r
+            if not tagset and first_no_tag is None:
+                first_no_tag = r
+        if first_no_tag:
+            self.db.execute(
+                "UPDATE asset_images SET used_at=? WHERE message_id=?",
+                (datetime.utcnow().isoformat(), first_no_tag["message_id"]),
+            )
+            self.db.commit()
+            return first_no_tag
+        return None
+
+
+    async def publish_weather(self, channel_id: int, tags: set[str] | None = None):
+        asset = self.next_asset(tags)
+        caption = asset["template"] if asset and asset["template"] else ""
+        if caption:
+            caption = self._render_template(caption) or caption
+        if asset and self.asset_channel_id:
+            await self.api_request(
+                "copyMessage",
+                {
+                    "chat_id": channel_id,
+                    "from_chat_id": self.asset_channel_id,
+                    "message_id": asset["message_id"],
+                    "caption": caption or None,
+                },
+            )
+            await self.api_request(
+                "deleteMessage",
+                {"chat_id": self.asset_channel_id, "message_id": asset["message_id"]},
+            )
+        else:
+            if caption:
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": channel_id, "text": caption},
+                )
+        self.db.execute(
+            "UPDATE weather_publish_channels SET last_published_at=? WHERE channel_id=?",
+            (datetime.utcnow().isoformat(), channel_id),
+        )
+        self.db.commit()
+
 
     async def handle_message(self, message):
+        if self.asset_channel_id and message.get('chat', {}).get('id') == self.asset_channel_id:
+            caption = message.get('caption') or message.get('text') or ''
+            tags = ' '.join(re.findall(r'#\S+', caption))
+            self.add_asset(message['message_id'], tags, caption)
+            return
+
         text = message.get('text', '')
         user_id = message['from']['id']
         username = message['from'].get('username')
@@ -1076,6 +1194,42 @@ class Bot:
             await self.api_request('sendMessage', {'chat_id': user_id, 'text': '\n'.join(lines)})
             return
 
+        if text.startswith('/setup_weather') and self.is_superadmin(user_id):
+            cur = self.db.execute('SELECT chat_id, title FROM channels')
+            rows = cur.fetchall()
+            existing = {r['channel_id'] for r in self.list_weather_channels()}
+            options = [r for r in rows if r['chat_id'] not in existing]
+            if not options:
+                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No channels available'})
+                return
+            keyboard = {'inline_keyboard': [[{'text': r['title'], 'callback_data': f'ws_ch:{r["chat_id"]}'}] for r in options]}
+            self.pending[user_id] = {'setup_weather': True}
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Select channel', 'reply_markup': keyboard})
+            return
+
+        if text.startswith('/list_weather_channels') and self.is_superadmin(user_id):
+            rows = self.list_weather_channels()
+            if not rows:
+                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No weather channels'})
+                return
+            for r in rows:
+                last = r['last_published_at'] or 'never'
+                keyboard = {'inline_keyboard': [[{'text': 'Run now', 'callback_data': f'wrnow:{r["channel_id"]}'}, {'text': 'Stop', 'callback_data': f'wstop:{r["channel_id"]}'}]]}
+                await self.api_request('sendMessage', {'chat_id': user_id, 'text': f"{r['title'] or r['channel_id']} at {r['post_time']} last {last}", 'reply_markup': keyboard})
+            return
+
+        if text.startswith('/set_assets_channel') and self.is_superadmin(user_id):
+            cur = self.db.execute('SELECT chat_id, title FROM channels')
+            rows = cur.fetchall()
+            if not rows:
+                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No channels available'})
+                return
+            keyboard = {'inline_keyboard': [[{'text': r['title'], 'callback_data': f'asset_ch:{r["chat_id"]}'}] for r in rows]}
+            self.pending[user_id] = {'set_assets': True}
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Select asset channel', 'reply_markup': keyboard})
+            return
+
+
         if text.startswith('/weather') and self.is_superadmin(user_id):
 
             parts = text.split(maxsplit=1)
@@ -1219,6 +1373,18 @@ class Bot:
                 })
             return
 
+        if user_id in self.pending and self.pending[user_id].get('weather_time'):
+            time_str = text.strip()
+            try:
+                dt = datetime.strptime(time_str, '%H:%M')
+            except ValueError:
+                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Invalid time format'})
+                return
+            self.add_weather_channel(self.pending[user_id]['channel'], time_str)
+            del self.pending[user_id]
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather channel registered'})
+            return
+
         # start scheduling on forwarded message
         if 'forward_from_chat' in message and self.is_authorized(user_id):
             from_chat = message['forward_from_chat']['id']
@@ -1280,6 +1446,32 @@ class Bot:
                     'chat_id': user_id,
                     'text': 'Enter time (HH:MM or DD.MM.YYYY HH:MM)'
                 })
+        elif data.startswith('ws_ch:') and user_id in self.pending and self.pending[user_id].get('setup_weather'):
+            cid = int(data.split(':')[1])
+            self.pending[user_id] = {'channel': cid, 'weather_time': False, 'setup_weather': True}
+            keyboard = {'inline_keyboard': [[{'text': '17:55', 'callback_data': 'ws_time:17:55'}, {'text': 'Custom', 'callback_data': 'ws_custom'}]]}
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Select time', 'reply_markup': keyboard})
+        elif data == 'ws_custom' and user_id in self.pending and self.pending[user_id].get('setup_weather'):
+            self.pending[user_id]['weather_time'] = True
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Enter time HH:MM'})
+        elif data.startswith('ws_time:') and user_id in self.pending and self.pending[user_id].get('setup_weather'):
+            time_str = data.split(':', 1)[1]
+            self.add_weather_channel(self.pending[user_id]['channel'], time_str)
+            del self.pending[user_id]
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather channel registered'})
+        elif data.startswith('asset_ch:') and user_id in self.pending and self.pending[user_id].get('set_assets'):
+            cid = int(data.split(':')[1])
+            self.set_asset_channel(cid)
+            del self.pending[user_id]
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Asset channel set'})
+        elif data.startswith('wrnow:') and self.is_superadmin(user_id):
+            cid = int(data.split(':')[1])
+            await self.publish_weather(cid, None)
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Posted'})
+        elif data.startswith('wstop:') and self.is_superadmin(user_id):
+            cid = int(data.split(':')[1])
+            self.remove_weather_channel(cid)
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Channel removed'})
         elif data.startswith('approve:') and self.is_superadmin(user_id):
             uid = int(data.split(':')[1])
             if self.approve_user(uid):
@@ -1382,6 +1574,26 @@ class Bot:
             except Exception:
                 logging.exception('Error publishing schedule %s', row['id'])
 
+    async def process_weather_channels(self):
+        now_utc = datetime.utcnow()
+        offset = self.parse_offset(TZ_OFFSET)
+        local_now = now_utc + offset
+        cur = self.db.execute(
+            "SELECT channel_id, post_time, last_published_at FROM weather_publish_channels"
+        )
+        for r in cur.fetchall():
+            try:
+                if r["last_published_at"]:
+                    last = datetime.fromisoformat(r["last_published_at"])
+                    if last.date() == local_now.date():
+                        continue
+                hh, mm = map(int, r["post_time"].split(":"))
+                scheduled = datetime.combine(local_now.date(), datetime.min.time()).replace(hour=hh, minute=mm)
+                if local_now >= scheduled:
+                    await self.publish_weather(r["channel_id"], None)
+            except Exception:
+                logging.exception("Failed to publish weather for %s", r["channel_id"])
+
     async def schedule_loop(self):
         """Background scheduler running at configurable intervals."""
 
@@ -1392,6 +1604,7 @@ class Bot:
                 try:
                     await self.collect_weather()
                     await self.collect_sea()
+                    await self.process_weather_channels()
                 except Exception:
                     logging.exception('Weather collection failed')
                 await asyncio.sleep(SCHED_INTERVAL_SEC)

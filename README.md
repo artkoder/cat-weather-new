@@ -18,6 +18,8 @@ This bot allows authorized users to schedule posts to their Telegram channels.
   the cached weather and sea temperature for all registered locations.
 - Register channel posts with custom templates for automatic weather updates,
   including sea temperature, working with both text and caption posts.
+- Daily weather posts use images from a dedicated private channel selected with
+  `/set_assets_channel`.
 
 
 ## Commands
@@ -25,6 +27,7 @@ This bot allows authorized users to schedule posts to their Telegram channels.
 - /pending - list pending users (admin)
 - /approve <id> - approve user
 - /reject <id> - reject user
+- /add_user <id> - manually add a user (superadmin)
 - /list_users - list approved users
 - /remove_user <id> - remove user
 - /channels - list channels (admin)
@@ -43,6 +46,18 @@ This bot allows authorized users to schedule posts to their Telegram channels.
 - /cities - list cities with inline delete buttons (admin). Coordinates are shown
   with six decimal places.
 - /seas - list sea locations with inline delete buttons (admin).
+- /weather [now] - show cached weather; append `now` to refresh data
+- /regweather <post_url> <template> - register a post for weather updates
+- /weatherposts [update] - list registered weather posts; append `update` to refresh
+- /setup_weather - interactive wizard to add a daily forecast channel
+- /list_weather_channels - show configured weather channels with action buttons
+- /set_assets_channel - choose the channel used for weather assets
+
+### Asset channel
+Images and caption templates are stored in a private channel
+`@kotopogoda_assets`. Choose this channel with `/set_assets_channel`. When the bot
+is an admin of this private channel, every new post is stored automatically for
+future weather updates and deleted after publishing.
 
 
 
@@ -66,6 +81,10 @@ This bot allows authorized users to schedule posts to their Telegram channels.
 - **US-14**: Admin registers a weather post for updates, including sea temperature.
 - **US-15**: Automatic weather post updates with current weather and sea temperature.
 - **US-16**: Admin lists registered posts showing the rendered weather and sea data for all registered seas.
+- **US-17**: Admin adds a channel for daily weather posts and specifies the publication time with `/setup_weather`.
+- **US-18**: Content manager uploads images with templates to `@kotopogoda_assets`; used posts disappear after publishing.
+- **US-19**: Admin views the list of weather channels and can send a post immediately with «Run now» or remove a channel with «Stop».
+- **US-20**: The bot publishes the weather once per day for each configured channel at the set time.
 
 
 

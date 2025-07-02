@@ -54,7 +54,7 @@ This bot allows authorized users to schedule posts to their Telegram channels.
 
  - /addweatherbutton <post_url> <text> [url] - attach a button linking to the latest forecast. Text supports the same placeholders as templates. Multiple weather buttons share one row
 
-- /weatherposts [update] - list registered weather posts; append `update` to refresh
+- /weatherposts [update] - list registered weather posts with a 'Stop weather' button on each; append `update` to refresh
 - /setup_weather - interactive wizard to add a daily forecast channel
 - /list_weather_channels - show configured weather channels with action buttons
 - /set_assets_channel - choose the channel used for weather assets
@@ -105,6 +105,7 @@ contains only fresh assets.
 
 - **US-15**: Automatic weather post updates with current weather and sea temperature.
 - **US-16**: Admin lists registered posts showing the rendered weather and sea data for all registered seas.
+- **US-16.1**: Admin stops weather updates for a post using the "Stop weather" button shown in `/weatherposts`.
 - **US-17**: Admin adds a channel for daily weather posts and specifies the publication time with `/setup_weather`.
 - **US-18**: Content manager uploads images with templates to `@kotopogoda_assets`; used posts disappear after publishing.
 - **US-19**: Admin views the list of weather channels and can send a post immediately with «Run now» or remove a channel with «Stop».

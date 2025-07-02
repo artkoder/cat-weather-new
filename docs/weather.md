@@ -55,9 +55,7 @@ no further requests are made for that city until the next scheduled half hour.
 - `/delbutton <post_url>` – remove all buttons from a post and delete any stored weather button data so they do not reappear.
 
 
-- `/weatherposts` – list registered weather posts. Append `update` to refresh all
-  posts immediately. Each entry shows the post link followed by the rendered
-  weather header including sea temperature when a sea location is registered.
+- `/weatherposts` – list registered weather posts. Append `update` to refresh all posts immediately. Each entry shows the post link and current weather header with a *Stop weather* button. Pressing the button removes the weather header and stops further updates.
 
 ### Templates
 

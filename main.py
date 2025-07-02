@@ -1359,6 +1359,18 @@ class Bot:
             buttons.append([{'text': keyboard_text, 'url': parts[-1]}])
             keyboard = {'inline_keyboard': buttons}
 
+            row = self.db.execute(
+                'SELECT base_markup, button_texts FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                (chat_id, msg_id),
+            ).fetchone()
+            if row:
+                base_buttons = json.loads(row['base_markup'])['inline_keyboard'] if row['base_markup'] else []
+                base_buttons.append([{'text': keyboard_text, 'url': parts[-1]}])
+                self.db.execute(
+                    'UPDATE weather_link_posts SET base_markup=? WHERE chat_id=? AND message_id=?',
+                    (json.dumps({'inline_keyboard': base_buttons}), chat_id, msg_id),
+                )
+
             resp = await self.api_request('editMessageReplyMarkup', {
                 'chat_id': chat_id,
                 'message_id': msg_id,
@@ -1366,6 +1378,11 @@ class Bot:
             })
             if resp.get('ok'):
                 logging.info('Updated message %s with button', msg_id)
+                self.db.execute(
+                    'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                    (json.dumps(keyboard), chat_id, msg_id),
+                )
+                self.db.commit()
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Button added'})
             else:
                 logging.error('Failed to add button to %s: %s', msg_id, resp)
@@ -1399,6 +1416,10 @@ class Bot:
                 logging.info('Removed buttons from message %s', msg_id)
                 self.db.execute(
                     'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                    (chat_id, msg_id),
+                )
+                self.db.execute(
+                    'UPDATE weather_posts SET reply_markup=NULL WHERE chat_id=? AND message_id=?',
                     (chat_id, msg_id),
                 )
                 self.db.commit()
@@ -1565,20 +1586,26 @@ class Bot:
             cur = self.db.execute(
                 'SELECT chat_id, message_id, template FROM weather_posts ORDER BY id'
             )
-            rows = cur.fetchall()
-            if rows:
-                lines = []
-                for r in rows:
-                    header = self._render_template(r['template'])
-                    url = self.post_url(r['chat_id'], r['message_id'])
-                    if header:
-                        lines.append(f"{url} {header}")
-                    else:
-                        lines.append(f"{url} no data")
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': '\n'.join(lines)})
+            post_rows = cur.fetchall()
+            for r in post_rows:
+                header = self._render_template(r['template'])
+                url = self.post_url(r['chat_id'], r['message_id'])
+                text = f"{url} {header}" if header else f"{url} no data"
+                keyboard = {
+                    'inline_keyboard': [[
+                        {
+                            'text': 'Stop weather',
+                            'callback_data': f'wpost_del:{r["chat_id"]}:{r["message_id"]}'
+                        }
+                    ]]
+                }
+                await self.api_request(
+                    'sendMessage',
+                    {'chat_id': user_id, 'text': text, 'reply_markup': keyboard},
+                )
             cur = self.db.execute('SELECT chat_id, message_id, button_texts FROM weather_link_posts ORDER BY rowid')
             rows = cur.fetchall()
-            if not rows and not lines:
+            if not rows and not post_rows:
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No weather posts'})
                 return
             for r in rows:
@@ -1915,11 +1942,48 @@ class Bot:
                 },
             )
             self.db.execute(
+                'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                (json.dumps(markup) if markup else None, chat_id, msg_id),
+            )
+            self.db.execute(
                 'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',
                 (chat_id, msg_id),
             )
             self.db.commit()
             await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather buttons removed'})
+        elif data.startswith('wpost_del:') and self.is_superadmin(user_id):
+            _, cid, mid = data.split(':')
+            chat_id = int(cid)
+            msg_id = int(mid)
+            row = self.db.execute(
+                'SELECT base_text, base_caption, reply_markup FROM weather_posts WHERE chat_id=? AND message_id=?',
+                (chat_id, msg_id),
+            ).fetchone()
+            if row:
+                markup = json.loads(row['reply_markup']) if row['reply_markup'] else None
+                if row['base_caption'] is not None:
+                    payload = {
+                        'chat_id': chat_id,
+                        'message_id': msg_id,
+                        'caption': row['base_caption'],
+                    }
+                    method = 'editMessageCaption'
+                else:
+                    payload = {
+                        'chat_id': chat_id,
+                        'message_id': msg_id,
+                        'text': row['base_text'] or '',
+                    }
+                    method = 'editMessageText'
+                if markup:
+                    payload['reply_markup'] = markup
+                await self.api_request(method, payload)
+                self.db.execute(
+                    'DELETE FROM weather_posts WHERE chat_id=? AND message_id=?',
+                    (chat_id, msg_id),
+                )
+                self.db.commit()
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather removed'})
         elif data.startswith('approve:') and self.is_superadmin(user_id):
             uid = int(data.split(':')[1])
             if self.approve_user(uid):

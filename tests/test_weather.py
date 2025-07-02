@@ -614,3 +614,43 @@ async def test_remove_weather_post(tmp_path):
     await bot.close()
 
 
+
+@pytest.mark.asyncio
+async def test_addbutton_persists_on_update(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    api_calls = []
+
+    async def dummy(method, data=None):
+        api_calls.append((method, data))
+        if method == "forwardMessage":
+            return {"ok": True, "result": {"message_id": 99, "text": "orig", "reply_markup": {"inline_keyboard": []}}}
+        return {"ok": True}
+
+    bot.api_request = dummy  # type: ignore
+
+    await bot.start()
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+    await bot.handle_update({"message": {"text": "/addcity Paris 0 0", "from": {"id": 1}}})
+    await bot.handle_update({"message": {"text": "/regweather https://t.me/c/123/5 t {1|temperature}", "from": {"id": 1}}})
+
+    await bot.handle_update({"message": {"text": "/addbutton https://t.me/c/123/5 nav https://ex.com", "from": {"id": 1}}})
+
+    row = bot.db.execute("SELECT reply_markup FROM weather_posts").fetchone()
+    assert "ex.com" in row["reply_markup"]
+
+    bot.db.execute(
+        "INSERT INTO weather_cache_hour (city_id, timestamp, temperature, weather_code, wind_speed, is_day)"
+        " VALUES (1, ?, 15.0, 1, 3.0, 1)",
+        (datetime.utcnow().isoformat(),),
+    )
+    bot.db.commit()
+
+    await bot.update_weather_posts()
+    edit = [c for c in api_calls if c[0] in ("editMessageText", "editMessageCaption")][-1]
+    assert "ex.com" in json.dumps(edit[1]["reply_markup"])
+
+    await bot.close()
+
+
+

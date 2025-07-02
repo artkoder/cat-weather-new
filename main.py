@@ -1359,6 +1359,18 @@ class Bot:
             buttons.append([{'text': keyboard_text, 'url': parts[-1]}])
             keyboard = {'inline_keyboard': buttons}
 
+            row = self.db.execute(
+                'SELECT base_markup, button_texts FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                (chat_id, msg_id),
+            ).fetchone()
+            if row:
+                base_buttons = json.loads(row['base_markup'])['inline_keyboard'] if row['base_markup'] else []
+                base_buttons.append([{'text': keyboard_text, 'url': parts[-1]}])
+                self.db.execute(
+                    'UPDATE weather_link_posts SET base_markup=? WHERE chat_id=? AND message_id=?',
+                    (json.dumps({'inline_keyboard': base_buttons}), chat_id, msg_id),
+                )
+
             resp = await self.api_request('editMessageReplyMarkup', {
                 'chat_id': chat_id,
                 'message_id': msg_id,
@@ -1366,6 +1378,11 @@ class Bot:
             })
             if resp.get('ok'):
                 logging.info('Updated message %s with button', msg_id)
+                self.db.execute(
+                    'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                    (json.dumps(keyboard), chat_id, msg_id),
+                )
+                self.db.commit()
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Button added'})
             else:
                 logging.error('Failed to add button to %s: %s', msg_id, resp)
@@ -1399,6 +1416,10 @@ class Bot:
                 logging.info('Removed buttons from message %s', msg_id)
                 self.db.execute(
                     'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                    (chat_id, msg_id),
+                )
+                self.db.execute(
+                    'UPDATE weather_posts SET reply_markup=NULL WHERE chat_id=? AND message_id=?',
                     (chat_id, msg_id),
                 )
                 self.db.commit()
@@ -1919,6 +1940,10 @@ class Bot:
                     'message_id': msg_id,
                     'reply_markup': markup,
                 },
+            )
+            self.db.execute(
+                'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                (json.dumps(markup) if markup else None, chat_id, msg_id),
             )
             self.db.execute(
                 'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',

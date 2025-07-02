@@ -614,6 +614,7 @@ async def test_remove_weather_post(tmp_path):
     await bot.close()
 
 
+
 @pytest.mark.asyncio
 async def test_addbutton_persists_on_update(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
@@ -650,5 +651,6 @@ async def test_addbutton_persists_on_update(tmp_path):
     assert "ex.com" in json.dumps(edit[1]["reply_markup"])
 
     await bot.close()
+
 
 

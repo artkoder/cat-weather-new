@@ -1349,32 +1349,44 @@ class Bot:
                 return
             chat_id, msg_id = parsed
             keyboard_text = " ".join(parts[2:-1])
-            fwd = await self.api_request('forwardMessage', {
-                'chat_id': user_id,
-                'from_chat_id': chat_id,
-                'message_id': msg_id
-            })
+            fwd = await self.api_request(
+                'forwardMessage',
+                {
+                    'chat_id': user_id,
+                    'from_chat_id': chat_id,
+                    'message_id': msg_id,
+                },
+            )
             markup = None
+            caption = None
+            caption_entities = None
             if fwd.get('ok'):
-                markup = fwd['result'].get('reply_markup')
-                await self.api_request('deleteMessage', {'chat_id': user_id, 'message_id': fwd['result']['message_id']})
+                message = fwd['result']
+                markup = message.get('reply_markup')
+                caption = message.get('caption')
+                caption_entities = message.get('caption_entities')
+                await self.api_request(
+                    'deleteMessage',
+                    {'chat_id': user_id, 'message_id': message['message_id']},
+                )
             buttons = markup.get('inline_keyboard', []) if markup else []
             buttons.append([{'text': keyboard_text, 'url': parts[-1]}])
             keyboard = {'inline_keyboard': buttons}
 
-            resp = await self.api_request(
-                'editMessageReplyMarkup',
-                {
-                    'chat_id': chat_id,
-                    'message_id': msg_id,
-                    'reply_markup': keyboard,
-                },
-            )
-            ok = resp.get('ok', False)
-            if not ok and resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', '').lower():
-                # Telegram returns this when the same button already exists.
-                ok = True
-            if ok:
+            payload = {
+                'chat_id': chat_id,
+                'message_id': msg_id,
+                'reply_markup': keyboard,
+            }
+            method = 'editMessageReplyMarkup'
+            if caption is not None:
+                method = 'editMessageCaption'
+                payload['caption'] = caption
+                if caption_entities:
+                    payload['caption_entities'] = caption_entities
+
+            resp = await self.api_request(method, payload)
+            if resp.get('ok'):
                 logging.info('Updated message %s with button', msg_id)
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Button added'})
             else:

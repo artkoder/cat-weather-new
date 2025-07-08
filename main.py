@@ -11,7 +11,10 @@ from aiohttp import web, ClientSession
 
 logging.basicConfig(level=logging.INFO)
 
-DB_PATH = os.getenv("DB_PATH", "bot.db")
+# Default database path points to /data which is mounted as a Fly.io volume.
+# This ensures information like registered channels and scheduled posts
+# persists across deployments unless DB_PATH is explicitly overridden.
+DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 TZ_OFFSET = os.getenv("TZ_OFFSET", "+00:00")
 SCHED_INTERVAL_SEC = int(os.getenv("SCHED_INTERVAL_SEC", "30"))
 WMO_EMOJI = {
@@ -1359,12 +1362,19 @@ class Bot:
             buttons.append([{'text': keyboard_text, 'url': parts[-1]}])
             keyboard = {'inline_keyboard': buttons}
 
-            resp = await self.api_request('editMessageReplyMarkup', {
-                'chat_id': chat_id,
-                'message_id': msg_id,
-                'reply_markup': keyboard
-            })
-            if resp.get('ok'):
+            resp = await self.api_request(
+                'editMessageReplyMarkup',
+                {
+                    'chat_id': chat_id,
+                    'message_id': msg_id,
+                    'reply_markup': keyboard,
+                },
+            )
+            ok = resp.get('ok', False)
+            if not ok and resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', '').lower():
+                # Telegram returns this when the same button already exists.
+                ok = True
+            if ok:
                 logging.info('Updated message %s with button', msg_id)
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Button added'})
             else:
@@ -1390,15 +1400,22 @@ class Bot:
                 return
             chat_id, msg_id = parsed
 
-            resp = await self.api_request('editMessageReplyMarkup', {
-                'chat_id': chat_id,
-                'message_id': msg_id,
-                'reply_markup': {}
-            })
+            resp = await self.api_request(
+                'editMessageReplyMarkup',
+                {
+                    'chat_id': chat_id,
+                    'message_id': msg_id,
+                    'reply_markup': {},
+                },
+            )
             if resp.get('ok'):
                 logging.info('Removed buttons from message %s', msg_id)
                 self.db.execute(
                     'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                    (chat_id, msg_id),
+                )
+                self.db.execute(
+                    'UPDATE weather_posts SET reply_markup=NULL WHERE chat_id=? AND message_id=?',
                     (chat_id, msg_id),
                 )
                 self.db.commit()

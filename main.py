@@ -894,6 +894,11 @@ class Bot:
                     "reply_markup": {"inline_keyboard": buttons},
                 },
             )
+            self.db.execute(
+                "UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?",
+                (json.dumps({"inline_keyboard": buttons}), r["chat_id"], r["message_id"]),
+            )
+        self.db.commit()
 
     def add_weather_channel(self, channel_id: int, post_time: str):
         self.db.execute(
@@ -1370,7 +1375,26 @@ class Bot:
                     {'chat_id': user_id, 'message_id': message['message_id']},
                 )
             buttons = markup.get('inline_keyboard', []) if markup else []
-            buttons.append([{'text': keyboard_text, 'url': parts[-1]}])
+            new_row = [{'text': keyboard_text, 'url': parts[-1]}]
+
+            wl_row = self.db.execute(
+                'SELECT base_markup FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                (chat_id, msg_id),
+            ).fetchone()
+
+            if wl_row:
+                base_buttons = buttons[:-1] if buttons else []
+                weather_row = buttons[-1] if buttons else []
+                base_buttons.append(new_row)
+                buttons = base_buttons + ([weather_row] if weather_row else [])
+                base_markup = json.dumps({'inline_keyboard': base_buttons})
+                self.db.execute(
+                    'UPDATE weather_link_posts SET base_markup=? WHERE chat_id=? AND message_id=?',
+                    (base_markup, chat_id, msg_id),
+                )
+            else:
+                buttons.append(new_row)
+
             keyboard = {'inline_keyboard': buttons}
 
             payload = {
@@ -1388,6 +1412,11 @@ class Bot:
             resp = await self.api_request(method, payload)
             if resp.get('ok'):
                 logging.info('Updated message %s with button', msg_id)
+                self.db.execute(
+                    'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                    (json.dumps(keyboard), chat_id, msg_id),
+                )
+                self.db.commit()
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Button added'})
             else:
                 logging.error('Failed to add button to %s: %s', msg_id, resp)
@@ -1508,6 +1537,10 @@ class Bot:
                 self.db.execute(
                     'INSERT OR REPLACE INTO weather_link_posts (chat_id, message_id, base_markup, button_texts) VALUES (?, ?, ?, ?)',
                     (chat_id, msg_id, base_markup, json.dumps(texts)),
+                )
+                self.db.execute(
+                    'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                    (json.dumps({'inline_keyboard': keyboard_buttons}), chat_id, msg_id),
                 )
                 self.db.commit()
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather button added'})
@@ -1948,6 +1981,10 @@ class Bot:
                     'message_id': msg_id,
                     'reply_markup': markup,
                 },
+            )
+            self.db.execute(
+                'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                (json.dumps(markup) if markup else None, chat_id, msg_id),
             )
             self.db.execute(
                 'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',

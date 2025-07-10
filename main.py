@@ -811,7 +811,7 @@ class Bot:
                 continue
 
             markup = json.loads(r["reply_markup"]) if r["reply_markup"] else None
-            if r["base_caption"]:
+            if r["base_caption"] is not None:
                 caption = f"{header}{WEATHER_SEPARATOR}{r['base_caption']}"
                 payload = {
                     "chat_id": r["chat_id"],
@@ -846,6 +846,8 @@ class Bot:
                 )
             if resp.get("ok"):
                 logging.info("Updated weather post %s", r["id"])
+            elif resp.get("error_code") == 400 and "message is not modified" in resp.get("description", ""):
+                logging.info("Weather post %s already up to date", r["id"])
             else:
                 logging.error(
                     "Failed to update weather post %s: %s", r["id"], resp
@@ -886,7 +888,7 @@ class Bot:
             if weather_buttons:
                 buttons.append(weather_buttons)
 
-            await self.api_request(
+            resp = await self.api_request(
                 "editMessageReplyMarkup",
                 {
                     "chat_id": r["chat_id"],
@@ -894,6 +896,12 @@ class Bot:
                     "reply_markup": {"inline_keyboard": buttons},
                 },
             )
+
+            if not resp.get("ok") and not (
+                resp.get("error_code") == 400 and "message is not modified" in resp.get("description", "")
+            ):
+                logging.error("Failed to update buttons for %s: %s", r["message_id"], resp)
+
             self.db.execute(
                 "UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?",
                 (json.dumps({"inline_keyboard": buttons}), r["chat_id"], r["message_id"]),
@@ -1419,7 +1427,9 @@ class Bot:
                     payload['caption_entities'] = caption_entities
 
             resp = await self.api_request(method, payload)
-            if resp.get('ok'):
+            if resp.get('ok') or (
+                resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', '')
+            ):
                 logging.info('Updated message %s with button', msg_id)
                 self.db.execute(
                     'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
@@ -1458,7 +1468,9 @@ class Bot:
                     'reply_markup': {},
                 },
             )
-            if resp.get('ok'):
+            if resp.get('ok') or (
+                resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', '')
+            ):
                 logging.info('Removed buttons from message %s', msg_id)
                 self.db.execute(
                     'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',

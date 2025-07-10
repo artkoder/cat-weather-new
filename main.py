@@ -1822,6 +1822,10 @@ class Bot:
 
             )
             self.db.commit()
+            # Ensure data is available for the placeholders right away
+            # so the post gets updated immediately after registration.
+            await self.collect_weather(force=True)
+            await self.collect_sea(force=True)
             await self.update_weather_posts({int(m.group(1)) for m in re.finditer(r"{(\d+)\|", template)})
             await self.api_request('sendMessage', {
                 'chat_id': user_id,

@@ -896,10 +896,12 @@ class Bot:
                     "reply_markup": {"inline_keyboard": buttons},
                 },
             )
+
             if not resp.get("ok") and not (
                 resp.get("error_code") == 400 and "message is not modified" in resp.get("description", "")
             ):
                 logging.error("Failed to update buttons for %s: %s", r["message_id"], resp)
+
             self.db.execute(
                 "UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?",
                 (json.dumps({"inline_keyboard": buttons}), r["chat_id"], r["message_id"]),

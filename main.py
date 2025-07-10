@@ -894,6 +894,11 @@ class Bot:
                     "reply_markup": {"inline_keyboard": buttons},
                 },
             )
+            self.db.execute(
+                "UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?",
+                (json.dumps({"inline_keyboard": buttons}), r["chat_id"], r["message_id"]),
+            )
+        self.db.commit()
 
     def add_weather_channel(self, channel_id: int, post_time: str):
         self.db.execute(
@@ -1533,6 +1538,10 @@ class Bot:
                     'INSERT OR REPLACE INTO weather_link_posts (chat_id, message_id, base_markup, button_texts) VALUES (?, ?, ?, ?)',
                     (chat_id, msg_id, base_markup, json.dumps(texts)),
                 )
+                self.db.execute(
+                    'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                    (json.dumps({'inline_keyboard': keyboard_buttons}), chat_id, msg_id),
+                )
                 self.db.commit()
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather button added'})
             else:
@@ -1972,6 +1981,10 @@ class Bot:
                     'message_id': msg_id,
                     'reply_markup': markup,
                 },
+            )
+            self.db.execute(
+                'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                (json.dumps(markup) if markup else None, chat_id, msg_id),
             )
             self.db.execute(
                 'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',

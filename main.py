@@ -1355,13 +1355,22 @@ class Bot:
             chat_id, msg_id = parsed
             keyboard_text = " ".join(parts[2:-1])
             fwd = await self.api_request(
-                'forwardMessage',
+                'copyMessage',
                 {
                     'chat_id': user_id,
                     'from_chat_id': chat_id,
                     'message_id': msg_id,
                 },
             )
+            if not fwd.get('ok'):
+                fwd = await self.api_request(
+                    'forwardMessage',
+                    {
+                        'chat_id': user_id,
+                        'from_chat_id': chat_id,
+                        'message_id': msg_id,
+                    },
+                )
             markup = None
             caption = None
             caption_entities = None
@@ -1501,10 +1510,15 @@ class Bot:
                 return
             chat_id, msg_id = parsed
             fwd = await self.api_request(
-                'forwardMessage',
+                'copyMessage',
                 {'chat_id': user_id, 'from_chat_id': chat_id, 'message_id': msg_id},
             )
             markup = None
+            if not fwd.get('ok'):
+                fwd = await self.api_request(
+                    'forwardMessage',
+                    {'chat_id': user_id, 'from_chat_id': chat_id, 'message_id': msg_id},
+                )
             if fwd.get('ok'):
                 markup = fwd['result'].get('reply_markup')
                 await self.api_request('deleteMessage', {'chat_id': user_id, 'message_id': fwd['result']['message_id']})
@@ -1775,11 +1789,17 @@ class Bot:
                 return
             template = parts[2]
             chat_id, msg_id = parsed
-            resp = await self.api_request('forwardMessage', {
+            resp = await self.api_request('copyMessage', {
                 'chat_id': user_id,
                 'from_chat_id': chat_id,
                 'message_id': msg_id
             })
+            if not resp.get('ok'):
+                resp = await self.api_request('forwardMessage', {
+                    'chat_id': user_id,
+                    'from_chat_id': chat_id,
+                    'message_id': msg_id
+                })
             if not resp.get('ok'):
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Cannot read post'})
                 return

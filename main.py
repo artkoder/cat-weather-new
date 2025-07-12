@@ -120,7 +120,17 @@ CREATE_TABLES = [
             morning REAL,
             day REAL,
             evening REAL,
-            night REAL
+            night REAL,
+            wave REAL,
+            wind REAL,
+            morning_wave REAL,
+            day_wave REAL,
+            evening_wave REAL,
+            night_wave REAL,
+            morning_wind REAL,
+            day_wind REAL,
+            evening_wind REAL,
+            night_wind REAL
         )""",
 
     """CREATE TABLE IF NOT EXISTS weather_posts (
@@ -213,6 +223,16 @@ class Bot:
             ("sea_cache", "day"),
             ("sea_cache", "evening"),
             ("sea_cache", "night"),
+            ("sea_cache", "wave"),
+            ("sea_cache", "wind"),
+            ("sea_cache", "morning_wave"),
+            ("sea_cache", "day_wave"),
+            ("sea_cache", "evening_wave"),
+            ("sea_cache", "night_wave"),
+            ("sea_cache", "morning_wind"),
+            ("sea_cache", "day_wind"),
+            ("sea_cache", "evening_wind"),
+            ("sea_cache", "night_wind"),
 
         ):
             cur = self.db.execute(f"PRAGMA table_info({table})")
@@ -300,10 +320,13 @@ class Bot:
 
     async def fetch_open_meteo_sea(self, lat: float, lon: float) -> dict | None:
         url = (
-            "https://marine-api.open-meteo.com/v1/marine?latitude="
-            f"{lat}&longitude={lon}&hourly=sea_surface_temperature&timezone=auto"
-
+            "https://api.open-meteo.com/v1/marine?latitude="
+            f"{lat}&longitude={lon}"
+            "&current=wave_height,wind_speed_10m,sea_surface_temperature"
+            "&hourly=wave_height,wind_speed_10m,sea_surface_temperature"
+            "&forecast_days=2&timezone=auto"
         )
+        logging.info("Sea API request: %s", url)
         try:
             async with self.session.get(url) as resp:
                 text = await resp.text()
@@ -486,33 +509,48 @@ class Bot:
                 continue
 
             data = await self.fetch_open_meteo_sea(s["lat"], s["lon"])
-            if not data or "hourly" not in data:
+            if not data or "hourly" not in data or "current" not in data:
                 continue
             temps = data["hourly"].get("water_temperature") or data["hourly"].get("sea_surface_temperature")
+            waves = data["hourly"].get("wave_height")
+            winds = data["hourly"].get("wind_speed_10m")
             times = data["hourly"].get("time")
-            if not temps or not times:
+            if not temps or not times or not waves or not winds:
                 continue
-
             current = temps[0]
+            current_wave = data["current"].get("wave_height")
+            current_wind = data["current"].get("wind_speed_10m")
             tomorrow = date.today() + timedelta(days=1)
             morn = day_temp = eve = night = None
-            for t, temp in zip(times, temps):
+            mwave = dwave = ewave = nwave = None
+            mwind = dwind = ewind = nwind = None
+            for t, temp, wave, wind in zip(times, temps, waves, winds):
                 dt = datetime.fromisoformat(t)
                 if dt.date() != tomorrow:
                     continue
                 if dt.hour == 6 and morn is None:
                     morn = temp
+                    mwave = wave
+                    mwind = wind
                 elif dt.hour == 12 and day_temp is None:
                     day_temp = temp
+                    dwave = wave
+                    dwind = wind
                 elif dt.hour == 18 and eve is None:
                     eve = temp
+                    ewave = wave
+                    ewind = wind
                 elif dt.hour == 0 and night is None:
                     night = temp
-                if morn is not None and day_temp is not None and eve is not None and night is not None:
+                    nwave = wave
+                    nwind = wind
+                if (
+                    None not in (morn, day_temp, eve, night, mwave, dwave, ewave, nwave, mwind, dwind, ewind, nwind)
+                ):
                     break
 
             self.db.execute(
-                "INSERT OR REPLACE INTO sea_cache (sea_id, updated, current, morning, day, evening, night) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO sea_cache (sea_id, updated, current, morning, day, evening, night, wave, wind, morning_wave, day_wave, evening_wave, night_wave, morning_wind, day_wind, evening_wind, night_wind) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     s["id"],
                     now.isoformat(),
@@ -521,6 +559,16 @@ class Bot:
                     day_temp,
                     eve,
                     night,
+                    current_wave,
+                    current_wind,
+                    mwave,
+                    dwave,
+                    ewave,
+                    nwave,
+                    mwind,
+                    dwind,
+                    ewind,
+                    nwind,
                 ),
             )
             self.db.commit()
@@ -688,7 +736,9 @@ class Bot:
 
     def _get_sea_cache(self, sea_id: int):
         return self.db.execute(
-            "SELECT current, morning, day, evening, night FROM sea_cache WHERE sea_id=?",
+            "SELECT current, morning, day, evening, night, wave, wind, "
+            "morning_wave, day_wave, evening_wave, night_wave, "
+            "morning_wind, day_wind, evening_wind, night_wind FROM sea_cache WHERE sea_id=?",
             (sea_id,),
         ).fetchone()
 
@@ -742,6 +792,48 @@ class Bot:
                     raise ValueError(f"no sea {key} for {cid}")
                 emoji = "\U0001F30A"
                 return f"{emoji} {row[key]:.1f}\u00B0C"
+
+            if field == "seastorm":
+                row = self._get_sea_cache(cid)
+                if not row:
+                    raise ValueError(f"no sea data for {cid}")
+                t_key = {
+                    "nm": "morning",
+                    "nd": "day",
+                    "ny": "evening",
+                    "nn": "night",
+                }.get(period, "current")
+                wave_key = {
+                    "nm": "morning_wave",
+                    "nd": "day_wave",
+                    "ny": "evening_wave",
+                    "nn": "night_wave",
+                }.get(period, "wave")
+                wind_key = {
+                    "nm": "morning_wind",
+                    "nd": "day_wind",
+                    "ny": "evening_wind",
+                    "nn": "night_wind",
+                }.get(period, "wind")
+                temp = row[t_key]
+                wave = row[wave_key]
+                wind = row[wind_key]
+                if wave is None or wind is None or temp is None:
+                    raise ValueError(f"no sea storm data for {cid}")
+
+                try:
+                    wave_val = float(wave)
+                    wind_val = float(wind)
+                    temp_val = float(temp)
+                except (TypeError, ValueError):
+                    raise ValueError(f"invalid sea storm data for {cid}")
+
+                if wave_val < 0.5 and wind_val < 5:
+                    emoji = "\U0001F30A"
+                    return f"{emoji} {temp_val:.1f}\u00B0C"
+                if wave_val >= 1.5 or wind_val >= 10:
+                    return "сильный шторм"
+                return "шторм"
 
             row = self._get_cached_weather(cid)
             period_row = self._get_period_weather(cid) if period else None

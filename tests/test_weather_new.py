@@ -113,3 +113,25 @@ async def test_template_russian_and_period(tmp_path):
     assert any(m in result for m in months)
     await bot.close()
 
+
+@pytest.mark.asyncio
+async def test_seastorm_render(tmp_path):
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+
+    bot.db.execute(
+        "INSERT INTO sea_cache (sea_id, updated, current, morning, day, evening, night, wave, morning_wave, day_wave, evening_wave, night_wave)"
+        " VALUES (1, ?, 15.0, 15.1, 15.2, 15.3, 15.4, 0.2, 0.4, 0.6, 1.6, 0.3)",
+        (datetime.utcnow().isoformat(),),
+    )
+    bot.db.commit()
+
+    assert bot._render_template('{1|seastorm}') == '\U0001F30A 15.0\u00B0C'
+    assert bot._render_template('{1|nd-seastorm}') == '\U0001F30A шторм'
+    assert bot._render_template('{1|ny-seastorm}') == '\U0001F30A сильный шторм'
+    await bot.close()
+
+
+def test_strip_header():
+    assert Bot.strip_header('🌊 16°C∙text') == 'text'
+    assert Bot.strip_header('prefix ∙ data') == 'prefix ∙ data'
+

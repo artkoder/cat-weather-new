@@ -320,12 +320,15 @@ class Bot:
 
     async def fetch_open_meteo_sea(self, lat: float, lon: float) -> dict | None:
         url = (
-            "https://marine-api.open-meteo.com/v1/marine?latitude="
+
+            "https://api.open-meteo.com/v1/marine?latitude="
+
             f"{lat}&longitude={lon}"
             "&current=wave_height,wind_speed_10m,sea_surface_temperature"
             "&hourly=wave_height,wind_speed_10m,sea_surface_temperature"
             "&forecast_days=2&timezone=auto"
         )
+        logging.info("Sea API request: %s", url)
         try:
             async with self.session.get(url) as resp:
                 text = await resp.text()

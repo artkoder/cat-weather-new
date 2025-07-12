@@ -131,7 +131,9 @@ async def test_seastorm_render(tmp_path):
     await bot.close()
 
 
+
 def test_strip_header():
     assert Bot.strip_header('🌊 16°C∙text') == 'text'
     assert Bot.strip_header('prefix ∙ data') == 'prefix ∙ data'
+
 

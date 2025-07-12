@@ -310,6 +310,7 @@ class Bot:
 
     async def fetch_open_meteo_sea(self, lat: float, lon: float) -> dict | None:
         url = (
+
             "https://marine-api.open-meteo.com/v1/marine?latitude="
             f"{lat}&longitude={lon}"
             "&current=wave_height,wind_wave_height,swell_wave_height,"

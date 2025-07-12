@@ -819,10 +819,20 @@ class Bot:
                 wind = row[wind_key]
                 if wave is None or wind is None or temp is None:
                     raise ValueError(f"no sea storm data for {cid}")
-                if wave < 0.5 and wind < 5:
+
+
+                try:
+                    wave_val = float(wave)
+                    wind_val = float(wind)
+                    temp_val = float(temp)
+                except (TypeError, ValueError):
+                    raise ValueError(f"invalid sea storm data for {cid}")
+
+                if wave_val < 0.5 and wind_val < 5:
                     emoji = "\U0001F30A"
-                    return f"{emoji} {temp:.1f}\u00B0C"
-                if wave >= 1.5 or wind >= 10:
+                    return f"{emoji} {temp_val:.1f}\u00B0C"
+                if wave_val >= 1.5 or wind_val >= 10:
+
                     return "сильный шторм"
                 return "шторм"
 

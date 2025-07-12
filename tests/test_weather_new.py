@@ -119,8 +119,10 @@ async def test_seastorm_render(tmp_path):
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
 
     bot.db.execute(
+
         "INSERT INTO sea_cache (sea_id, updated, current, morning, day, evening, night, wave, morning_wave, day_wave, evening_wave, night_wave)"
         " VALUES (1, ?, 15.0, 15.1, 15.2, 15.3, 15.4, 0.2, 0.4, 0.6, 1.6, 0.3)",
+
         (datetime.utcnow().isoformat(),),
     )
     bot.db.commit()

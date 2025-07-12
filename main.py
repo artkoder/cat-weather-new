@@ -122,12 +122,10 @@ CREATE_TABLES = [
             evening REAL,
             night REAL,
             wave REAL,
-
             morning_wave REAL,
             day_wave REAL,
             evening_wave REAL,
             night_wave REAL
-
         )""",
 
     """CREATE TABLE IF NOT EXISTS weather_posts (
@@ -221,12 +219,10 @@ class Bot:
             ("sea_cache", "evening"),
             ("sea_cache", "night"),
             ("sea_cache", "wave"),
-
             ("sea_cache", "morning_wave"),
             ("sea_cache", "day_wave"),
             ("sea_cache", "evening_wave"),
             ("sea_cache", "night_wave"),
-
 
         ):
             cur = self.db.execute(f"PRAGMA table_info({table})")
@@ -322,7 +318,6 @@ class Bot:
             "&hourly=wave_height,wind_wave_height,swell_wave_height,"
             "sea_surface_temperature"
             "&daily=wave_height_max,wind_wave_height_max,swell_wave_height_max"
-
             "&forecast_days=2&timezone=auto"
         )
         logging.info("Sea API request: %s", url)
@@ -512,7 +507,6 @@ class Bot:
                 continue
             temps = data["hourly"].get("water_temperature") or data["hourly"].get("sea_surface_temperature")
             waves = data["hourly"].get("wave_height")
-
             times = data["hourly"].get("time")
             if not temps or not times or not waves:
                 continue
@@ -522,14 +516,12 @@ class Bot:
             morn = day_temp = eve = night = None
             mwave = dwave = ewave = nwave = None
             for t, temp, wave in zip(times, temps, waves):
-
                 dt = datetime.fromisoformat(t)
                 if dt.date() != tomorrow:
                     continue
                 if dt.hour == 6 and morn is None:
                     morn = temp
                     mwave = wave
-
                 elif dt.hour == 12 and day_temp is None:
                     day_temp = temp
                     dwave = wave
@@ -541,14 +533,11 @@ class Bot:
                     nwave = wave
                 if (
                     None not in (morn, day_temp, eve, night, mwave, dwave, ewave, nwave)
-
                 ):
                     break
 
             self.db.execute(
-
                 "INSERT OR REPLACE INTO sea_cache (sea_id, updated, current, morning, day, evening, night, wave, morning_wave, day_wave, evening_wave, night_wave) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-
                 (
                     s["id"],
                     now.isoformat(),
@@ -558,12 +547,10 @@ class Bot:
                     eve,
                     night,
                     current_wave,
-
                     mwave,
                     dwave,
                     ewave,
                     nwave,
-
                 ),
             )
             self.db.commit()
@@ -731,10 +718,8 @@ class Bot:
 
     def _get_sea_cache(self, sea_id: int):
         return self.db.execute(
-
             "SELECT current, morning, day, evening, night, wave, "
             "morning_wave, day_wave, evening_wave, night_wave FROM sea_cache WHERE sea_id=?",
-
             (sea_id,),
         ).fetchone()
 
@@ -805,7 +790,6 @@ class Bot:
                     "ny": "evening_wave",
                     "nn": "night_wave",
                 }.get(period, "wave")
-
                 temp = row[t_key]
                 wave = row[wave_key]
                 if wave is None or temp is None:
@@ -813,19 +797,16 @@ class Bot:
 
                 try:
                     wave_val = float(wave)
-
                     temp_val = float(temp)
                 except (TypeError, ValueError):
                     raise ValueError(f"invalid sea storm data for {cid}")
 
-
+                emoji = "\U0001F30A"
                 if wave_val < 0.5:
-                    emoji = "\U0001F30A"
                     return f"{emoji} {temp_val:.1f}\u00B0C"
                 if wave_val >= 1.5:
-
-                    return "сильный шторм"
-                return "шторм"
+                    return f"{emoji} сильный шторм"
+                return f"{emoji} шторм"
 
             row = self._get_cached_weather(cid)
             period_row = self._get_period_weather(cid) if period else None
@@ -912,7 +893,7 @@ class Bot:
             else:
                 text = (
                     f"{header}{WEATHER_SEPARATOR}{r['base_text']}"
-                    if r["base_text"]
+                    if r["base_text"] is not None
                     else header
                 )
 

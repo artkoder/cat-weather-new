@@ -310,7 +310,6 @@ class Bot:
 
     async def fetch_open_meteo_sea(self, lat: float, lon: float) -> dict | None:
         url = (
-
             "https://marine-api.open-meteo.com/v1/marine?latitude="
             f"{lat}&longitude={lon}"
             "&current=wave_height,wind_wave_height,swell_wave_height,"
@@ -1879,17 +1878,39 @@ class Bot:
                 return
             template = parts[2]
             chat_id, msg_id = parsed
-            resp = await self.api_request('copyMessage', {
-                'chat_id': user_id,
-                'from_chat_id': chat_id,
-                'message_id': msg_id
-            })
-            if not resp.get('ok'):
-                resp = await self.api_request('forwardMessage', {
+            resp = await self.api_request(
+                'copyMessage',
+                {
                     'chat_id': user_id,
                     'from_chat_id': chat_id,
-                    'message_id': msg_id
-                })
+                    'message_id': msg_id,
+                },
+            )
+            if not resp.get('ok'):
+                resp = await self.api_request(
+                    'forwardMessage',
+                    {
+                        'chat_id': user_id,
+                        'from_chat_id': chat_id,
+                        'message_id': msg_id,
+                    },
+                )
+            elif (
+                not resp['result'].get('text')
+                and not resp['result'].get('caption')
+            ):
+                await self.api_request(
+                    'deleteMessage',
+                    {'chat_id': user_id, 'message_id': resp['result']['message_id']},
+                )
+                resp = await self.api_request(
+                    'forwardMessage',
+                    {
+                        'chat_id': user_id,
+                        'from_chat_id': chat_id,
+                        'message_id': msg_id,
+                    },
+                )
             if not resp.get('ok'):
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Cannot read post'})
                 return

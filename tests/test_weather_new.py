@@ -130,3 +130,10 @@ async def test_seastorm_render(tmp_path):
     assert bot._render_template('{1|ny-seastorm}') == '\U0001F30A сильный шторм'
     await bot.close()
 
+
+
+def test_strip_header():
+    assert Bot.strip_header('🌊 16°C∙text') == 'text'
+    assert Bot.strip_header('prefix ∙ data') == 'prefix ∙ data'
+
+

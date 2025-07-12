@@ -723,6 +723,19 @@ class Bot:
             (sea_id,),
         ).fetchone()
 
+    @staticmethod
+    def strip_header(text: str | None) -> str | None:
+        """Remove an existing weather header from text if detected."""
+        if not text:
+            return text
+        if WEATHER_SEPARATOR not in text:
+            return text
+        first, rest = text.split(WEATHER_SEPARATOR, 1)
+        first = first.strip()
+        if "\u00B0C" in first or "шторм" in first:
+            return rest.lstrip()
+        return text
+
 
     @staticmethod
     def _parse_coords(text: str) -> tuple[float, float] | None:
@@ -1883,10 +1896,8 @@ class Bot:
 
             base_text = resp['result'].get('text')
             base_caption = resp['result'].get('caption')
-            if base_text and WEATHER_SEPARATOR in base_text:
-                base_text = base_text.split(WEATHER_SEPARATOR, 1)[1]
-            if base_caption and WEATHER_SEPARATOR in base_caption:
-                base_caption = base_caption.split(WEATHER_SEPARATOR, 1)[1]
+            base_text = self.strip_header(base_text)
+            base_caption = self.strip_header(base_caption)
             markup = resp['result'].get('reply_markup')
 
             if base_text is None and base_caption is None:

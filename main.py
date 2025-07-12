@@ -320,7 +320,9 @@ class Bot:
 
     async def fetch_open_meteo_sea(self, lat: float, lon: float) -> dict | None:
         url = (
+
             "https://api.open-meteo.com/v1/marine?latitude="
+
             f"{lat}&longitude={lon}"
             "&current=wave_height,wind_speed_10m,sea_surface_temperature"
             "&hourly=wave_height,wind_speed_10m,sea_surface_temperature"
@@ -821,6 +823,7 @@ class Bot:
                 if wave is None or wind is None or temp is None:
                     raise ValueError(f"no sea storm data for {cid}")
 
+
                 try:
                     wave_val = float(wave)
                     wind_val = float(wind)
@@ -832,6 +835,7 @@ class Bot:
                     emoji = "\U0001F30A"
                     return f"{emoji} {temp_val:.1f}\u00B0C"
                 if wave_val >= 1.5 or wind_val >= 10:
+
                     return "сильный шторм"
                 return "шторм"
 

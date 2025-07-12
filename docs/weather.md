@@ -10,11 +10,18 @@ response and the parsed weather information. The request looks like:
 https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&current=temperature_2m,weather_code,wind_speed_10m,is_day&timezone=auto
 ```
 
-Sea temperature uses the marine API endpoint:
+Sea conditions use the marine API endpoint:
 
 ```
-https://marine-api.open-meteo.com/v1/marine?latitude=<lat>&longitude=<lon>&hourly=sea_surface_temperature&timezone=auto
+https://marine-api.open-meteo.com/v1/marine?latitude=<lat>&longitude=<lon>&current=wave_height,wind_wave_height,swell_wave_height,sea_surface_temperature,sea_level_height_msl&hourly=wave_height,wind_wave_height,swell_wave_height,sea_surface_temperature&daily=wave_height_max,wind_wave_height_max,swell_wave_height_max&forecast_days=2&timezone=auto
 ```
+
+### Storm rating
+
+The bot looks at the wave height in meters. When it stays below **0.5 m** the
+sea is considered calm and `{id|seastorm}` prints the water temperature just
+like `{id|seatemperature}`. Waves from **0.5 m** to **1.5 m** produce
+`шторм`. Anything higher than **1.5 m** results in `сильный шторм`.
 
 The bot continues working even if a query fails. When a request fails, it is
 retried up to three times with a one‑minute pause between attempts. After that,
@@ -46,9 +53,12 @@ no further requests are made for that city until the next scheduled half hour.
   `{<city_id>|temperature}` or `{<city_id>|wind}` mixed with text. Water
 
   temperature can be inserted with `{<sea_id>|seatemperature}` which expands to
-  the sea emoji followed by the current temperature like `🌊 15.1°C`. If the
+  the sea emoji followed by the current temperature like `🌊 15.1°C`. Storm
+  conditions are available with `{<sea_id>|seastorm}`. Waves below 0.5 m behave
+  like `{<sea_id>|seatemperature}`. Heights between 0.5 m and 1.5 m show
+  `🌊 шторм`, while anything above 1.5 m shows `🌊 сильный шторм`.
 
-  message already contains a weather header separated by `∙` it will be stripped
+  Message text already containing a weather header separated by `∙` is stripped
   when registering so only the original text remains.
 
  - `/addweatherbutton <post_url> <text> [url]` – add a button linking to the latest forecast. Button text supports the same placeholders as templates. Provide the URL manually if no forecast exists yet. Multiple weather buttons appear on the same row.
@@ -129,7 +139,12 @@ CREATE TABLE IF NOT EXISTS sea_cache (
     morning REAL,
     day REAL,
     evening REAL,
-    night REAL
+    night REAL,
+    wave REAL,
+    morning_wave REAL,
+    day_wave REAL,
+    evening_wave REAL,
+    night_wave REAL
 );
 ```
 

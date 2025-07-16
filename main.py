@@ -120,7 +120,12 @@ CREATE_TABLES = [
             morning REAL,
             day REAL,
             evening REAL,
-            night REAL
+            night REAL,
+            wave REAL,
+            morning_wave REAL,
+            day_wave REAL,
+            evening_wave REAL,
+            night_wave REAL
         )""",
 
     """CREATE TABLE IF NOT EXISTS weather_posts (
@@ -213,6 +218,11 @@ class Bot:
             ("sea_cache", "day"),
             ("sea_cache", "evening"),
             ("sea_cache", "night"),
+            ("sea_cache", "wave"),
+            ("sea_cache", "morning_wave"),
+            ("sea_cache", "day_wave"),
+            ("sea_cache", "evening_wave"),
+            ("sea_cache", "night_wave"),
 
         ):
             cur = self.db.execute(f"PRAGMA table_info({table})")
@@ -301,9 +311,15 @@ class Bot:
     async def fetch_open_meteo_sea(self, lat: float, lon: float) -> dict | None:
         url = (
             "https://marine-api.open-meteo.com/v1/marine?latitude="
-            f"{lat}&longitude={lon}&hourly=sea_surface_temperature&timezone=auto"
-
+            f"{lat}&longitude={lon}"
+            "&current=wave_height,wind_wave_height,swell_wave_height,"
+            "sea_surface_temperature,sea_level_height_msl"
+            "&hourly=wave_height,wind_wave_height,swell_wave_height,"
+            "sea_surface_temperature"
+            "&daily=wave_height_max,wind_wave_height_max,swell_wave_height_max"
+            "&forecast_days=2&timezone=auto"
         )
+        logging.info("Sea API request: %s", url)
         try:
             async with self.session.get(url) as resp:
                 text = await resp.text()
@@ -486,33 +502,41 @@ class Bot:
                 continue
 
             data = await self.fetch_open_meteo_sea(s["lat"], s["lon"])
-            if not data or "hourly" not in data:
+            if not data or "hourly" not in data or "current" not in data:
                 continue
             temps = data["hourly"].get("water_temperature") or data["hourly"].get("sea_surface_temperature")
+            waves = data["hourly"].get("wave_height")
             times = data["hourly"].get("time")
-            if not temps or not times:
+            if not temps or not times or not waves:
                 continue
-
             current = temps[0]
+            current_wave = data["current"].get("wave_height")
             tomorrow = date.today() + timedelta(days=1)
             morn = day_temp = eve = night = None
-            for t, temp in zip(times, temps):
+            mwave = dwave = ewave = nwave = None
+            for t, temp, wave in zip(times, temps, waves):
                 dt = datetime.fromisoformat(t)
                 if dt.date() != tomorrow:
                     continue
                 if dt.hour == 6 and morn is None:
                     morn = temp
+                    mwave = wave
                 elif dt.hour == 12 and day_temp is None:
                     day_temp = temp
+                    dwave = wave
                 elif dt.hour == 18 and eve is None:
                     eve = temp
+                    ewave = wave
                 elif dt.hour == 0 and night is None:
                     night = temp
-                if morn is not None and day_temp is not None and eve is not None and night is not None:
+                    nwave = wave
+                if (
+                    None not in (morn, day_temp, eve, night, mwave, dwave, ewave, nwave)
+                ):
                     break
 
             self.db.execute(
-                "INSERT OR REPLACE INTO sea_cache (sea_id, updated, current, morning, day, evening, night) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO sea_cache (sea_id, updated, current, morning, day, evening, night, wave, morning_wave, day_wave, evening_wave, night_wave) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     s["id"],
                     now.isoformat(),
@@ -521,6 +545,11 @@ class Bot:
                     day_temp,
                     eve,
                     night,
+                    current_wave,
+                    mwave,
+                    dwave,
+                    ewave,
+                    nwave,
                 ),
             )
             self.db.commit()
@@ -688,9 +717,23 @@ class Bot:
 
     def _get_sea_cache(self, sea_id: int):
         return self.db.execute(
-            "SELECT current, morning, day, evening, night FROM sea_cache WHERE sea_id=?",
+            "SELECT current, morning, day, evening, night, wave, "
+            "morning_wave, day_wave, evening_wave, night_wave FROM sea_cache WHERE sea_id=?",
             (sea_id,),
         ).fetchone()
+
+    @staticmethod
+    def strip_header(text: str | None) -> str | None:
+        """Remove an existing weather header from text if detected."""
+        if not text:
+            return text
+        if WEATHER_SEPARATOR not in text:
+            return text
+        first, rest = text.split(WEATHER_SEPARATOR, 1)
+        first = first.strip()
+        if "\u00B0C" in first or "шторм" in first:
+            return rest.lstrip()
+        return text
 
 
     @staticmethod
@@ -742,6 +785,40 @@ class Bot:
                     raise ValueError(f"no sea {key} for {cid}")
                 emoji = "\U0001F30A"
                 return f"{emoji} {row[key]:.1f}\u00B0C"
+
+            if field == "seastorm":
+                row = self._get_sea_cache(cid)
+                if not row:
+                    raise ValueError(f"no sea data for {cid}")
+                t_key = {
+                    "nm": "morning",
+                    "nd": "day",
+                    "ny": "evening",
+                    "nn": "night",
+                }.get(period, "current")
+                wave_key = {
+                    "nm": "morning_wave",
+                    "nd": "day_wave",
+                    "ny": "evening_wave",
+                    "nn": "night_wave",
+                }.get(period, "wave")
+                temp = row[t_key]
+                wave = row[wave_key]
+                if wave is None or temp is None:
+                    raise ValueError(f"no sea storm data for {cid}")
+
+                try:
+                    wave_val = float(wave)
+                    temp_val = float(temp)
+                except (TypeError, ValueError):
+                    raise ValueError(f"invalid sea storm data for {cid}")
+
+                emoji = "\U0001F30A"
+                if wave_val < 0.5:
+                    return f"{emoji} {temp_val:.1f}\u00B0C"
+                if wave_val >= 1.5:
+                    return f"{emoji} сильный шторм"
+                return f"{emoji} шторм"
 
             row = self._get_cached_weather(cid)
             period_row = self._get_period_weather(cid) if period else None
@@ -811,7 +888,7 @@ class Bot:
                 continue
 
             markup = json.loads(r["reply_markup"]) if r["reply_markup"] else None
-            if r["base_caption"]:
+            if r["base_caption"] is not None:
                 caption = f"{header}{WEATHER_SEPARATOR}{r['base_caption']}"
                 payload = {
                     "chat_id": r["chat_id"],
@@ -828,7 +905,7 @@ class Bot:
             else:
                 text = (
                     f"{header}{WEATHER_SEPARATOR}{r['base_text']}"
-                    if r["base_text"]
+                    if r["base_text"] is not None
                     else header
                 )
 
@@ -846,6 +923,8 @@ class Bot:
                 )
             if resp.get("ok"):
                 logging.info("Updated weather post %s", r["id"])
+            elif resp.get("error_code") == 400 and "message is not modified" in resp.get("description", ""):
+                logging.info("Weather post %s already up to date", r["id"])
             else:
                 logging.error(
                     "Failed to update weather post %s: %s", r["id"], resp
@@ -886,7 +965,7 @@ class Bot:
             if weather_buttons:
                 buttons.append(weather_buttons)
 
-            await self.api_request(
+            resp = await self.api_request(
                 "editMessageReplyMarkup",
                 {
                     "chat_id": r["chat_id"],
@@ -894,6 +973,17 @@ class Bot:
                     "reply_markup": {"inline_keyboard": buttons},
                 },
             )
+
+            if not resp.get("ok") and not (
+                resp.get("error_code") == 400 and "message is not modified" in resp.get("description", "")
+            ):
+                logging.error("Failed to update buttons for %s: %s", r["message_id"], resp)
+
+            self.db.execute(
+                "UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?",
+                (json.dumps({"inline_keyboard": buttons}), r["chat_id"], r["message_id"]),
+            )
+        self.db.commit()
 
     def add_weather_channel(self, channel_id: int, post_time: str):
         self.db.execute(
@@ -1350,13 +1440,17 @@ class Bot:
             chat_id, msg_id = parsed
             keyboard_text = " ".join(parts[2:-1])
             fwd = await self.api_request(
+
                 'forwardMessage',
+
                 {
                     'chat_id': user_id,
                     'from_chat_id': chat_id,
                     'message_id': msg_id,
                 },
             )
+
+
             markup = None
             caption = None
             caption_entities = None
@@ -1370,7 +1464,26 @@ class Bot:
                     {'chat_id': user_id, 'message_id': message['message_id']},
                 )
             buttons = markup.get('inline_keyboard', []) if markup else []
-            buttons.append([{'text': keyboard_text, 'url': parts[-1]}])
+            new_row = [{'text': keyboard_text, 'url': parts[-1]}]
+
+            wl_row = self.db.execute(
+                'SELECT base_markup FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                (chat_id, msg_id),
+            ).fetchone()
+
+            if wl_row:
+                base_buttons = buttons[:-1] if buttons else []
+                weather_row = buttons[-1] if buttons else []
+                base_buttons.append(new_row)
+                buttons = base_buttons + ([weather_row] if weather_row else [])
+                base_markup = json.dumps({'inline_keyboard': base_buttons})
+                self.db.execute(
+                    'UPDATE weather_link_posts SET base_markup=? WHERE chat_id=? AND message_id=?',
+                    (base_markup, chat_id, msg_id),
+                )
+            else:
+                buttons.append(new_row)
+
             keyboard = {'inline_keyboard': buttons}
 
             payload = {
@@ -1386,6 +1499,7 @@ class Bot:
                     payload['caption_entities'] = caption_entities
 
             resp = await self.api_request(method, payload)
+
             if not resp.get('ok') and resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', ''):
                 resp['ok'] = True
             if resp.get('ok'):
@@ -1400,6 +1514,7 @@ class Bot:
                         (json.dumps(keyboard), chat_id, msg_id),
                     )
                     self.db.commit()
+
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Button added'})
             else:
                 logging.error('Failed to add button to %s: %s', msg_id, resp)
@@ -1432,9 +1547,11 @@ class Bot:
                     'reply_markup': {},
                 },
             )
+
             if not resp.get('ok') and resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', ''):
                 resp['ok'] = True
             if resp.get('ok'):
+
                 logging.info('Removed buttons from message %s', msg_id)
                 self.db.execute(
                     'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',
@@ -1486,10 +1603,15 @@ class Bot:
                 return
             chat_id, msg_id = parsed
             fwd = await self.api_request(
-                'forwardMessage',
+                'copyMessage',
                 {'chat_id': user_id, 'from_chat_id': chat_id, 'message_id': msg_id},
             )
             markup = None
+            if not fwd.get('ok'):
+                fwd = await self.api_request(
+                    'forwardMessage',
+                    {'chat_id': user_id, 'from_chat_id': chat_id, 'message_id': msg_id},
+                )
             if fwd.get('ok'):
                 markup = fwd['result'].get('reply_markup')
                 await self.api_request('deleteMessage', {'chat_id': user_id, 'message_id': fwd['result']['message_id']})
@@ -1522,6 +1644,10 @@ class Bot:
                 self.db.execute(
                     'INSERT OR REPLACE INTO weather_link_posts (chat_id, message_id, base_markup, button_texts) VALUES (?, ?, ?, ?)',
                     (chat_id, msg_id, base_markup, json.dumps(texts)),
+                )
+                self.db.execute(
+                    'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                    (json.dumps({'inline_keyboard': keyboard_buttons}), chat_id, msg_id),
                 )
                 self.db.commit()
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather button added'})
@@ -1756,21 +1882,47 @@ class Bot:
                 return
             template = parts[2]
             chat_id, msg_id = parsed
-            resp = await self.api_request('forwardMessage', {
-                'chat_id': user_id,
-                'from_chat_id': chat_id,
-                'message_id': msg_id
-            })
+            resp = await self.api_request(
+                'copyMessage',
+                {
+                    'chat_id': user_id,
+                    'from_chat_id': chat_id,
+                    'message_id': msg_id,
+                },
+            )
+            if not resp.get('ok'):
+                resp = await self.api_request(
+                    'forwardMessage',
+                    {
+                        'chat_id': user_id,
+                        'from_chat_id': chat_id,
+                        'message_id': msg_id,
+                    },
+                )
+            elif (
+                not resp['result'].get('text')
+                and not resp['result'].get('caption')
+            ):
+                await self.api_request(
+                    'deleteMessage',
+                    {'chat_id': user_id, 'message_id': resp['result']['message_id']},
+                )
+                resp = await self.api_request(
+                    'forwardMessage',
+                    {
+                        'chat_id': user_id,
+                        'from_chat_id': chat_id,
+                        'message_id': msg_id,
+                    },
+                )
             if not resp.get('ok'):
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Cannot read post'})
                 return
 
             base_text = resp['result'].get('text')
             base_caption = resp['result'].get('caption')
-            if base_text and WEATHER_SEPARATOR in base_text:
-                base_text = base_text.split(WEATHER_SEPARATOR, 1)[1]
-            if base_caption and WEATHER_SEPARATOR in base_caption:
-                base_caption = base_caption.split(WEATHER_SEPARATOR, 1)[1]
+            base_text = self.strip_header(base_text)
+            base_caption = self.strip_header(base_caption)
             markup = resp['result'].get('reply_markup')
 
             if base_text is None and base_caption is None:
@@ -1783,6 +1935,10 @@ class Bot:
 
             )
             self.db.commit()
+            # Ensure data is available for the placeholders right away
+            # so the post gets updated immediately after registration.
+            await self.collect_weather(force=True)
+            await self.collect_sea(force=True)
             await self.update_weather_posts({int(m.group(1)) for m in re.finditer(r"{(\d+)\|", template)})
             await self.api_request('sendMessage', {
                 'chat_id': user_id,
@@ -1962,6 +2118,10 @@ class Bot:
                     'message_id': msg_id,
                     'reply_markup': markup,
                 },
+            )
+            self.db.execute(
+                'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                (json.dumps(markup) if markup else None, chat_id, msg_id),
             )
             self.db.execute(
                 'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',

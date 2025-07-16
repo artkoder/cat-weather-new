@@ -11,7 +11,10 @@ from aiohttp import web, ClientSession
 
 logging.basicConfig(level=logging.INFO)
 
-DB_PATH = os.getenv("DB_PATH", "bot.db")
+# Default database path points to /data which is mounted as a Fly.io volume.
+# This ensures information like registered channels and scheduled posts
+# persists across deployments unless DB_PATH is explicitly overridden.
+DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 TZ_OFFSET = os.getenv("TZ_OFFSET", "+00:00")
 SCHED_INTERVAL_SEC = int(os.getenv("SCHED_INTERVAL_SEC", "30"))
 WMO_EMOJI = {
@@ -1346,26 +1349,57 @@ class Bot:
                 return
             chat_id, msg_id = parsed
             keyboard_text = " ".join(parts[2:-1])
-            fwd = await self.api_request('forwardMessage', {
-                'chat_id': user_id,
-                'from_chat_id': chat_id,
-                'message_id': msg_id
-            })
+            fwd = await self.api_request(
+                'forwardMessage',
+                {
+                    'chat_id': user_id,
+                    'from_chat_id': chat_id,
+                    'message_id': msg_id,
+                },
+            )
             markup = None
+            caption = None
+            caption_entities = None
             if fwd.get('ok'):
-                markup = fwd['result'].get('reply_markup')
-                await self.api_request('deleteMessage', {'chat_id': user_id, 'message_id': fwd['result']['message_id']})
+                message = fwd['result']
+                markup = message.get('reply_markup')
+                caption = message.get('caption')
+                caption_entities = message.get('caption_entities')
+                await self.api_request(
+                    'deleteMessage',
+                    {'chat_id': user_id, 'message_id': message['message_id']},
+                )
             buttons = markup.get('inline_keyboard', []) if markup else []
             buttons.append([{'text': keyboard_text, 'url': parts[-1]}])
             keyboard = {'inline_keyboard': buttons}
 
-            resp = await self.api_request('editMessageReplyMarkup', {
+            payload = {
                 'chat_id': chat_id,
                 'message_id': msg_id,
-                'reply_markup': keyboard
-            })
+                'reply_markup': keyboard,
+            }
+            method = 'editMessageReplyMarkup'
+            if caption is not None:
+                method = 'editMessageCaption'
+                payload['caption'] = caption
+                if caption_entities:
+                    payload['caption_entities'] = caption_entities
+
+            resp = await self.api_request(method, payload)
+            if not resp.get('ok') and resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', ''):
+                resp['ok'] = True
             if resp.get('ok'):
                 logging.info('Updated message %s with button', msg_id)
+                cur = self.db.execute(
+                    'SELECT 1 FROM weather_posts WHERE chat_id=? AND message_id=?',
+                    (chat_id, msg_id),
+                )
+                if cur.fetchone():
+                    self.db.execute(
+                        'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                        (json.dumps(keyboard), chat_id, msg_id),
+                    )
+                    self.db.commit()
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Button added'})
             else:
                 logging.error('Failed to add button to %s: %s', msg_id, resp)
@@ -1390,15 +1424,24 @@ class Bot:
                 return
             chat_id, msg_id = parsed
 
-            resp = await self.api_request('editMessageReplyMarkup', {
-                'chat_id': chat_id,
-                'message_id': msg_id,
-                'reply_markup': {}
-            })
+            resp = await self.api_request(
+                'editMessageReplyMarkup',
+                {
+                    'chat_id': chat_id,
+                    'message_id': msg_id,
+                    'reply_markup': {},
+                },
+            )
+            if not resp.get('ok') and resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', ''):
+                resp['ok'] = True
             if resp.get('ok'):
                 logging.info('Removed buttons from message %s', msg_id)
                 self.db.execute(
                     'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                    (chat_id, msg_id),
+                )
+                self.db.execute(
+                    'UPDATE weather_posts SET reply_markup=NULL WHERE chat_id=? AND message_id=?',
                     (chat_id, msg_id),
                 )
                 self.db.commit()

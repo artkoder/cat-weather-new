@@ -1440,22 +1440,17 @@ class Bot:
             chat_id, msg_id = parsed
             keyboard_text = " ".join(parts[2:-1])
             fwd = await self.api_request(
-                'copyMessage',
+
+                'forwardMessage',
+
                 {
                     'chat_id': user_id,
                     'from_chat_id': chat_id,
                     'message_id': msg_id,
                 },
             )
-            if not fwd.get('ok'):
-                fwd = await self.api_request(
-                    'forwardMessage',
-                    {
-                        'chat_id': user_id,
-                        'from_chat_id': chat_id,
-                        'message_id': msg_id,
-                    },
-                )
+
+
             markup = None
             caption = None
             caption_entities = None
@@ -1504,15 +1499,22 @@ class Bot:
                     payload['caption_entities'] = caption_entities
 
             resp = await self.api_request(method, payload)
-            if resp.get('ok') or (
-                resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', '')
-            ):
+
+            if not resp.get('ok') and resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', ''):
+                resp['ok'] = True
+            if resp.get('ok'):
                 logging.info('Updated message %s with button', msg_id)
-                self.db.execute(
-                    'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
-                    (json.dumps(keyboard), chat_id, msg_id),
+                cur = self.db.execute(
+                    'SELECT 1 FROM weather_posts WHERE chat_id=? AND message_id=?',
+                    (chat_id, msg_id),
                 )
-                self.db.commit()
+                if cur.fetchone():
+                    self.db.execute(
+                        'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                        (json.dumps(keyboard), chat_id, msg_id),
+                    )
+                    self.db.commit()
+
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Button added'})
             else:
                 logging.error('Failed to add button to %s: %s', msg_id, resp)
@@ -1545,9 +1547,11 @@ class Bot:
                     'reply_markup': {},
                 },
             )
-            if resp.get('ok') or (
-                resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', '')
-            ):
+
+            if not resp.get('ok') and resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', ''):
+                resp['ok'] = True
+            if resp.get('ok'):
+
                 logging.info('Removed buttons from message %s', msg_id)
                 self.db.execute(
                     'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',

@@ -190,6 +190,16 @@ CREATE_TABLES = [
             UNIQUE(chat_id, message_id)
         )""",
 
+    """CREATE TABLE IF NOT EXISTS amber_channels (
+            channel_id INTEGER PRIMARY KEY
+        )""",
+
+    """CREATE TABLE IF NOT EXISTS amber_state (
+            sea_id INTEGER PRIMARY KEY,
+            storm_start TEXT,
+            active INTEGER DEFAULT 0
+        )""",
+
 ]
 
 
@@ -556,6 +566,44 @@ class Bot:
             updated.add(s["id"])
         if updated:
             await self.update_weather_posts()
+            await self.check_amber()
+
+    async def check_amber(self):
+        state = self.db.execute('SELECT sea_id, storm_start, active FROM amber_state LIMIT 1').fetchone()
+        if not state:
+            return
+        sea_id = state['sea_id']
+        row = self._get_sea_cache(sea_id)
+        if not row or row['wave'] is None:
+            return
+        wave = row['wave']
+        now = datetime.utcnow()
+        if wave >= 1.5:
+            if not state['active']:
+                self.db.execute(
+                    'UPDATE amber_state SET storm_start=?, active=1 WHERE sea_id=?',
+                    (now.isoformat(), sea_id),
+                )
+                self.db.commit()
+            return
+        if state['active'] and state['storm_start']:
+            start = datetime.fromisoformat(state['storm_start'])
+            if now - start >= timedelta(hours=1):
+                start_str = self.format_time(start.isoformat(), TZ_OFFSET)
+                end_str = self.format_time(now.isoformat(), TZ_OFFSET)
+                text = (
+                    'Время собирать янтарь. Закончился шторм, длившийся с '
+                    f'{start_str} по {end_str}, теперь в окрестностях Светлогорска, Отрадного, Донского и Балтийска можно идти собирать янтарь на пляже (вывоз за пределы региона по закону запрещён).\n\n'
+                    'Сообщение сформировано автоматически сервисом #котопогода от Полюбить Калининград'
+                )
+                for r in self.db.execute('SELECT channel_id FROM amber_channels'):
+                    try:
+                        await self.api_request('sendMessage', {'chat_id': r['channel_id'], 'text': text})
+                        logging.info('Amber message sent to %s', r['channel_id'])
+                    except Exception:
+                        logging.exception('Amber message failed for %s', r['channel_id'])
+            self.db.execute('UPDATE amber_state SET storm_start=NULL, active=0 WHERE sea_id=?', (sea_id,))
+            self.db.commit()
 
     async def handle_update(self, update):
         message = update.get('message') or update.get('channel_post')
@@ -689,6 +737,44 @@ class Bot:
     def is_superadmin(self, user_id):
         row = self.get_user(user_id)
         return row and row['is_superadmin']
+
+    def get_amber_sea(self) -> int | None:
+        row = self.db.execute('SELECT sea_id FROM amber_state LIMIT 1').fetchone()
+        return row['sea_id'] if row else None
+
+    def set_amber_sea(self, sea_id: int):
+        self.db.execute('DELETE FROM amber_state')
+        self.db.execute(
+            'INSERT INTO amber_state (sea_id, storm_start, active) VALUES (?, NULL, 0)',
+            (sea_id,),
+        )
+        self.db.commit()
+
+    def get_amber_channels(self) -> set[int]:
+        cur = self.db.execute('SELECT channel_id FROM amber_channels')
+        return {r['channel_id'] for r in cur.fetchall()}
+
+    def is_amber_channel(self, channel_id: int) -> bool:
+        cur = self.db.execute('SELECT 1 FROM amber_channels WHERE channel_id=?', (channel_id,))
+        return cur.fetchone() is not None
+
+    async def show_amber_channels(self, user_id: int):
+        enabled = self.get_amber_channels()
+        cur = self.db.execute('SELECT chat_id, title FROM channels')
+        rows = cur.fetchall()
+        if not rows:
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No channels available'})
+            return
+        for r in rows:
+            cid = r['chat_id']
+            icon = '✅' if cid in enabled else '❌'
+            btn = 'Выключить отправку' if cid in enabled else 'Включить отправку'
+            keyboard = {'inline_keyboard': [[{'text': btn, 'callback_data': f'amber_toggle:{cid}'}]]}
+            await self.api_request('sendMessage', {
+                'chat_id': user_id,
+                'text': f"{r['title'] or cid} {icon}",
+                'reply_markup': keyboard,
+            })
 
     async def parse_post_url(self, url: str) -> tuple[int, int] | None:
         """Return chat_id and message_id from a Telegram post URL."""
@@ -1725,6 +1811,21 @@ class Bot:
                 })
             return
 
+        if text.startswith('/amber') and self.is_superadmin(user_id):
+            sea_id = self.get_amber_sea()
+            if sea_id is None:
+                cur = self.db.execute('SELECT id, name FROM seas ORDER BY id')
+                rows = cur.fetchall()
+                if not rows:
+                    await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No seas'})
+                    return
+                keyboard = {'inline_keyboard': [[{'text': r['name'], 'callback_data': f'amber_sea:{r["id"]}'}] for r in rows]}
+                self.pending[user_id] = {'amber_sea': True}
+                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Select sea', 'reply_markup': keyboard})
+            else:
+                await self.show_amber_channels(user_id)
+            return
+
         if text.startswith('/weatherposts') and self.is_superadmin(user_id):
             parts = text.split(maxsplit=1)
             force = len(parts) > 1 and parts[1] == 'update'
@@ -2218,6 +2319,34 @@ class Bot:
                 'reply_markup': {}
             })
             await self.api_request('sendMessage', {'chat_id': user_id, 'text': f'Sea {sid} deleted'})
+
+        elif data.startswith('amber_sea:') and user_id in self.pending and self.pending[user_id].get('amber_sea'):
+            sid = int(data.split(':')[1])
+            self.set_amber_sea(sid)
+            del self.pending[user_id]
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Sea selected'})
+            await self.show_amber_channels(user_id)
+        elif data.startswith('amber_toggle:') and self.is_superadmin(user_id):
+            cid = int(data.split(':')[1])
+            if self.is_amber_channel(cid):
+                self.db.execute('DELETE FROM amber_channels WHERE channel_id=?', (cid,))
+                self.db.commit()
+                enabled = False
+            else:
+                self.db.execute('INSERT OR IGNORE INTO amber_channels (channel_id) VALUES (?)', (cid,))
+                self.db.commit()
+                enabled = True
+            row = self.db.execute('SELECT title FROM channels WHERE chat_id=?', (cid,)).fetchone()
+            title = row['title'] if row else str(cid)
+            icon = '✅' if enabled else '❌'
+            btn = 'Выключить отправку' if enabled else 'Включить отправку'
+            keyboard = {'inline_keyboard': [[{'text': btn, 'callback_data': f'amber_toggle:{cid}'}]]}
+            await self.api_request('editMessageText', {
+                'chat_id': query['message']['chat']['id'],
+                'message_id': query['message']['message_id'],
+                'text': f"{title} {icon}",
+                'reply_markup': keyboard,
+            })
         await self.api_request('answerCallbackQuery', {'callback_query_id': query['id']})
 
 

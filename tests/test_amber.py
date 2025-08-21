@@ -1,0 +1,34 @@
+import os
+import sys
+from datetime import datetime, timedelta
+import pytest
+
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from main import Bot
+
+os.environ.setdefault('TELEGRAM_BOT_TOKEN', 'dummy')
+
+@pytest.mark.asyncio
+async def test_amber_notification(tmp_path):
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    # set up sea and channel
+    bot.db.execute("INSERT INTO seas (id, name, lat, lon) VALUES (1, 'sea', 0, 0)")
+    bot.db.execute("INSERT INTO channels (chat_id, title) VALUES (-100, 'ch')")
+    bot.db.commit()
+    bot.set_amber_sea(1)
+    bot.db.execute("INSERT INTO amber_channels (channel_id) VALUES (-100)")
+    start = datetime.utcnow() - timedelta(hours=2)
+    bot.db.execute("UPDATE amber_state SET storm_start=?, active=1 WHERE sea_id=1", (start.isoformat(),))
+    bot.db.execute(
+        "INSERT INTO sea_cache (sea_id, updated, current, morning, day, evening, night, wave, morning_wave, day_wave, evening_wave, night_wave) VALUES (1, ?, 15, 15,15,15,15, 0.4,0,0,0,0)",
+        (datetime.utcnow().isoformat(),),
+    )
+    bot.db.commit()
+    calls = []
+    async def dummy(method, data=None):
+        calls.append((method, data))
+        return {'ok': True}
+    bot.api_request = dummy  # type: ignore
+    await bot.check_amber()
+    assert any(c[0] == 'sendMessage' for c in calls)
+    await bot.close()

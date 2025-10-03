@@ -20,6 +20,7 @@ import piexif
 from data_access import Asset, DataAccess, Rubric
 from jobs import Job, JobDelayed, JobQueue
 from openai_client import OpenAIClient
+from weather_migration import migrate_weather_publish_channels
 
 if TYPE_CHECKING:
     from openai_client import OpenAIResponse
@@ -86,14 +87,25 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         row["id"]
         for row in conn.execute("SELECT id FROM schema_migrations")
     }
-    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+    migration_files = sorted(
+        p for p in MIGRATIONS_DIR.iterdir() if p.suffix in {".sql", ".py"}
+    )
+    for path in migration_files:
         migration_id = path.stem
         if migration_id in applied:
             continue
-        sql = path.read_text(encoding="utf-8")
         logging.info("Applying migration %s", migration_id)
         with conn:
-            conn.executescript(sql)
+            if path.suffix == ".sql":
+                sql = path.read_text(encoding="utf-8")
+                conn.executescript(sql)
+            else:
+                namespace: dict[str, Any] = {}
+                exec(path.read_text(encoding="utf-8"), namespace)
+                runner = namespace.get("run")
+                if not callable(runner):
+                    raise ValueError(f"Migration {migration_id} missing run()")
+                runner(conn)
             conn.execute(
                 "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
                 (migration_id, datetime.utcnow().isoformat()),
@@ -257,6 +269,8 @@ class Bot:
             self.db.execute(stmt)
         self.db.commit()
         self.data = DataAccess(self.db)
+        if migrate_weather_publish_channels(self.db, tz_offset=TZ_OFFSET):
+            self.db.commit()
         self.jobs = JobQueue(self.db, concurrency=1)
         self.jobs.register_handler("ingest", self._job_ingest)
         self.jobs.register_handler("vision", self._job_vision)

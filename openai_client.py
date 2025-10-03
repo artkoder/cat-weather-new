@@ -15,6 +15,7 @@ class OpenAIResponse:
     prompt_tokens: int | None
     completion_tokens: int | None
     total_tokens: int | None
+    request_id: str | None = None
 
 
 class OpenAIClient:
@@ -101,6 +102,7 @@ class OpenAIClient:
         prompt_tokens = usage.get("prompt_tokens")
         completion_tokens = usage.get("completion_tokens")
         total_tokens = usage.get("total_tokens")
+        request_id = data.get("id") or response.headers.get("x-request-id")
         content = data.get("output") or data.get("response") or {}
         if isinstance(content, list) and content:
             content_item = content[0]
@@ -124,4 +126,4 @@ class OpenAIClient:
                 parsed = {"raw": message_text}
         else:
             parsed = {}
-        return OpenAIResponse(parsed, prompt_tokens, completion_tokens, total_tokens)
+        return OpenAIResponse(parsed, prompt_tokens, completion_tokens, total_tokens, request_id)

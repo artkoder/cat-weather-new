@@ -13,6 +13,15 @@ import sqlite3
 JobHandler = Callable[["Job"], Awaitable[None]]
 
 
+class JobDelayed(Exception):
+    """Signal that a job should be retried later without counting as failure."""
+
+    def __init__(self, available_at: datetime, reason: str):
+        super().__init__(reason)
+        self.available_at = available_at
+        self.reason = reason
+
+
 @dataclass
 class Job:
     id: int
@@ -116,6 +125,23 @@ class JobQueue:
         self.conn.commit()
         try:
             await handler(job)
+        except JobDelayed as delayed:
+            now = datetime.utcnow().isoformat()
+            self.conn.execute(
+                """
+                UPDATE jobs_queue
+                SET status=?, available_at=?, last_error=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    "delayed",
+                    delayed.available_at.isoformat(),
+                    delayed.reason,
+                    now,
+                    job.id,
+                ),
+            )
+            self.conn.commit()
         except Exception as exc:  # pragma: no cover - defensive
             logging.exception("Job %s failed", job.id)
             await self._handle_failure(job, str(exc))

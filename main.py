@@ -26,6 +26,7 @@ logging.basicConfig(level=logging.INFO)
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 TZ_OFFSET = os.getenv("TZ_OFFSET", "+00:00")
 SCHED_INTERVAL_SEC = int(os.getenv("SCHED_INTERVAL_SEC", "30"))
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 WMO_EMOJI = {
     0: "\u2600\ufe0f",
     1: "\U0001F324",
@@ -61,6 +62,36 @@ WEATHER_HEADER_PATTERN = re.compile(
     r"(°\s*[cf]?|шторм|м/с|ветер|давлен|влажн|осадки)",
     re.IGNORECASE,
 )
+
+
+def apply_migrations(conn: sqlite3.Connection) -> None:
+    """Apply SQL migrations stored in the migrations directory."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            id TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    applied = {
+        row["id"]
+        for row in conn.execute("SELECT id FROM schema_migrations")
+    }
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        migration_id = path.stem
+        if migration_id in applied:
+            continue
+        sql = path.read_text(encoding="utf-8")
+        logging.info("Applying migration %s", migration_id)
+        with conn:
+            conn.executescript(sql)
+            conn.execute(
+                "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+                (migration_id, datetime.utcnow().isoformat()),
+            )
 
 
 CREATE_TABLES = [
@@ -213,6 +244,7 @@ class Bot:
             os.makedirs(db_dir, exist_ok=True)
         self.db = sqlite3.connect(db_path)
         self.db.row_factory = sqlite3.Row
+        apply_migrations(self.db)
         global TZ_OFFSET
         TZ_OFFSET = os.getenv("TZ_OFFSET", "+00:00")
         for stmt in CREATE_TABLES:

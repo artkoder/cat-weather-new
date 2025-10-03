@@ -24,6 +24,7 @@ class Asset:
     longitude: float | None
     city: str | None
     country: str | None
+    rubric_id: int | None
 
 
 @dataclass
@@ -43,98 +44,6 @@ class DataAccess:
     def __init__(self, connection: sqlite3.Connection):
         self.conn = connection
         self.conn.row_factory = sqlite3.Row
-        self._ensure_tables()
-
-    def _ensure_tables(self) -> None:
-        now = datetime.utcnow().isoformat()
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS assets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_id INTEGER NOT NULL,
-                message_id INTEGER NOT NULL UNIQUE,
-                caption_template TEXT,
-                hashtags TEXT,
-                categories TEXT,
-                recognized_message_id INTEGER,
-                metadata TEXT,
-                vision_results TEXT,
-                latitude REAL,
-                longitude REAL,
-                city TEXT,
-                country TEXT,
-                last_used_at TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS asset_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_id INTEGER NOT NULL,
-                message_id INTEGER NOT NULL,
-                asset_id INTEGER,
-                schedule_id INTEGER,
-                metadata TEXT,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS weather_jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_id INTEGER NOT NULL UNIQUE,
-                post_time TEXT NOT NULL,
-                run_at TEXT NOT NULL,
-                last_run_at TEXT,
-                failures INTEGER DEFAULT 0,
-                last_error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS jobs_queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                payload TEXT,
-                status TEXT NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                available_at TEXT,
-                last_error TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ai_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                model TEXT NOT NULL,
-                prompt_tokens INTEGER,
-                completion_tokens INTEGER,
-                total_tokens INTEGER,
-                job_name TEXT,
-                job_id INTEGER,
-                asset_id INTEGER,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        # ensure indexes for frequent lookups
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_assets_message ON assets(message_id)"
-        )
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_jobs_queue_status ON jobs_queue(status, available_at)"
-        )
-        self.conn.commit()
 
     @staticmethod
     def _serialize_categories(hashtags: str | None, categories: Iterable[str] | None) -> str:
@@ -155,6 +64,7 @@ class DataAccess:
         *,
         metadata: dict[str, Any] | None = None,
         categories: Iterable[str] | None = None,
+        rubric_id: int | None = None,
     ) -> int:
         """Insert or update asset metadata."""
 
@@ -164,15 +74,23 @@ class DataAccess:
         cur = self.conn.execute(
             """
             INSERT INTO assets (
-                channel_id, message_id, caption_template, hashtags, categories,
-                metadata, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                channel_id,
+                message_id,
+                caption_template,
+                hashtags,
+                categories,
+                metadata,
+                rubric_id,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id) DO UPDATE SET
                 channel_id=excluded.channel_id,
                 caption_template=excluded.caption_template,
                 hashtags=excluded.hashtags,
                 categories=excluded.categories,
                 metadata=COALESCE(excluded.metadata, assets.metadata),
+                rubric_id=COALESCE(excluded.rubric_id, assets.rubric_id),
                 updated_at=excluded.updated_at
             """,
             (
@@ -182,6 +100,7 @@ class DataAccess:
                 hashtags,
                 cats_json,
                 metadata_json,
+                rubric_id,
                 now,
                 now,
             ),
@@ -205,6 +124,7 @@ class DataAccess:
         longitude: float | None = None,
         city: str | None = None,
         country: str | None = None,
+        rubric_id: int | None = None,
     ) -> None:
         """Update selected asset fields while preserving unset values."""
 
@@ -225,8 +145,8 @@ class DataAccess:
             values["metadata"] = json.dumps(merged)
         if recognized_message_id is not None:
             values["recognized_message_id"] = recognized_message_id
-        if vision_results is not None:
-            values["vision_results"] = json.dumps(vision_results)
+        if rubric_id is not None:
+            values["rubric_id"] = rubric_id
         if latitude is not None:
             values["latitude"] = latitude
         if longitude is not None:
@@ -243,26 +163,45 @@ class DataAccess:
         sql = f"UPDATE assets SET {assignments}, updated_at=? WHERE id=?"
         params.insert(-1, datetime.utcnow().isoformat())
         self.conn.execute(sql, params)
+        if vision_results is not None:
+            self._store_vision_result(row.id, vision_results)
         self.conn.commit()
 
     def get_asset(self, asset_id: int) -> Asset | None:
-        row = self.conn.execute(
-            "SELECT * FROM assets WHERE id=?", (asset_id,)
-        ).fetchone()
-        return self._asset_from_row(row) if row else None
+        return self._fetch_asset("a.id = ?", (asset_id,))
 
     def get_asset_by_message(self, message_id: int) -> Asset | None:
-        row = self.conn.execute(
-            "SELECT * FROM assets WHERE message_id=?", (message_id,)
-        ).fetchone()
-        return self._asset_from_row(row) if row else None
+        return self._fetch_asset("a.message_id = ?", (message_id,))
+
+    def _fetch_asset(self, where_clause: str, params: Iterable[Any]) -> Asset | None:
+        query = f"""
+            SELECT a.*, vr.result_json AS vision_payload
+            FROM assets a
+            LEFT JOIN vision_results vr
+              ON vr.asset_id = a.id
+             AND vr.id = (
+                 SELECT id FROM vision_results
+                 WHERE asset_id = a.id
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1
+             )
+            WHERE {where_clause}
+            LIMIT 1
+        """
+        row = self.conn.execute(query, tuple(params)).fetchone()
+        return self._asset_from_row(row)
 
     def _asset_from_row(self, row: sqlite3.Row | None) -> Asset | None:
         if not row:
             return None
         categories = json.loads(row["categories"] or "[]")
         metadata = json.loads(row["metadata"] or "null")
-        vision = json.loads(row["vision_results"] or "null")
+        raw_vision: str | None
+        if "vision_payload" in row.keys():
+            raw_vision = row["vision_payload"]
+        else:
+            raw_vision = self._load_latest_vision_json(int(row["id"]))
+        vision = json.loads(raw_vision) if raw_vision else None
         return Asset(
             id=row["id"],
             channel_id=row["channel_id"],
@@ -277,12 +216,25 @@ class DataAccess:
             longitude=row["longitude"],
             city=row["city"],
             country=row["country"],
+            rubric_id=row["rubric_id"] if "rubric_id" in row.keys() else None,
         )
 
     def get_next_asset(self, tags: set[str] | None) -> Asset | None:
         now_iso = datetime.utcnow().isoformat()
         rows = self.conn.execute(
-            "SELECT * FROM assets ORDER BY COALESCE(last_used_at, created_at) ASC"
+            """
+            SELECT a.*, vr.result_json AS vision_payload
+            FROM assets a
+            LEFT JOIN vision_results vr
+              ON vr.asset_id = a.id
+             AND vr.id = (
+                 SELECT id FROM vision_results
+                 WHERE asset_id = a.id
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1
+             )
+            ORDER BY COALESCE(a.last_used_at, a.created_at) ASC, a.id ASC
+            """
         ).fetchall()
         normalized = {t.lower() for t in tags} if tags else None
         for row in rows:
@@ -301,27 +253,60 @@ class DataAccess:
             return asset
         return None
 
+    def _store_vision_result(self, asset_id: int, result: Any) -> None:
+        payload = json.dumps(result) if not isinstance(result, str) else result
+        provider = result.get("provider") if isinstance(result, dict) else None
+        status = result.get("status") if isinstance(result, dict) else None
+        now = datetime.utcnow().isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO vision_results (asset_id, provider, status, result_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (asset_id, provider, status, payload, now, now),
+        )
+
+    def _load_latest_vision_json(self, asset_id: int) -> str | None:
+        row = self.conn.execute(
+            """
+            SELECT result_json FROM vision_results
+            WHERE asset_id=?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (asset_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return row["result_json"]
+
     def record_post_history(
         self,
         channel_id: int,
         message_id: int,
         asset_id: int | None,
-        schedule_id: int | None,
+        rubric_id: int | None,
         metadata: dict[str, Any] | None,
     ) -> None:
         now = datetime.utcnow().isoformat()
+        resolved_rubric = rubric_id
+        if resolved_rubric is None and asset_id is not None:
+            asset = self.get_asset(asset_id)
+            if asset:
+                resolved_rubric = asset.rubric_id
         self.conn.execute(
             """
-            INSERT INTO asset_history (
-                channel_id, message_id, asset_id, schedule_id, metadata, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO posts_history (
+                channel_id, message_id, asset_id, rubric_id, metadata, published_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 channel_id,
                 message_id,
                 asset_id,
-                schedule_id,
+                resolved_rubric,
                 json.dumps(metadata) if metadata is not None else None,
+                now,
                 now,
             ),
         )
@@ -411,7 +396,7 @@ class DataAccess:
         now = datetime.utcnow().isoformat()
         self.conn.execute(
             """
-            INSERT INTO ai_usage (
+            INSERT INTO token_usage (
                 model, prompt_tokens, completion_tokens, total_tokens,
                 job_name, job_id, asset_id, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)

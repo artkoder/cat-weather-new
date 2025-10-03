@@ -1497,22 +1497,44 @@ class Bot:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "summary": {"type": "string"},
-                    "details": {"type": "string"},
-                    "tags": {
+                    "category": {
+                        "type": "string",
+                        "description": "Основная категория сюжета фотографии",
+                    },
+                    "arch_view": {
+                        "type": "string",
+                        "description": "Описание архитектурных элементов или вида (если есть)",
+                        "default": "",
+                    },
+                    "photo_weather": {
+                        "type": "string",
+                        "description": "Краткое описание погодных условий на фото",
+                    },
+                    "flower_varieties": {
                         "type": "array",
                         "items": {"type": "string"},
+                        "description": "Список цветов, которые видны на изображении",
                         "default": [],
                     },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Уверенность модели от 0 до 1",
+                    },
                 },
-                "required": ["summary"],
-                "additionalProperties": True,
+                "required": ["category", "photo_weather"],
+                "additionalProperties": False,
             },
         }
         system_prompt = (
-            "Ты помощник Котопогода. Определи что изображено и верни JSON с полями summary, details и tags."
+            "Ты помощник Котопогода. Определи содержимое фотографии и верни JSON с полями "
+            "category, arch_view, photo_weather, flower_varieties, confidence. "
+            "category — краткая категория сюжета. arch_view — описание архитектурных элементов или вида (если отсутствует, верни пустую строку). "
+            "photo_weather — краткая сводка погоды на изображении. flower_varieties — массив названий цветов или пустой массив. "
+            "confidence — число от 0 до 1."
         )
-        user_prompt = "Опиши изображение кратко для подписи к погодному посту."
+        user_prompt = (
+            "Проанализируй фото и заполни поля category, arch_view, photo_weather, flower_varieties, confidence."
+        )
         response = await self.openai.classify_image(
             model="gpt-4o-mini",
             system_prompt=system_prompt,
@@ -1524,17 +1546,61 @@ class Bot:
             self.data.update_asset(asset_id, vision_results={"status": "skipped"})
             return
         result = response.content
-        if not isinstance(result, dict) or "summary" not in result:
+        if not isinstance(result, dict):
             raise RuntimeError("Invalid response from vision model")
-        summary = str(result.get("summary", "")).strip()
-        details = str(result.get("details", "")).strip()
-        tags = result.get("tags") or []
-        caption_lines = [f"Распознано: {summary}"]
-        if details:
-            caption_lines.append(details)
-        if tags:
-            caption_lines.append(" ".join(f"#{t}" for t in tags))
+        category = str(result.get("category", "")).strip()
+        photo_weather = str(result.get("photo_weather", "")).strip()
+        if not category or not photo_weather:
+            raise RuntimeError("Invalid response from vision model")
+        arch_view = str(result.get("arch_view", "")).strip()
+        raw_flowers = result.get("flower_varieties")
+        flower_varieties: list[str] = []
+        if isinstance(raw_flowers, list):
+            for item in raw_flowers:
+                text = str(item).strip()
+                if text:
+                    flower_varieties.append(text)
+        elif raw_flowers:
+            text = str(raw_flowers).strip()
+            if text:
+                flower_varieties.append(text)
+        raw_confidence = result.get("confidence")
+        confidence: float | None
+        if isinstance(raw_confidence, (int, float)):
+            confidence = float(raw_confidence)
+        elif isinstance(raw_confidence, str):
+            try:
+                confidence = float(raw_confidence)
+            except ValueError:
+                confidence = None
+        else:
+            confidence = None
+        caption_lines = [f"Распознано: {category}"]
+        location_parts: list[str] = []
+        if asset.city:
+            location_parts.append(asset.city)
+        if asset.country and asset.country not in location_parts:
+            location_parts.append(asset.country)
+        if location_parts:
+            caption_lines.append(f"Локация: {', '.join(location_parts)}")
+        if arch_view:
+            caption_lines.append(f"Архитектурный вид: {arch_view}")
+        if flower_varieties:
+            caption_lines.append("Цветы: " + ", ".join(flower_varieties))
+        caption_lines.append(f"Погода на фото: {photo_weather}")
+        if confidence is not None:
+            display_confidence = confidence * 100 if 0 <= confidence <= 1 else confidence
+            caption_lines.append(f"Уверенность модели: {display_confidence:.0f}%")
         caption_text = "\n".join(line for line in caption_lines if line)
+        result_payload = {
+            "status": "ok",
+            "provider": "gpt-4o-mini",
+            "category": category,
+            "arch_view": arch_view,
+            "photo_weather": photo_weather,
+            "flower_varieties": flower_varieties,
+            "confidence": confidence,
+        }
         resp = await self.api_request(
             "sendPhoto",
             {
@@ -1549,8 +1615,13 @@ class Bot:
         self.data.update_asset(
             asset_id,
             recognized_message_id=new_mid,
-            vision_results=result,
+            vision_results=result_payload,
             metadata={"vision_caption": caption_text},
+            vision_category=category,
+            vision_arch_view=arch_view,
+            vision_photo_weather=photo_weather,
+            vision_flower_varieties=flower_varieties,
+            vision_confidence=confidence,
         )
         self.data.log_ai_usage(
             "gpt-4o-mini",

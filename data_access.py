@@ -25,6 +25,11 @@ class Asset:
     city: str | None
     country: str | None
     rubric_id: int | None
+    vision_category: str | None
+    vision_arch_view: str | None
+    vision_photo_weather: str | None
+    vision_flower_varieties: list[str] | None
+    vision_confidence: float | None
 
 
 @dataclass
@@ -125,6 +130,11 @@ class DataAccess:
         city: str | None = None,
         country: str | None = None,
         rubric_id: int | None = None,
+        vision_category: str | None = None,
+        vision_arch_view: str | None = None,
+        vision_photo_weather: str | None = None,
+        vision_flower_varieties: list[str] | None = None,
+        vision_confidence: float | None = None,
     ) -> None:
         """Update selected asset fields while preserving unset values."""
 
@@ -155,6 +165,16 @@ class DataAccess:
             values["city"] = city
         if country is not None:
             values["country"] = country
+        if vision_category is not None:
+            values["vision_category"] = vision_category
+        if vision_arch_view is not None:
+            values["vision_arch_view"] = vision_arch_view
+        if vision_photo_weather is not None:
+            values["vision_photo_weather"] = vision_photo_weather
+        if vision_flower_varieties is not None:
+            values["vision_flower_varieties"] = json.dumps(vision_flower_varieties)
+        if vision_confidence is not None:
+            values["vision_confidence"] = vision_confidence
         if not values:
             return
         assignments = ", ".join(f"{k} = ?" for k in values)
@@ -202,6 +222,23 @@ class DataAccess:
         else:
             raw_vision = self._load_latest_vision_json(int(row["id"]))
         vision = json.loads(raw_vision) if raw_vision else None
+        vision_category = row["vision_category"] if "vision_category" in row.keys() else None
+        vision_arch_view = row["vision_arch_view"] if "vision_arch_view" in row.keys() else None
+        vision_photo_weather = (
+            row["vision_photo_weather"] if "vision_photo_weather" in row.keys() else None
+        )
+        raw_flowers = (
+            row["vision_flower_varieties"] if "vision_flower_varieties" in row.keys() else None
+        )
+        flower_varieties = None
+        if raw_flowers:
+            try:
+                flower_varieties = json.loads(raw_flowers)
+            except json.JSONDecodeError:
+                flower_varieties = [raw_flowers]
+        vision_confidence = (
+            row["vision_confidence"] if "vision_confidence" in row.keys() else None
+        )
         return Asset(
             id=row["id"],
             channel_id=row["channel_id"],
@@ -217,6 +254,11 @@ class DataAccess:
             city=row["city"],
             country=row["country"],
             rubric_id=row["rubric_id"] if "rubric_id" in row.keys() else None,
+            vision_category=vision_category,
+            vision_arch_view=vision_arch_view,
+            vision_photo_weather=vision_photo_weather,
+            vision_flower_varieties=flower_varieties,
+            vision_confidence=vision_confidence,
         )
 
     def get_next_asset(self, tags: set[str] | None) -> Asset | None:
@@ -257,13 +299,48 @@ class DataAccess:
         payload = json.dumps(result) if not isinstance(result, str) else result
         provider = result.get("provider") if isinstance(result, dict) else None
         status = result.get("status") if isinstance(result, dict) else None
+        category = result.get("category") if isinstance(result, dict) else None
+        arch_view = result.get("arch_view") if isinstance(result, dict) else None
+        photo_weather = result.get("photo_weather") if isinstance(result, dict) else None
+        flowers_raw: Any | None = result.get("flower_varieties") if isinstance(result, dict) else None
+        if isinstance(flowers_raw, list):
+            flowers_json = json.dumps(flowers_raw)
+        elif flowers_raw is None:
+            flowers_json = None
+        else:
+            flowers_json = json.dumps([flowers_raw])
+        confidence = result.get("confidence") if isinstance(result, dict) else None
         now = datetime.utcnow().isoformat()
         self.conn.execute(
             """
-            INSERT INTO vision_results (asset_id, provider, status, result_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO vision_results (
+                asset_id,
+                provider,
+                status,
+                category,
+                arch_view,
+                photo_weather,
+                flower_varieties,
+                confidence,
+                result_json,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (asset_id, provider, status, payload, now, now),
+            (
+                asset_id,
+                provider,
+                status,
+                category,
+                arch_view,
+                photo_weather,
+                flowers_json,
+                confidence,
+                payload,
+                now,
+                now,
+            ),
         )
 
     def _load_latest_vision_json(self, asset_id: int) -> str | None:

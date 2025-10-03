@@ -1,15 +1,22 @@
 import asyncio
 import contextlib
+import io
 import json
 import logging
 import os
 import re
 import sqlite3
 from datetime import datetime, date, timedelta, timezone
+from pathlib import Path
+from typing import Any
 
 from aiohttp import web, ClientSession
+from PIL import Image
+import piexif
 
 from data_access import Asset, DataAccess
+from jobs import Job, JobQueue
+from openai_client import OpenAIClient
 
 logging.basicConfig(level=logging.INFO)
 
@@ -198,6 +205,7 @@ CREATE_TABLES = [
 
 class Bot:
     def __init__(self, token: str, db_path: str):
+        self.token = token
         self.api_url = f"https://api.telegram.org/bot{token}"
         self.dry_run = token == "dummy"
         db_dir = os.path.dirname(db_path)
@@ -211,6 +219,14 @@ class Bot:
             self.db.execute(stmt)
         self.db.commit()
         self.data = DataAccess(self.db)
+        self.jobs = JobQueue(self.db, concurrency=1)
+        self.jobs.register_handler("ingest", self._job_ingest)
+        self.jobs.register_handler("vision", self._job_vision)
+        self.openai = OpenAIClient(os.getenv("OPENAI_API_KEY"))
+        asset_dir = os.getenv("ASSET_STORAGE_DIR")
+        self.asset_storage = Path(asset_dir).expanduser() if asset_dir else Path("/tmp/bot_assets")
+        self.asset_storage.mkdir(parents=True, exist_ok=True)
+        self._last_geocode_at: datetime | None = None
         # ensure new columns exist when upgrading
         for table, column in (
             ("users", "username"),
@@ -251,9 +267,11 @@ class Bot:
     async def start(self):
         self.session = ClientSession()
         self.running = True
+        await self.jobs.start()
 
     async def close(self):
         self.running = False
+        await self.jobs.stop()
         if self.session:
             await self.session.close()
 
@@ -261,14 +279,27 @@ class Bot:
 
     async def handle_edited_message(self, message):
         if self.asset_channel_id and message.get('chat', {}).get('id') == self.asset_channel_id:
-            caption = message.get('caption') or message.get('text') or ''
-            tags = ' '.join(re.findall(r'#\S+', caption))
-            self.add_asset(
-                message['message_id'],
-                tags,
-                caption,
-                channel_id=message['chat']['id'],
-            )
+            metadata, tags, caption, channel_id, message_id = self._collect_asset_metadata(message)
+            if not message_id:
+                return
+            existing = self.data.get_asset_by_message(message_id)
+            if existing:
+                self.data.update_asset(
+                    existing.id,
+                    template=caption,
+                    hashtags=tags,
+                    metadata=metadata,
+                )
+                asset_id = existing.id
+            else:
+                asset_id = self.add_asset(
+                    message_id,
+                    tags,
+                    caption,
+                    channel_id=channel_id,
+                    metadata=metadata,
+                )
+            self.jobs.enqueue("ingest", {"asset_id": asset_id})
             return
 
     async def api_request(self, method: str, data: dict = None):
@@ -1154,10 +1185,355 @@ class Bot:
         template: str | None = None,
         *,
         channel_id: int | None = None,
-    ):
+        metadata: dict[str, Any] | None = None,
+    ) -> int:
         source_channel = channel_id or self.asset_channel_id or 0
-        self.data.save_asset(source_channel, message_id, template, hashtags)
+        asset_id = self.data.save_asset(
+            source_channel,
+            message_id,
+            template,
+            hashtags,
+            metadata=metadata,
+        )
         logging.info("Stored asset %s tags=%s", message_id, hashtags)
+        return asset_id
+
+    def _collect_asset_metadata(
+        self, message: dict[str, Any]
+    ) -> tuple[dict[str, Any], str, str, int, int]:
+        caption = message.get("caption") or message.get("text") or ""
+        tags = " ".join(re.findall(r"#\S+", caption))
+        chat_id = message.get("chat", {}).get("id", 0)
+        message_id = message.get("message_id", 0)
+        from_user = message.get("from") or {}
+        metadata: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "caption": caption,
+            "kind": None,
+            "author_user_id": from_user.get("id"),
+            "author_username": from_user.get("username"),
+            "file": None,
+            "date": message.get("date"),
+        }
+        if message.get("sender_chat"):
+            metadata["sender_chat_id"] = message["sender_chat"].get("id")
+        if message.get("via_bot"):
+            metadata["via_bot_id"] = message["via_bot"].get("id")
+        if message.get("forward_from"):
+            metadata["forward_from_user"] = message["forward_from"].get("id")
+        if message.get("forward_from_chat"):
+            metadata["forward_from_chat"] = message["forward_from_chat"].get("id")
+
+        file_meta: dict[str, Any] = {}
+        kind = None
+        if message.get("photo"):
+            kind = "photo"
+            photo = sorted(
+                message["photo"], key=lambda p: p.get("file_size", 0)
+            )[-1]
+            file_meta = {
+                "file_id": photo.get("file_id"),
+                "file_unique_id": photo.get("file_unique_id"),
+                "file_size": photo.get("file_size"),
+                "width": photo.get("width"),
+                "height": photo.get("height"),
+            }
+        elif message.get("document"):
+            kind = "document"
+            doc = message["document"]
+            file_meta = {
+                "file_id": doc.get("file_id"),
+                "file_unique_id": doc.get("file_unique_id"),
+                "file_name": doc.get("file_name"),
+                "mime_type": doc.get("mime_type"),
+                "file_size": doc.get("file_size"),
+            }
+        elif message.get("video"):
+            kind = "video"
+            vid = message["video"]
+            file_meta = {
+                "file_id": vid.get("file_id"),
+                "file_unique_id": vid.get("file_unique_id"),
+                "duration": vid.get("duration"),
+                "width": vid.get("width"),
+                "height": vid.get("height"),
+                "file_size": vid.get("file_size"),
+            }
+        elif message.get("animation"):
+            kind = "animation"
+            anim = message["animation"]
+            file_meta = {
+                "file_id": anim.get("file_id"),
+                "file_unique_id": anim.get("file_unique_id"),
+                "file_name": anim.get("file_name"),
+                "mime_type": anim.get("mime_type"),
+                "duration": anim.get("duration"),
+                "file_size": anim.get("file_size"),
+            }
+        if kind:
+            metadata["kind"] = kind
+        if file_meta:
+            metadata["file"] = file_meta
+        return metadata, tags, caption, chat_id, message_id
+
+    async def _download_file(self, file_id: str) -> bytes | None:
+        if self.dry_run:
+            return b""
+        if not self.session:
+            logging.warning("HTTP session is not initialised for download")
+            return None
+        resp = await self.api_request("getFile", {"file_id": file_id})
+        file_path = resp.get("result", {}).get("file_path") if resp else None
+        if not file_path:
+            logging.error("No file_path returned for file %s", file_id)
+            return None
+        url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+        async with self.session.get(url) as file_resp:
+            if file_resp.status != 200:
+                logging.error("Failed to download file %s: HTTP %s", file_id, file_resp.status)
+                return None
+            return await file_resp.read()
+
+    @staticmethod
+    def _convert_gps(value, ref) -> float | None:
+        if not value:
+            return None
+        try:
+            degrees = value[0][0] / value[0][1]
+            minutes = value[1][0] / value[1][1]
+            seconds = value[2][0] / value[2][1]
+            decimal = degrees + minutes / 60 + seconds / 3600
+            if ref in {"S", "W"}:
+                decimal = -decimal
+            return decimal
+        except Exception:
+            logging.exception("Failed to convert GPS coordinates")
+            return None
+
+    def _extract_gps(self, data: bytes) -> tuple[float, float] | None:
+        try:
+            with Image.open(io.BytesIO(data)) as img:
+                exif_bytes = img.info.get("exif")
+            if not exif_bytes:
+                return None
+            exif_dict = piexif.load(exif_bytes)
+        except Exception:
+            logging.exception("Failed to parse EXIF metadata")
+            return None
+        gps = exif_dict.get("GPS") or {}
+        lat = self._convert_gps(
+            gps.get(piexif.GPSIFD.GPSLatitude), gps.get(piexif.GPSIFD.GPSLatitudeRef)
+        )
+        lon = self._convert_gps(
+            gps.get(piexif.GPSIFD.GPSLongitude), gps.get(piexif.GPSIFD.GPSLongitudeRef)
+        )
+        if lat is None or lon is None:
+            return None
+        return lat, lon
+
+    async def _reverse_geocode(self, lat: float, lon: float) -> dict[str, Any]:
+        if self.dry_run or not self.session:
+            return {}
+        now = datetime.utcnow()
+        if self._last_geocode_at:
+            elapsed = (now - self._last_geocode_at).total_seconds()
+            if elapsed < 1:
+                await asyncio.sleep(1 - elapsed)
+        url = "https://nominatim.openstreetmap.org/reverse"
+        params = {
+            "lat": f"{lat:.6f}",
+            "lon": f"{lon:.6f}",
+            "format": "jsonv2",
+        }
+        headers = {"User-Agent": "KotopogodaBot/1.0"}
+        async with self.session.get(url, params=params, headers=headers) as resp:
+            if resp.status != 200:
+                logging.warning("Reverse geocode failed with HTTP %s", resp.status)
+                return {}
+            data = await resp.json()
+        self._last_geocode_at = datetime.utcnow()
+        return data.get("address", {}) if isinstance(data, dict) else {}
+
+    def _store_local_file(self, asset_id: int, file_meta: dict[str, Any], data: bytes) -> str:
+        suffix = ""
+        file_name = file_meta.get("file_name")
+        if file_name:
+            suffix = Path(file_name).suffix
+        if not suffix and file_meta.get("mime_type"):
+            if "/" in file_meta["mime_type"]:
+                suffix = "." + file_meta["mime_type"].split("/")[-1]
+        unique = file_meta.get("file_unique_id") or str(asset_id)
+        filename = f"{asset_id}_{unique}{suffix}" if suffix else f"{asset_id}_{unique}"
+        path = self.asset_storage / filename
+        try:
+            path.write_bytes(data)
+        except Exception:
+            logging.exception("Failed to write asset file %s", path)
+        return str(path)
+
+    async def _job_ingest(self, job: Job):
+        asset_id = job.payload.get("asset_id") if job.payload else None
+        if not asset_id:
+            logging.warning("Ingest job %s missing asset_id", job.id)
+            return
+        asset = self.data.get_asset(asset_id)
+        if not asset:
+            logging.warning("Asset %s not found for ingest", asset_id)
+            return
+        metadata = asset.metadata or {}
+        file_info = metadata.get("file") or {}
+        file_id = file_info.get("file_id")
+        if not file_id:
+            logging.warning("Asset %s has no file information", asset_id)
+            return
+        if self.dry_run:
+            logging.info("Dry run ingest for asset %s", asset_id)
+            self.data.update_asset(
+                asset_id,
+                metadata={"ingest_skipped": True, "local_path": metadata.get("local_path")},
+            )
+            self.jobs.enqueue("vision", {"asset_id": asset_id})
+            return
+        data = await self._download_file(file_id)
+        if not data:
+            raise RuntimeError(f"Failed to download file for asset {asset_id}")
+        local_path = self._store_local_file(asset_id, file_info, data)
+        gps = None
+        if metadata.get("kind") == "photo":
+            gps = self._extract_gps(data)
+            if not gps:
+                author_id = metadata.get("author_user_id")
+                if author_id:
+                    await self.api_request(
+                        "sendMessage",
+                        {
+                            "chat_id": author_id,
+                            "text": "В изображении отсутствуют EXIF-данные с координатами.",
+                        },
+                    )
+        update_kwargs: dict[str, Any] = {
+            "metadata": {
+                "local_path": local_path,
+                "exif_present": bool(gps),
+            }
+        }
+        if gps:
+            lat, lon = gps
+            update_kwargs["latitude"] = lat
+            update_kwargs["longitude"] = lon
+            address = await self._reverse_geocode(lat, lon)
+            if address:
+                city = address.get("city") or address.get("town") or address.get("village")
+                country = address.get("country")
+                if city:
+                    update_kwargs["city"] = city
+                if country:
+                    update_kwargs["country"] = country
+        self.data.update_asset(asset_id, **update_kwargs)
+        self.jobs.enqueue("vision", {"asset_id": asset_id})
+
+    async def _job_vision(self, job: Job):
+        asset_id = job.payload.get("asset_id") if job.payload else None
+        if not asset_id:
+            logging.warning("Vision job %s missing asset_id", job.id)
+            return
+        asset = self.data.get_asset(asset_id)
+        if not asset:
+            logging.warning("Asset %s missing for vision", asset_id)
+            return
+        metadata = asset.metadata or {}
+        file_info = metadata.get("file") or {}
+        file_id = file_info.get("file_id")
+        if not file_id:
+            logging.warning("Asset %s has no file for vision", asset_id)
+            return
+        local_path = metadata.get("local_path")
+        if not local_path and not self.dry_run:
+            data = await self._download_file(file_id)
+            if data:
+                local_path = self._store_local_file(asset_id, file_info, data)
+        if self.dry_run or not self.openai or not self.openai.api_key:
+            self.data.update_asset(asset_id, vision_results={"status": "skipped"})
+            return
+        if not local_path or not os.path.exists(local_path):
+            raise RuntimeError(f"Local file for asset {asset_id} not found")
+        with open(local_path, "rb") as fh:
+            image_bytes = fh.read()
+        schema = {
+            "name": "vision_classification",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string"},
+                    "details": {"type": "string"},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "default": [],
+                    },
+                },
+                "required": ["summary"],
+                "additionalProperties": True,
+            },
+        }
+        system_prompt = (
+            "Ты помощник Котопогода. Определи что изображено и верни JSON с полями summary, details и tags."
+        )
+        user_prompt = "Опиши изображение кратко для подписи к погодному посту."
+        response = await self.openai.classify_image(
+            model="gpt-4o-mini",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            image_bytes=image_bytes,
+            schema=schema,
+        )
+        if response is None:
+            self.data.update_asset(asset_id, vision_results={"status": "skipped"})
+            return
+        result = response.content
+        if not isinstance(result, dict) or "summary" not in result:
+            raise RuntimeError("Invalid response from vision model")
+        summary = str(result.get("summary", "")).strip()
+        details = str(result.get("details", "")).strip()
+        tags = result.get("tags") or []
+        caption_lines = [f"Распознано: {summary}"]
+        if details:
+            caption_lines.append(details)
+        if tags:
+            caption_lines.append(" ".join(f"#{t}" for t in tags))
+        caption_text = "\n".join(line for line in caption_lines if line)
+        resp = await self.api_request(
+            "sendPhoto",
+            {
+                "chat_id": asset.channel_id,
+                "photo": file_id,
+                "caption": caption_text,
+            },
+        )
+        if not resp.get("ok"):
+            raise RuntimeError(f"Failed to publish vision result: {resp}")
+        new_mid = resp.get("result", {}).get("message_id") if resp.get("result") else None
+        self.data.update_asset(
+            asset_id,
+            recognized_message_id=new_mid,
+            vision_results=result,
+            metadata={"vision_caption": caption_text},
+        )
+        self.data.log_ai_usage(
+            "gpt-4o-mini",
+            response.prompt_tokens,
+            response.completion_tokens,
+            response.total_tokens,
+            job_name=job.name,
+            job_id=job.id,
+            asset_id=asset_id,
+        )
+        if not self.dry_run and new_mid:
+            await self.api_request(
+                "deleteMessage",
+                {"chat_id": asset.channel_id, "message_id": asset.message_id},
+            )
 
     def next_asset(self, tags: set[str] | None):
         logging.info("Selecting asset for tags=%s", tags)

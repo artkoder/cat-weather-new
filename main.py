@@ -257,6 +257,7 @@ class Bot:
             self.db.execute(stmt)
         self.db.commit()
         self.data = DataAccess(self.db)
+        self._migrate_legacy_asset_images()
         self.jobs = JobQueue(self.db, concurrency=1)
         self.jobs.register_handler("ingest", self._job_ingest)
         self.jobs.register_handler("vision", self._job_vision)
@@ -317,6 +318,59 @@ class Bot:
         self.session: ClientSession | None = None
         self.running = False
         self.manual_buttons: dict[tuple[int, int], dict[str, list[list[dict]]]] = {}
+
+    def _migrate_legacy_asset_images(self) -> None:
+        cur = self.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='asset_images'"
+        )
+        if not cur.fetchone():
+            return
+        rows = self.db.execute(
+            "SELECT message_id, hashtags, template FROM asset_images"
+        ).fetchall()
+        if not rows:
+            self.db.execute("DROP TABLE asset_images")
+            self.db.commit()
+            return
+        channel_row = self.db.execute(
+            "SELECT channel_id FROM asset_channel ORDER BY rowid LIMIT 1"
+        ).fetchone()
+        channel_id = channel_row["channel_id"] if channel_row else 0
+        now = datetime.utcnow().isoformat()
+        for row in rows:
+            message_id = row["message_id"]
+            if message_id is None:
+                continue
+            categories = DataAccess._serialize_categories(row["hashtags"], None)
+            self.db.execute(
+                """
+                INSERT INTO assets (
+                    channel_id,
+                    message_id,
+                    caption_template,
+                    hashtags,
+                    categories,
+                    created_at,
+                    updated_at
+                )
+                SELECT ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM assets WHERE message_id = ?
+                )
+                """,
+                (
+                    channel_id,
+                    message_id,
+                    row["template"],
+                    row["hashtags"],
+                    categories,
+                    now,
+                    now,
+                    message_id,
+                ),
+            )
+        self.db.execute("DROP TABLE IF EXISTS asset_images")
+        self.db.commit()
 
     def _next_usage_reset(self, *, now: datetime | None = None) -> datetime:
         reference = now or datetime.utcnow()

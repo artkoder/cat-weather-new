@@ -1,6 +1,7 @@
 import os
 import pytest
 import sys
+import sqlite3
 from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -135,3 +136,33 @@ def test_strip_header():
     assert Bot.strip_header('🌊 16°C∙text') == 'text'
     assert Bot.strip_header('prefix ∙ data') == 'prefix ∙ data'
 
+
+
+@pytest.mark.asyncio
+async def test_migrate_legacy_weather_channels(tmp_path):
+    db_path = tmp_path / 'db.sqlite'
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE weather_publish_channels ("
+        " channel_id INTEGER PRIMARY KEY,"
+        " post_time TEXT NOT NULL,"
+        " last_published_at TEXT"
+        ")"
+    )
+    conn.execute(
+        "INSERT INTO weather_publish_channels (channel_id, post_time, last_published_at) VALUES (?, ?, ?)",
+        (-100500, '10:30', '2024-01-01T09:00:00')
+    )
+    conn.commit()
+    conn.close()
+
+    bot = Bot('dummy', str(db_path))
+    channels = bot.list_weather_channels()
+    assert channels and channels[0]['channel_id'] == -100500
+    assert channels[0]['post_time'] == '10:30'
+    assert channels[0]['last_published_at'] == '2024-01-01T09:00:00'
+    assert (
+        bot.db.execute("SELECT name FROM sqlite_master WHERE name='weather_publish_channels'").fetchone()
+        is None
+    )
+    await bot.close()

@@ -1,13 +1,15 @@
 import asyncio
+import contextlib
 import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import datetime, date, timedelta, timezone
-import contextlib
-import re
 
 from aiohttp import web, ClientSession
+
+from data_access import Asset, DataAccess
 
 logging.basicConfig(level=logging.INFO)
 
@@ -48,6 +50,10 @@ def weather_emoji(code: int, is_day: int | None) -> str:
     return emoji
 
 WEATHER_SEPARATOR = "\u2219"  # "∙" used to split header from original text
+WEATHER_HEADER_PATTERN = re.compile(
+    r"(°\s*[cf]?|шторм|м/с|ветер|давлен|влажн|осадки)",
+    re.IGNORECASE,
+)
 
 
 CREATE_TABLES = [
@@ -141,21 +147,8 @@ CREATE_TABLES = [
             UNIQUE(chat_id, message_id)
         )""",
 
-    """CREATE TABLE IF NOT EXISTS asset_images (
-            message_id INTEGER PRIMARY KEY,
-            hashtags TEXT,
-            template TEXT,
-            used_at TEXT
-        )""",
-
     """CREATE TABLE IF NOT EXISTS asset_channel (
             channel_id INTEGER PRIMARY KEY
-        )""",
-
-    """CREATE TABLE IF NOT EXISTS weather_publish_channels (
-            channel_id INTEGER PRIMARY KEY,
-            post_time TEXT NOT NULL,
-            last_published_at TEXT
         )""",
 
 
@@ -206,11 +199,18 @@ CREATE_TABLES = [
 class Bot:
     def __init__(self, token: str, db_path: str):
         self.api_url = f"https://api.telegram.org/bot{token}"
+        self.dry_run = token == "dummy"
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         self.db = sqlite3.connect(db_path)
         self.db.row_factory = sqlite3.Row
+        global TZ_OFFSET
+        TZ_OFFSET = os.getenv("TZ_OFFSET", "+00:00")
         for stmt in CREATE_TABLES:
             self.db.execute(stmt)
         self.db.commit()
+        self.data = DataAccess(self.db)
         # ensure new columns exist when upgrading
         for table, column in (
             ("users", "username"),
@@ -246,6 +246,7 @@ class Bot:
 
         self.session: ClientSession | None = None
         self.running = False
+        self.manual_buttons: dict[tuple[int, int], dict[str, list[list[dict]]]] = {}
 
     async def start(self):
         self.session = ClientSession()
@@ -262,10 +263,18 @@ class Bot:
         if self.asset_channel_id and message.get('chat', {}).get('id') == self.asset_channel_id:
             caption = message.get('caption') or message.get('text') or ''
             tags = ' '.join(re.findall(r'#\S+', caption))
-            self.add_asset(message['message_id'], tags, caption)
+            self.add_asset(
+                message['message_id'],
+                tags,
+                caption,
+                channel_id=message['chat']['id'],
+            )
             return
 
     async def api_request(self, method: str, data: dict = None):
+        if self.dry_run:
+            logging.debug("Simulated API call %s with %s", method, data)
+            return {"ok": True, "result": {}}
         async with self.session.post(f"{self.api_url}/{method}", json=data) as resp:
             text = await resp.text()
             if resp.status != 200:
@@ -366,7 +375,7 @@ class Bot:
                 attempts, last_attempt = self.failed_fetches.get(c["id"], (0, datetime.min))
 
                 if not force:
-                    if last_success > now - timedelta(minutes=30):
+                    if not self.dry_run and last_success > now - timedelta(minutes=30):
                         continue
                     if attempts >= 3 and (now - last_attempt) < timedelta(minutes=30):
                         continue
@@ -512,15 +521,17 @@ class Bot:
                 continue
 
             data = await self.fetch_open_meteo_sea(s["lat"], s["lon"])
-            if not data or "hourly" not in data or "current" not in data:
+            if not data or "hourly" not in data:
                 continue
             temps = data["hourly"].get("water_temperature") or data["hourly"].get("sea_surface_temperature")
             waves = data["hourly"].get("wave_height")
             times = data["hourly"].get("time")
-            if not temps or not times or not waves:
+            if not temps or not times:
                 continue
+            if waves is None:
+                waves = [0.0 for _ in temps]
             current = temps[0]
-            current_wave = data["current"].get("wave_height")
+            current_wave = data.get("current", {}).get("wave_height")
             tomorrow = date.today() + timedelta(days=1)
             morn = day_temp = eve = night = None
             mwave = dwave = ewave = nwave = None
@@ -721,6 +732,30 @@ class Bot:
         h, m = offset.lstrip('+-').split(':')
         return timedelta(minutes=sign * (int(h) * 60 + int(m)))
 
+    def next_weather_run(
+        self,
+        post_time: str,
+        offset: str,
+        reference: datetime | None = None,
+        allow_past: bool = False,
+    ) -> datetime:
+        """Compute the next UTC datetime for the given local post time."""
+
+        if reference is None:
+            reference = datetime.utcnow()
+        tz_delta = self.parse_offset(offset)
+        local_ref = reference + tz_delta
+        hour, minute = map(int, post_time.split(':'))
+        candidate = local_ref.replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        if candidate <= local_ref:
+            if allow_past:
+                candidate = local_ref
+            else:
+                candidate += timedelta(days=1)
+        return candidate - tz_delta
+
     def format_time(self, ts: str, offset: str) -> str:
         dt = datetime.fromisoformat(ts)
         dt += self.parse_offset(offset)
@@ -815,9 +850,8 @@ class Bot:
             return text
         if WEATHER_SEPARATOR not in text:
             return text
-        first, rest = text.split(WEATHER_SEPARATOR, 1)
-        first = first.strip()
-        if "\u00B0C" in first or "шторм" in first:
+        prefix, rest = text.split(WEATHER_SEPARATOR, 1)
+        if WEATHER_HEADER_PATTERN.search(prefix.strip()):
             return rest.lstrip()
         return text
 
@@ -1072,24 +1106,32 @@ class Bot:
         self.db.commit()
 
     def add_weather_channel(self, channel_id: int, post_time: str):
-        self.db.execute(
-            "INSERT OR REPLACE INTO weather_publish_channels (channel_id, post_time) VALUES (?, ?)",
-            (channel_id, post_time),
-        )
-        self.db.commit()
+        next_run = self.next_weather_run(post_time, TZ_OFFSET, allow_past=True)
+        self.data.upsert_weather_job(channel_id, post_time, next_run)
 
     def remove_weather_channel(self, channel_id: int):
-        self.db.execute(
-            "DELETE FROM weather_publish_channels WHERE channel_id=?",
-            (channel_id,),
-        )
-        self.db.commit()
+        self.data.remove_weather_job(channel_id)
 
     def list_weather_channels(self):
-        cur = self.db.execute(
-            "SELECT w.channel_id, w.post_time, w.last_published_at, c.title FROM weather_publish_channels w LEFT JOIN channels c ON c.chat_id=w.channel_id ORDER BY w.channel_id"
-        )
-        return cur.fetchall()
+        jobs = self.data.list_weather_jobs()
+        rows = []
+        for job in jobs:
+            title_row = self.db.execute(
+                "SELECT title FROM channels WHERE chat_id=?",
+                (job.channel_id,),
+            ).fetchone()
+            rows.append(
+                {
+                    "channel_id": job.channel_id,
+                    "post_time": job.post_time,
+                    "last_published_at": job.last_run_at.isoformat()
+                    if job.last_run_at
+                    else None,
+                    "next_run_at": job.run_at.isoformat(),
+                    "title": title_row["title"] if title_row else None,
+                }
+            )
+        return rows
 
     def set_asset_channel(self, channel_id: int):
         self.db.execute("DELETE FROM asset_channel")
@@ -1105,81 +1147,36 @@ class Bot:
         row = cur.fetchone()
         return row["channel_id"] if row else None
 
-    def add_asset(self, message_id: int, hashtags: str, template: str | None = None):
-
-        cur = self.db.execute(
-            "SELECT used_at FROM asset_images WHERE message_id=?",
-            (message_id,),
-        )
-        row = cur.fetchone()
-        used_at = row["used_at"] if row else None
-        self.db.execute(
-            "INSERT OR REPLACE INTO asset_images (message_id, hashtags, template, used_at) VALUES (?, ?, ?, ?)",
-            (message_id, hashtags, template, used_at),
-        )
-        self.db.commit()
-
+    def add_asset(
+        self,
+        message_id: int,
+        hashtags: str,
+        template: str | None = None,
+        *,
+        channel_id: int | None = None,
+    ):
+        source_channel = channel_id or self.asset_channel_id or 0
+        self.data.save_asset(source_channel, message_id, template, hashtags)
         logging.info("Stored asset %s tags=%s", message_id, hashtags)
 
     def next_asset(self, tags: set[str] | None):
-        """Return and mark the next unused asset.
-
-        When ``tags`` is ``None`` or empty, the very first unused asset is
-        returned regardless of its hashtags. Otherwise we search for a tag
-        match and fall back to an untagged asset.
-        """
-
         logging.info("Selecting asset for tags=%s", tags)
-
-        cur = self.db.execute(
-            "SELECT message_id, hashtags, template FROM asset_images WHERE used_at IS NULL ORDER BY message_id"
-        )
-        rows = cur.fetchall()
-
-        if not rows:
+        asset = self.data.get_next_asset(tags)
+        if asset:
+            logging.info("Picked asset %s", asset.message_id)
+        else:
             logging.info("No asset available")
+        if not asset:
             return None
-
-        if not tags:
-            r = rows[0]
-            self.db.execute(
-                "UPDATE asset_images SET used_at=? WHERE message_id=?",
-                (datetime.utcnow().isoformat(), r["message_id"]),
-            )
-            self.db.commit()
-            logging.info("Picked asset %s", r["message_id"])
-            return r
-
-        first_no_tag = None
-        for r in rows:
-            tagset = set(r["hashtags"].split()) if r["hashtags"] else set()
-            if tagset & tags:
-
-                self.db.execute(
-                    "UPDATE asset_images SET used_at=? WHERE message_id=?",
-                    (datetime.utcnow().isoformat(), r["message_id"]),
-                )
-                self.db.commit()
-
-                logging.info("Picked asset %s", r["message_id"])
-                return r
-            if not tagset and first_no_tag is None:
-                first_no_tag = r
-
-
-        if first_no_tag:
-            self.db.execute(
-                "UPDATE asset_images SET used_at=? WHERE message_id=?",
-                (datetime.utcnow().isoformat(), first_no_tag["message_id"]),
-            )
-            self.db.commit()
-
-            logging.info("Picked asset %s (no tags)", first_no_tag["message_id"])
-            return first_no_tag
-
-
-        logging.info("No asset available")
-        return None
+        return {
+            "id": asset.id,
+            "channel_id": asset.channel_id,
+            "message_id": asset.message_id,
+            "template": asset.caption_template,
+            "hashtags": asset.hashtags,
+            "categories": asset.categories,
+            "recognized_message_id": asset.recognized_message_id,
+        }
 
 
 
@@ -1191,25 +1188,30 @@ class Bot:
     ) -> bool:
 
         asset = self.next_asset(tags)
-        caption = asset["template"] if asset and asset["template"] else ""
+        caption = asset["template"] if asset and asset.get("template") else ""
         if caption:
             caption = self._render_template(caption) or caption
-        if asset and self.asset_channel_id:
+        from_chat = None
+        if asset:
+            from_chat = asset.get("channel_id") or self.asset_channel_id
+        if asset and from_chat:
 
             logging.info("Copying asset %s to %s", asset["message_id"], channel_id)
             resp = await self.api_request(
-
                 "copyMessage",
                 {
                     "chat_id": channel_id,
-                    "from_chat_id": self.asset_channel_id,
+                    "from_chat_id": from_chat,
                     "message_id": asset["message_id"],
                     "caption": caption or None,
                 },
             )
             await self.api_request(
                 "deleteMessage",
-                {"chat_id": self.asset_channel_id, "message_id": asset["message_id"]},
+                {
+                    "chat_id": from_chat,
+                    "message_id": asset["message_id"],
+                },
             )
 
             ok = resp.get("ok", False)
@@ -1225,16 +1227,21 @@ class Bot:
             return False
 
         if ok and record:
-            self.db.execute(
-                "UPDATE weather_publish_channels SET last_published_at=? WHERE channel_id=?",
-                (datetime.utcnow().isoformat(), channel_id),
-            )
-            self.db.commit()
             if resp.get("result"):
                 mid = resp["result"].get("message_id")
                 if mid:
                     self.set_latest_weather_post(channel_id, mid)
                     await self.update_weather_buttons()
+                    self.data.record_post_history(
+                        channel_id,
+                        mid,
+                        asset["id"] if asset else None,
+                        None,
+                        {
+                            "caption": caption,
+                            "categories": asset["categories"] if asset else [],
+                        },
+                    )
         else:
             logging.error("Failed to publish weather: %s", resp)
         return ok
@@ -1247,7 +1254,12 @@ class Bot:
         if self.asset_channel_id and message.get('chat', {}).get('id') == self.asset_channel_id:
             caption = message.get('caption') or message.get('text') or ''
             tags = ' '.join(re.findall(r'#\S+', caption))
-            self.add_asset(message['message_id'], tags, caption)
+            self.add_asset(
+                message['message_id'],
+                tags,
+                caption,
+                channel_id=message['chat']['id'],
+            )
             return
 
 
@@ -1540,37 +1552,36 @@ class Bot:
             markup = None
             caption = None
             caption_entities = None
-            if fwd.get('ok'):
+            if fwd.get('ok') and fwd.get('result'):
                 message = fwd['result']
                 markup = message.get('reply_markup')
                 caption = message.get('caption')
                 caption_entities = message.get('caption_entities')
                 await self.api_request(
                     'deleteMessage',
-                    {'chat_id': user_id, 'message_id': message['message_id']},
+                    {'chat_id': user_id, 'message_id': message.get('message_id')},
                 )
-            buttons = markup.get('inline_keyboard', []) if markup else []
+            key = (chat_id, msg_id)
+            info = self.manual_buttons.get(key)
+            if info is None:
+                base_buttons = markup.get('inline_keyboard', []) if markup else []
+                info = {
+                    'base': [
+                        [dict(btn) for btn in row]
+                        for row in base_buttons
+                    ],
+                    'custom': [],
+                }
             new_row = [{'text': keyboard_text, 'url': parts[-1]}]
+            info['custom'].append([dict(btn) for btn in new_row])
+            self.manual_buttons[key] = info
 
-            wl_row = self.db.execute(
-                'SELECT base_markup FROM weather_link_posts WHERE chat_id=? AND message_id=?',
-                (chat_id, msg_id),
-            ).fetchone()
-
-            if wl_row:
-                base_buttons = buttons[:-1] if buttons else []
-                weather_row = buttons[-1] if buttons else []
-                base_buttons.append(new_row)
-                buttons = base_buttons + ([weather_row] if weather_row else [])
-                base_markup = json.dumps({'inline_keyboard': base_buttons})
-                self.db.execute(
-                    'UPDATE weather_link_posts SET base_markup=? WHERE chat_id=? AND message_id=?',
-                    (base_markup, chat_id, msg_id),
-                )
-            else:
-                buttons.append(new_row)
-
-            keyboard = {'inline_keyboard': buttons}
+            keyboard = {
+                'inline_keyboard': [
+                    [dict(btn) for btn in row]
+                    for row in info['base'] + info['custom']
+                ]
+            }
 
             payload = {
                 'chat_id': chat_id,
@@ -1648,7 +1659,7 @@ class Bot:
                     (chat_id, msg_id),
                 )
                 self.db.commit()
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Button removed'})
+                self.manual_buttons.pop((chat_id, msg_id), None)
             else:
                 logging.error('Failed to remove button from %s: %s', msg_id, resp)
                 await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Failed to remove button'})
@@ -1667,7 +1678,7 @@ class Bot:
                 return
 
             url = None
-            if len(parts) > 3:
+            if len(parts) > 3 and parts[-1].startswith(('http://', 'https://')):
                 url = parts[-1]
                 btn_text = " ".join(parts[2:-1])
             else:
@@ -1698,9 +1709,15 @@ class Bot:
                     'forwardMessage',
                     {'chat_id': user_id, 'from_chat_id': chat_id, 'message_id': msg_id},
                 )
-            if fwd.get('ok'):
+            if fwd.get('ok') and fwd.get('result'):
                 markup = fwd['result'].get('reply_markup')
-                await self.api_request('deleteMessage', {'chat_id': user_id, 'message_id': fwd['result']['message_id']})
+                await self.api_request(
+                    'deleteMessage',
+                    {
+                        'chat_id': user_id,
+                        'message_id': fwd['result'].get('message_id'),
+                    },
+                )
 
             row = self.db.execute(
                 'SELECT base_markup, button_texts FROM weather_link_posts WHERE chat_id=? AND message_id=?',
@@ -1959,7 +1976,7 @@ class Bot:
             sea_rows = cur.fetchall()
             for r in sea_rows:
                 row = self._get_sea_cache(r['id'])
-                if row and all(row[k] is not None for k in row.keys()):
+                if row and row['current'] is not None:
                     emoji = "\U0001F30A"
                     lines.append(
                         f"{r['name']}: {emoji} {row['current']:.1f}°C {row['morning']:.1f}/{row['day']:.1f}/{row['evening']:.1f}/{row['night']:.1f}"
@@ -1991,7 +2008,7 @@ class Bot:
                     'message_id': msg_id,
                 },
             )
-            if not resp.get('ok'):
+            if not resp.get('ok') or not resp.get('result'):
                 resp = await self.api_request(
                     'forwardMessage',
                     {
@@ -2395,25 +2412,23 @@ class Bot:
 
     async def process_weather_channels(self):
         now_utc = datetime.utcnow()
-        offset = self.parse_offset(TZ_OFFSET)
-        local_now = now_utc + offset
-        cur = self.db.execute(
-            "SELECT channel_id, post_time, last_published_at FROM weather_publish_channels"
-        )
-        for r in cur.fetchall():
+        jobs = self.data.due_weather_jobs(now_utc)
+        for job in jobs:
             try:
-                if r["last_published_at"]:
-                    last = datetime.fromisoformat(r["last_published_at"])
-
-                    if (last + offset).date() == local_now.date():
-
-                        continue
-                hh, mm = map(int, r["post_time"].split(":"))
-                scheduled = datetime.combine(local_now.date(), datetime.min.time()).replace(hour=hh, minute=mm)
-                if local_now >= scheduled:
-                    await self.publish_weather(r["channel_id"], None)
+                ok = await self.publish_weather(job.channel_id, None)
+                if ok:
+                    next_run = self.next_weather_run(
+                        job.post_time, TZ_OFFSET, reference=now_utc
+                    )
+                    self.data.mark_weather_job_run(job.id, next_run)
+                else:
+                    self.data.record_weather_job_failure(
+                        job.id, "publish failed"
+                    )
             except Exception:
-                logging.exception("Failed to publish weather for %s", r["channel_id"])
+                logging.exception(
+                    "Failed to publish weather for %s", job.channel_id
+                )
 
     async def schedule_loop(self):
         """Background scheduler running at configurable intervals."""

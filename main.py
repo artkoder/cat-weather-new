@@ -395,25 +395,45 @@ class Bot:
 
     async def handle_edited_message(self, message):
         if self.asset_channel_id and message.get('chat', {}).get('id') == self.asset_channel_id:
-            metadata, tags, caption, channel_id, message_id = self._collect_asset_metadata(message)
+            info = self._collect_asset_metadata(message)
+            message_id = info.get("message_id")
+            tg_chat_id = info.get("tg_chat_id") or 0
             if not message_id:
                 return
-            existing = self.data.get_asset_by_message(message_id)
+            existing = self.data.get_asset_by_message(tg_chat_id, message_id)
             if existing:
                 self.data.update_asset(
                     existing.id,
-                    template=caption,
-                    hashtags=tags,
-                    metadata=metadata,
+                    template=info.get("caption"),
+                    caption=info.get("caption"),
+                    hashtags=info.get("hashtags"),
+                    kind=info.get("kind"),
+                    file_meta=info.get("file_meta"),
+                    author_user_id=info.get("author_user_id"),
+                    author_username=info.get("author_username"),
+                    sender_chat_id=info.get("sender_chat_id"),
+                    via_bot_id=info.get("via_bot_id"),
+                    forward_from_user=info.get("forward_from_user"),
+                    forward_from_chat=info.get("forward_from_chat"),
+                    metadata=info.get("metadata"),
                 )
                 asset_id = existing.id
             else:
                 asset_id = self.add_asset(
                     message_id,
-                    tags,
-                    caption,
-                    channel_id=channel_id,
-                    metadata=metadata,
+                    info.get("hashtags", ""),
+                    info.get("caption"),
+                    channel_id=tg_chat_id,
+                    metadata=info.get("metadata"),
+                    tg_chat_id=tg_chat_id,
+                    kind=info.get("kind"),
+                    file_meta=info.get("file_meta"),
+                    author_user_id=info.get("author_user_id"),
+                    author_username=info.get("author_username"),
+                    sender_chat_id=info.get("sender_chat_id"),
+                    via_bot_id=info.get("via_bot_id"),
+                    forward_from_user=info.get("forward_from_user"),
+                    forward_from_chat=info.get("forward_from_chat"),
                 )
             self.jobs.enqueue("ingest", {"asset_id": asset_id})
             return
@@ -1321,6 +1341,15 @@ class Bot:
         *,
         channel_id: int | None = None,
         metadata: dict[str, Any] | None = None,
+        tg_chat_id: int | None = None,
+        kind: str | None = None,
+        file_meta: dict[str, Any] | None = None,
+        author_user_id: int | None = None,
+        author_username: str | None = None,
+        sender_chat_id: int | None = None,
+        via_bot_id: int | None = None,
+        forward_from_user: int | None = None,
+        forward_from_chat: int | None = None,
     ) -> int:
         source_channel = channel_id or self.asset_channel_id or 0
         asset_id = self.data.save_asset(
@@ -1328,38 +1357,40 @@ class Bot:
             message_id,
             template,
             hashtags,
+            tg_chat_id=tg_chat_id or source_channel,
+            caption=template,
+            kind=kind,
+            file_meta=file_meta,
+            author_user_id=author_user_id,
+            author_username=author_username,
+            sender_chat_id=sender_chat_id,
+            via_bot_id=via_bot_id,
+            forward_from_user=forward_from_user,
+            forward_from_chat=forward_from_chat,
             metadata=metadata,
         )
         logging.info("Stored asset %s tags=%s", message_id, hashtags)
         return asset_id
 
-    def _collect_asset_metadata(
-        self, message: dict[str, Any]
-    ) -> tuple[dict[str, Any], str, str, int, int]:
+    def _collect_asset_metadata(self, message: dict[str, Any]) -> dict[str, Any]:
         caption = message.get("caption") or message.get("text") or ""
         tags = " ".join(re.findall(r"#\S+", caption))
         chat_id = message.get("chat", {}).get("id", 0)
         message_id = message.get("message_id", 0)
         from_user = message.get("from") or {}
+        sender_chat_id = message.get("sender_chat", {}).get("id") if message.get("sender_chat") else None
+        via_bot_id = message.get("via_bot", {}).get("id") if message.get("via_bot") else None
+        forward_from_user = (
+            message.get("forward_from", {}).get("id") if message.get("forward_from") else None
+        )
+        forward_from_chat = (
+            message.get("forward_from_chat", {}).get("id")
+            if message.get("forward_from_chat")
+            else None
+        )
         metadata: dict[str, Any] = {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "caption": caption,
-            "kind": None,
-            "author_user_id": from_user.get("id"),
-            "author_username": from_user.get("username"),
-            "file": None,
             "date": message.get("date"),
         }
-        if message.get("sender_chat"):
-            metadata["sender_chat_id"] = message["sender_chat"].get("id")
-        if message.get("via_bot"):
-            metadata["via_bot_id"] = message["via_bot"].get("id")
-        if message.get("forward_from"):
-            metadata["forward_from_user"] = message["forward_from"].get("id")
-        if message.get("forward_from_chat"):
-            metadata["forward_from_chat"] = message["forward_from_chat"].get("id")
-
         file_meta: dict[str, Any] = {}
         kind = None
         if message.get("photo"):
@@ -1406,11 +1437,21 @@ class Bot:
                 "duration": anim.get("duration"),
                 "file_size": anim.get("file_size"),
             }
-        if kind:
-            metadata["kind"] = kind
-        if file_meta:
-            metadata["file"] = file_meta
-        return metadata, tags, caption, chat_id, message_id
+        return {
+            "metadata": metadata,
+            "hashtags": tags,
+            "caption": caption,
+            "tg_chat_id": chat_id,
+            "message_id": message_id,
+            "kind": kind,
+            "file_meta": file_meta or None,
+            "author_user_id": from_user.get("id"),
+            "author_username": from_user.get("username"),
+            "sender_chat_id": sender_chat_id,
+            "via_bot_id": via_bot_id,
+            "forward_from_user": forward_from_user,
+            "forward_from_chat": forward_from_chat,
+        }
 
     async def _download_file(self, file_id: str) -> bytes | None:
         if self.dry_run:
@@ -1516,9 +1557,7 @@ class Bot:
         if not asset:
             logging.warning("Asset %s not found for ingest", asset_id)
             return
-        metadata = asset.metadata or {}
-        file_info = metadata.get("file") or {}
-        file_id = file_info.get("file_id")
+        file_id = asset.file_id
         if not file_id:
             logging.warning("Asset %s has no file information", asset_id)
             return
@@ -1526,19 +1565,29 @@ class Bot:
             logging.info("Dry run ingest for asset %s", asset_id)
             self.data.update_asset(
                 asset_id,
-                metadata={"ingest_skipped": True, "local_path": metadata.get("local_path")},
+                metadata={"ingest_skipped": True},
             )
             self.jobs.enqueue("vision", {"asset_id": asset_id})
             return
         data = await self._download_file(file_id)
         if not data:
             raise RuntimeError(f"Failed to download file for asset {asset_id}")
-        local_path = self._store_local_file(asset_id, file_info, data)
+        file_meta = {
+            "file_id": asset.file_id,
+            "file_unique_id": asset.file_unique_id,
+            "file_name": asset.file_name,
+            "mime_type": asset.mime_type,
+            "duration": asset.duration,
+            "file_size": asset.file_size,
+            "width": asset.width,
+            "height": asset.height,
+        }
+        local_path = self._store_local_file(asset_id, file_meta, data)
         gps = None
-        if metadata.get("kind") == "photo":
+        if asset.kind == "photo":
             gps = self._extract_gps(data)
             if not gps:
-                author_id = metadata.get("author_user_id")
+                author_id = asset.author_user_id
                 if author_id:
                     await self.api_request(
                         "sendMessage",
@@ -1548,10 +1597,8 @@ class Bot:
                         },
                     )
         update_kwargs: dict[str, Any] = {
-            "metadata": {
-                "local_path": local_path,
-                "exif_present": bool(gps),
-            }
+            "local_path": local_path,
+            "exif_present": bool(gps),
         }
         if gps:
             lat, lon = gps
@@ -1577,17 +1624,25 @@ class Bot:
         if not asset:
             logging.warning("Asset %s missing for vision", asset_id)
             return
-        metadata = asset.metadata or {}
-        file_info = metadata.get("file") or {}
-        file_id = file_info.get("file_id")
+        file_id = asset.file_id
         if not file_id:
             logging.warning("Asset %s has no file for vision", asset_id)
             return
-        local_path = metadata.get("local_path")
+        file_meta = {
+            "file_id": asset.file_id,
+            "file_unique_id": asset.file_unique_id,
+            "file_name": asset.file_name,
+            "mime_type": asset.mime_type,
+            "duration": asset.duration,
+            "file_size": asset.file_size,
+            "width": asset.width,
+            "height": asset.height,
+        }
+        local_path = asset.local_path
         if not local_path and not self.dry_run:
             data = await self._download_file(file_id)
             if data:
-                local_path = self._store_local_file(asset_id, file_info, data)
+                local_path = self._store_local_file(asset_id, file_meta, data)
         if self.dry_run or not self.openai or not self.openai.api_key:
             self.data.update_asset(asset_id, vision_results={"status": "skipped"})
             return
@@ -1720,12 +1775,13 @@ class Bot:
             asset_id,
             recognized_message_id=new_mid,
             vision_results=result_payload,
-            metadata={"vision_caption": caption_text},
             vision_category=category,
             vision_arch_view=arch_view,
             vision_photo_weather=photo_weather,
             vision_flower_varieties=flower_varieties,
             vision_confidence=confidence,
+            vision_caption=caption_text,
+            local_path=local_path,
         )
         self._record_openai_usage("gpt-4o-mini", response, job=job)
         if not self.dry_run and new_mid:
@@ -1827,14 +1883,25 @@ class Bot:
         global TZ_OFFSET
 
         if self.asset_channel_id and message.get('chat', {}).get('id') == self.asset_channel_id:
-            caption = message.get('caption') or message.get('text') or ''
-            tags = ' '.join(re.findall(r'#\S+', caption))
-            self.add_asset(
-                message['message_id'],
-                tags,
-                caption,
-                channel_id=message['chat']['id'],
+            info = self._collect_asset_metadata(message)
+            asset_id = self.add_asset(
+                info.get("message_id", 0),
+                info.get("hashtags", ""),
+                info.get("caption"),
+                channel_id=info.get("tg_chat_id"),
+                metadata=info.get("metadata"),
+                tg_chat_id=info.get("tg_chat_id"),
+                kind=info.get("kind"),
+                file_meta=info.get("file_meta"),
+                author_user_id=info.get("author_user_id"),
+                author_username=info.get("author_username"),
+                sender_chat_id=info.get("sender_chat_id"),
+                via_bot_id=info.get("via_bot_id"),
+                forward_from_user=info.get("forward_from_user"),
+                forward_from_chat=info.get("forward_from_chat"),
             )
+            if asset_id:
+                self.jobs.enqueue("ingest", {"asset_id": asset_id})
             return
 
 
@@ -3256,8 +3323,7 @@ class Bot:
         caption = "\n\n".join(part for part in caption_parts if part)
         media: list[dict[str, Any]] = []
         for idx, asset in enumerate(assets):
-            file_info = (asset.metadata or {}).get("file") or {}
-            file_id = file_info.get("file_id")
+            file_id = asset.file_id
             if not file_id:
                 logging.warning("Asset %s missing file_id", asset.id)
                 return False
@@ -3547,10 +3613,7 @@ class Bot:
         asset_list = list(assets)
         ids = [asset.id for asset in asset_list]
         for asset in asset_list:
-            metadata = asset.metadata or {}
-            local_path = metadata.get("local_path") if isinstance(metadata, dict) else None
-            if local_path:
-                self._remove_file(local_path)
+            self._remove_file(asset.local_path)
         if extra_paths:
             for path in extra_paths:
                 self._remove_file(path)
@@ -3607,8 +3670,7 @@ class Bot:
     def _overlay_number(
         self, asset: Asset, number: int, config: dict[str, Any]
     ) -> str | None:
-        metadata = asset.metadata or {}
-        local_path = metadata.get("local_path") if isinstance(metadata, dict) else None
+        local_path = asset.local_path
         if not local_path or not os.path.exists(local_path):
             logging.warning("Asset %s missing local file for overlay", asset.id)
             return None

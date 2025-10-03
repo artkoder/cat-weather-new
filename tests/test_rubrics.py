@@ -66,12 +66,17 @@ async def test_publish_flowers_removes_assets(tmp_path):
     _insert_rubric(bot, "flowers", config, rubric_id=1)
     now = datetime.utcnow().isoformat()
     for idx in range(4):
-        metadata = {"file": {"file_id": f"file{idx}"}}
+        metadata = {"date": now}
+        file_meta = {"file_id": f"file{idx}"}
         bot.data.save_asset(
             -2000,
             100 + idx,
             None,
             "",
+            tg_chat_id=-2000,
+            caption="",
+            kind="photo",
+            file_meta=file_meta,
             metadata=metadata,
             categories=["flowers"],
             rubric_id=1,
@@ -121,22 +126,26 @@ async def test_publish_guess_arch_with_overlays(tmp_path):
     )
     bot.db.commit()
     assets = []
+    now = datetime.utcnow().isoformat()
     for idx in range(3):
         image_path = tmp_path / f"asset_{idx}.jpg"
         Image.new("RGB", (400, 300), color=(idx * 40, 10, 10)).save(image_path)
-        metadata = {
-            "file": {"file_id": f"gfile{idx}"},
-            "local_path": str(image_path),
-        }
+        metadata = {"date": now}
+        file_meta = {"file_id": f"gfile{idx}"}
         asset_id = bot.data.save_asset(
             -3000,
             500 + idx,
             None,
             "",
+            tg_chat_id=-3000,
+            caption="",
+            kind="photo",
+            file_meta=file_meta,
             metadata=metadata,
             categories=["photo_weather"],
             rubric_id=2,
         )
+        bot.data.update_asset(asset_id, local_path=str(image_path))
         assets.append(asset_id)
 
     calls = []

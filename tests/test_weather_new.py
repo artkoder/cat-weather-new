@@ -1,3 +1,4 @@
+import json
 import os
 import pytest
 import sys
@@ -5,7 +6,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from main import Bot
+from main import Bot, Job
 
 os.environ.setdefault('TELEGRAM_BOT_TOKEN', 'dummy')
 
@@ -80,6 +81,64 @@ async def test_edit_asset(tmp_path):
     await bot.handle_edited_message(edit)
     a = bot.next_asset({'#новый'})
     assert a and a['message_id'] == 11
+    await bot.close()
+
+
+@pytest.mark.asyncio
+
+async def test_photo_triggers_ingest_and_vision(tmp_path, caplog):
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    bot.set_asset_channel(-100123)
+    message = {
+        'message_id': 21,
+        'date': int(datetime.utcnow().timestamp()),
+        'chat': {'id': -100123},
+        'caption': '#котопогода свежий кадр',
+        'from': {'id': 777, 'username': 'catlover'},
+        'photo': [
+            {'file_id': 'small', 'file_unique_id': 'uniq_small', 'file_size': 10, 'width': 90, 'height': 90},
+            {'file_id': 'large', 'file_unique_id': 'uniq_large', 'file_size': 20, 'width': 1920, 'height': 1080},
+        ],
+    }
+    with caplog.at_level('INFO'):
+        await bot.handle_message(message)
+    rows = bot.db.execute(
+        "SELECT id, name, payload FROM jobs_queue ORDER BY id"
+    ).fetchall()
+    assert rows and rows[0]['name'] == 'ingest'
+    payload = json.loads(rows[0]['payload'])
+    asset_id = payload['asset_id']
+    asset = bot.data.get_asset(asset_id)
+    assert asset.kind == 'photo'
+    assert asset.file_id == 'large'
+    assert asset.author_user_id == 777
+    await bot.handle_message(message)
+    ingest_jobs = bot.db.execute(
+        "SELECT COUNT(*) FROM jobs_queue WHERE name='ingest'"
+    ).fetchone()[0]
+    assert ingest_jobs == 1
+    job = Job(
+        id=rows[0]['id'],
+        name='ingest',
+        payload=payload,
+        status='queued',
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    with caplog.at_level('INFO'):
+        await bot._job_ingest(job)
+    vision_rows = bot.db.execute(
+        "SELECT name, payload FROM jobs_queue WHERE name='vision'"
+    ).fetchall()
+    assert vision_rows
+    vision_payload = json.loads(vision_rows[0]['payload'])
+    assert vision_payload['asset_id'] == asset_id
+    ingest_log = any('Scheduled ingest job' in rec.message for rec in caplog.records)
+    vision_log = any('queued for vision job' in rec.message for rec in caplog.records)
+    assert ingest_log and vision_log
     await bot.close()
 
 

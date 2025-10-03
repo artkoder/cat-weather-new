@@ -435,7 +435,8 @@ class Bot:
                     forward_from_user=info.get("forward_from_user"),
                     forward_from_chat=info.get("forward_from_chat"),
                 )
-            self.jobs.enqueue("ingest", {"asset_id": asset_id})
+            job_id = self.jobs.enqueue("ingest", {"asset_id": asset_id}, dedupe=True)
+            logging.info("Scheduled ingest job %s for asset %s after edit", job_id, asset_id)
             return
 
     async def api_request(
@@ -1567,7 +1568,10 @@ class Bot:
                 asset_id,
                 metadata={"ingest_skipped": True},
             )
-            self.jobs.enqueue("vision", {"asset_id": asset_id})
+            vision_job = self.jobs.enqueue("vision", {"asset_id": asset_id})
+            logging.info(
+                "Asset %s queued for vision job %s after ingest (dry run)", asset_id, vision_job
+            )
             return
         data = await self._download_file(file_id)
         if not data:
@@ -1613,7 +1617,8 @@ class Bot:
                 if country:
                     update_kwargs["country"] = country
         self.data.update_asset(asset_id, **update_kwargs)
-        self.jobs.enqueue("vision", {"asset_id": asset_id})
+        vision_job = self.jobs.enqueue("vision", {"asset_id": asset_id})
+        logging.info("Asset %s queued for vision job %s after ingest", asset_id, vision_job)
 
     async def _job_vision(self, job: Job):
         asset_id = job.payload.get("asset_id") if job.payload else None
@@ -1901,7 +1906,8 @@ class Bot:
                 forward_from_chat=info.get("forward_from_chat"),
             )
             if asset_id:
-                self.jobs.enqueue("ingest", {"asset_id": asset_id})
+                job_id = self.jobs.enqueue("ingest", {"asset_id": asset_id}, dedupe=True)
+                logging.info("Scheduled ingest job %s for asset %s", job_id, asset_id)
             return
 
 

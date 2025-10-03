@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import io
@@ -6,17 +8,21 @@ import logging
 import os
 import re
 import sqlite3
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, date, timedelta, timezone, time as dtime
 from pathlib import Path
-from typing import Any, Iterable
+
+from typing import Any, Iterable, TYPE_CHECKING
 
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont
 import piexif
 
 from data_access import Asset, DataAccess, Rubric
-from jobs import Job, JobQueue
+from jobs import Job, JobDelayed, JobQueue
 from openai_client import OpenAIClient
+
+if TYPE_CHECKING:
+    from openai_client import OpenAIResponse
 
 logging.basicConfig(level=logging.INFO)
 
@@ -256,6 +262,21 @@ class Bot:
         self.jobs.register_handler("vision", self._job_vision)
         self.jobs.register_handler("publish_rubric", self._job_publish_rubric)
         self.openai = OpenAIClient(os.getenv("OPENAI_API_KEY"))
+        limit_raw = os.getenv("OPENAI_DAILY_TOKEN_LIMIT")
+        parsed_limit: int | None
+        if limit_raw:
+            try:
+                parsed_limit = int(limit_raw)
+            except ValueError:
+                logging.warning("Invalid OPENAI_DAILY_TOKEN_LIMIT: %s", limit_raw)
+                parsed_limit = None
+        else:
+            parsed_limit = None
+        if parsed_limit is not None and parsed_limit > 0:
+            self.openai_daily_limit = parsed_limit
+        else:
+            self.openai_daily_limit = None
+        self._limited_models = {"gpt-4o", "gpt-4o-mini"}
         asset_dir = os.getenv("ASSET_STORAGE_DIR")
         self.asset_storage = Path(asset_dir).expanduser() if asset_dir else Path("/tmp/bot_assets")
         self.asset_storage.mkdir(parents=True, exist_ok=True)
@@ -296,6 +317,54 @@ class Bot:
         self.session: ClientSession | None = None
         self.running = False
         self.manual_buttons: dict[tuple[int, int], dict[str, list[list[dict]]]] = {}
+
+    def _next_usage_reset(self, *, now: datetime | None = None) -> datetime:
+        reference = now or datetime.utcnow()
+        next_day = reference.date() + timedelta(days=1)
+        return datetime.combine(next_day, dtime(hour=0, minute=5))
+
+    def _enforce_openai_limit(self, job: Job | None) -> None:
+        if (
+            job is None
+            or not self.openai_daily_limit
+            or not self.openai
+            or not self.openai.api_key
+        ):
+            return
+        total_today = self.data.get_daily_token_usage_total(models=self._limited_models)
+        if total_today >= self.openai_daily_limit:
+            resume_at = self._next_usage_reset()
+            reason = (
+                "Превышен дневной лимит токенов OpenAI: "
+                f"{total_today}/{self.openai_daily_limit}. Задача перенесена до {resume_at.isoformat()}"
+            )
+            logging.warning(reason)
+            raise JobDelayed(resume_at, reason)
+
+    def _record_openai_usage(
+        self,
+        model: str,
+        response: "OpenAIResponse" | None,
+        *,
+        job: Job | None = None,
+    ) -> None:
+        if response is None:
+            return
+        self.data.log_token_usage(
+            model,
+            response.prompt_tokens,
+            response.completion_tokens,
+            response.total_tokens,
+            job_id=job.id if job else None,
+            request_id=response.request_id,
+        )
+        if model in self._limited_models:
+            total_today = self.data.get_daily_token_usage_total(models=self._limited_models)
+            logging.info(
+                "Суммарное потребление токенов %s за сегодня: %s",
+                ", ".join(sorted(self._limited_models)),
+                total_today,
+            )
 
     async def start(self):
         self.session = ClientSession()
@@ -1555,6 +1624,7 @@ class Bot:
         user_prompt = (
             "Проанализируй фото и заполни поля category, arch_view, photo_weather, flower_varieties, confidence."
         )
+        self._enforce_openai_limit(job)
         response = await self.openai.classify_image(
             model="gpt-4o-mini",
             system_prompt=system_prompt,
@@ -1643,15 +1713,7 @@ class Bot:
             vision_flower_varieties=flower_varieties,
             vision_confidence=confidence,
         )
-        self.data.log_ai_usage(
-            "gpt-4o-mini",
-            response.prompt_tokens,
-            response.completion_tokens,
-            response.total_tokens,
-            job_name=job.name,
-            job_id=job.id,
-            asset_id=asset_id,
-        )
+        self._record_openai_usage("gpt-4o-mini", response, job=job)
         if not self.dry_run and new_mid:
             await self.api_request(
                 "deleteMessage",
@@ -3029,7 +3091,12 @@ class Bot:
         test_mode = bool(payload.get("test"))
         schedule_key = payload.get("schedule_key")
         scheduled_at = payload.get("scheduled_at")
-        success = await self.publish_rubric(code, channel_id=channel_id, test=test_mode)
+        success = await self.publish_rubric(
+            code,
+            channel_id=channel_id,
+            test=test_mode,
+            job=job,
+        )
         if success and schedule_key and scheduled_at:
             try:
                 run_at = datetime.fromisoformat(scheduled_at)
@@ -3045,6 +3112,7 @@ class Bot:
         channel_id: int | None = None,
         *,
         test: bool = False,
+        job: Job | None = None,
     ) -> bool:
         rubric = self.data.get_rubric_by_code(code)
         if not rubric:
@@ -3061,7 +3129,7 @@ class Bot:
         if not handler:
             logging.warning("No handler defined for rubric %s", code)
             return False
-        return await handler(rubric, int(target), test=test)
+        return await handler(rubric, int(target), test=test, job=job)
 
     def _parse_tz_offset(self, value: str | None) -> timezone:
         offset = (value or "+00:00").strip()
@@ -3135,7 +3203,12 @@ class Bot:
         return candidate.astimezone(timezone.utc).replace(tzinfo=None)
 
     async def _publish_flowers(
-        self, rubric: Rubric, channel_id: int, *, test: bool = False
+        self,
+        rubric: Rubric,
+        channel_id: int,
+        *,
+        test: bool = False,
+        job: Job | None = None,
     ) -> bool:
         config = rubric.config or {}
         asset_cfg = config.get("assets") or {}
@@ -3160,7 +3233,7 @@ class Bot:
             return False
         cities = sorted({asset.city for asset in assets if asset.city})
         greeting, hashtags = await self._generate_flowers_copy(
-            rubric, cities, len(assets)
+            rubric, cities, len(assets), job=job
         )
         hashtag_list = self._prepare_hashtags(hashtags)
         caption_parts = [greeting.strip()] if greeting else []
@@ -3211,7 +3284,12 @@ class Bot:
         return True
 
     async def _generate_flowers_copy(
-        self, rubric: Rubric, cities: list[str], asset_count: int
+        self,
+        rubric: Rubric,
+        cities: list[str],
+        asset_count: int,
+        *,
+        job: Job | None = None,
     ) -> tuple[str, list[str]]:
         prompt_parts = [
             "Составь короткий приветственный текст для утреннего поста с фото цветов.",
@@ -3240,6 +3318,7 @@ class Bot:
         }
         response = None
         try:
+            self._enforce_openai_limit(job)
             response = await self.openai.generate_json(
                 model="gpt-4o-mini",
                 system_prompt=(
@@ -3252,13 +3331,7 @@ class Bot:
         except Exception:
             logging.exception("Failed to generate flowers copy")
         if response:
-            self.data.log_ai_usage(
-                "gpt-4o-mini",
-                response.prompt_tokens,
-                response.completion_tokens,
-                response.total_tokens,
-                job_name="publish_rubric",
-            )
+            self._record_openai_usage("gpt-4o-mini", response, job=job)
         if response and isinstance(response.content, dict):
             greeting = str(response.content.get("greeting") or "").strip()
             hashtags = response.content.get("hashtags") or []
@@ -3277,7 +3350,12 @@ class Bot:
         return "Доброе утро! Пусть этот букет сделает день ярче."
 
     async def _publish_guess_arch(
-        self, rubric: Rubric, channel_id: int, *, test: bool = False
+        self,
+        rubric: Rubric,
+        channel_id: int,
+        *,
+        test: bool = False,
+        job: Job | None = None,
     ) -> bool:
         config = rubric.config or {}
         asset_cfg = config.get("assets") or {}
@@ -3403,6 +3481,7 @@ class Bot:
         }
         response = None
         try:
+            self._enforce_openai_limit(job)
             response = await self.openai.generate_json(
                 model="gpt-4o-mini",
                 system_prompt=(
@@ -3415,13 +3494,7 @@ class Bot:
         except Exception:
             logging.exception("Failed to generate guess_arch caption")
         if response:
-            self.data.log_ai_usage(
-                "gpt-4o-mini",
-                response.prompt_tokens,
-                response.completion_tokens,
-                response.total_tokens,
-                job_name="publish_rubric",
-            )
+            self._record_openai_usage("gpt-4o-mini", response, job=job)
         if response and isinstance(response.content, dict):
             caption = str(response.content.get("caption") or "").strip()
             hashtags = response.content.get("hashtags") or []

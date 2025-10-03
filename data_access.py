@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, date
 from typing import Any, Iterable, Iterator, Sequence
 
 import sqlite3
@@ -535,28 +535,68 @@ class DataAccess:
         )
         self.conn.commit()
 
-    def log_ai_usage(
+    def log_token_usage(
         self,
         model: str,
         prompt_tokens: int | None,
         completion_tokens: int | None,
         total_tokens: int | None,
         *,
-        job_name: str | None = None,
         job_id: int | None = None,
-        asset_id: int | None = None,
+        request_id: str | None = None,
+        timestamp: str | None = None,
     ) -> None:
-        now = datetime.utcnow().isoformat()
+        recorded_at = timestamp or datetime.utcnow().isoformat()
+        total = total_tokens
+        if total is None and (prompt_tokens is not None or completion_tokens is not None):
+            total = (prompt_tokens or 0) + (completion_tokens or 0)
         self.conn.execute(
             """
             INSERT INTO token_usage (
-                model, prompt_tokens, completion_tokens, total_tokens,
-                job_name, job_id, asset_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                model,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                job_id,
+                request_id,
+                timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (model, prompt_tokens, completion_tokens, total_tokens, job_name, job_id, asset_id, now),
+            (
+                model,
+                prompt_tokens,
+                completion_tokens,
+                total,
+                job_id,
+                request_id,
+                recorded_at,
+            ),
         )
         self.conn.commit()
+
+    def get_daily_token_usage_total(
+        self,
+        *,
+        day: date | None = None,
+        models: Iterable[str] | None = None,
+    ) -> int:
+        target_day = (day or datetime.utcnow().date()).isoformat()
+        params: list[Any] = [target_day]
+        query = (
+            "SELECT COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total "
+            "FROM token_usage WHERE date(timestamp) = date(?)"
+        )
+        model_list = list(models) if models else []
+        if model_list:
+            placeholders = ", ".join("?" for _ in model_list)
+            query += f" AND model IN ({placeholders})"
+            params.extend(model_list)
+        row = self.conn.execute(query, params).fetchone()
+        value = row["total"] if row else 0
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            return 0
 
     def _rubric_from_row(self, row: sqlite3.Row) -> Rubric:
         description = row["description"]

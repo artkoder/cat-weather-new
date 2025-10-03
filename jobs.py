@@ -243,12 +243,41 @@ class JobQueue:
         payload: dict[str, Any] | None = None,
         *,
         run_at: datetime | None = None,
+        dedupe: bool = False,
     ) -> int:
         if name not in self.handlers:
             logging.warning("Enqueuing job %s without registered handler", name)
         now = datetime.utcnow()
         available_at = run_at if run_at else now
         status = "queued" if available_at <= now else "delayed"
+        payload_data = dict(payload) if payload else {}
+        payload_json = json.dumps(payload_data, sort_keys=True)
+        if dedupe:
+            statuses = ("queued", "running", "delayed")
+            placeholders = ", ".join("?" for _ in statuses)
+            rows = self.conn.execute(
+                f"""
+                SELECT id, payload
+                FROM jobs_queue
+                WHERE name = ?
+                  AND status IN ({placeholders})
+                """,
+                (name, *statuses),
+            ).fetchall()
+            for row in rows:
+                try:
+                    existing_payload = json.loads(row["payload"]) if row["payload"] else {}
+                except json.JSONDecodeError:
+                    continue
+                if existing_payload == payload_data:
+                    job_id = int(row["id"])
+                    logging.debug(
+                        "Skipping duplicate job %s for payload %s (existing id=%s)",
+                        name,
+                        payload_data,
+                        job_id,
+                    )
+                    return job_id
         cur = self.conn.execute(
             """
             INSERT INTO jobs_queue (name, payload, status, attempts, available_at, created_at, updated_at)
@@ -256,7 +285,7 @@ class JobQueue:
             """,
             (
                 name,
-                json.dumps(payload or {}),
+                payload_json,
                 status,
                 available_at.isoformat() if status == "delayed" else None,
                 now.isoformat(),

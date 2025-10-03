@@ -1,1 +1,4 @@
 aiohttp>=3.9.5
+httpx>=0.27.0
+Pillow>=10.4.0
+piexif>=1.1.3

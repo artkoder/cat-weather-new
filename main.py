@@ -8,13 +8,13 @@ import re
 import sqlite3
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
-from aiohttp import web, ClientSession
-from PIL import Image
+from aiohttp import web, ClientSession, FormData
+from PIL import Image, ImageDraw, ImageFont
 import piexif
 
-from data_access import Asset, DataAccess
+from data_access import Asset, DataAccess, Rubric
 from jobs import Job, JobQueue
 from openai_client import OpenAIClient
 
@@ -59,7 +59,7 @@ def weather_emoji(code: int, is_day: int | None) -> str:
 
 WEATHER_SEPARATOR = "\u2219"  # "∙" used to split header from original text
 WEATHER_HEADER_PATTERN = re.compile(
-    r"(°\s*[cf]?|шторм|м/с|ветер|давлен|влажн|осадки)",
+    r"(°\s*[cf]?|шторм|м/с|ветер|давлен|влажн|осадки|old)",
     re.IGNORECASE,
 )
 
@@ -254,6 +254,7 @@ class Bot:
         self.jobs = JobQueue(self.db, concurrency=1)
         self.jobs.register_handler("ingest", self._job_ingest)
         self.jobs.register_handler("vision", self._job_vision)
+        self.jobs.register_handler("publish_rubric", self._job_publish_rubric)
         self.openai = OpenAIClient(os.getenv("OPENAI_API_KEY"))
         asset_dir = os.getenv("ASSET_STORAGE_DIR")
         self.asset_storage = Path(asset_dir).expanduser() if asset_dir else Path("/tmp/bot_assets")
@@ -334,24 +335,43 @@ class Bot:
             self.jobs.enqueue("ingest", {"asset_id": asset_id})
             return
 
-    async def api_request(self, method: str, data: dict = None):
+    async def api_request(
+        self,
+        method: str,
+        data: dict | None = None,
+        *,
+        files: dict[str, tuple[str, bytes]] | None = None,
+    ):
         if self.dry_run:
             logging.debug("Simulated API call %s with %s", method, data)
             return {"ok": True, "result": {}}
-        async with self.session.post(f"{self.api_url}/{method}", json=data) as resp:
-            text = await resp.text()
-            if resp.status != 200:
-                logging.error("API HTTP %s for %s: %s", resp.status, method, text)
-            try:
-                result = json.loads(text)
-            except Exception:
-                logging.exception("Invalid response for %s: %s", method, text)
-                return {}
-            if not result.get("ok"):
-                logging.error("API call %s failed: %s", method, result)
-            else:
-                logging.info("API call %s succeeded", method)
-            return result
+        url = f"{self.api_url}/{method}"
+        if files:
+            form = FormData()
+            for key, value in (data or {}).items():
+                if isinstance(value, (dict, list)):
+                    form.add_field(key, json.dumps(value))
+                else:
+                    form.add_field(key, str(value))
+            for name, (filename, blob) in files.items():
+                form.add_field(name, blob, filename=filename)
+            async with self.session.post(url, data=form) as resp:
+                text = await resp.text()
+        else:
+            async with self.session.post(url, json=data) as resp:
+                text = await resp.text()
+        if resp.status != 200:
+            logging.error("API HTTP %s for %s: %s", resp.status, method, text)
+        try:
+            result = json.loads(text)
+        except Exception:
+            logging.exception("Invalid response for %s: %s", method, text)
+            return {}
+        if not result.get("ok"):
+            logging.error("API call %s failed: %s", method, result)
+        else:
+            logging.info("API call %s succeeded", method)
+        return result
 
     async def fetch_open_meteo(self, lat: float, lon: float) -> dict | None:
         url = (
@@ -2838,6 +2858,659 @@ class Bot:
                     "Failed to publish weather for %s", job.channel_id
                 )
 
+    async def process_rubric_schedule(self, reference: datetime | None = None) -> None:
+        now = reference or datetime.utcnow()
+        rubrics = self.data.list_rubrics()
+        for rubric in rubrics:
+            config = rubric.config or {}
+            if not config.get("enabled", True):
+                continue
+            schedules = config.get("schedules") or config.get("schedule") or []
+            if isinstance(schedules, dict):
+                schedules = [schedules]
+            for idx, schedule in enumerate(schedules):
+                if not isinstance(schedule, dict):
+                    continue
+                if not schedule.get("enabled", True):
+                    continue
+                channel_id = schedule.get("channel_id") or config.get("channel_id")
+                if not channel_id:
+                    continue
+                time_str = schedule.get("time")
+                if not time_str:
+                    continue
+                tz_value = schedule.get("tz") or config.get("tz") or TZ_OFFSET
+                days = schedule.get("days") or config.get("days")
+                key = schedule.get("key") or f"{channel_id}:{idx}:{time_str}"
+                state = self.data.get_rubric_schedule_state(rubric.code, key)
+                next_run = state.next_run_at if state else None
+                if next_run is None or next_run <= now:
+                    next_run = self._compute_next_rubric_run(
+                        time_str=time_str,
+                        tz_offset=tz_value,
+                        days=days,
+                        reference=now,
+                    )
+                    self.data.set_rubric_schedule_state(
+                        rubric.code,
+                        key,
+                        next_run_at=next_run,
+                        last_run_at=state.last_run_at if state else None,
+                    )
+                if not next_run:
+                    continue
+                if self._rubric_job_exists(rubric.code, key):
+                    continue
+                payload = {
+                    "rubric_code": rubric.code,
+                    "channel_id": channel_id,
+                    "schedule_key": key,
+                    "scheduled_at": next_run.isoformat(),
+                }
+                self.jobs.enqueue("publish_rubric", payload, run_at=next_run)
+
+    def _rubric_job_exists(self, rubric_code: str, schedule_key: str) -> bool:
+        row = self.db.execute(
+            """
+            SELECT id FROM jobs_queue
+            WHERE name='publish_rubric'
+              AND status IN ('queued', 'delayed', 'running')
+              AND json_extract(payload, '$.rubric_code') = ?
+              AND json_extract(payload, '$.schedule_key') = ?
+            LIMIT 1
+            """,
+            (rubric_code, schedule_key),
+        ).fetchone()
+        return bool(row)
+
+    def enqueue_rubric(
+        self,
+        code: str,
+        *,
+        channel_id: int | None = None,
+        test: bool = False,
+    ) -> int:
+        rubric = self.data.get_rubric_by_code(code)
+        if not rubric:
+            raise ValueError(f"Unknown rubric {code}")
+        config = rubric.config or {}
+        target = channel_id
+        if target is None:
+            target = config.get("test_channel_id") if test else config.get("channel_id")
+        if target is None:
+            raise ValueError("Channel id is required for rubric publication")
+        payload = {
+            "rubric_code": code,
+            "channel_id": target,
+            "schedule_key": "manual-test" if test else "manual",
+            "scheduled_at": datetime.utcnow().isoformat(),
+            "test": test,
+        }
+        return self.jobs.enqueue("publish_rubric", payload)
+
+    async def _job_publish_rubric(self, job: Job) -> None:
+        payload = job.payload or {}
+        code = payload.get("rubric_code")
+        if not code:
+            logging.warning("Rubric job %s missing code", job.id)
+            return
+        channel_id = payload.get("channel_id")
+        test_mode = bool(payload.get("test"))
+        schedule_key = payload.get("schedule_key")
+        scheduled_at = payload.get("scheduled_at")
+        success = await self.publish_rubric(code, channel_id=channel_id, test=test_mode)
+        if success and schedule_key and scheduled_at:
+            try:
+                run_at = datetime.fromisoformat(scheduled_at)
+            except ValueError:
+                run_at = datetime.utcnow()
+            self.data.mark_rubric_run(code, schedule_key, run_at)
+        if not success:
+            raise RuntimeError(f"Failed to publish rubric {code}")
+
+    async def publish_rubric(
+        self,
+        code: str,
+        channel_id: int | None = None,
+        *,
+        test: bool = False,
+    ) -> bool:
+        rubric = self.data.get_rubric_by_code(code)
+        if not rubric:
+            logging.warning("Rubric %s not found", code)
+            return False
+        config = rubric.config or {}
+        target = channel_id
+        if target is None:
+            target = config.get("test_channel_id") if test else config.get("channel_id")
+        if target is None:
+            logging.warning("Rubric %s missing channel configuration", code)
+            return False
+        handler = getattr(self, f"_publish_{code}", None)
+        if not handler:
+            logging.warning("No handler defined for rubric %s", code)
+            return False
+        return await handler(rubric, int(target), test=test)
+
+    def _parse_tz_offset(self, value: str | None) -> timezone:
+        offset = (value or "+00:00").strip()
+        sign = 1
+        if offset.startswith("-"):
+            sign = -1
+            offset = offset[1:]
+        elif offset.startswith("+"):
+            offset = offset[1:]
+        hours_str, _, minutes_str = offset.partition(":")
+        try:
+            hours = int(hours_str or "0")
+            minutes = int(minutes_str or "0")
+        except ValueError:
+            return timezone.utc
+        delta = timedelta(hours=hours, minutes=minutes)
+        return timezone(sign * delta)
+
+    def _normalize_days(self, raw_days: Any) -> set[int]:
+        if not raw_days:
+            return set()
+        if isinstance(raw_days, str):
+            items = [raw_days]
+        elif isinstance(raw_days, Iterable):
+            items = list(raw_days)
+        else:
+            return set()
+        mapping = {
+            "mon": 0,
+            "tue": 1,
+            "wed": 2,
+            "thu": 3,
+            "fri": 4,
+            "sat": 5,
+            "sun": 6,
+        }
+        result: set[int] = set()
+        for item in items:
+            if isinstance(item, int):
+                result.add(item % 7)
+            elif isinstance(item, str):
+                key = item.strip().lower()[:3]
+                if key in mapping:
+                    result.add(mapping[key])
+        return result
+
+    def _compute_next_rubric_run(
+        self,
+        *,
+        time_str: str,
+        tz_offset: str,
+        days: Any,
+        reference: datetime,
+    ) -> datetime:
+        tzinfo = self._parse_tz_offset(tz_offset)
+        if reference.tzinfo is None:
+            local_ref = reference.replace(tzinfo=timezone.utc).astimezone(tzinfo)
+        else:
+            local_ref = reference.astimezone(tzinfo)
+        try:
+            hour, minute = [int(part) for part in time_str.split(":", 1)]
+        except ValueError:
+            hour, minute = 0, 0
+        candidate = local_ref.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        allowed_days = self._normalize_days(days)
+        if not allowed_days:
+            allowed_days = set(range(7))
+        while candidate <= local_ref or candidate.weekday() not in allowed_days:
+            candidate = candidate + timedelta(days=1)
+            candidate = candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return candidate.astimezone(timezone.utc).replace(tzinfo=None)
+
+    async def _publish_flowers(
+        self, rubric: Rubric, channel_id: int, *, test: bool = False
+    ) -> bool:
+        config = rubric.config or {}
+        asset_cfg = config.get("assets") or {}
+        categories = (
+            asset_cfg.get("categories")
+            or config.get("categories")
+            or ["flowers"]
+        )
+        min_count = int(asset_cfg.get("min") or 4)
+        max_count = int(asset_cfg.get("max") or max(min_count, 6))
+        assets = self.data.fetch_assets_by_categories(
+            categories,
+            rubric_id=rubric.id,
+            limit=max_count,
+        )
+        if len(assets) < min_count:
+            logging.warning(
+                "Not enough assets for flowers rubric: have %s, need %s",
+                len(assets),
+                min_count,
+            )
+            return False
+        cities = sorted({asset.city for asset in assets if asset.city})
+        greeting, hashtags = await self._generate_flowers_copy(
+            rubric, cities, len(assets)
+        )
+        hashtag_list = self._prepare_hashtags(hashtags)
+        caption_parts = [greeting.strip()] if greeting else []
+        if hashtag_list:
+            caption_parts.append(" ".join(hashtag_list))
+        caption = "\n\n".join(part for part in caption_parts if part)
+        media: list[dict[str, Any]] = []
+        for idx, asset in enumerate(assets):
+            file_info = (asset.metadata or {}).get("file") or {}
+            file_id = file_info.get("file_id")
+            if not file_id:
+                logging.warning("Asset %s missing file_id", asset.id)
+                return False
+            item = {"type": "photo", "media": file_id}
+            if idx == 0 and caption:
+                item["caption"] = caption
+            media.append(item)
+        response = await self.api_request(
+            "sendMediaGroup",
+            {"chat_id": channel_id, "media": media},
+        )
+        if not response.get("ok"):
+            logging.error("Failed to publish flowers rubric: %s", response)
+            return False
+        result_payload = response.get("result")
+        message_id: int
+        if isinstance(result_payload, list) and result_payload:
+            message_id = int(result_payload[0].get("message_id") or 0)
+        elif isinstance(result_payload, dict):
+            message_id = int(result_payload.get("message_id") or 0)
+        else:
+            message_id = 0
+        metadata = {
+            "rubric_code": rubric.code,
+            "asset_ids": [asset.id for asset in assets],
+            "test": test,
+            "cities": cities,
+            "hashtags": hashtag_list,
+        }
+        self.data.record_post_history(
+            channel_id,
+            message_id,
+            assets[0].id if assets else None,
+            rubric.id,
+            metadata,
+        )
+        self._cleanup_assets(assets)
+        return True
+
+    async def _generate_flowers_copy(
+        self, rubric: Rubric, cities: list[str], asset_count: int
+    ) -> tuple[str, list[str]]:
+        prompt_parts = [
+            "Составь короткий приветственный текст для утреннего поста с фото цветов.",
+            "Пиши дружелюбно и на русском языке.",
+            f"Фотографий: {asset_count}.",
+        ]
+        if cities:
+            prompt_parts.append(
+                "Упомяни города: " + ", ".join(cities)
+            )
+        prompt = " ".join(prompt_parts)
+        schema = {
+            "name": "flowers_post",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "greeting": {"type": "string"},
+                    "hashtags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
+                },
+                "required": ["greeting", "hashtags"],
+            },
+        }
+        response = None
+        try:
+            response = await self.openai.generate_json(
+                model="gpt-4o-mini",
+                system_prompt=(
+                    "Ты редактор телеграм-канала про погоду и уют. "
+                    "Создавай дружелюбные тексты."
+                ),
+                user_prompt=prompt,
+                schema=schema,
+            )
+        except Exception:
+            logging.exception("Failed to generate flowers copy")
+        if response:
+            self.data.log_ai_usage(
+                "gpt-4o-mini",
+                response.prompt_tokens,
+                response.completion_tokens,
+                response.total_tokens,
+                job_name="publish_rubric",
+            )
+        if response and isinstance(response.content, dict):
+            greeting = str(response.content.get("greeting") or "").strip()
+            hashtags = response.content.get("hashtags") or []
+            hashtags = [str(tag) for tag in hashtags if tag]
+            if greeting:
+                return greeting, hashtags
+        return self._default_flowers_greeting(cities), self._default_hashtags("flowers")
+
+    def _default_flowers_greeting(self, cities: list[str]) -> str:
+        if cities:
+            if len(cities) == 1:
+                location = cities[0]
+            else:
+                location = ", ".join(cities[:-1]) + f" и {cities[-1]}"
+            return f"Доброе утро, {location}! Делимся цветами вашего города."
+        return "Доброе утро! Пусть этот букет сделает день ярче."
+
+    async def _publish_guess_arch(
+        self, rubric: Rubric, channel_id: int, *, test: bool = False
+    ) -> bool:
+        config = rubric.config or {}
+        asset_cfg = config.get("assets") or {}
+        categories = (
+            asset_cfg.get("categories")
+            or config.get("categories")
+            or ["photo_weather"]
+        )
+        min_count = int(asset_cfg.get("min") or 3)
+        max_count = int(asset_cfg.get("max") or min_count)
+        assets = self.data.fetch_assets_by_categories(
+            categories,
+            rubric_id=rubric.id,
+            limit=max_count,
+        )
+        if len(assets) < min_count:
+            logging.warning(
+                "Not enough assets for guess_arch rubric: have %s, need %s",
+                len(assets),
+                min_count,
+            )
+            return False
+        overlay_paths: list[str] = []
+        try:
+            for idx, asset in enumerate(assets, start=1):
+                path = self._overlay_number(asset, idx, config)
+                if not path:
+                    for created in overlay_paths:
+                        self._remove_file(created)
+                    return False
+                overlay_paths.append(path)
+        except Exception:
+            logging.exception("Failed to prepare overlays for guess_arch")
+            for created in overlay_paths:
+                self._remove_file(created)
+            return False
+        weather_city = config.get("weather_city") or "Kaliningrad"
+        weather_text = self._get_city_weather_summary(weather_city)
+        caption_text, hashtags = await self._generate_guess_arch_copy(
+            rubric, len(assets), weather_text
+        )
+        hashtag_list = self._prepare_hashtags(hashtags)
+        caption_parts = [caption_text.strip()] if caption_text else []
+        if weather_text:
+            caption_parts.append(weather_text)
+        if hashtag_list:
+            caption_parts.append(" ".join(hashtag_list))
+        caption = "\n\n".join(part for part in caption_parts if part)
+        media: list[dict[str, Any]] = []
+        files: dict[str, tuple[str, bytes]] = {}
+        for idx, path in enumerate(overlay_paths):
+            attach_name = f"file{idx}"
+            try:
+                data = Path(path).read_bytes()
+            except Exception:
+                logging.exception("Failed to read overlay %s", path)
+                for created in overlay_paths:
+                    self._remove_file(created)
+                return False
+            files[attach_name] = (Path(path).name, data)
+            item = {"type": "photo", "media": f"attach://{attach_name}"}
+            if idx == 0 and caption:
+                item["caption"] = caption
+            media.append(item)
+        response = await self.api_request(
+            "sendMediaGroup",
+            {"chat_id": channel_id, "media": media},
+            files=files,
+        )
+        if not response.get("ok"):
+            logging.error("Failed to publish guess_arch rubric: %s", response)
+            for created in overlay_paths:
+                self._remove_file(created)
+            return False
+        result_payload = response.get("result")
+        if isinstance(result_payload, list) and result_payload:
+            message_id = int(result_payload[0].get("message_id") or 0)
+        elif isinstance(result_payload, dict):
+            message_id = int(result_payload.get("message_id") or 0)
+        else:
+            message_id = 0
+        metadata = {
+            "rubric_code": rubric.code,
+            "asset_ids": [asset.id for asset in assets],
+            "test": test,
+            "weather": weather_text,
+            "hashtags": hashtag_list,
+        }
+        self.data.record_post_history(
+            channel_id,
+            message_id,
+            assets[0].id if assets else None,
+            rubric.id,
+            metadata,
+        )
+        self._cleanup_assets(assets, extra_paths=overlay_paths)
+        return True
+
+    async def _generate_guess_arch_copy(
+        self, rubric: Rubric, asset_count: int, weather_text: str | None
+    ) -> tuple[str, list[str]]:
+        prompt = (
+            "Подготовь подпись на русском языке для конкурса \"Угадай архитектуру\". "
+            f"В альбоме {asset_count} пронумерованных фотографий. "
+            "Попроси подписчиков написать свои варианты в комментариях."
+        )
+        if weather_text:
+            prompt += f" Добавь аккуратную фразу с погодой: {weather_text}."
+        schema = {
+            "name": "guess_arch_post",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "caption": {"type": "string"},
+                    "hashtags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
+                },
+                "required": ["caption", "hashtags"],
+            },
+        }
+        response = None
+        try:
+            response = await self.openai.generate_json(
+                model="gpt-4o-mini",
+                system_prompt=(
+                    "Ты редактор телеграм-канала о погоде и городе. "
+                    "Пиши интересно, но коротко."
+                ),
+                user_prompt=prompt,
+                schema=schema,
+            )
+        except Exception:
+            logging.exception("Failed to generate guess_arch caption")
+        if response:
+            self.data.log_ai_usage(
+                "gpt-4o-mini",
+                response.prompt_tokens,
+                response.completion_tokens,
+                response.total_tokens,
+                job_name="publish_rubric",
+            )
+        if response and isinstance(response.content, dict):
+            caption = str(response.content.get("caption") or "").strip()
+            hashtags = response.content.get("hashtags") or []
+            hashtags = [str(tag) for tag in hashtags if tag]
+            if caption:
+                return caption, hashtags
+        fallback_caption = (
+            "Делимся подборкой калининградской архитектуры — угадайте номера на фото и"
+            " делитесь ответами в комментариях!"
+        )
+        if weather_text:
+            fallback_caption += f" {weather_text}"
+        return fallback_caption, self._default_hashtags("guess_arch")
+
+    def _prepare_hashtags(self, tags: Iterable[str]) -> list[str]:
+        prepared: list[str] = []
+        for tag in tags:
+            text = str(tag or "").strip()
+            if not text:
+                continue
+            if not text.startswith("#"):
+                text = "#" + text.lstrip("#")
+            prepared.append(text)
+        return prepared
+
+    def _default_hashtags(self, code: str) -> list[str]:
+        mapping = {
+            "flowers": ["#котопогода", "#цветы"],
+            "guess_arch": ["#угадайархитектуру", "#калининград", "#котопогода"],
+        }
+        return mapping.get(code, ["#котопогода"])
+
+    def _cleanup_assets(
+        self, assets: Iterable[Asset], *, extra_paths: Iterable[str] | None = None
+    ) -> None:
+        asset_list = list(assets)
+        ids = [asset.id for asset in asset_list]
+        for asset in asset_list:
+            metadata = asset.metadata or {}
+            local_path = metadata.get("local_path") if isinstance(metadata, dict) else None
+            if local_path:
+                self._remove_file(local_path)
+        if extra_paths:
+            for path in extra_paths:
+                self._remove_file(path)
+        self.data.delete_assets(ids)
+
+    def _remove_file(self, path: str | None) -> None:
+        if not path:
+            return
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            return
+        except Exception:
+            logging.exception("Failed to remove file %s", path)
+
+    def _get_city_weather_summary(self, city_name: str) -> str | None:
+        row = self.db.execute(
+            "SELECT id, name FROM cities WHERE lower(name)=lower(?)",
+            (city_name,),
+        ).fetchone()
+        if not row:
+            return None
+        weather_row = self.db.execute(
+            """
+            SELECT temperature, weather_code, wind_speed
+            FROM weather_cache_hour
+            WHERE city_id=?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (row["id"],),
+        ).fetchone()
+        if not weather_row:
+            return None
+        temp = weather_row["temperature"]
+        code = weather_row["weather_code"]
+        wind = weather_row["wind_speed"]
+        emoji = weather_emoji(int(code), None) if code is not None else ""
+        parts: list[str] = []
+        if temp is not None:
+            parts.append(f"{int(round(temp))}°C")
+        if wind is not None:
+            parts.append(f"ветер {int(round(wind))} м/с")
+        summary = ", ".join(parts)
+        city_display = row["name"]
+        if emoji and summary:
+            return f"{emoji} {city_display}: {summary}"
+        if emoji:
+            return f"{emoji} {city_display}"
+        if summary:
+            return f"{city_display}: {summary}"
+        return city_display
+
+    def _overlay_number(
+        self, asset: Asset, number: int, config: dict[str, Any]
+    ) -> str | None:
+        metadata = asset.metadata or {}
+        local_path = metadata.get("local_path") if isinstance(metadata, dict) else None
+        if not local_path or not os.path.exists(local_path):
+            logging.warning("Asset %s missing local file for overlay", asset.id)
+            return None
+        overlays_dir = (
+            config.get("overlays_dir")
+            or config.get("overlay_dir")
+            or config.get("overlays")
+            or "overlays"
+        )
+        overlay_path = Path(overlays_dir)
+        if not overlay_path.is_absolute():
+            overlay_path = Path(__file__).resolve().parent / overlay_path
+        candidate = overlay_path / f"{number}.png"
+        with Image.open(local_path) as src:
+            base = src.convert("RGBA")
+            overlay_img = self._load_overlay_image(candidate, number, base.size)
+            offset = (
+                int(base.width * 0.05),
+                int(base.height * 0.05),
+            )
+            base.paste(overlay_img, offset, overlay_img)
+            output_path = self.asset_storage / f"{asset.id}_numbered_{number}.png"
+            base.convert("RGB").save(output_path)
+        return str(output_path)
+
+    def _load_overlay_image(
+        self, path: Path, number: int, base_size: tuple[int, int]
+    ) -> Image.Image:
+        overlay_img: Image.Image
+        if path.exists():
+            with Image.open(path) as overlay_src:
+                overlay_img = overlay_src.convert("RGBA").copy()
+        else:
+            overlay_img = self._create_number_overlay(number, min(base_size))
+        max_side = max(96, min(base_size) // 4)
+        overlay_img = overlay_img.resize((max_side, max_side), Image.LANCZOS)
+        return overlay_img
+
+    def _create_number_overlay(self, number: int, base_side: int) -> Image.Image:
+        size = max(96, base_side // 4)
+        image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.ellipse((0, 0, size, size), fill=(0, 0, 0, 180))
+        font_size = max(32, size // 2)
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
+        except Exception:
+            font = ImageFont.load_default()
+        text = str(number)
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        except AttributeError:
+            text_width, text_height = draw.textsize(text, font=font)
+        position = ((size - text_width) // 2, (size - text_height) // 2)
+        draw.text(position, text, fill=(255, 255, 255, 230), font=font)
+        return image
+
+
     async def schedule_loop(self):
         """Background scheduler running at configurable intervals."""
 
@@ -2850,6 +3523,7 @@ class Bot:
                     await self.collect_sea()
 
                     await self.process_weather_channels()
+                    await self.process_rubric_schedule()
                 except Exception:
                     logging.exception('Weather collection failed')
                 await asyncio.sleep(SCHED_INTERVAL_SEC)

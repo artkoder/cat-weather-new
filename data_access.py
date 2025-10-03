@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator, Sequence
 
 import sqlite3
 
@@ -36,6 +36,23 @@ class WeatherJob:
     last_run_at: datetime | None
     failures: int
     last_error: str | None
+
+
+@dataclass
+class Rubric:
+    id: int
+    code: str
+    title: str
+    description: str | None
+    config: dict[str, Any]
+
+
+@dataclass
+class RubricScheduleState:
+    rubric_code: str
+    schedule_key: str
+    next_run_at: datetime | None
+    last_run_at: datetime | None
 
 
 class DataAccess:
@@ -218,6 +235,65 @@ class DataAccess:
             country=row["country"],
             rubric_id=row["rubric_id"] if "rubric_id" in row.keys() else None,
         )
+
+    def iter_assets(self, *, rubric_id: int | None = None) -> Iterator[Asset]:
+        rows = self.conn.execute(
+            """
+            SELECT a.*, vr.result_json AS vision_payload
+            FROM assets a
+            LEFT JOIN vision_results vr
+              ON vr.asset_id = a.id
+             AND vr.id = (
+                 SELECT id FROM vision_results
+                 WHERE asset_id = a.id
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1
+             )
+            ORDER BY COALESCE(a.last_used_at, a.created_at) ASC, a.id ASC
+            """
+        ).fetchall()
+        for row in rows:
+            asset = self._asset_from_row(row)
+            if not asset:
+                continue
+            if rubric_id is not None and asset.rubric_id != rubric_id:
+                continue
+            yield asset
+
+    def fetch_assets_by_categories(
+        self,
+        categories: Sequence[str],
+        *,
+        rubric_id: int | None = None,
+        limit: int | None = None,
+    ) -> list[Asset]:
+        normalized = {c.lower().lstrip("#") for c in categories if c}
+        if not normalized:
+            return []
+        results: list[Asset] = []
+        for asset in self.iter_assets(rubric_id=rubric_id):
+            asset_tags = {t.lower().lstrip("#") for t in asset.categories}
+            if not asset_tags.intersection(normalized):
+                continue
+            results.append(asset)
+            if limit is not None and len(results) >= limit:
+                break
+        return results
+
+    def delete_assets(self, asset_ids: Sequence[int]) -> None:
+        if not asset_ids:
+            return
+        placeholders = ",".join("?" for _ in asset_ids)
+        params = tuple(int(a) for a in asset_ids)
+        self.conn.execute(
+            f"DELETE FROM vision_results WHERE asset_id IN ({placeholders})",
+            params,
+        )
+        self.conn.execute(
+            f"DELETE FROM assets WHERE id IN ({placeholders})",
+            params,
+        )
+        self.conn.commit()
 
     def get_next_asset(self, tags: set[str] | None) -> Asset | None:
         now_iso = datetime.utcnow().isoformat()
@@ -402,5 +478,118 @@ class DataAccess:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (model, prompt_tokens, completion_tokens, total_tokens, job_name, job_id, asset_id, now),
+        )
+        self.conn.commit()
+
+    def _rubric_from_row(self, row: sqlite3.Row) -> Rubric:
+        description = row["description"]
+        config: dict[str, Any]
+        if description:
+            try:
+                parsed = json.loads(description)
+                config = parsed if isinstance(parsed, dict) else {}
+            except json.JSONDecodeError:
+                config = {}
+        else:
+            config = {}
+        return Rubric(
+            id=row["id"],
+            code=row["code"],
+            title=row["title"],
+            description=row["description"],
+            config=config,
+        )
+
+    def list_rubrics(self) -> list[Rubric]:
+        rows = self.conn.execute(
+            "SELECT * FROM rubrics ORDER BY id"
+        ).fetchall()
+        return [self._rubric_from_row(r) for r in rows]
+
+    def get_rubric_by_code(self, code: str) -> Rubric | None:
+        row = self.conn.execute(
+            "SELECT * FROM rubrics WHERE code=?",
+            (code,),
+        ).fetchone()
+        if not row:
+            return None
+        return self._rubric_from_row(row)
+
+    def get_rubric_schedule_state(
+        self, rubric_code: str, schedule_key: str
+    ) -> RubricScheduleState | None:
+        row = self.conn.execute(
+            """
+            SELECT rubric_code, schedule_key, next_run_at, last_run_at
+            FROM rubric_schedule_state
+            WHERE rubric_code=? AND schedule_key=?
+            LIMIT 1
+            """,
+            (rubric_code, schedule_key),
+        ).fetchone()
+        if not row:
+            return None
+        next_run = (
+            datetime.fromisoformat(row["next_run_at"])
+            if row["next_run_at"]
+            else None
+        )
+        last_run = (
+            datetime.fromisoformat(row["last_run_at"])
+            if row["last_run_at"]
+            else None
+        )
+        return RubricScheduleState(
+            rubric_code=row["rubric_code"],
+            schedule_key=row["schedule_key"],
+            next_run_at=next_run,
+            last_run_at=last_run,
+        )
+
+    def set_rubric_schedule_state(
+        self,
+        rubric_code: str,
+        schedule_key: str,
+        *,
+        next_run_at: datetime | None,
+        last_run_at: datetime | None = None,
+    ) -> None:
+        now = datetime.utcnow().isoformat()
+        next_iso = next_run_at.isoformat() if next_run_at else None
+        last_iso = last_run_at.isoformat() if last_run_at else None
+        self.conn.execute(
+            """
+            INSERT INTO rubric_schedule_state (
+                rubric_code, schedule_key, next_run_at, last_run_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(rubric_code, schedule_key) DO UPDATE SET
+                next_run_at=excluded.next_run_at,
+                last_run_at=COALESCE(excluded.last_run_at, rubric_schedule_state.last_run_at),
+                updated_at=excluded.updated_at
+            """,
+            (rubric_code, schedule_key, next_iso, last_iso, now, now),
+        )
+        self.conn.commit()
+
+    def mark_rubric_run(
+        self, rubric_code: str, schedule_key: str, run_at: datetime
+    ) -> None:
+        now = datetime.utcnow().isoformat()
+        self.conn.execute(
+            """
+            INSERT INTO rubric_schedule_state (
+                rubric_code, schedule_key, next_run_at, last_run_at, created_at, updated_at
+            ) VALUES (?, ?, NULL, ?, ?, ?)
+            ON CONFLICT(rubric_code, schedule_key) DO UPDATE SET
+                last_run_at=excluded.last_run_at,
+                updated_at=excluded.updated_at
+            """,
+            (
+                rubric_code,
+                schedule_key,
+                run_at.isoformat(),
+                now,
+                now,
+            ),
         )
         self.conn.commit()

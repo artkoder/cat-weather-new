@@ -37,7 +37,6 @@ class OpenAIClient:
     ) -> OpenAIResponse | None:
         if not self.api_key:
             return None
-        url = f"{self.base_url}/responses"
         payload = {
             "model": model,
             "input": [
@@ -61,6 +60,33 @@ class OpenAIClient:
                 "json_schema": schema,
             },
         }
+        return await self._submit_request(payload)
+
+    async def generate_json(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict[str, Any],
+    ) -> OpenAIResponse | None:
+        if not self.api_key:
+            return None
+        payload = {
+            "model": model,
+            "input": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": schema,
+            },
+        }
+        return await self._submit_request(payload)
+
+    async def _submit_request(self, payload: Dict[str, Any]) -> OpenAIResponse:
+        url = f"{self.base_url}/responses"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -76,7 +102,6 @@ class OpenAIClient:
         completion_tokens = usage.get("completion_tokens")
         total_tokens = usage.get("total_tokens")
         content = data.get("output") or data.get("response") or {}
-        # API returns list under "output"; normalise
         if isinstance(content, list) and content:
             content_item = content[0]
         else:

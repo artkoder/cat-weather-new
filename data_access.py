@@ -13,23 +13,43 @@ import sqlite3
 class Asset:
     id: int
     channel_id: int
+    tg_chat_id: int
     message_id: int
     caption_template: str | None
+    caption: str | None
     hashtags: str | None
     categories: list[str]
+    kind: str | None
+    file_id: str | None
+    file_unique_id: str | None
+    file_name: str | None
+    mime_type: str | None
+    file_size: int | None
+    width: int | None
+    height: int | None
+    duration: int | None
     recognized_message_id: int | None
-    metadata: dict[str, Any] | None
-    vision_results: dict[str, Any] | None
+    exif_present: bool
     latitude: float | None
     longitude: float | None
     city: str | None
     country: str | None
+    author_user_id: int | None
+    author_username: str | None
+    sender_chat_id: int | None
+    via_bot_id: int | None
+    forward_from_user: int | None
+    forward_from_chat: int | None
+    local_path: str | None
+    metadata: dict[str, Any] | None
+    vision_results: dict[str, Any] | None
     rubric_id: int | None
     vision_category: str | None
     vision_arch_view: str | None
     vision_photo_weather: str | None
     vision_flower_varieties: list[str] | None
     vision_confidence: float | None
+    vision_caption: str | None
 
 
 @dataclass
@@ -77,6 +97,29 @@ class DataAccess:
             cats = []
         return json.dumps(cats)
 
+    @staticmethod
+    def _prepare_metadata(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not metadata:
+            return None
+        removable = {
+            "chat_id",
+            "message_id",
+            "caption",
+            "kind",
+            "author_user_id",
+            "author_username",
+            "sender_chat_id",
+            "via_bot_id",
+            "forward_from_user",
+            "forward_from_chat",
+            "file",
+            "local_path",
+            "exif_present",
+            "vision_caption",
+        }
+        cleaned = {k: v for k, v in metadata.items() if k not in removable}
+        return cleaned or None
+
     def save_asset(
         self,
         channel_id: int,
@@ -84,6 +127,16 @@ class DataAccess:
         template: str | None,
         hashtags: str | None,
         *,
+        tg_chat_id: int,
+        caption: str | None,
+        kind: str | None,
+        file_meta: dict[str, Any] | None = None,
+        author_user_id: int | None = None,
+        author_username: str | None = None,
+        sender_chat_id: int | None = None,
+        via_bot_id: int | None = None,
+        forward_from_user: int | None = None,
+        forward_from_chat: int | None = None,
         metadata: dict[str, Any] | None = None,
         categories: Iterable[str] | None = None,
         rubric_id: int | None = None,
@@ -92,35 +145,87 @@ class DataAccess:
 
         now = datetime.utcnow().isoformat()
         cats_json = self._serialize_categories(hashtags, categories)
-        metadata_json = json.dumps(metadata) if metadata is not None else None
+        cleaned_metadata = self._prepare_metadata(metadata)
+        metadata_json = json.dumps(cleaned_metadata) if cleaned_metadata else None
+        file_meta = file_meta or {}
         cur = self.conn.execute(
             """
             INSERT INTO assets (
                 channel_id,
+                tg_chat_id,
                 message_id,
                 caption_template,
+                caption,
                 hashtags,
                 categories,
+                kind,
+                file_id,
+                file_unique_id,
+                file_name,
+                mime_type,
+                file_size,
+                width,
+                height,
+                duration,
+                author_user_id,
+                author_username,
+                sender_chat_id,
+                via_bot_id,
+                forward_from_user,
+                forward_from_chat,
                 metadata,
                 rubric_id,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(message_id) DO UPDATE SET
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tg_chat_id, message_id) DO UPDATE SET
                 channel_id=excluded.channel_id,
                 caption_template=excluded.caption_template,
+                caption=excluded.caption,
                 hashtags=excluded.hashtags,
                 categories=excluded.categories,
+                kind=excluded.kind,
+                file_id=excluded.file_id,
+                file_unique_id=excluded.file_unique_id,
+                file_name=excluded.file_name,
+                mime_type=excluded.mime_type,
+                file_size=excluded.file_size,
+                width=excluded.width,
+                height=excluded.height,
+                duration=excluded.duration,
+                author_user_id=excluded.author_user_id,
+                author_username=excluded.author_username,
+                sender_chat_id=excluded.sender_chat_id,
+                via_bot_id=excluded.via_bot_id,
+                forward_from_user=excluded.forward_from_user,
+                forward_from_chat=excluded.forward_from_chat,
                 metadata=COALESCE(excluded.metadata, assets.metadata),
                 rubric_id=COALESCE(excluded.rubric_id, assets.rubric_id),
                 updated_at=excluded.updated_at
             """,
             (
                 channel_id,
+                tg_chat_id,
                 message_id,
                 template,
+                caption,
                 hashtags,
                 cats_json,
+                kind,
+                file_meta.get("file_id"),
+                file_meta.get("file_unique_id"),
+                file_meta.get("file_name"),
+                file_meta.get("mime_type"),
+                file_meta.get("file_size"),
+                file_meta.get("width"),
+                file_meta.get("height"),
+                file_meta.get("duration"),
+                author_user_id,
+                author_username,
+                sender_chat_id,
+                via_bot_id,
+                forward_from_user,
+                forward_from_chat,
                 metadata_json,
                 rubric_id,
                 now,
@@ -130,7 +235,7 @@ class DataAccess:
         self.conn.commit()
         if cur.lastrowid:
             return int(cur.lastrowid)
-        row = self.get_asset_by_message(message_id)
+        row = self.get_asset_by_message(tg_chat_id, message_id)
         return row.id if row else 0
 
     def update_asset(
@@ -138,7 +243,16 @@ class DataAccess:
         asset_id: int,
         *,
         template: str | None = None,
+        caption: str | None = None,
         hashtags: str | None = None,
+        kind: str | None = None,
+        file_meta: dict[str, Any] | None = None,
+        author_user_id: int | None = None,
+        author_username: str | None = None,
+        sender_chat_id: int | None = None,
+        via_bot_id: int | None = None,
+        forward_from_user: int | None = None,
+        forward_from_chat: int | None = None,
         metadata: dict[str, Any] | None = None,
         recognized_message_id: int | None = None,
         vision_results: dict[str, Any] | None = None,
@@ -152,6 +266,9 @@ class DataAccess:
         vision_photo_weather: str | None = None,
         vision_flower_varieties: list[str] | None = None,
         vision_confidence: float | None = None,
+        exif_present: bool | None = None,
+        local_path: str | None = None,
+        vision_caption: str | None = None,
     ) -> None:
         """Update selected asset fields while preserving unset values."""
 
@@ -162,14 +279,43 @@ class DataAccess:
         values: dict[str, Any] = {}
         if template is not None:
             values["caption_template"] = template
+        if caption is not None:
+            values["caption"] = caption
         if hashtags is not None:
             values["hashtags"] = hashtags
             values["categories"] = self._serialize_categories(hashtags, None)
+        if kind is not None:
+            values["kind"] = kind
+        if file_meta is not None:
+            values["file_id"] = file_meta.get("file_id")
+            values["file_unique_id"] = file_meta.get("file_unique_id")
+            values["file_name"] = file_meta.get("file_name")
+            values["mime_type"] = file_meta.get("mime_type")
+            values["file_size"] = file_meta.get("file_size")
+            values["width"] = file_meta.get("width")
+            values["height"] = file_meta.get("height")
+            values["duration"] = file_meta.get("duration")
+        if author_user_id is not None:
+            values["author_user_id"] = author_user_id
+        if author_username is not None:
+            values["author_username"] = author_username
+        if sender_chat_id is not None:
+            values["sender_chat_id"] = sender_chat_id
+        if via_bot_id is not None:
+            values["via_bot_id"] = via_bot_id
+        if forward_from_user is not None:
+            values["forward_from_user"] = forward_from_user
+        if forward_from_chat is not None:
+            values["forward_from_chat"] = forward_from_chat
         if metadata is not None:
             existing = row.metadata or {}
             merged = existing.copy()
             merged.update(metadata)
-            values["metadata"] = json.dumps(merged)
+            cleaned = self._prepare_metadata(merged)
+            if cleaned is not None:
+                values["metadata"] = json.dumps(cleaned)
+            elif row.metadata is not None:
+                values["metadata"] = None
         if recognized_message_id is not None:
             values["recognized_message_id"] = recognized_message_id
         if rubric_id is not None:
@@ -182,6 +328,10 @@ class DataAccess:
             values["city"] = city
         if country is not None:
             values["country"] = country
+        if exif_present is not None:
+            values["exif_present"] = int(bool(exif_present))
+        if local_path is not None:
+            values["local_path"] = local_path
         if vision_category is not None:
             values["vision_category"] = vision_category
         if vision_arch_view is not None:
@@ -192,6 +342,8 @@ class DataAccess:
             values["vision_flower_varieties"] = json.dumps(vision_flower_varieties)
         if vision_confidence is not None:
             values["vision_confidence"] = vision_confidence
+        if vision_caption is not None:
+            values["vision_caption"] = vision_caption
         if not values:
             return
         assignments = ", ".join(f"{k} = ?" for k in values)
@@ -207,8 +359,11 @@ class DataAccess:
     def get_asset(self, asset_id: int) -> Asset | None:
         return self._fetch_asset("a.id = ?", (asset_id,))
 
-    def get_asset_by_message(self, message_id: int) -> Asset | None:
-        return self._fetch_asset("a.message_id = ?", (message_id,))
+    def get_asset_by_message(self, tg_chat_id: int, message_id: int) -> Asset | None:
+        return self._fetch_asset(
+            "a.tg_chat_id = ? AND a.message_id = ?",
+            (tg_chat_id, message_id),
+        )
 
     def _fetch_asset(self, where_clause: str, params: Iterable[Any]) -> Asset | None:
         query = f"""
@@ -256,26 +411,51 @@ class DataAccess:
         vision_confidence = (
             row["vision_confidence"] if "vision_confidence" in row.keys() else None
         )
+        raw_exif = row["exif_present"] if "exif_present" in row.keys() else 0
+        try:
+            exif_value = int(raw_exif)
+        except (TypeError, ValueError):
+            exif_value = 1 if str(raw_exif).lower() in {"true", "1"} else 0
         return Asset(
             id=row["id"],
             channel_id=row["channel_id"],
+            tg_chat_id=row["tg_chat_id"],
             message_id=row["message_id"],
             caption_template=row["caption_template"],
+            caption=row["caption"],
             hashtags=row["hashtags"],
             categories=categories,
+            kind=row["kind"],
+            file_id=row["file_id"],
+            file_unique_id=row["file_unique_id"],
+            file_name=row["file_name"],
+            mime_type=row["mime_type"],
+            file_size=row["file_size"],
+            width=row["width"],
+            height=row["height"],
+            duration=row["duration"],
             recognized_message_id=row["recognized_message_id"],
-            metadata=metadata,
-            vision_results=vision,
+            exif_present=bool(exif_value),
             latitude=row["latitude"],
             longitude=row["longitude"],
             city=row["city"],
             country=row["country"],
+            author_user_id=row["author_user_id"],
+            author_username=row["author_username"],
+            sender_chat_id=row["sender_chat_id"],
+            via_bot_id=row["via_bot_id"],
+            forward_from_user=row["forward_from_user"],
+            forward_from_chat=row["forward_from_chat"],
+            local_path=row["local_path"],
+            metadata=metadata,
+            vision_results=vision,
             rubric_id=row["rubric_id"] if "rubric_id" in row.keys() else None,
             vision_category=vision_category,
             vision_arch_view=vision_arch_view,
             vision_photo_weather=vision_photo_weather,
             vision_flower_varieties=flower_varieties,
             vision_confidence=vision_confidence,
+            vision_caption=row["vision_caption"] if "vision_caption" in row.keys() else None,
         )
 
     def iter_assets(self, *, rubric_id: int | None = None) -> Iterator[Asset]:

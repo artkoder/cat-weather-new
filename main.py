@@ -263,6 +263,7 @@ class Bot:
             os.makedirs(db_dir, exist_ok=True)
         self.db = sqlite3.connect(db_path)
         self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA foreign_keys=ON")
         apply_migrations(self.db)
         global TZ_OFFSET
         TZ_OFFSET = os.getenv("TZ_OFFSET", "+00:00")

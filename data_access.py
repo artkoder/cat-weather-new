@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, date
 from typing import Any, Iterable, Iterator, Sequence
 
+
+_UNSET = object()
+
 import sqlite3
 
 
@@ -78,6 +81,19 @@ class RubricScheduleState:
     schedule_key: str
     next_run_at: datetime | None
     last_run_at: datetime | None
+
+
+@dataclass
+class JobRecord:
+    id: int
+    name: str
+    payload: dict[str, Any]
+    status: str
+    attempts: int
+    available_at: datetime | None
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class DataAccess:
@@ -237,6 +253,18 @@ class DataAccess:
             return int(cur.lastrowid)
         row = self.get_asset_by_message(tg_chat_id, message_id)
         return row.id if row else 0
+
+    def update_recognized_message(
+        self, asset_id: int, *, message_id: int | None
+    ) -> None:
+        """Store the Telegram message that acknowledged the asset."""
+
+        now = datetime.utcnow().isoformat()
+        self.conn.execute(
+            "UPDATE assets SET recognized_message_id=?, updated_at=? WHERE id=?",
+            (message_id, now, asset_id),
+        )
+        self.conn.commit()
 
     def update_asset(
         self,
@@ -958,3 +986,117 @@ class DataAccess:
             ),
         )
         self.conn.commit()
+
+    # --- Job queue helpers -------------------------------------------------
+
+    def enqueue_job(
+        self,
+        name: str,
+        payload: dict[str, Any] | None,
+        *,
+        available_at: datetime | None = None,
+    ) -> int:
+        """Insert a new job into the queue using the normalized schema."""
+
+        now = datetime.utcnow().isoformat()
+        encoded_payload = json.dumps(payload or {})
+        available = available_at.isoformat() if available_at else None
+        cur = self.conn.execute(
+            """
+            INSERT INTO jobs_queue (
+                name, payload, status, attempts, available_at, last_error, created_at, updated_at
+            ) VALUES (?, ?, 'queued', 0, ?, NULL, ?, ?)
+            """,
+            (name, encoded_payload, available, now, now),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def fetch_due_jobs(self, *, limit: int = 50) -> list[JobRecord]:
+        """Return queued jobs that are ready for execution."""
+
+        now = datetime.utcnow().isoformat()
+        rows = self.conn.execute(
+            """
+            SELECT *
+            FROM jobs_queue
+            WHERE status IN ('queued', 'delayed')
+              AND (available_at IS NULL OR available_at <= ?)
+            ORDER BY available_at IS NOT NULL, available_at, id
+            LIMIT ?
+            """,
+            (now, limit),
+        ).fetchall()
+        return [self._job_from_row(row) for row in rows]
+
+    def get_job(self, job_id: int) -> JobRecord | None:
+        row = self.conn.execute(
+            "SELECT * FROM jobs_queue WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return self._job_from_row(row)
+
+    def update_job_status(
+        self,
+        job_id: int,
+        *,
+        status: str,
+        attempts: int | None = None,
+        available_at: datetime | None | object = _UNSET,
+        last_error: str | None | object = _UNSET,
+    ) -> None:
+        """Update queue bookkeeping after workers change a job state."""
+
+        now = datetime.utcnow().isoformat()
+        clauses = ["status=?", "updated_at=?"]
+        params: list[Any] = [status, now]
+        if attempts is not None:
+            clauses.append("attempts=?")
+            params.append(attempts)
+        if available_at is not _UNSET:
+            if available_at is not None:
+                clauses.append("available_at=?")
+                params.append(available_at.isoformat())
+            else:
+                clauses.append("available_at=NULL")
+        if last_error is not _UNSET:
+            if last_error is not None:
+                clauses.append("last_error=?")
+                params.append(last_error)
+            else:
+                clauses.append("last_error=NULL")
+        params.append(job_id)
+        sql = f"UPDATE jobs_queue SET {', '.join(clauses)} WHERE id=?"
+        self.conn.execute(sql, params)
+        self.conn.commit()
+
+    def delete_job(self, job_id: int) -> None:
+        self.conn.execute("DELETE FROM jobs_queue WHERE id=?", (job_id,))
+        self.conn.commit()
+
+    def _job_from_row(self, row: sqlite3.Row) -> JobRecord:
+        payload_raw = row["payload"]
+        try:
+            payload = json.loads(payload_raw) if payload_raw else {}
+        except json.JSONDecodeError:
+            payload = {}
+        available_at = (
+            datetime.fromisoformat(row["available_at"])
+            if row["available_at"]
+            else None
+        )
+        created_at = datetime.fromisoformat(row["created_at"])
+        updated_at = datetime.fromisoformat(row["updated_at"])
+        return JobRecord(
+            id=row["id"],
+            name=row["name"],
+            payload=payload if isinstance(payload, dict) else {},
+            status=row["status"],
+            attempts=row["attempts"] or 0,
+            available_at=available_at,
+            last_error=row["last_error"],
+            created_at=created_at,
+            updated_at=updated_at,
+        )

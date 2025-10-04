@@ -2,6 +2,8 @@
 
 This document describes the weather feature set for the Telegram scheduler bot.
 
+For an overview of project-level releases and database requirements, refer to the [CHANGELOG](../CHANGELOG.md).
+
 Weather for each city is queried from the Open-Meteo API approximately every 30
 minutes and stored in the `weather_cache` table. The bot logs both the raw HTTP
 response and the parsed weather information. The request looks like:

@@ -1,6 +1,8 @@
 # Telegram Scheduler Bot
 
 ## Summary
+[Полную историю изменений см. в `CHANGELOG.md`](CHANGELOG.md).
+
 - **Asset ingestion**. The bot listens to the configured assets channel, stores each message as an asset record and downloads the original media to local storage. Every photo must contain GPS EXIF data so the bot can resolve the city through Nominatim; authors without coordinates receive an automatic reminder.
 - **Recognition pipeline**. After ingestion the asynchronous job queue schedules a `vision` task that classifies the photo with OpenAI `gpt-4o-mini`, storing the rubric category, architectural details and detected flowers while respecting per-model daily token quotas configured via environment variables.
 - **Rubric automation**. Two daily rubrics are supported out of the box: `flowers` creates a carousel with greetings for cities detected in flower assets, while `guess_arch` prepares a numbered architecture quiz with optional overlays and weather context. Both rubrics consume recognized assets and clean them up after publishing.

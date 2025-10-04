@@ -10,19 +10,34 @@
 - **Operations guardrails**. OpenAI usage is rate-limited per model, reverse geocoding calls Nominatim with throttling, and each rubric publication is persisted with metadata for auditing through the admin tools.
 
 ## Commands
+### Quick reference
+- `/help` – condensed cheat sheet with the most common workflows, matching the bot’s inline help output.
+
 ### Access & governance
 - `/start` – registers the requester and assigns the first superadmin on first launch.
-- `/pending`, `/approve <id>`, `/reject <id>` – manage the onboarding queue from the Telegram admin interface.
+- `/tz <±HH:MM>` – lets each operator set a personal timezone used when formatting schedules and history.
+- `/pending`, `/approve <id>`, `/reject <id>` – manage the onboarding queue from the Telegram admin interface (the `/pending` view exposes inline Approve/Reject buttons).
 - `/add_user <id>`, `/remove_user <id>`, `/list_users` – grant or revoke long-term access to the scheduler and rubric tools.
 
-### Asset management
+### Channels & scheduling
+- `/channels` – print every channel known to the bot so superadmins can audit bindings.
 - `/set_assets_channel` – bind the private storage channel used for ASSETS ingestion; only posts created after this command are captured.
-- `/history` and `/scheduled` – inspect previously published posts and queued schedules, including rubric drops copied from the assets channel.
+- `/setup_weather` – wizard that assigns rubric schedules to channels when new destinations are added.
+- `/list_weather_channels` – admin dashboard showing rubric schedules, last run timestamps and inline `Run now`/`Stop` actions.
+- `/history` and `/scheduled` – inspect previously published posts and queued schedules, including rubric drops copied from the assets channel (each scheduled item comes with inline `Cancel`/`Reschedule` controls).
 
-### Rubrics & quotas
-- `/list_weather_channels` – repurposed admin dashboard that now shows rubric schedules, remaining OpenAI daily quota and lets admins toggle individual runs (messages labelled accordingly).
-- `/weather now` – forces a refresh of cached weather that is embedded into the `guess_arch` rubric intro; other weather commands remain available under Legacy behavior.
-- Inline buttons labelled «Run now» next to rubric schedules enqueue an immediate `publish_rubric` job using the background queue while preserving the regular cadence.
+### Manual posting tools
+- `/addbutton <post_url> <text> <url>` – add a custom inline button to any stored asset or published post. Use `t.me/c/<id>/<message>` links from the source channel history.
+- `/delbutton <post_url>` – remove all inline buttons from a post and clear persisted metadata in SQLite.
+- `/addweatherbutton <post_url> <text> [url]` – attach a forecast button; omit the URL after triggering `/weather now` to reuse the latest stored link.
+- `/weatherposts [update]` – list every registered weather template, optionally refreshing rendered content before showing inline removal buttons.
+- `/regweather <post_url> <template>` – register a message as a weather template so the bot can substitute placeholders on each publication.
+
+### Weather registry & geography
+- `/weather [now]` – display cached city and sea data or force an immediate refresh.
+- `/addcity <name> <lat> <lon>`, `/cities` – manage the city directory used by the weather cache.
+- `/addsea <name> <lat> <lon>`, `/seas` – maintain the sea catalogue that powers shoreline forecasts.
+- `/amber` – open the inline picker for the Янтарный канал, then drill down to channel-specific toggles.
 
 ## User Stories
 ### Implemented

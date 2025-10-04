@@ -1972,6 +1972,61 @@ class Bot:
         user_id = message['from']['id']
         username = message['from'].get('username')
 
+        if text.startswith('/help'):
+            help_messages = [
+                (
+                    "*Основные команды*\n\n"
+                    "*Доступ и настройки*\n"
+                    "- `/help` — краткая памятка с ключевыми сценариями.\n"
+                    "- `/start` — запросить доступ или подтвердить, что бот уже активирован.\n"
+                    "- `/tz <±HH:MM>` — установить личный часовой пояс для расписаний.\n"
+                    "- `/list_users` — список администраторов и операторов.\n"
+                    "- `/pending` → кнопки `Approve`/`Reject` для очереди заявок.\n"
+                    "- `/approve <id>` / `/reject <id>` — ручное утверждение или отказ.\n"
+                    "- `/add_user <id>` / `/remove_user <id>` — постоянное добавление или удаление доступа.\n"
+                ),
+                (
+                    "*Каналы и расписания*\n"
+                    "- `/channels` — все подключённые каналы (раздел «Каналы» админ-интерфейса).\n"
+                    "- `/set_assets_channel` — выбрать канал хранения ассетов перед запуском конвейера.\n"
+                    "- `/scheduled` — список очереди публикаций с кнопками `Cancel` и `Reschedule`.\n"
+                    "- `/history` — последние отправленные посты с отметкой времени.\n"
+                    "- `/setup_weather` — мастер настройки расписаний рубрик для выбранных каналов.\n"
+                    "- `/list_weather_channels` — обзор рубрик: показывает время, дату последнего запуска и кнопки `Run now`/`Stop`.\n"
+                ),
+                (
+                    "*Работа с постами, погодой и ручные действия*\n"
+                    "- `/addbutton <post_url> <текст> <url>` — добавить кнопку к посту; используйте `t.me/c/...` из истории канала.\n"
+                    "- `/delbutton <post_url>` — удалить все кнопки у поста; изменения сохраняются в базе.\n"
+                    "- `/addweatherbutton <post_url> <текст> [url]` — быстрый доступ к свежему прогнозу, можно опустить URL после `/weather now`.\n"
+                    "- `/weatherposts [update]` — перечень активных погодных шаблонов и кнопка остановки рассылки.\n"
+                    "- `/regweather <post_url> <template>` — зарегистрировать новый шаблон для автоподстановки погоды.\n"
+                    "- `/weather [now]` — посмотреть кэш погоды и морей или форсировать обновление.\n"
+                    "- `/addcity`, `/cities` и `/addsea`, `/seas` — управлять справочниками городов и морей; `/amber` открывает выбор канала с кнопкой «Янтарный».")
+            ]
+            if not self.is_authorized(user_id):
+                help_messages.insert(
+                    0,
+                    (
+                        "*Доступ по приглашению*\n"
+                        "- Первый администратор отправляет `/start` и получает статус супер-админа.\n"
+                        "- Остальные пользователи вызывают `/start`, попадают в очередь и ждут утверждения через `/pending`."
+                    ),
+                )
+            help_messages.append(
+                "Подробная документация: файл `README.md` → раздел *Commands* и журнал изменений `CHANGELOG.md`."
+            )
+            for chunk in help_messages:
+                await self.api_request(
+                    'sendMessage',
+                    {
+                        'chat_id': user_id,
+                        'text': chunk,
+                        'parse_mode': 'Markdown',
+                    },
+                )
+            return
+
         # first /start registers superadmin or puts user in queue
         if text.startswith('/start'):
             if self.get_user(user_id):

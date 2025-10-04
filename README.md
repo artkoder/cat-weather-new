@@ -60,6 +60,7 @@
 - `SCHED_INTERVAL_SEC` – polling cadence for the scheduler loop (default `30`).
 - `OPENAI_API_KEY` – key used by the recognition pipeline and rubric copy generators; when missing, related jobs are skipped automatically.
 - `OPENAI_DAILY_TOKEN_LIMIT`, `OPENAI_DAILY_TOKEN_LIMIT_4O`, `OPENAI_DAILY_TOKEN_LIMIT_4O_MINI` – optional per-model quotas that gate new OpenAI jobs until the next UTC reset.
+- `PORT` – HTTP port that `web.run_app` listens on (default `8080`). Ensure it matches the port exposed by your proxy or hosting platform (Fly.io, Docker, etc.) so inbound requests reach the app.
 
 ### External services
 - **Nominatim** – the bot queries `https://nominatim.openstreetmap.org/reverse` and rate-limits calls to one request per second. Set `User-Agent` friendly values in the code if you fork, and consider running your own Nominatim instance for higher throughput.

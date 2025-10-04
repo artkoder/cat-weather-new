@@ -60,6 +60,66 @@ async def test_rubric_scheduler_enqueues_jobs(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rubric_scheduler_respects_timezone(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "schedules": [
+            {"time": "10:00", "channel_id": -900, "tz": "+03:00"}
+        ],
+    }
+    _insert_rubric(bot, "guess_arch", config, rubric_id=2)
+    reference = datetime(2024, 3, 1, 6, 0, 0)
+    expected = bot._compute_next_rubric_run(  # type: ignore[attr-defined]
+        time_str="10:00", tz_offset="+03:00", days=None, reference=reference
+    )
+    await bot.process_rubric_schedule(reference=reference)
+    row = bot.db.execute(
+        "SELECT payload FROM jobs_queue WHERE name='publish_rubric'"
+    ).fetchone()
+    assert row is not None
+    payload = json.loads(row["payload"])
+    assert payload["rubric_code"] == "guess_arch"
+    assert payload["channel_id"] == -900
+    assert payload["scheduled_at"] == expected.isoformat()
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_rubric_manual_and_test_channels(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "channel_id": -111,
+        "test_channel_id": -222,
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=5)
+
+    job_id = bot.enqueue_rubric("flowers")
+    row = bot.db.execute(
+        "SELECT status, payload FROM jobs_queue WHERE id=?", (job_id,)
+    ).fetchone()
+    assert row is not None
+    payload = json.loads(row["payload"])
+    assert payload["schedule_key"] == "manual"
+    assert payload["channel_id"] == -111
+    assert not payload.get("test")
+    assert row["status"] == "queued"
+
+    test_job_id = bot.enqueue_rubric("flowers", test=True)
+    test_row = bot.db.execute(
+        "SELECT status, payload FROM jobs_queue WHERE id=?", (test_job_id,)
+    ).fetchone()
+    assert test_row is not None
+    test_payload = json.loads(test_row["payload"])
+    assert test_payload["schedule_key"] == "manual-test"
+    assert test_payload["channel_id"] == -222
+    assert test_payload["test"] is True
+    assert test_row["status"] == "queued"
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_publish_flowers_removes_assets(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {

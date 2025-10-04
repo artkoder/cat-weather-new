@@ -61,14 +61,14 @@ async def test_publish_flowers_removes_assets(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {
         "enabled": True,
-        "assets": {"categories": ["flowers"], "min": 4, "max": 6},
+        "assets": {"min": 4, "max": 6},
     }
     _insert_rubric(bot, "flowers", config, rubric_id=1)
     now = datetime.utcnow().isoformat()
     for idx in range(4):
         metadata = {"date": now}
         file_meta = {"file_id": f"file{idx}"}
-        bot.data.save_asset(
+        asset_id = bot.data.save_asset(
             -2000,
             100 + idx,
             None,
@@ -81,17 +81,27 @@ async def test_publish_flowers_removes_assets(tmp_path):
             categories=["flowers"],
             rubric_id=1,
         )
+        bot.data.update_asset(
+            asset_id,
+            vision_category="flowers",
+            vision_photo_weather="солнечно",
+            city=f"Город {idx}",
+        )
 
     calls = []
 
     async def fake_api(method, data=None, *, files=None):
         calls.append({"method": method, "data": data, "files": files})
-        return {"ok": True, "result": [{"message_id": 42}]}
+        if method == "sendMediaGroup":
+            return {"ok": True, "result": [{"message_id": 42}]}
+        return {"ok": True}
 
     bot.api_request = fake_api  # type: ignore
     ok = await bot.publish_rubric("flowers", channel_id=-500)
     assert ok
     assert calls and calls[0]["method"] == "sendMediaGroup"
+    delete_calls = [call for call in calls if call["method"] == "deleteMessage"]
+    assert len(delete_calls) == 4
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0
     history = bot.db.execute("SELECT metadata FROM posts_history").fetchone()
@@ -110,7 +120,7 @@ async def test_publish_guess_arch_with_overlays(tmp_path):
     bot.asset_storage = storage
     config = {
         "enabled": True,
-        "assets": {"categories": ["photo_weather"], "min": 3, "max": 3},
+        "assets": {"min": 4, "max": 4},
         "weather_city": "Kaliningrad",
     }
     _insert_rubric(bot, "guess_arch", config, rubric_id=2)
@@ -125,9 +135,8 @@ async def test_publish_guess_arch_with_overlays(tmp_path):
         (datetime.utcnow().isoformat(),),
     )
     bot.db.commit()
-    assets = []
     now = datetime.utcnow().isoformat()
-    for idx in range(3):
+    for idx in range(4):
         image_path = tmp_path / f"asset_{idx}.jpg"
         Image.new("RGB", (400, 300), color=(idx * 40, 10, 10)).save(image_path)
         metadata = {"date": now}
@@ -146,20 +155,27 @@ async def test_publish_guess_arch_with_overlays(tmp_path):
             rubric_id=2,
         )
         bot.data.update_asset(asset_id, local_path=str(image_path))
-        assets.append(asset_id)
+        bot.data.update_asset(
+            asset_id,
+            vision_category="architecture",
+            vision_arch_view="фасад",
+            vision_photo_weather="пасмурно",
+        )
 
     calls = []
 
     async def fake_api(method, data=None, *, files=None):
         calls.append({"method": method, "data": data, "files": files})
-        return {"ok": True, "result": [{"message_id": 99}]}
+        if method == "sendMediaGroup":
+            return {"ok": True, "result": [{"message_id": 99}]}
+        return {"ok": True}
 
     bot.api_request = fake_api  # type: ignore
     ok = await bot.publish_rubric("guess_arch", channel_id=-777)
     assert ok
     assert calls and calls[0]["files"]
     media_payload = calls[0]["data"]["media"]
-    assert len(media_payload) == 3
+    assert len(media_payload) == 4
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0
     history = bot.db.execute("SELECT metadata FROM posts_history").fetchone()
@@ -170,5 +186,7 @@ async def test_publish_guess_arch_with_overlays(tmp_path):
     # ensure overlays cleaned up
     numbered_exists = any(storage.glob("*_numbered_*.png"))
     assert not numbered_exists
+    delete_calls = [call for call in calls if call["method"] == "deleteMessage"]
+    assert len(delete_calls) == 4
     await bot.close()
 

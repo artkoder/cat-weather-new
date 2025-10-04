@@ -440,53 +440,124 @@ async def test_rubric_channel_and_schedule_edit_flow(tmp_path):
     await bot.start()
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
-    bot.data.upsert_rubric("flowers", "Flowers", config={"enabled": False, "schedules": []})
+    bot.data.upsert_rubric(
+        "flowers",
+        "Flowers",
+        config={"enabled": False, "schedules": [], "tz": "+03:00"},
+    )
+    bot.db.execute("INSERT INTO channels (chat_id, title) VALUES (?, ?)", (-100, "Main"))
+    bot.db.commit()
 
     calls.clear()
     await bot.handle_update({"message": {"text": "/rubric_edit flowers", "from": {"id": 1}}})
     assert calls and calls[-1][0] == "sendMessage"
 
-    await bot.handle_update(
-        {
-            "callback_query": {
-                "id": "1",
-                "from": {"id": 1},
-                "data": "rubric_channel:flowers:main",
-                "message": {"chat": {"id": 1}, "message_id": 100},
-            }
-        }
-    )
-    await bot.handle_update({"message": {"text": "-100", "from": {"id": 1}}})
-    config = bot.data.get_rubric_config("flowers")
-    assert config is not None
-    assert config["channel_id"] == -100
+    message = {"chat": {"id": 1}, "message_id": 100}
+    base_callback = {"id": "1", "from": {"id": 1}, "message": message}
 
     await bot.handle_update(
         {
             "callback_query": {
-                "id": "2",
-                "from": {"id": 1},
-                "data": "rubric_sched_add:flowers",
-                "message": {"chat": {"id": 1}, "message_id": 101},
+                **base_callback,
+                "data": "rubric_channel:flowers:main",
             }
         }
     )
-    schedule_payload = json.dumps(
+    await bot.handle_update(
         {
-            "time": "09:30",
-            "tz": "+03:00",
-            "days": ["mon", "tue"],
-            "channel_id": -100,
-            "enabled": True,
+            "callback_query": {
+                **base_callback,
+                "data": "rubric_channel_set:-100",
+            }
         }
     )
-    await bot.handle_update({"message": {"text": schedule_payload, "from": {"id": 1}}})
+    config = bot.data.get_rubric_config("flowers")
+    assert config is not None
+    assert config["channel_id"] == -100
+
+    schedule_message = {"chat": {"id": 1}, "message_id": 101}
+    schedule_callback = {"id": "2", "from": {"id": 1}, "message": schedule_message}
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **schedule_callback,
+                "data": "rubric_sched_add:flowers",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **schedule_callback,
+                "data": "rubric_sched_time",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **schedule_callback,
+                "data": "rubric_sched_hour:9",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **schedule_callback,
+                "data": "rubric_sched_minute:30",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **schedule_callback,
+                "data": "rubric_sched_days",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **schedule_callback,
+                "data": "rubric_sched_day:mon",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **schedule_callback,
+                "data": "rubric_sched_day:tue",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **schedule_callback,
+                "data": "rubric_sched_days_done",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **schedule_callback,
+                "data": "rubric_sched_save",
+            }
+        }
+    )
     config = bot.data.get_rubric_config("flowers")
     assert config is not None
     schedules = config.get("schedules")
     assert isinstance(schedules, list) and len(schedules) == 1
     assert schedules[0]["time"] == "09:30"
     assert schedules[0]["enabled"] is True
+    assert schedules[0]["days"] == ["mon", "tue"]
+    assert schedules[0]["tz"] == "+03:00"
 
     await bot.handle_update(
         {

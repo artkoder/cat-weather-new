@@ -1018,10 +1018,39 @@ class DataAccess:
         config.pop("schedule", None)
         return normalized
 
+    @staticmethod
+    def _prepare_schedule_payload(schedule: dict[str, Any]) -> dict[str, Any]:
+        prepared = dict(schedule)
+        days = prepared.get("days")
+        if isinstance(days, set):
+            prepared["days"] = sorted(days)
+        elif isinstance(days, tuple):
+            prepared["days"] = list(days)
+        elif days is None:
+            prepared.pop("days", None)
+        channel_id = prepared.get("channel_id")
+        if channel_id in {"", None}:
+            prepared.pop("channel_id", None)
+        else:
+            try:
+                prepared["channel_id"] = int(channel_id)
+            except (TypeError, ValueError):
+                prepared.pop("channel_id", None)
+        enabled = prepared.get("enabled")
+        if enabled is not None:
+            prepared["enabled"] = bool(enabled)
+        time_value = prepared.get("time")
+        if time_value is not None:
+            prepared["time"] = str(time_value)
+        tz_value = prepared.get("tz")
+        if tz_value is not None:
+            prepared["tz"] = str(tz_value)
+        return prepared
+
     def add_rubric_schedule(self, code: str, schedule: dict[str, Any]) -> list[dict[str, Any]]:
         config = self.get_rubric_config(code) or {}
         schedules = self._normalize_schedules(config)
-        schedules.append(dict(schedule))
+        schedules.append(self._prepare_schedule_payload(schedule))
         self.save_rubric_config(code, config)
         return schedules
 
@@ -1035,7 +1064,7 @@ class DataAccess:
         schedules = self._normalize_schedules(config)
         if not 0 <= index < len(schedules):
             raise IndexError("Schedule index out of range")
-        schedules[index] = dict(schedule)
+        schedules[index] = self._prepare_schedule_payload(schedule)
         self.save_rubric_config(code, config)
         return schedules
 

@@ -136,9 +136,11 @@ async def test_photo_triggers_ingest_and_vision(tmp_path, caplog):
     assert vision_rows
     vision_payload = json.loads(vision_rows[0]['payload'])
     assert vision_payload['asset_id'] == asset_id
-    ingest_log = any('Scheduled ingest job' in rec.message for rec in caplog.records)
+    ingest_messages = [rec.message for rec in caplog.records if 'Scheduled ingest job' in rec.message]
+    ingest_log = bool(ingest_messages)
     vision_log = any('queued for vision job' in rec.message for rec in caplog.records)
     assert ingest_log and vision_log
+    assert any('reason=new_message' in msg for msg in ingest_messages)
     await bot.close()
 
 

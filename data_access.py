@@ -688,6 +688,31 @@ class DataAccess:
         )
         self.conn.commit()
 
+    def get_recent_rubric_metadata(self, rubric_code: str, limit: int = 5) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT ph.metadata
+            FROM posts_history AS ph
+            JOIN rubrics AS r ON ph.rubric_id = r.id
+            WHERE r.code = ?
+            ORDER BY ph.published_at DESC, ph.id DESC
+            LIMIT ?
+            """,
+            (rubric_code, limit),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            raw = row["metadata"]
+            if not raw:
+                result.append({})
+                continue
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = {}
+            result.append(parsed if isinstance(parsed, dict) else {})
+        return result
+
     def upsert_weather_job(self, channel_id: int, post_time: str, next_run: datetime) -> None:
         now = datetime.utcnow().isoformat()
         run_iso = next_run.isoformat()

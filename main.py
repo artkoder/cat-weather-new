@@ -445,8 +445,8 @@ class Bot:
         if self.asset_channel_id and message.get('chat', {}).get('id') == self.asset_channel_id:
             info = self._collect_asset_metadata(message)
             message_id = info.get("message_id")
-            tg_chat_id = info.get("tg_chat_id") or 0
-            if not message_id:
+            tg_chat_id = info.get("tg_chat_id")
+            if not message_id or not tg_chat_id:
                 return
             if self.data.is_recognized_message(tg_chat_id, message_id):
                 logging.info(

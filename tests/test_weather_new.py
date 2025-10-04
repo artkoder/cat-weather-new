@@ -49,6 +49,68 @@ async def test_weather_scheduler_publish(tmp_path):
     assert any(c[0]=='copyMessage' for c in calls)
     await bot.close()
 
+
+
+@pytest.mark.asyncio
+async def test_publish_weather_uses_migrated_legacy_assets(tmp_path):
+    db_path = tmp_path / 'db.sqlite'
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE asset_images (
+            message_id INTEGER PRIMARY KEY,
+            hashtags TEXT,
+            template TEXT,
+            used_at TEXT
+        );
+        INSERT INTO asset_images (message_id, hashtags, template, used_at)
+        VALUES (101, '#дождь #котопогода', 'legacy caption', '2024-01-01T00:00:00');
+        CREATE TABLE IF NOT EXISTS asset_channel (
+            channel_id INTEGER PRIMARY KEY
+        );
+        INSERT INTO asset_channel (channel_id) VALUES (-100123);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    bot = Bot('dummy', str(db_path))
+
+    calls = []
+
+    async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
+        calls.append((method, data))
+        return {'ok': True, 'result': {'message_id': 777}}
+
+    bot.api_request = fake_api_request  # type: ignore[assignment]
+
+    ok = await bot.publish_weather(-100500, {'#дождь'}, record=False)
+    assert ok
+
+    copy_calls = [call for call in calls if call[0] == 'copyMessage']
+    assert copy_calls
+    copy_payload = copy_calls[0][1]
+    assert copy_payload['message_id'] == 101
+    assert copy_payload['from_chat_id'] == -100123
+
+    legacy_table = bot.db.execute(
+        "SELECT name FROM sqlite_master WHERE name='asset_images'"
+    ).fetchone()
+    assert legacy_table is None
+
+    row = bot.db.execute(
+        "SELECT hashtags, categories, channel_id, tg_chat_id FROM assets WHERE message_id=?",
+        (101,),
+    ).fetchone()
+    assert row is not None
+    categories = json.loads(row['categories'])
+    assert '#дождь' in categories and '#котопогода' in categories
+    assert row['channel_id'] == -100123
+    assert row['tg_chat_id'] == -100123
+
+    await bot.close()
+
+
 @pytest.mark.asyncio
 
 async def test_handle_asset_message(tmp_path):

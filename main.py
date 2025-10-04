@@ -72,6 +72,25 @@ WEATHER_HEADER_PATTERN = re.compile(
 )
 
 
+CHANNEL_PICKER_PAGE_SIZE = 6
+CHANNEL_SEARCH_CHARSETS = {
+    "rus": list("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"),
+    "lat": list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+    "num": list("0123456789"),
+}
+CHANNEL_SEARCH_LABELS = {
+    "rus": "АБВ",
+    "lat": "ABC",
+    "num": "123",
+}
+CHANNEL_SEARCH_CONTROLS = [
+    ("⬅️", "rubric_channel_search_del"),
+    ("Пробел", "rubric_channel_search_add:20"),
+    ("Сбросить", "rubric_channel_search_clear"),
+    ("Готово", "rubric_channel_search_done"),
+]
+
+
 def apply_migrations(conn: sqlite3.Connection) -> None:
     """Apply SQL migrations stored in the migrations directory."""
 
@@ -2103,82 +2122,14 @@ class Bot:
             if not self.is_superadmin(user_id):
                 del self.pending[user_id]
             else:
-                state = self.pending[user_id]['rubric_input']
-                code = state.get('code')
-                message_to_update = state.get('message')
-                action = state.get('action')
-                field = state.get('field')
-                raw = text.strip()
-                try:
-                    if field in {'channel_id', 'test_channel_id'} and code:
-                        if raw.lower() in {'', 'none', 'clear'}:
-                            config = self._normalize_rubric_config(
-                                self.data.get_rubric_config(code) or {}
-                            )
-                            config.pop(field, None)
-                            self.data.save_rubric_config(code, config)
-                            await self.api_request(
-                                'sendMessage',
-                                {
-                                    'chat_id': user_id,
-                                    'text': f'{field} очищен для {code}',
-                                },
-                            )
-                        else:
-                            channel_id = int(raw)
-                            config = self._normalize_rubric_config(
-                                self.data.get_rubric_config(code) or {}
-                            )
-                            config[field] = channel_id
-                            self.data.save_rubric_config(code, config)
-                            await self.api_request(
-                                'sendMessage',
-                                {
-                                    'chat_id': user_id,
-                                    'text': f'{field} обновлён для {code}',
-                                },
-                            )
-                        del self.pending[user_id]
-                        await self._send_rubric_overview(
-                            user_id,
-                            code,
-                            message=message_to_update,
-                        )
-                        return
-                    if action in {'schedule_add', 'schedule_edit'} and code:
-                        schedule = json.loads(raw)
-                        if not isinstance(schedule, dict):
-                            raise ValueError('Schedule must be JSON object')
-                        if action == 'schedule_edit':
-                            index = state.get('index', 0)
-                            self.data.update_rubric_schedule(code, int(index), schedule)
-                            notice = f'Расписание #{int(index) + 1} обновлено'
-                        else:
-                            self.data.add_rubric_schedule(code, schedule)
-                            notice = 'Расписание добавлено'
-                        await self.api_request(
-                            'sendMessage',
-                            {
-                                'chat_id': user_id,
-                                'text': f'{notice} для {code}',
-                            },
-                        )
-                        del self.pending[user_id]
-                        await self._send_rubric_overview(
-                            user_id,
-                            code,
-                            message=message_to_update,
-                        )
-                        return
-                except (ValueError, TypeError, json.JSONDecodeError):
-                    await self.api_request(
-                        'sendMessage',
-                        {
-                            'chat_id': user_id,
-                            'text': 'Введите корректное значение или "clear" для очистки. Для расписаний используйте JSON.',
-                        },
-                    )
-                    return
+                await self.api_request(
+                    'sendMessage',
+                    {
+                        'chat_id': user_id,
+                        'text': 'Используйте кнопки для настройки рубрики.',
+                    },
+                )
+            return
 
         if text.startswith('/help'):
             help_messages = [
@@ -3478,44 +3429,220 @@ class Bot:
                 field = 'channel_id' if target == 'main' else 'test_channel_id'
                 self.pending[user_id] = {
                     'rubric_input': {
+                        'mode': 'channel_picker',
                         'code': code,
                         'field': field,
                         'message': query.get('message'),
+                        'page': 0,
+                        'search': '',
+                        'search_mode': False,
+                        'search_charset': 'rus',
+                        'return_mode': None,
                     }
                 }
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Введите ID канала ("clear" для сброса)',
-                })
+                await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_channel_page:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'channel_picker':
+                try:
+                    page = int(data.split(':', 1)[1])
+                except ValueError:
+                    page = 0
+                state['page'] = max(page, 0)
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_channel_search_toggle' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'channel_picker':
+                state['search_mode'] = not state.get('search_mode', False)
+                if state['search_mode']:
+                    state.setdefault('search_charset', 'rus')
+                await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_channel_search_charset:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'channel_picker':
+                key = data.split(':', 1)[1]
+                if key in CHANNEL_SEARCH_CHARSETS:
+                    state['search_charset'] = key
+                await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_channel_search_add:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'channel_picker':
+                hex_value = data.split(':', 1)[1]
+                try:
+                    char = bytes.fromhex(hex_value).decode('utf-8')
+                except ValueError:
+                    char = ''
+                if char:
+                    state['search'] = (state.get('search') or '') + char
+                    state['page'] = 0
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_channel_search_del' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'channel_picker':
+                current = state.get('search') or ''
+                if current:
+                    state['search'] = current[:-1]
+                    state['page'] = 0
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_channel_search_clear' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'channel_picker':
+                state['search'] = ''
+                state['page'] = 0
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_channel_search_done' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'channel_picker':
+                state['search_mode'] = False
+                state['page'] = 0
+                await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_channel_set:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'channel_picker':
+                value = data.split(':', 1)[1]
+                channel_id: int | None
+                try:
+                    channel_id = int(value)
+                except ValueError:
+                    channel_id = None
+                if state.get('return_mode') == 'schedule_wizard':
+                    schedule = state.setdefault('schedule', {})
+                    schedule['channel_id'] = channel_id
+                    state['mode'] = 'schedule_wizard'
+                    state['step'] = 'main'
+                    state['search_mode'] = False
+                    await self._edit_rubric_input_message(user_id)
+                else:
+                    code = state.get('code')
+                    field = state.get('field')
+                    if code and field:
+                        config = self._normalize_rubric_config(
+                            self.data.get_rubric_config(code) or {}
+                        )
+                        if channel_id is None:
+                            config.pop(field, None)
+                        else:
+                            config[field] = channel_id
+                        self.data.save_rubric_config(code, config)
+                    message_obj = state.get('message')
+                    del self.pending[user_id]
+                    if code:
+                        await self._send_rubric_overview(
+                            user_id,
+                            code,
+                            message=message_obj,
+                        )
+        elif data == 'rubric_channel_clear' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'channel_picker':
+                if state.get('return_mode') == 'schedule_wizard':
+                    schedule = state.setdefault('schedule', {})
+                    schedule['channel_id'] = None
+                    state['mode'] = 'schedule_wizard'
+                    state['step'] = 'main'
+                    state['search_mode'] = False
+                    await self._edit_rubric_input_message(user_id)
+                else:
+                    code = state.get('code')
+                    field = state.get('field')
+                    if code and field:
+                        config = self._normalize_rubric_config(
+                            self.data.get_rubric_config(code) or {}
+                        )
+                        config.pop(field, None)
+                        self.data.save_rubric_config(code, config)
+                    message_obj = state.get('message')
+                    del self.pending[user_id]
+                    if code:
+                        await self._send_rubric_overview(
+                            user_id,
+                            code,
+                            message=message_obj,
+                        )
+        elif data == 'rubric_channel_cancel' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state:
+                if state.get('return_mode') == 'schedule_wizard':
+                    state['mode'] = 'schedule_wizard'
+                    state['step'] = 'main'
+                    state['search_mode'] = False
+                    await self._edit_rubric_input_message(user_id)
+                else:
+                    code = state.get('code')
+                    message_obj = state.get('message')
+                    del self.pending[user_id]
+                    if code:
+                        await self._send_rubric_overview(
+                            user_id,
+                            code,
+                            message=message_obj,
+                        )
         elif data.startswith('rubric_sched_add:') and self.is_superadmin(user_id):
             code = data.split(':', 1)[1]
+            rubric = self.data.get_rubric_by_code(code)
+            if not rubric:
+                return
+            config = self._normalize_rubric_config(rubric.config)
+            default_days = config.get('days')
+            if isinstance(default_days, (list, tuple)):
+                days_value: Any = list(default_days)
+            elif default_days:
+                days_value = default_days
+            else:
+                days_value = []
+            schedule = {
+                'time': None,
+                'tz': config.get('tz') or TZ_OFFSET,
+                'days': days_value,
+                'channel_id': config.get('channel_id'),
+                'enabled': True,
+            }
             self.pending[user_id] = {
                 'rubric_input': {
+                    'mode': 'schedule_wizard',
                     'code': code,
                     'action': 'schedule_add',
                     'message': query.get('message'),
+                    'schedule': schedule,
+                    'step': 'main',
+                    'search': '',
+                    'search_mode': False,
+                    'search_charset': 'rus',
+                    'page': 0,
                 }
             }
-            await self.api_request('sendMessage', {
-                'chat_id': user_id,
-                'text': 'Отправьте JSON расписания, например {"time": "10:00", "tz": "+03:00", "days": ["mon"], "channel_id": -100}',
-            })
+            await self._edit_rubric_input_message(user_id)
         elif data.startswith('rubric_sched_edit:') and self.is_superadmin(user_id):
             parts = data.split(':')
             if len(parts) == 3:
-                code, idx = parts[1], int(parts[2])
-                self.pending[user_id] = {
-                    'rubric_input': {
-                        'code': code,
-                        'action': 'schedule_edit',
-                        'index': idx,
-                        'message': query.get('message'),
+                code, idx_str = parts[1], parts[2]
+                try:
+                    idx = int(idx_str)
+                except ValueError:
+                    idx = -1
+                rubric = self.data.get_rubric_by_code(code)
+                if not rubric:
+                    return
+                config = self._normalize_rubric_config(rubric.config)
+                schedules = config.get('schedules', [])
+                if 0 <= idx < len(schedules):
+                    schedule = dict(schedules[idx])
+                    self.pending[user_id] = {
+                        'rubric_input': {
+                            'mode': 'schedule_wizard',
+                            'code': code,
+                            'action': 'schedule_edit',
+                            'index': idx,
+                            'message': query.get('message'),
+                            'schedule': schedule,
+                            'step': 'main',
+                            'search': '',
+                            'search_mode': False,
+                            'search_charset': 'rus',
+                            'page': 0,
+                        }
                     }
-                }
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'Отправьте обновлённое расписание в JSON для #{idx + 1}',
-                })
+                    await self._edit_rubric_input_message(user_id)
         elif data.startswith('rubric_sched_toggle:') and self.is_superadmin(user_id):
             parts = data.split(':')
             if len(parts) == 3:
@@ -3533,6 +3660,132 @@ class Bot:
                         schedule['enabled'] = not schedule.get('enabled', True)
                         self.data.save_rubric_config(code, config)
                         await self._send_rubric_overview(user_id, code, message=query.get('message'))
+        elif data == 'rubric_sched_time' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                state['step'] = 'time_hours'
+                await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_sched_hour:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                try:
+                    hour = int(data.split(':', 1)[1])
+                except ValueError:
+                    hour = 0
+                state['temp_hour'] = max(0, min(hour, 23))
+                state['step'] = 'time_minutes'
+                await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_sched_minute:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                try:
+                    minute = int(data.split(':', 1)[1])
+                except ValueError:
+                    minute = 0
+                hour = int(state.get('temp_hour', 0))
+                minute = max(0, min(minute, 59))
+                state.pop('temp_hour', None)
+                schedule = state.setdefault('schedule', {})
+                schedule['time'] = f"{hour:02d}:{minute:02d}"
+                state['step'] = 'main'
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_sched_time_back' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                state['step'] = 'time_hours'
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_sched_time_cancel' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                state.pop('temp_hour', None)
+                state['step'] = 'main'
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_sched_days' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                state['step'] = 'days'
+                await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_sched_day:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                day = data.split(':', 1)[1]
+                schedule = state.setdefault('schedule', {})
+                days = schedule.get('days')
+                if not isinstance(days, list):
+                    days = list(days) if isinstance(days, tuple) else []
+                if day in days:
+                    days.remove(day)
+                else:
+                    days.append(day)
+                schedule['days'] = days
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_sched_days_all' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                schedule = state.setdefault('schedule', {})
+                schedule['days'] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_sched_days_clear' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                schedule = state.setdefault('schedule', {})
+                schedule['days'] = []
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_sched_days_done' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                state['step'] = 'main'
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_sched_toggle_enabled' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                schedule = state.setdefault('schedule', {})
+                schedule['enabled'] = not schedule.get('enabled', True)
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_sched_channel' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                state['mode'] = 'channel_picker'
+                state['return_mode'] = 'schedule_wizard'
+                state['field'] = 'channel_id'
+                state['page'] = 0
+                state['search_mode'] = False
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_sched_save' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                code = state.get('code')
+                schedule_data = dict(state.get('schedule') or {})
+                if isinstance(schedule_data.get('days'), tuple):
+                    schedule_data['days'] = list(schedule_data['days'])
+                action = state.get('action')
+                message_obj = state.get('message')
+                try:
+                    if action == 'schedule_edit':
+                        index = int(state.get('index', 0))
+                        self.data.update_rubric_schedule(code, index, schedule_data)
+                    else:
+                        self.data.add_rubric_schedule(code, schedule_data)
+                finally:
+                    del self.pending[user_id]
+                if code:
+                    await self._send_rubric_overview(
+                        user_id,
+                        code,
+                        message=message_obj,
+                    )
+        elif data == 'rubric_sched_cancel' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'schedule_wizard':
+                code = state.get('code')
+                message_obj = state.get('message')
+                del self.pending[user_id]
+                if code:
+                    await self._send_rubric_overview(
+                        user_id,
+                        code,
+                        message=message_obj,
+                    )
         elif data.startswith('rubric_sched_del:') and self.is_superadmin(user_id):
             parts = data.split(':')
             if len(parts) == 3:
@@ -3743,6 +3996,358 @@ class Bot:
         return (
             f"#{index + 1}: {time_str} (tz {tz_value}) → {channel_repr}, дни: {days_repr} {flag}{suffix}"
         )
+
+    def _get_channel_title(self, chat_id: int | None) -> str:
+        if chat_id is None:
+            return "—"
+        row = self.db.execute(
+            "SELECT title FROM channels WHERE chat_id=?",
+            (chat_id,),
+        ).fetchone()
+        title = row["title"] if row and row["title"] else None
+        return title or str(chat_id)
+
+    @staticmethod
+    def _weekday_label(day: str) -> str:
+        mapping = {
+            "mon": "Пн",
+            "tue": "Вт",
+            "wed": "Ср",
+            "thu": "Чт",
+            "fri": "Пт",
+            "sat": "Сб",
+            "sun": "Вс",
+        }
+        return mapping.get(day, day)
+
+    def _format_weekdays(self, days: Iterable[str] | str | None) -> str:
+        if not days:
+            return "—"
+        if isinstance(days, str):
+            return days
+        labels = [self._weekday_label(day) for day in days]
+        return ", ".join(labels) if labels else "—"
+
+    def _get_rubric_input_message_target(
+        self, state: dict[str, Any]
+    ) -> tuple[int, int] | None:
+        message = state.get("message")
+        if not message:
+            return None
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+        message_id = message.get("message_id")
+        if chat_id is None or message_id is None:
+            return None
+        return chat_id, message_id
+
+    def _render_channel_search_keyboard(
+        self, state: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        search = state.get("search") or ""
+        charset_key = state.get("search_charset") or "rus"
+        charset = CHANNEL_SEARCH_CHARSETS.get(charset_key) or CHANNEL_SEARCH_CHARSETS["rus"]
+        header = state.get("code") or ""
+        lines = [
+            f"Поиск каналов для {header}",
+            f"Запрос: {search or '—'}",
+            "Нажмите символы для фильтрации.",
+        ]
+        keyboard_rows: list[list[dict[str, Any]]] = []
+        for idx in range(0, len(charset), 6):
+            row_buttons: list[dict[str, Any]] = []
+            for ch in charset[idx : idx + 6]:
+                encoded = ch.encode("utf-8").hex()
+                row_buttons.append(
+                    {
+                        "text": ch,
+                        "callback_data": f"rubric_channel_search_add:{encoded}",
+                    }
+                )
+            if row_buttons:
+                keyboard_rows.append(row_buttons)
+        switch_row: list[dict[str, Any]] = []
+        for key, label in CHANNEL_SEARCH_LABELS.items():
+            prefix = "• " if key == charset_key else ""
+            switch_row.append(
+                {
+                    "text": f"{prefix}{label}",
+                    "callback_data": f"rubric_channel_search_charset:{key}",
+                }
+            )
+        keyboard_rows.append(switch_row)
+        control_row: list[dict[str, Any]] = []
+        for label, callback in CHANNEL_SEARCH_CONTROLS:
+            control_row.append({"text": label, "callback_data": callback})
+        keyboard_rows.append(control_row)
+        return "\n".join(lines), {"inline_keyboard": keyboard_rows}
+
+    def _render_channel_picker(
+        self, state: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        if state.get("search_mode"):
+            return self._render_channel_search_keyboard(state)
+        code = state.get("code") or ""
+        field = state.get("field", "channel_id")
+        search = state.get("search") or ""
+        page = max(int(state.get("page", 0)), 0)
+        params: list[Any] = []
+        where_clause = ""
+        if search:
+            where_clause = " WHERE title LIKE ?"
+            params.append(f"%{search}%")
+        count_row = self.db.execute(
+            f"SELECT COUNT(*) FROM channels{where_clause}",
+            params,
+        ).fetchone()
+        total = count_row[0] if count_row else 0
+        per_page = CHANNEL_PICKER_PAGE_SIZE
+        max_page = max((total - 1) // per_page, 0)
+        page = min(page, max_page)
+        state["page"] = page
+        offset = page * per_page
+        rows = self.db.execute(
+            f"SELECT chat_id, title FROM channels{where_clause} ORDER BY rowid DESC LIMIT ? OFFSET ?",
+            params + [per_page, offset],
+        ).fetchall()
+        if state.get("return_mode") == "schedule_wizard":
+            schedule = state.get("schedule") or {}
+            current_id = schedule.get("channel_id")
+            if current_id is None:
+                config = self._normalize_rubric_config(
+                    self.data.get_rubric_config(code) or {}
+                )
+                current_id = config.get("channel_id")
+        else:
+            config = self._normalize_rubric_config(
+                self.data.get_rubric_config(code) or {}
+            )
+            current_id = config.get(field)
+        lines = [
+            f"Выбор канала для {code}",
+            f"Поиск: {search or '—'}",
+        ]
+        if not rows:
+            lines.append("Каналы не найдены")
+        total_pages = max_page + 1 if total else 1
+        lines.append(f"Страница {page + 1}/{total_pages}")
+        keyboard_rows: list[list[dict[str, Any]]] = []
+        for row in rows:
+            chat_id = row["chat_id"]
+            title = row["title"] or str(chat_id)
+            if len(title) > 50:
+                title = title[:47] + "…"
+            prefix = "✅ " if current_id == chat_id else ""
+            keyboard_rows.append(
+                [
+                    {
+                        "text": f"{prefix}{title}",
+                        "callback_data": f"rubric_channel_set:{chat_id}",
+                    }
+                ]
+            )
+        nav_row: list[dict[str, Any]] = []
+        if page > 0:
+            nav_row.append(
+                {"text": "◀️", "callback_data": f"rubric_channel_page:{page - 1}"}
+            )
+        if page < max_page:
+            nav_row.append(
+                {"text": "▶️", "callback_data": f"rubric_channel_page:{page + 1}"}
+            )
+        if nav_row:
+            keyboard_rows.append(nav_row)
+        keyboard_rows.append(
+            [
+                {
+                    "text": "🔍 Поиск",
+                    "callback_data": "rubric_channel_search_toggle",
+                },
+                {
+                    "text": "Очистить",
+                    "callback_data": "rubric_channel_clear",
+                },
+            ]
+        )
+        cancel_text = "Назад" if state.get("return_mode") == "schedule_wizard" else "Отмена"
+        keyboard_rows.append(
+            [{"text": cancel_text, "callback_data": "rubric_channel_cancel"}]
+        )
+        return "\n".join(lines), {"inline_keyboard": keyboard_rows}
+
+    def _build_time_hours_keyboard(self) -> dict[str, Any]:
+        rows: list[list[dict[str, Any]]] = []
+        for start in range(0, 24, 6):
+            row: list[dict[str, Any]] = []
+            for hour in range(start, min(start + 6, 24)):
+                label = f"{hour:02d}"
+                row.append(
+                    {
+                        "text": label,
+                        "callback_data": f"rubric_sched_hour:{hour}",
+                    }
+                )
+            rows.append(row)
+        rows.append(
+            [
+                {"text": "Отмена", "callback_data": "rubric_sched_time_cancel"},
+            ]
+        )
+        return {"inline_keyboard": rows}
+
+    def _build_time_minutes_keyboard(self) -> dict[str, Any]:
+        rows: list[list[dict[str, Any]]] = []
+        for start in range(0, 60, 15):
+            row: list[dict[str, Any]] = []
+            for minute in range(start, min(start + 15, 60), 5):
+                label = f"{minute:02d}"
+                row.append(
+                    {
+                        "text": label,
+                        "callback_data": f"rubric_sched_minute:{minute}",
+                    }
+                )
+            rows.append(row)
+        rows.append(
+            [
+                {"text": "⬅️", "callback_data": "rubric_sched_time_back"},
+                {"text": "Отмена", "callback_data": "rubric_sched_time_cancel"},
+            ]
+        )
+        return {"inline_keyboard": rows}
+
+    def _build_days_keyboard(self, schedule: dict[str, Any]) -> dict[str, Any]:
+        current = schedule.get("days")
+        if not isinstance(current, list):
+            current = list(current) if isinstance(current, tuple) else []
+        rows: list[list[dict[str, Any]]] = []
+        order = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        for start in range(0, len(order), 3):
+            row: list[dict[str, Any]] = []
+            for day in order[start : start + 3]:
+                label = self._weekday_label(day)
+                if day in current:
+                    label = f"✅ {label}"
+                row.append(
+                    {
+                        "text": label,
+                        "callback_data": f"rubric_sched_day:{day}",
+                    }
+                )
+            rows.append(row)
+        rows.append(
+            [
+                {
+                    "text": "Все",
+                    "callback_data": "rubric_sched_days_all",
+                },
+                {
+                    "text": "Очистить",
+                    "callback_data": "rubric_sched_days_clear",
+                },
+                {
+                    "text": "Готово",
+                    "callback_data": "rubric_sched_days_done",
+                },
+            ]
+        )
+        return {"inline_keyboard": rows}
+
+    def _render_schedule_wizard(
+        self, state: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        code = state.get("code") or ""
+        schedule = state.setdefault("schedule", {})
+        config = self._normalize_rubric_config(
+            self.data.get_rubric_config(code) or {}
+        )
+        schedule.setdefault("tz", schedule.get("tz") or config.get("tz") or TZ_OFFSET)
+        if schedule.get("days") is None and config.get("days") is not None:
+            fallback_days = config.get("days")
+            schedule["days"] = list(fallback_days) if isinstance(fallback_days, (list, tuple)) else fallback_days
+        lines = [f"Настройка расписания для {code}"]
+        time_value = schedule.get("time") or "--:--"
+        lines.append(f"Время: {time_value} (TZ {schedule.get('tz')})")
+        lines.append(f"Дни: {self._format_weekdays(schedule.get('days'))}")
+        channel_id = schedule.get("channel_id")
+        if channel_id is None and config.get("channel_id") is not None:
+            channel_text = f"{self._get_channel_title(config.get('channel_id'))} (по умолчанию)"
+        else:
+            channel_text = self._get_channel_title(channel_id)
+        lines.append(f"Канал: {channel_text}")
+        enabled = schedule.get("enabled", True)
+        lines.append(f"Статус: {'✅' if enabled else '❌'}")
+        step = state.get("step", "main")
+        if step == "time_hours":
+            lines.append("Выберите часы отправки")
+            keyboard = self._build_time_hours_keyboard()
+        elif step == "time_minutes":
+            lines.append("Выберите минуты отправки")
+            keyboard = self._build_time_minutes_keyboard()
+        elif step == "days":
+            lines.append("Выберите дни недели")
+            keyboard = self._build_days_keyboard(schedule)
+        else:
+            keyboard_rows: list[list[dict[str, Any]]] = [
+                [
+                    {
+                        "text": f"🕒 Время: {time_value}",
+                        "callback_data": "rubric_sched_time",
+                    }
+                ],
+                [
+                    {
+                        "text": f"📅 Дни: {self._format_weekdays(schedule.get('days'))}",
+                        "callback_data": "rubric_sched_days",
+                    }
+                ],
+                [
+                    {
+                        "text": f"📡 Канал: {channel_text}",
+                        "callback_data": "rubric_sched_channel",
+                    }
+                ],
+                [
+                    {
+                        "text": "✅ Включено" if enabled else "❌ Выключено",
+                        "callback_data": "rubric_sched_toggle_enabled",
+                    }
+                ],
+                [
+                    {
+                        "text": "Сохранить",
+                        "callback_data": "rubric_sched_save",
+                    },
+                    {
+                        "text": "Отмена",
+                        "callback_data": "rubric_sched_cancel",
+                    },
+                ],
+            ]
+            keyboard = {"inline_keyboard": keyboard_rows}
+        return "\n".join(lines), keyboard
+
+    async def _edit_rubric_input_message(self, user_id: int) -> None:
+        state = self.pending.get(user_id, {}).get("rubric_input")
+        if not state:
+            return
+        target = self._get_rubric_input_message_target(state)
+        if not target:
+            return
+        chat_id, message_id = target
+        if state.get("mode") == "channel_picker":
+            text, keyboard = self._render_channel_picker(state)
+        elif state.get("mode") == "schedule_wizard":
+            text, keyboard = self._render_schedule_wizard(state)
+        else:
+            return
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "reply_markup": keyboard,
+        }
+        await self.api_request("editMessageText", payload)
 
     def _build_rubric_overview(
         self, rubric: Rubric

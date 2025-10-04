@@ -1,6 +1,8 @@
 import os
 import re
 import sys
+from typing import Any
+
 import pytest
 from aiohttp import web
 from datetime import datetime, timedelta
@@ -440,6 +442,272 @@ async def test_add_weather_button(tmp_path):
     assert len(up_payload["reply_markup"]["inline_keyboard"]) == 1
     assert "\u00B0C" in up_payload["reply_markup"]["inline_keyboard"][0][0]["text"]
 
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_rubric_channel_picker_flow(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def dummy(method, data=None):
+        calls.append((method, data))
+        return {"ok": True}
+
+    bot.api_request = dummy  # type: ignore
+    await bot.start()
+
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+
+    bot.db.execute("INSERT INTO channels (chat_id, title) VALUES (?, ?)", (-100, "Main"))
+    bot.db.execute("INSERT INTO channels (chat_id, title) VALUES (?, ?)", (-200, "Second"))
+    bot.db.commit()
+    bot.data.upsert_rubric("news", "News", config={"enabled": True})
+
+    message = {"message_id": 10, "chat": {"id": 1}}
+    callback_base = {"id": "cb1", "from": {"id": 1}, "message": message}
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_channel:news:main",
+            }
+        }
+    )
+
+    assert 1 in bot.pending and bot.pending[1]["rubric_input"]["mode"] == "channel_picker"
+    assert any(call[0] == "editMessageText" for call in calls)
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_channel_set:-100",
+            }
+        }
+    )
+
+    config = bot.data.get_rubric_config("news")
+    assert config["channel_id"] == -100
+    assert 1 not in bot.pending
+    assert any(call[0] == "editMessageText" for call in calls)
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_rubric_schedule_wizard_flow(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def dummy(method, data=None):
+        calls.append((method, data))
+        return {"ok": True}
+
+    bot.api_request = dummy  # type: ignore
+    await bot.start()
+
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+
+    bot.db.execute("INSERT INTO channels (chat_id, title) VALUES (?, ?)", (-100, "Main"))
+    bot.db.commit()
+    bot.data.upsert_rubric("news", "News", config={"enabled": True})
+
+    message = {"message_id": 20, "chat": {"id": 1}}
+    callback_base = {"id": "cb2", "from": {"id": 1}, "message": message}
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_add:news",
+            }
+        }
+    )
+
+    assert bot.pending[1]["rubric_input"]["mode"] == "schedule_wizard"
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_time",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_hour:9",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_minute:30",
+            }
+        }
+    )
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_days",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_day:mon",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_day:wed",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_days_done",
+            }
+        }
+    )
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_channel",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_channel_set:-100",
+            }
+        }
+    )
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_toggle_enabled",
+            }
+        }
+    )
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_save",
+            }
+        }
+    )
+
+    config = bot.data.get_rubric_config("news")
+    schedule = config["schedules"][0]
+    assert schedule["time"] == "09:30"
+    assert schedule["days"] == ["mon", "wed"]
+    assert schedule.get("channel_id") == -100
+    assert schedule.get("enabled") is False
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_edit:news:0",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_time",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_hour:10",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_minute:0",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_toggle_enabled",
+            }
+        }
+    )
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_save",
+            }
+        }
+    )
+
+    config = bot.data.get_rubric_config("news")
+    schedule = config["schedules"][0]
+    assert schedule["time"] == "10:00"
+    assert schedule.get("enabled") is True
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_toggle:news:0",
+            }
+        }
+    )
+
+    config = bot.data.get_rubric_config("news")
+    assert config["schedules"][0]["enabled"] is False
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **callback_base,
+                "data": "rubric_sched_del:news:0",
+            }
+        }
+    )
+
+    config = bot.data.get_rubric_config("news")
+    assert config.get("schedules") == []
 
     await bot.close()
 

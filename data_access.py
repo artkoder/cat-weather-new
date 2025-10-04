@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Any, Iterable, Iterator, Sequence
 
 
@@ -853,17 +853,43 @@ class DataAccess:
         )
         self.conn.commit()
 
+    @staticmethod
+    def _tz_offset_delta(tz_offset: str | None) -> timedelta:
+        offset = (tz_offset or "+00:00").strip()
+        sign = 1
+        if offset.startswith("-"):
+            sign = -1
+            offset = offset[1:]
+        elif offset.startswith("+"):
+            offset = offset[1:]
+        hours_str, _, minutes_str = offset.partition(":")
+        try:
+            hours = int(hours_str or "0")
+            minutes = int(minutes_str or "0")
+        except ValueError:
+            return timedelta()
+        return sign * timedelta(hours=hours, minutes=minutes)
+
     def get_daily_token_usage_total(
         self,
         *,
         day: date | None = None,
         models: Iterable[str] | None = None,
+        tz_offset: str | None = None,
     ) -> int:
-        target_day = (day or datetime.utcnow().date()).isoformat()
-        params: list[Any] = [target_day]
+        offset = self._tz_offset_delta(tz_offset)
+        if day is None:
+            local_now = datetime.utcnow() + offset
+            target_day = local_now.date()
+        else:
+            target_day = day
+        start_local = datetime.combine(target_day, datetime.min.time())
+        start_utc = start_local - offset
+        end_utc = start_utc + timedelta(days=1)
+        params: list[Any] = [start_utc.isoformat(), end_utc.isoformat()]
         query = (
             "SELECT COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total "
-            "FROM token_usage WHERE date(timestamp) = date(?)"
+            "FROM token_usage WHERE timestamp >= ? AND timestamp < ?"
         )
         model_list = list(models) if models else []
         if model_list:

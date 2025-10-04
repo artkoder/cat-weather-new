@@ -56,6 +56,7 @@ async def test_rubric_scheduler_enqueues_jobs(tmp_path):
     payload = json.loads(row["payload"])
     assert payload["rubric_code"] == "flowers"
     assert payload["channel_id"] == -100
+    assert payload["tz_offset"] == "+00:00"
     await bot.close()
 
 
@@ -82,6 +83,7 @@ async def test_rubric_scheduler_respects_timezone(tmp_path):
     assert payload["rubric_code"] == "guess_arch"
     assert payload["channel_id"] == -900
     assert payload["scheduled_at"] == expected.isoformat()
+    assert payload["tz_offset"] == "+03:00"
     await bot.close()
 
 
@@ -104,6 +106,7 @@ async def test_enqueue_rubric_manual_and_test_channels(tmp_path):
     assert payload["schedule_key"] == "manual"
     assert payload["channel_id"] == -111
     assert not payload.get("test")
+    assert payload["tz_offset"] == "+00:00"
     assert row["status"] == "queued"
 
     test_job_id = bot.enqueue_rubric("flowers", test=True)
@@ -115,6 +118,7 @@ async def test_enqueue_rubric_manual_and_test_channels(tmp_path):
     assert test_payload["schedule_key"] == "manual-test"
     assert test_payload["channel_id"] == -222
     assert test_payload["test"] is True
+    assert test_payload["tz_offset"] == "+00:00"
     assert test_row["status"] == "queued"
     await bot.close()
 

@@ -320,10 +320,20 @@ class Bot:
         self.running = False
         self.manual_buttons: dict[tuple[int, int], dict[str, list[list[dict]]]] = {}
 
-    def _next_usage_reset(self, *, now: datetime | None = None) -> datetime:
+    def _tz_offset_delta(self, tz_offset: str | None) -> timedelta:
+        tzinfo = self._parse_tz_offset(tz_offset or TZ_OFFSET)
+        offset = tzinfo.utcoffset(datetime.utcnow())
+        return offset if offset is not None else timedelta()
+
+    def _next_usage_reset(
+        self, *, now: datetime | None = None, tz_offset: str | None = None
+    ) -> datetime:
         reference = now or datetime.utcnow()
-        next_day = reference.date() + timedelta(days=1)
-        return datetime.combine(next_day, dtime(hour=0, minute=5))
+        offset = self._tz_offset_delta(tz_offset)
+        local_reference = reference + offset
+        next_day = local_reference.date() + timedelta(days=1)
+        local_reset = datetime.combine(next_day, dtime(hour=0, minute=5))
+        return local_reset - offset
 
     def _load_model_limits(self) -> dict[str, int]:
         def parse_limit(raw: str | None, env_name: str) -> int | None:
@@ -361,13 +371,26 @@ class Bot:
             or not self.openai.api_key
         ):
             return
+        tz_offset = None
+        if job and isinstance(job.payload, dict):
+            tz_offset = job.payload.get("tz_offset")
+        tz_offset = tz_offset or TZ_OFFSET
         limit = self._model_limits[model]
-        total_today = self.data.get_daily_token_usage_total(models={model})
+        total_today = self.data.get_daily_token_usage_total(
+            models={model}, tz_offset=tz_offset
+        )
         if total_today >= limit:
-            resume_at = self._next_usage_reset()
+            resume_at = self._next_usage_reset(tz_offset=tz_offset)
+            tzinfo = self._parse_tz_offset(tz_offset)
+            resume_local = (
+                resume_at.replace(tzinfo=timezone.utc).astimezone(tzinfo)
+                if resume_at.tzinfo is None
+                else resume_at.astimezone(tzinfo)
+            )
             reason = (
                 f"Превышен дневной лимит токенов {model}: "
-                f"{total_today}/{limit}. Задача перенесена до {resume_at.isoformat()}"
+                f"{total_today}/{limit}. Задача перенесена до {resume_at.isoformat()} UTC"
+                f" (локально {resume_local.isoformat()})"
             )
             logging.warning(reason)
             raise JobDelayed(resume_at, reason)
@@ -389,8 +412,14 @@ class Bot:
             job_id=job.id if job else None,
             request_id=response.request_id,
         )
+        tz_offset = None
+        if job and isinstance(job.payload, dict):
+            tz_offset = job.payload.get("tz_offset")
+        tz_offset = tz_offset or TZ_OFFSET
         if model in self._model_limits:
-            total_today = self.data.get_daily_token_usage_total(models={model})
+            total_today = self.data.get_daily_token_usage_total(
+                models={model}, tz_offset=tz_offset
+            )
             limit = self._model_limits[model]
             logging.info(
                 "Суммарное потребление токенов %s за сегодня: %s из %s",
@@ -1606,7 +1635,10 @@ class Bot:
                 asset_id,
                 metadata={"ingest_skipped": True},
             )
-            vision_job = self.jobs.enqueue("vision", {"asset_id": asset_id})
+            tz_offset = self.get_tz_offset(asset.author_user_id) if asset.author_user_id else TZ_OFFSET
+            vision_job = self.jobs.enqueue(
+                "vision", {"asset_id": asset_id, "tz_offset": tz_offset}
+            )
             logging.info(
                 "Asset %s queued for vision job %s after ingest (dry run)", asset_id, vision_job
             )
@@ -1655,7 +1687,10 @@ class Bot:
                 if country:
                     update_kwargs["country"] = country
         self.data.update_asset(asset_id, **update_kwargs)
-        vision_job = self.jobs.enqueue("vision", {"asset_id": asset_id})
+        tz_offset = self.get_tz_offset(asset.author_user_id) if asset.author_user_id else TZ_OFFSET
+        vision_job = self.jobs.enqueue(
+            "vision", {"asset_id": asset_id, "tz_offset": tz_offset}
+        )
         logging.info("Asset %s queued for vision job %s after ingest", asset_id, vision_job)
 
     async def _job_vision(self, job: Job):
@@ -3233,6 +3268,7 @@ class Bot:
                     "channel_id": channel_id,
                     "schedule_key": key,
                     "scheduled_at": next_run.isoformat(),
+                    "tz_offset": tz_value,
                 }
                 self.jobs.enqueue("publish_rubric", payload, run_at=next_run)
 
@@ -3272,6 +3308,7 @@ class Bot:
             "schedule_key": "manual-test" if test else "manual",
             "scheduled_at": datetime.utcnow().isoformat(),
             "test": test,
+            "tz_offset": config.get("tz") or TZ_OFFSET,
         }
         return self.jobs.enqueue("publish_rubric", payload)
 

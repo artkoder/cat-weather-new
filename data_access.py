@@ -396,7 +396,11 @@ class DataAccess:
             (tg_chat_id, message_id),
         )
 
-    def is_recognized_message(self, tg_chat_id: int, message_id: int) -> bool:
+    def is_recognized_message(self, tg_chat_id: int | None, message_id: int | None) -> bool:
+        """Check if the pair matches a previously recognized asset message."""
+
+        if not tg_chat_id or not message_id:
+            return False
         row = self.conn.execute(
             "SELECT 1 FROM assets WHERE tg_chat_id=? AND recognized_message_id=? LIMIT 1",
             (tg_chat_id, message_id),

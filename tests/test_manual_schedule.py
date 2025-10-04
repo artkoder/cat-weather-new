@@ -11,7 +11,7 @@ os.environ.setdefault('TELEGRAM_BOT_TOKEN', 'dummy')
 @pytest.mark.asyncio
 async def test_manual_run_does_not_block_schedule(tmp_path):
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
-    bot.set_asset_channel(-100)
+    bot.set_weather_assets_channel(-100)
     calls = []
 
     async def dummy(method, data=None):

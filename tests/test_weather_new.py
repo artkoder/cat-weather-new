@@ -37,7 +37,7 @@ async def test_render_date(tmp_path):
 @pytest.mark.asyncio
 async def test_weather_scheduler_publish(tmp_path):
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
-    bot.set_asset_channel(-100)
+    bot.set_weather_assets_channel(-100)
     calls = []
     async def dummy(method, data=None):
         calls.append((method, data))
@@ -115,7 +115,7 @@ async def test_publish_weather_uses_migrated_legacy_assets(tmp_path):
 
 async def test_handle_asset_message(tmp_path):
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
-    bot.set_asset_channel(-100123)
+    bot.set_weather_assets_channel(-100123)
     msg = {
         'message_id': 10,
         'chat': {'id': -100123},
@@ -132,7 +132,7 @@ async def test_handle_asset_message(tmp_path):
 
 async def test_edit_asset(tmp_path):
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
-    bot.set_asset_channel(-100123)
+    bot.set_weather_assets_channel(-100123)
     msg = {
         'message_id': 11,
         'chat': {'id': -100123},
@@ -154,7 +154,7 @@ async def test_edit_asset(tmp_path):
 
 async def test_photo_triggers_ingest_and_vision(tmp_path, caplog):
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
-    bot.set_asset_channel(-100123)
+    bot.set_recognition_channel(-100123)
     message = {
         'message_id': 21,
         'date': int(datetime.utcnow().timestamp()),
@@ -214,7 +214,7 @@ async def test_photo_triggers_ingest_and_vision(tmp_path, caplog):
 
 async def test_recognized_message_skips_reingest(tmp_path):
     bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
-    bot.set_asset_channel(-100123)
+    bot.set_recognition_channel(-100123)
 
     img = Image.new('RGB', (10, 10), color='white')
     buffer = BytesIO()
@@ -369,7 +369,7 @@ async def test_recognized_message_skips_reingest(tmp_path):
 @pytest.mark.asyncio
 async def test_recognized_edit_skips_reingest(tmp_path):
     bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
-    bot.set_asset_channel(-100123)
+    bot.set_recognition_channel(-100123)
 
     img = Image.new('RGB', (10, 10), color='white')
     buffer = BytesIO()
@@ -517,6 +517,64 @@ async def test_recognized_edit_skips_reingest(tmp_path):
     assert ingest_jobs == 0
     asset_count_after = bot.db.execute('SELECT COUNT(*) FROM assets').fetchone()[0]
     assert asset_count_after == asset_count
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_weather_and_recognition_channels_do_not_mix(tmp_path):
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    bot.set_weather_assets_channel(-200001)
+    bot.set_recognition_channel(-300001)
+
+    calls: list[tuple[str, dict | None]] = []
+
+    async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
+        calls.append((method, data))
+        return {'ok': True, 'result': {'message_id': 900}}
+
+    bot.api_request = fake_api_request  # type: ignore[assignment]
+
+    recognition_message = {
+        'message_id': 11,
+        'date': int(datetime.utcnow().timestamp()),
+        'chat': {'id': -300001},
+        'caption': '#распознавание кот',
+        'photo': [
+            {
+                'file_id': 'rec_photo',
+                'file_unique_id': 'rec_unique',
+                'file_size': 10,
+                'width': 640,
+                'height': 480,
+            }
+        ],
+    }
+
+    weather_message = {
+        'message_id': 22,
+        'date': int(datetime.utcnow().timestamp()),
+        'chat': {'id': -200001},
+        'caption': '#погода готово',
+    }
+
+    await bot.handle_message(recognition_message)
+    await bot.handle_message(weather_message)
+
+    row = bot.db.execute(
+        "SELECT origin FROM assets WHERE tg_chat_id=? AND message_id=?",
+        (-300001, 11),
+    ).fetchone()
+    assert row is not None and row['origin'] == 'recognition'
+
+    ok = await bot.publish_weather(-400001, None, record=False)
+    assert ok
+
+    copy_calls = [payload for method, payload in calls if method == 'copyMessage']
+    assert copy_calls and copy_calls[0]['message_id'] == 22
+    assert copy_calls[0]['from_chat_id'] == -200001
+    delete_calls = [method for method, _ in calls if method == 'deleteMessage']
+    assert not delete_calls
 
     await bot.close()
 

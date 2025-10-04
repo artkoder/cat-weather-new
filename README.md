@@ -3,7 +3,7 @@
 ## Summary
 [Полную историю изменений см. в `CHANGELOG.md`](CHANGELOG.md).
 
-- **Asset ingestion**. The bot listens to the configured assets channel, stores each message as an asset record and downloads the original media to local storage. Every photo must contain GPS EXIF data so the bot can resolve the city through Nominatim; authors without coordinates receive an automatic reminder.
+- **Asset ingestion**. The bot listens to the dedicated recognition channel for new submissions while weather-ready assets live in a separate storage channel. Every photo must contain GPS EXIF data so the bot can resolve the city through Nominatim; authors without coordinates receive an automatic reminder.
 - **Recognition pipeline**. After ingestion the asynchronous job queue schedules a `vision` task that classifies the photo with OpenAI `gpt-4o-mini`, storing the rubric category, architectural details and detected flowers while respecting per-model daily token quotas configured via environment variables.
 - **Rubric automation**. Two daily rubrics are supported out of the box: `flowers` creates a carousel with greetings for cities detected in flower assets, while `guess_arch` prepares a numbered architecture quiz with optional overlays and weather context. Both rubrics consume recognized assets and clean them up after publishing.
 - **Admin workflow**. Superadmins manage user access, asset channel binding and rubric schedules directly inside Telegram via commands and inline buttons. The admin interface also exposes manual approval queues and quick status messages for rubric runs.
@@ -21,7 +21,9 @@
 
 ### Channels & scheduling
 - `/channels` – print every channel known to the bot so superadmins can audit bindings.
-- `/set_assets_channel` – bind the private storage channel used for ASSETS ingestion; only posts created after this command are captured.
+- `/set_weather_assets_channel` – bind the private storage channel whose posts are copied by the weather scheduler.
+- `/set_recognition_channel` – pick the recognition/ingestion channel whose uploads trigger EXIF checks and vision jobs.
+- `/set_assets_channel` – legacy shortcut that assigns the same channel to both roles for backward compatibility.
 - `/setup_weather` – wizard that assigns rubric schedules to channels when new destinations are added.
 - `/list_weather_channels` – admin dashboard showing rubric schedules, last run timestamps and inline `Run now`/`Stop` actions.
 - `/history` and `/scheduled` – inspect previously published posts and queued schedules, including rubric drops copied from the assets channel (each scheduled item comes with inline `Cancel`/`Reschedule` controls).
@@ -38,6 +40,9 @@
 - `/addcity <name> <lat> <lon>`, `/cities` – manage the city directory used by the weather cache.
 - `/addsea <name> <lat> <lon>`, `/seas` – maintain the sea catalogue that powers shoreline forecasts.
 - `/amber` – open the inline picker for the Янтарный канал, then drill down to channel-specific toggles.
+
+### Channel configuration & migration
+- Upgrading from previous releases automatically copies the legacy assets channel into both the weather storage and recognition tables, so existing setups continue to work. Once the bot is updated you can run `/set_weather_assets_channel` and `/set_recognition_channel` to decouple the roles. Use `/set_assets_channel` if you prefer to keep a single shared channel.
 
 ## User Stories
 ### Implemented

@@ -8,8 +8,12 @@ from data_access import DataAccess
 
 
 def _load_schema(conn: sqlite3.Connection) -> None:
+    asset_channel_path = Path(__file__).resolve().parents[1] / "migrations" / "0004_asset_channel.sql"
+    conn.executescript(asset_channel_path.read_text(encoding="utf-8"))
     schema_path = Path(__file__).resolve().parents[1] / "migrations" / "0012_core_schema.sql"
     conn.executescript(schema_path.read_text(encoding="utf-8"))
+    upgrade_path = Path(__file__).resolve().parents[1] / "migrations" / "0014_split_asset_channels.sql"
+    conn.executescript(upgrade_path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture

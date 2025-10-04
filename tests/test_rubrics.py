@@ -382,3 +382,151 @@ async def test_generate_guess_arch_uses_gpt4o(tmp_path):
 
     await bot.close()
 
+
+@pytest.mark.asyncio
+async def test_rubrics_overview_lists_configs(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def fake_api(method, data=None, *, files=None):
+        calls.append((method, data))
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore
+    await bot.start()
+
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+    bot.data.upsert_rubric(
+        "flowers",
+        "Flowers",
+        config={
+            "enabled": True,
+            "channel_id": -100,
+            "test_channel_id": -200,
+            "tz": "+03:00",
+            "days": ["mon", "wed"],
+            "schedules": [
+                {"time": "09:00", "tz": "+03:00", "days": ["mon"], "channel_id": -100},
+            ],
+        },
+    )
+
+    calls.clear()
+    await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
+    assert calls, "Expected a message with rubric overview"
+    method, data = calls[0]
+    assert method == "sendMessage"
+    assert data is not None
+    assert "flowers" in data["text"].lower()
+    keyboard = data["reply_markup"]["inline_keyboard"]
+    assert any(
+        btn.get("callback_data") == "rubric_sched_add:flowers"
+        for row in keyboard
+        for btn in row
+    )
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_rubric_channel_and_schedule_edit_flow(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def fake_api(method, data=None, *, files=None):
+        calls.append((method, data))
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore
+    await bot.start()
+
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+    bot.data.upsert_rubric("flowers", "Flowers", config={"enabled": False, "schedules": []})
+
+    calls.clear()
+    await bot.handle_update({"message": {"text": "/rubric_edit flowers", "from": {"id": 1}}})
+    assert calls and calls[-1][0] == "sendMessage"
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "1",
+                "from": {"id": 1},
+                "data": "rubric_channel:flowers:main",
+                "message": {"chat": {"id": 1}, "message_id": 100},
+            }
+        }
+    )
+    await bot.handle_update({"message": {"text": "-100", "from": {"id": 1}}})
+    config = bot.data.get_rubric_config("flowers")
+    assert config is not None
+    assert config["channel_id"] == -100
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "2",
+                "from": {"id": 1},
+                "data": "rubric_sched_add:flowers",
+                "message": {"chat": {"id": 1}, "message_id": 101},
+            }
+        }
+    )
+    schedule_payload = json.dumps(
+        {
+            "time": "09:30",
+            "tz": "+03:00",
+            "days": ["mon", "tue"],
+            "channel_id": -100,
+            "enabled": True,
+        }
+    )
+    await bot.handle_update({"message": {"text": schedule_payload, "from": {"id": 1}}})
+    config = bot.data.get_rubric_config("flowers")
+    assert config is not None
+    schedules = config.get("schedules")
+    assert isinstance(schedules, list) and len(schedules) == 1
+    assert schedules[0]["time"] == "09:30"
+    assert schedules[0]["enabled"] is True
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "3",
+                "from": {"id": 1},
+                "data": "rubric_sched_toggle:flowers:0",
+                "message": {"chat": {"id": 1}, "message_id": 102},
+            }
+        }
+    )
+    config = bot.data.get_rubric_config("flowers")
+    assert config is not None
+    assert config["schedules"][0]["enabled"] is False
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "4",
+                "from": {"id": 1},
+                "data": "rubric_sched_del:flowers:0",
+                "message": {"chat": {"id": 1}, "message_id": 103},
+            }
+        }
+    )
+    config = bot.data.get_rubric_config("flowers")
+    assert config is not None
+    assert config.get("schedules") == []
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "5",
+                "from": {"id": 1},
+                "data": "rubric_delete:flowers",
+                "message": {"chat": {"id": 1}, "message_id": 104},
+            }
+        }
+    )
+    assert bot.data.get_rubric_by_code("flowers") is None
+
+    await bot.close()
+

@@ -959,6 +959,113 @@ class DataAccess:
             return None
         return self._rubric_from_row(row)
 
+    def upsert_rubric(
+        self,
+        code: str,
+        title: str,
+        *,
+        config: dict[str, Any] | None = None,
+    ) -> Rubric:
+        now = datetime.utcnow().isoformat()
+        payload = json.dumps(config or {}) if config else None
+        self.conn.execute(
+            """
+            INSERT INTO rubrics (code, title, description, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(code) DO UPDATE SET
+                title=excluded.title,
+                description=excluded.description,
+                updated_at=excluded.updated_at
+            """,
+            (code, title, payload, now, now),
+        )
+        self.conn.commit()
+        rubric = self.get_rubric_by_code(code)
+        if not rubric:  # pragma: no cover - defensive
+            raise RuntimeError(f"Failed to load rubric {code}")
+        return rubric
+
+    def save_rubric_config(self, code: str, config: dict[str, Any]) -> None:
+        now = datetime.utcnow().isoformat()
+        self.conn.execute(
+            """
+            UPDATE rubrics
+            SET description=?, updated_at=?
+            WHERE code=?
+            """,
+            (json.dumps(config), now, code),
+        )
+        self.conn.commit()
+
+    def get_rubric_config(self, code: str) -> dict[str, Any] | None:
+        rubric = self.get_rubric_by_code(code)
+        if not rubric:
+            return None
+        return rubric.config or {}
+
+    @staticmethod
+    def _normalize_schedules(config: dict[str, Any]) -> list[dict[str, Any]]:
+        schedules = config.get("schedules") or config.get("schedule") or []
+        if isinstance(schedules, dict):
+            schedules = [schedules]
+        elif not isinstance(schedules, list):
+            schedules = []
+        normalized: list[dict[str, Any]] = []
+        for item in schedules:
+            if isinstance(item, dict):
+                normalized.append(dict(item))
+        config["schedules"] = normalized
+        config.pop("schedule", None)
+        return normalized
+
+    def add_rubric_schedule(self, code: str, schedule: dict[str, Any]) -> list[dict[str, Any]]:
+        config = self.get_rubric_config(code) or {}
+        schedules = self._normalize_schedules(config)
+        schedules.append(dict(schedule))
+        self.save_rubric_config(code, config)
+        return schedules
+
+    def update_rubric_schedule(
+        self,
+        code: str,
+        index: int,
+        schedule: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        config = self.get_rubric_config(code) or {}
+        schedules = self._normalize_schedules(config)
+        if not 0 <= index < len(schedules):
+            raise IndexError("Schedule index out of range")
+        schedules[index] = dict(schedule)
+        self.save_rubric_config(code, config)
+        return schedules
+
+    def remove_rubric_schedule(self, code: str, index: int) -> bool:
+        config = self.get_rubric_config(code) or {}
+        schedules = self._normalize_schedules(config)
+        if not 0 <= index < len(schedules):
+            return False
+        schedule = schedules.pop(index)
+        self.save_rubric_config(code, config)
+        key = schedule.get("key")
+        if key:
+            self.conn.execute(
+                "DELETE FROM rubric_schedule_state WHERE rubric_code=? AND schedule_key=?",
+                (code, key),
+            )
+            self.conn.commit()
+        return True
+
+    def delete_rubric(self, code: str) -> bool:
+        cur = self.conn.execute("DELETE FROM rubrics WHERE code=?", (code,))
+        removed = cur.rowcount > 0
+        if removed:
+            self.conn.execute(
+                "DELETE FROM rubric_schedule_state WHERE rubric_code=?",
+                (code,),
+            )
+            self.conn.commit()
+        return removed
+
     def get_rubric_schedule_state(
         self, rubric_code: str, schedule_key: str
     ) -> RubricScheduleState | None:

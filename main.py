@@ -448,6 +448,13 @@ class Bot:
             tg_chat_id = info.get("tg_chat_id") or 0
             if not message_id:
                 return
+            if self.data.is_recognized_message(tg_chat_id, message_id):
+                logging.info(
+                    "Skipping recognized edit %s in channel %s",
+                    message_id,
+                    tg_chat_id,
+                )
+                return
             existing = self.data.get_asset_by_message(tg_chat_id, message_id)
             if existing:
                 self.data.update_asset(
@@ -1977,13 +1984,26 @@ class Bot:
 
         if self.asset_channel_id and message.get('chat', {}).get('id') == self.asset_channel_id:
             info = self._collect_asset_metadata(message)
+            message_id = info.get("message_id", 0)
+            tg_chat_id = info.get("tg_chat_id", 0)
+            if (
+                message_id
+                and tg_chat_id
+                and self.data.is_recognized_message(tg_chat_id, message_id)
+            ):
+                logging.info(
+                    "Skipping recognized message %s in channel %s",
+                    message_id,
+                    tg_chat_id,
+                )
+                return
             asset_id = self.add_asset(
-                info.get("message_id", 0),
+                message_id,
                 info.get("hashtags", ""),
                 info.get("caption"),
-                channel_id=info.get("tg_chat_id"),
+                channel_id=tg_chat_id,
                 metadata=info.get("metadata"),
-                tg_chat_id=info.get("tg_chat_id"),
+                tg_chat_id=tg_chat_id,
                 kind=info.get("kind"),
                 file_meta=info.get("file_meta"),
                 author_user_id=info.get("author_user_id"),

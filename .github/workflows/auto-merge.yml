@@ -1,0 +1,19 @@
+# .github/workflows/auto-merge.yml
+name: Enable Auto-Merge
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  enable:
+    if: contains(toJson(github.event.pull_request.labels), 'automerge')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          merge-method: squash

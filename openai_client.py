@@ -70,6 +70,8 @@ class OpenAIClient:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
+        temperature: float | None = None,
+        top_p: float | None = None,
     ) -> OpenAIResponse | None:
         if not self.api_key:
             return None
@@ -84,6 +86,10 @@ class OpenAIClient:
                 "json_schema": schema,
             },
         }
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if top_p is not None:
+            payload["top_p"] = top_p
         return await self._submit_request(payload)
 
     async def _submit_request(self, payload: Dict[str, Any]) -> OpenAIResponse:

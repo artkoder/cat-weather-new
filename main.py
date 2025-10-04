@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import sqlite3
 from datetime import datetime, date, timedelta, timezone, time as dtime
@@ -276,21 +277,7 @@ class Bot:
         self.jobs.register_handler("vision", self._job_vision)
         self.jobs.register_handler("publish_rubric", self._job_publish_rubric)
         self.openai = OpenAIClient(os.getenv("OPENAI_API_KEY"))
-        limit_raw = os.getenv("OPENAI_DAILY_TOKEN_LIMIT")
-        parsed_limit: int | None
-        if limit_raw:
-            try:
-                parsed_limit = int(limit_raw)
-            except ValueError:
-                logging.warning("Invalid OPENAI_DAILY_TOKEN_LIMIT: %s", limit_raw)
-                parsed_limit = None
-        else:
-            parsed_limit = None
-        if parsed_limit is not None and parsed_limit > 0:
-            self.openai_daily_limit = parsed_limit
-        else:
-            self.openai_daily_limit = None
-        self._limited_models = {"gpt-4o", "gpt-4o-mini"}
+        self._model_limits = self._load_model_limits()
         asset_dir = os.getenv("ASSET_STORAGE_DIR")
         self.asset_storage = Path(asset_dir).expanduser() if asset_dir else Path("/tmp/bot_assets")
         self.asset_storage.mkdir(parents=True, exist_ok=True)
@@ -337,20 +324,49 @@ class Bot:
         next_day = reference.date() + timedelta(days=1)
         return datetime.combine(next_day, dtime(hour=0, minute=5))
 
-    def _enforce_openai_limit(self, job: Job | None) -> None:
+    def _load_model_limits(self) -> dict[str, int]:
+        def parse_limit(raw: str | None, env_name: str) -> int | None:
+            if not raw:
+                return None
+            try:
+                value = int(raw)
+            except ValueError:
+                logging.warning("Invalid %s: %s", env_name, raw)
+                return None
+            if value <= 0:
+                logging.warning("Ignoring non-positive %s: %s", env_name, raw)
+                return None
+            return value
+
+        limits: dict[str, int] = {}
+        default_limit = parse_limit(os.getenv("OPENAI_DAILY_TOKEN_LIMIT"), "OPENAI_DAILY_TOKEN_LIMIT")
+        limit_4o = parse_limit(os.getenv("OPENAI_DAILY_TOKEN_LIMIT_4O"), "OPENAI_DAILY_TOKEN_LIMIT_4O")
+        limit_4o_mini = parse_limit(
+            os.getenv("OPENAI_DAILY_TOKEN_LIMIT_4O_MINI"), "OPENAI_DAILY_TOKEN_LIMIT_4O_MINI"
+        )
+        if limit_4o is not None:
+            limits["gpt-4o"] = limit_4o
+        if limit_4o_mini is not None:
+            limits["gpt-4o-mini"] = limit_4o_mini
+        if not limits and default_limit is not None:
+            limits = {"gpt-4o": default_limit, "gpt-4o-mini": default_limit}
+        return limits
+
+    def _enforce_openai_limit(self, job: Job | None, model: str) -> None:
         if (
             job is None
-            or not self.openai_daily_limit
+            or model not in self._model_limits
             or not self.openai
             or not self.openai.api_key
         ):
             return
-        total_today = self.data.get_daily_token_usage_total(models=self._limited_models)
-        if total_today >= self.openai_daily_limit:
+        limit = self._model_limits[model]
+        total_today = self.data.get_daily_token_usage_total(models={model})
+        if total_today >= limit:
             resume_at = self._next_usage_reset()
             reason = (
-                "Превышен дневной лимит токенов OpenAI: "
-                f"{total_today}/{self.openai_daily_limit}. Задача перенесена до {resume_at.isoformat()}"
+                f"Превышен дневной лимит токенов {model}: "
+                f"{total_today}/{limit}. Задача перенесена до {resume_at.isoformat()}"
             )
             logging.warning(reason)
             raise JobDelayed(resume_at, reason)
@@ -372,12 +388,14 @@ class Bot:
             job_id=job.id if job else None,
             request_id=response.request_id,
         )
-        if model in self._limited_models:
-            total_today = self.data.get_daily_token_usage_total(models=self._limited_models)
+        if model in self._model_limits:
+            total_today = self.data.get_daily_token_usage_total(models={model})
+            limit = self._model_limits[model]
             logging.info(
-                "Суммарное потребление токенов %s за сегодня: %s",
-                ", ".join(sorted(self._limited_models)),
+                "Суммарное потребление токенов %s за сегодня: %s из %s",
+                model,
                 total_today,
+                limit,
             )
 
     async def start(self):
@@ -1717,7 +1735,7 @@ class Bot:
         user_prompt = (
             "Проанализируй фото и заполни поля category, arch_view, photo_weather, flower_varieties, confidence."
         )
-        self._enforce_openai_limit(job)
+        self._enforce_openai_limit(job, "gpt-4o-mini")
         response = await self.openai.classify_image(
             model="gpt-4o-mini",
             system_prompt=system_prompt,
@@ -3377,6 +3395,7 @@ class Bot:
             "asset_ids": [asset.id for asset in assets],
             "test": test,
             "cities": cities,
+            "greeting": greeting,
             "hashtags": hashtag_list,
         }
         self.data.record_post_history(
@@ -3397,6 +3416,8 @@ class Bot:
         *,
         job: Job | None = None,
     ) -> tuple[str, list[str]]:
+        if not self.openai or not self.openai.api_key:
+            return self._default_flowers_greeting(cities), self._default_hashtags("flowers")
         prompt_parts = [
             "Составь короткий приветственный текст для утреннего поста с фото цветов.",
             "Пиши дружелюбно и на русском языке.",
@@ -3422,28 +3443,50 @@ class Bot:
                 "required": ["greeting", "hashtags"],
             },
         }
-        response = None
-        try:
-            self._enforce_openai_limit(job)
-            response = await self.openai.generate_json(
-                model="gpt-4o-mini",
-                system_prompt=(
-                    "Ты редактор телеграм-канала про погоду и уют. "
-                    "Создавай дружелюбные тексты."
-                ),
-                user_prompt=prompt,
-                schema=schema,
-            )
-        except Exception:
-            logging.exception("Failed to generate flowers copy")
-        if response:
-            self._record_openai_usage("gpt-4o-mini", response, job=job)
-        if response and isinstance(response.content, dict):
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            temperature = self._creative_temperature()
+            try:
+                logging.info(
+                    "Запрос генерации текста для цветов: модель=%s temperature=%.2f top_p=0.9 попытка %s/%s",
+                    "gpt-4o",
+                    temperature,
+                    attempt,
+                    attempts,
+                )
+                self._enforce_openai_limit(job, "gpt-4o")
+                response = await self.openai.generate_json(
+                    model="gpt-4o",
+                    system_prompt=(
+                        "Ты редактор телеграм-канала про погоду и уют. "
+                        "Создавай дружелюбные тексты."
+                    ),
+                    user_prompt=prompt,
+                    schema=schema,
+                    temperature=temperature,
+                    top_p=0.9,
+                )
+            except Exception:
+                logging.exception("Failed to generate flowers copy (attempt %s)", attempt)
+                response = None
+            if response:
+                self._record_openai_usage("gpt-4o", response, job=job)
+            if not response or not isinstance(response.content, dict):
+                continue
             greeting = str(response.content.get("greeting") or "").strip()
-            hashtags = response.content.get("hashtags") or []
-            hashtags = [str(tag) for tag in hashtags if tag]
-            if greeting:
-                return greeting, hashtags
+            raw_hashtags = response.content.get("hashtags") or []
+            hashtags = self._deduplicate_hashtags(raw_hashtags)
+            if not greeting or not hashtags:
+                continue
+            if self._is_duplicate_rubric_copy("flowers", "greeting", greeting, hashtags):
+                logging.info(
+                    "Получен повторяющийся текст для рубрики flowers, пробуем снова (%s/%s)",
+                    attempt,
+                    attempts,
+                )
+                continue
+            return greeting, hashtags
+        logging.warning("Не удалось получить новый текст для рубрики flowers, используем запасной вариант")
         return self._default_flowers_greeting(cities), self._default_hashtags("flowers")
 
     def _default_flowers_greeting(self, cities: list[str]) -> str:
@@ -3454,6 +3497,56 @@ class Bot:
                 location = ", ".join(cities[:-1]) + f" и {cities[-1]}"
             return f"Доброе утро, {location}! Делимся цветами вашего города."
         return "Доброе утро! Пусть этот букет сделает день ярче."
+
+    def _creative_temperature(self) -> float:
+        return round(random.uniform(0.9, 1.1), 2)
+
+    def _deduplicate_hashtags(self, tags: Iterable[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for tag in tags:
+            text = str(tag or "").strip()
+            if not text:
+                continue
+            normalized = text.lstrip("#").lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(text)
+        return result
+
+    def _is_duplicate_rubric_copy(
+        self,
+        rubric_code: str,
+        key: str,
+        text: str,
+        hashtags: Iterable[str],
+    ) -> bool:
+        normalized_text = text.strip().lower()
+        normalized_tags = sorted({str(tag).lstrip("#").lower() for tag in hashtags if str(tag).strip()})
+        if not normalized_text:
+            return False
+        recent_metadata = self.data.get_recent_rubric_metadata(rubric_code, limit=5)
+        for item in recent_metadata:
+            if not isinstance(item, dict):
+                continue
+            previous_text = str(item.get(key) or "").strip().lower()
+            if not previous_text:
+                continue
+            raw_tags = item.get("hashtags")
+            previous_tags: list[str]
+            if isinstance(raw_tags, (list, tuple, set)):
+                previous_tags = [str(tag) for tag in raw_tags]
+            elif isinstance(raw_tags, str):
+                previous_tags = [piece.strip() for piece in raw_tags.split() if piece.strip()]
+            else:
+                previous_tags = []
+            normalized_previous_tags = sorted(
+                {tag.lstrip("#").lower() for tag in previous_tags if tag.strip()}
+            )
+            if previous_text == normalized_text and normalized_previous_tags == normalized_tags:
+                return True
+        return False
 
     async def _publish_guess_arch(
         self,
@@ -3517,7 +3610,7 @@ class Bot:
                 self._remove_file(created)
             return False
         caption_text, hashtags = await self._generate_guess_arch_copy(
-            rubric, len(assets), weather_text
+            rubric, len(assets), weather_text, job=job
         )
         hashtag_list = self._prepare_hashtags(hashtags)
         caption_parts = [caption_text.strip()] if caption_text else []
@@ -3564,6 +3657,7 @@ class Bot:
             "asset_ids": [asset.id for asset in assets],
             "test": test,
             "weather": weather_text,
+            "caption": caption_text,
             "hashtags": hashtag_list,
         }
         self.data.record_post_history(
@@ -3577,8 +3671,21 @@ class Bot:
         return True
 
     async def _generate_guess_arch_copy(
-        self, rubric: Rubric, asset_count: int, weather_text: str | None
+        self,
+        rubric: Rubric,
+        asset_count: int,
+        weather_text: str | None,
+        *,
+        job: Job | None = None,
     ) -> tuple[str, list[str]]:
+        if not self.openai or not self.openai.api_key:
+            fallback_caption = (
+                "Делимся подборкой калининградской архитектуры — угадайте номера на фото и"
+                " делитесь ответами в комментариях!"
+            )
+            if weather_text:
+                fallback_caption += f" {weather_text}"
+            return fallback_caption, self._default_hashtags("guess_arch")
         prompt = (
             "Подготовь подпись на русском языке для конкурса \"Угадай архитектуру\". "
             f"В альбоме {asset_count} пронумерованных фотографий. "
@@ -3601,28 +3708,49 @@ class Bot:
                 "required": ["caption", "hashtags"],
             },
         }
-        response = None
-        try:
-            self._enforce_openai_limit(job)
-            response = await self.openai.generate_json(
-                model="gpt-4o-mini",
-                system_prompt=(
-                    "Ты редактор телеграм-канала о погоде и городе. "
-                    "Пиши интересно, но коротко."
-                ),
-                user_prompt=prompt,
-                schema=schema,
-            )
-        except Exception:
-            logging.exception("Failed to generate guess_arch caption")
-        if response:
-            self._record_openai_usage("gpt-4o-mini", response, job=job)
-        if response and isinstance(response.content, dict):
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            temperature = self._creative_temperature()
+            try:
+                logging.info(
+                    "Запрос генерации текста для guess_arch: модель=%s temperature=%.2f top_p=0.9 попытка %s/%s",
+                    "gpt-4o",
+                    temperature,
+                    attempt,
+                    attempts,
+                )
+                self._enforce_openai_limit(job, "gpt-4o")
+                response = await self.openai.generate_json(
+                    model="gpt-4o",
+                    system_prompt=(
+                        "Ты редактор телеграм-канала о погоде и городе. "
+                        "Пиши интересно, но коротко."
+                    ),
+                    user_prompt=prompt,
+                    schema=schema,
+                    temperature=temperature,
+                    top_p=0.9,
+                )
+            except Exception:
+                logging.exception("Failed to generate guess_arch caption (attempt %s)", attempt)
+                response = None
+            if response:
+                self._record_openai_usage("gpt-4o", response, job=job)
+            if not response or not isinstance(response.content, dict):
+                continue
             caption = str(response.content.get("caption") or "").strip()
-            hashtags = response.content.get("hashtags") or []
-            hashtags = [str(tag) for tag in hashtags if tag]
-            if caption:
-                return caption, hashtags
+            raw_hashtags = response.content.get("hashtags") or []
+            hashtags = self._deduplicate_hashtags(raw_hashtags)
+            if not caption or not hashtags:
+                continue
+            if self._is_duplicate_rubric_copy("guess_arch", "caption", caption, hashtags):
+                logging.info(
+                    "Получен повторяющийся текст для рубрики guess_arch, пробуем снова (%s/%s)",
+                    attempt,
+                    attempts,
+                )
+                continue
+            return caption, hashtags
         fallback_caption = (
             "Делимся подборкой калининградской архитектуры — угадайте номера на фото и"
             " делитесь ответами в комментариях!"

@@ -3,12 +3,15 @@ import os
 import sys
 from datetime import datetime
 
+from typing import Any
+
 import pytest
 from PIL import Image
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from main import Bot
+from openai_client import OpenAIResponse
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 
@@ -109,6 +112,7 @@ async def test_publish_flowers_removes_assets(tmp_path):
     meta = json.loads(history["metadata"])
     assert meta["rubric_code"] == "flowers"
     assert meta["asset_ids"]
+    assert meta["greeting"]
     await bot.close()
 
 
@@ -183,10 +187,134 @@ async def test_publish_guess_arch_with_overlays(tmp_path):
     meta = json.loads(history["metadata"])
     assert meta["rubric_code"] == "guess_arch"
     assert "weather" in meta
+    assert meta["caption"]
     # ensure overlays cleaned up
     numbered_exists = any(storage.glob("*_numbered_*.png"))
     assert not numbered_exists
     delete_calls = [call for call in calls if call["method"] == "deleteMessage"]
     assert len(delete_calls) == 4
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_generate_flowers_uses_gpt4o(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {"enabled": True}
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+    rubric = bot.data.get_rubric_by_code("flowers")
+
+    calls: list[dict[str, Any]] = []
+
+    class DummyOpenAI:
+        def __init__(self) -> None:
+            self.api_key = "test"
+
+        async def generate_json(self, **kwargs):  # type: ignore[override]
+            calls.append(kwargs)
+            return OpenAIResponse(
+                {"greeting": "Доброе утро", "hashtags": ["котопогода", "цветы"]},
+                10,
+                15,
+                25,
+                "req-1",
+            )
+
+    bot.openai = DummyOpenAI()
+
+    greeting, hashtags = await bot._generate_flowers_copy(rubric, ["Москва"], 4)
+
+    assert greeting == "Доброе утро"
+    assert hashtags == ["котопогода", "цветы"]
+    assert calls, "generate_json was not called"
+    request = calls[0]
+    assert request["model"] == "gpt-4o"
+    assert 0.9 <= request["temperature"] <= 1.1
+    assert request["top_p"] == 0.9
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_generate_flowers_retries_on_duplicate(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {"enabled": True}
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+    rubric = bot.data.get_rubric_by_code("flowers")
+    bot.data.record_post_history(1, 1, None, rubric.id, {
+        "rubric_code": "flowers",
+        "greeting": "Доброе утро",
+        "hashtags": ["#котопогода"],
+    })
+
+    calls: list[dict[str, Any]] = []
+
+    class DummyOpenAI:
+        def __init__(self) -> None:
+            self.api_key = "test"
+
+        async def generate_json(self, **kwargs):  # type: ignore[override]
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return OpenAIResponse(
+                    {"greeting": "Доброе утро", "hashtags": ["#котопогода"]},
+                    5,
+                    5,
+                    10,
+                    "req-first",
+                )
+            return OpenAIResponse(
+                {"greeting": "Привет, друзья", "hashtags": ["#котопогода", "#цветы"]},
+                6,
+                7,
+                13,
+                "req-second",
+            )
+
+    bot.openai = DummyOpenAI()
+
+    greeting, hashtags = await bot._generate_flowers_copy(rubric, [], 4)
+
+    assert greeting == "Привет, друзья"
+    assert hashtags == ["#котопогода", "#цветы"]
+    assert len(calls) >= 2
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_generate_guess_arch_uses_gpt4o(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {"enabled": True}
+    _insert_rubric(bot, "guess_arch", config, rubric_id=2)
+    rubric = bot.data.get_rubric_by_code("guess_arch")
+
+    calls: list[dict[str, Any]] = []
+
+    class DummyOpenAI:
+        def __init__(self) -> None:
+            self.api_key = "test"
+
+        async def generate_json(self, **kwargs):  # type: ignore[override]
+            calls.append(kwargs)
+            return OpenAIResponse(
+                {"caption": "Тест", "hashtags": ["угадай", "архитектура"]},
+                8,
+                9,
+                17,
+                "req-3",
+            )
+
+    bot.openai = DummyOpenAI()
+
+    caption, hashtags = await bot._generate_guess_arch_copy(rubric, 4, None)
+
+    assert caption == "Тест"
+    assert hashtags == ["угадай", "архитектура"]
+    assert calls
+    request = calls[0]
+    assert request["model"] == "gpt-4o"
+    assert 0.9 <= request["temperature"] <= 1.1
+    assert request["top_p"] == 0.9
+
     await bot.close()
 

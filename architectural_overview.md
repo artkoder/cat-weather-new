@@ -1,40 +1,38 @@
 # Architectural Overview
 
-This document outlines the main components of the Telegram scheduler bot.
+This document outlines the components that power the asset-driven rubric pipeline.
 
-## 1 Introduction
-The bot forwards posts to channels at scheduled times. It stores users, channels and schedule data in a SQLite database.
+## 1. Introduction
+The bot ingests posts from a dedicated Telegram channel, enriches them with EXIF metadata and OpenAI recognition results, and schedules rubric publications to downstream channels. A SQLite database stores all state, and an internal job queue coordinates long-running work.
 
-## 2 Database
-The database is migrated via SQL files in the `migrations` folder.
+## 2. Database
+SQLite tables track users, channels, assets, token usage, job queue entries and rubric configuration. Asset rows retain EXIF-derived coordinates, reverse-geocoded location names, and the recognition payload so rubrics can filter by category. Token consumption is persisted per OpenAI model to enforce daily limits.
 
-## 3 Services
+## 3. Services
 ### 3.1 Bot
-Handles Telegram updates and user commands.
+The aiohttp bot handles Telegram webhooks, user commands and inline callbacks. It also manages the background scheduler loop that processes due jobs and rubric schedules.
 
-### 3.2 WeatherService
+### 3.2 Asset ingest
+Incoming photos from the assets channel trigger an ingest job. The job downloads the original media, validates EXIF GPS coordinates, stores the file locally, reverse-geocodes coordinates via Nominatim, and updates the asset record with derived metadata.
 
-Collects current weather data from Open-Meteo for registered cities each hour using the request `https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&current=temperature_2m,weather_code,wind_speed_10m`. The raw response and parsed data are logged. Failed requests are retried up to three times with a minute pause, after which the service waits until the next hour. The bot ignores API errors so it continues running.
+### 3.3 Recognition
+A follow-up `vision` job classifies each asset with OpenAI (`gpt-4o-mini`) to extract a primary category, architecture view, flower varieties and weather description. The job respects model quotas and logs token usage for auditing.
 
+### 3.4 Rubric engine
+Configured rubrics (`flowers`, `guess_arch`) pull classified assets, render text using OpenAI where required, overlay numbers on quiz photos, and publish carousels back to Telegram channels. After a successful run the consumed assets and temporary overlays are removed.
 
-### 3.3 Webhook
-The HTTP server receives Telegram webhooks.
+### 3.5 Admin interface
+Superadmins manage onboarding, asset channel binding, rubric schedules and manual triggers directly from Telegram commands and inline buttons. The interface exposes quick actions such as «Run now» and displays remaining OpenAI quota.
 
-### 3.4 Authorization
-Superadmins approve or reject new users.
+## 4. Job Queue
+`jobs.py` implements a persistent queue with exponential backoff, deduplication and concurrency control. It loads due jobs every second, dispatches handlers (`ingest`, `vision`, `publish_rubric`) and records failure history for support investigations.
 
-### 3.5 Scheduler
-A background loop processes scheduled posts and weather jobs at regular intervals defined by `SCHED_INTERVAL_SEC`.
+## 5. User Stories
+- **US-1**: Asset ingestion validates EXIF metadata, reverse-geocodes coordinates and notifies authors when data is missing.
+- **US-2**: Recognition jobs enrich assets with rubric categories, architecture details and flower varieties using OpenAI.
+- **US-3**: The rubric engine automatically assembles and publishes `flowers` and `guess_arch` drops when schedules mature.
+- **US-4**: Administrators can audit OpenAI usage, enqueue manual runs and monitor rubric status within Telegram.
+- **US-5**: Operators rely on the durable job queue to recover from transient failures without losing or duplicating posts.
 
-## 4 Deployment
-The application targets Fly.io free tier and runs a single process.
-
-## 5 User Stories
-- US-1..US-9: base bot functionality (registration, scheduling, buttons).
-- US-10: admin adds a city.
-- US-11: admin views and removes cities.
-- US-12: periodic weather collection from Open-Meteo.
-- US-13: admin requests last weather check info and can force an update.
-- US-14: admin registers a weather post for updates.
-- US-15: automatic weather post updates.
-- US-16: admin lists registered posts with weather and sea data for all registered seas.
+## 6. Legacy
+Weather-specific schedulers, sea temperature placeholders and related commands remain available for historic channels. Their behaviour is unchanged but they are no longer part of the primary rubric workflow; see `docs/weather.md` for details.

@@ -1,4 +1,3 @@
-# .github/workflows/auto-merge.yml
 name: Enable Auto-Merge (all PRs to main)
 
 on:
@@ -12,6 +11,7 @@ permissions:
 
 jobs:
   enable:
+    # не включаем авто-мердж для драфтов
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:

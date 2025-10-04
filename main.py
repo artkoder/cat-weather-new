@@ -3299,15 +3299,15 @@ class Bot:
     ) -> bool:
         config = rubric.config or {}
         asset_cfg = config.get("assets") or {}
-        categories = (
-            asset_cfg.get("categories")
-            or config.get("categories")
-            or ["flowers"]
-        )
-        min_count = int(asset_cfg.get("min") or 4)
-        max_count = int(asset_cfg.get("max") or max(min_count, 6))
-        assets = self.data.fetch_assets_by_categories(
-            categories,
+        min_config = int(asset_cfg.get("min") or 4)
+        max_config_raw = asset_cfg.get("max")
+        min_count = max(4, min_config)
+        if max_config_raw is None:
+            max_count = max(min_count, 6)
+        else:
+            max_count = max(min_count, min(int(max_config_raw), 6))
+        assets = self.data.fetch_assets_by_vision_category(
+            "flowers",
             rubric_id=rubric.id,
             limit=max_count,
         )
@@ -3324,6 +3324,8 @@ class Bot:
         )
         hashtag_list = self._prepare_hashtags(hashtags)
         caption_parts = [greeting.strip()] if greeting else []
+        if cities:
+            caption_parts.append("Города съёмки: " + ", ".join(cities))
         if hashtag_list:
             caption_parts.append(" ".join(hashtag_list))
         caption = "\n\n".join(part for part in caption_parts if part)
@@ -3366,7 +3368,7 @@ class Bot:
             rubric.id,
             metadata,
         )
-        self._cleanup_assets(assets)
+        await self._cleanup_assets(assets)
         return True
 
     async def _generate_flowers_copy(
@@ -3445,18 +3447,36 @@ class Bot:
     ) -> bool:
         config = rubric.config or {}
         asset_cfg = config.get("assets") or {}
-        categories = (
-            asset_cfg.get("categories")
-            or config.get("categories")
-            or ["photo_weather"]
-        )
-        min_count = int(asset_cfg.get("min") or 3)
-        max_count = int(asset_cfg.get("max") or min_count)
-        assets = self.data.fetch_assets_by_categories(
-            categories,
+        min_config = int(asset_cfg.get("min") or 4)
+        max_config_raw = asset_cfg.get("max")
+        min_count = max(4, min_config)
+        if max_config_raw is None:
+            max_count = max(min_count, 6)
+        else:
+            max_count = max(min_count, min(int(max_config_raw), 6))
+        weather_city = config.get("weather_city") or "Kaliningrad"
+        weather_text, weather_class = self._get_city_weather_info(weather_city)
+        allowed_photo_weather = self._compatible_photo_weather_classes(weather_class)
+        candidate_limit = max_count * 3 if allowed_photo_weather else max_count
+        candidates = self.data.fetch_assets_by_vision_category(
+            "architecture",
             rubric_id=rubric.id,
-            limit=max_count,
+            limit=candidate_limit,
+            require_arch_view=True,
         )
+        assets: list[Asset] = []
+        for asset in candidates:
+            photo_label = self._normalize_weather_label(asset.vision_photo_weather)
+            if not photo_label:
+                continue
+            if photo_label == "indoor":
+                assets.append(asset)
+            elif not allowed_photo_weather:
+                assets.append(asset)
+            elif photo_label in allowed_photo_weather:
+                assets.append(asset)
+            if len(assets) >= max_count:
+                break
         if len(assets) < min_count:
             logging.warning(
                 "Not enough assets for guess_arch rubric: have %s, need %s",
@@ -3478,8 +3498,6 @@ class Bot:
             for created in overlay_paths:
                 self._remove_file(created)
             return False
-        weather_city = config.get("weather_city") or "Kaliningrad"
-        weather_text = self._get_city_weather_summary(weather_city)
         caption_text, hashtags = await self._generate_guess_arch_copy(
             rubric, len(assets), weather_text
         )
@@ -3537,7 +3555,7 @@ class Bot:
             rubric.id,
             metadata,
         )
-        self._cleanup_assets(assets, extra_paths=overlay_paths)
+        await self._cleanup_assets(assets, extra_paths=overlay_paths)
         return True
 
     async def _generate_guess_arch_copy(
@@ -3613,17 +3631,45 @@ class Bot:
         }
         return mapping.get(code, ["#котопогода"])
 
-    def _cleanup_assets(
+    async def _cleanup_assets(
         self, assets: Iterable[Asset], *, extra_paths: Iterable[str] | None = None
     ) -> None:
         asset_list = list(assets)
         ids = [asset.id for asset in asset_list]
         for asset in asset_list:
+            await self._delete_asset_message(asset)
             self._remove_file(asset.local_path)
         if extra_paths:
             for path in extra_paths:
                 self._remove_file(path)
         self.data.delete_assets(ids)
+
+    async def _delete_asset_message(self, asset: Asset) -> None:
+        chat_id = asset.tg_chat_id or asset.channel_id
+        message_id = asset.message_id
+        if not chat_id or not message_id:
+            return
+        try:
+            response = await self.api_request(
+                "deleteMessage",
+                {"chat_id": chat_id, "message_id": message_id},
+            )
+        except Exception:
+            logging.exception(
+                "Failed to delete asset %s message %s from chat %s",
+                asset.id,
+                message_id,
+                chat_id,
+            )
+            return
+        if not response or not response.get("ok"):
+            logging.warning(
+                "Failed to delete message %s from chat %s for asset %s: %s",
+                message_id,
+                chat_id,
+                asset.id,
+                response,
+            )
 
     def _remove_file(self, path: str | None) -> None:
         if not path:
@@ -3635,13 +3681,92 @@ class Bot:
         except Exception:
             logging.exception("Failed to remove file %s", path)
 
-    def _get_city_weather_summary(self, city_name: str) -> str | None:
+    def _compatible_photo_weather_classes(
+        self, actual_class: str | None
+    ) -> set[str] | None:
+        if actual_class is None:
+            return None
+        mapping = {
+            "clear": {"clear", "partly_cloudy"},
+            "partly_cloudy": {"clear", "partly_cloudy", "cloudy"},
+            "cloudy": {"partly_cloudy", "cloudy", "overcast"},
+            "overcast": {"cloudy", "overcast"},
+            "rain": {"rain", "storm"},
+            "storm": {"storm", "rain"},
+            "snow": {"snow"},
+            "fog": {"fog", "overcast", "cloudy"},
+            "night": {"night", "clear", "partly_cloudy"},
+            "indoor": {"indoor"},
+        }
+        allowed = mapping.get(actual_class, {actual_class})
+        return set(allowed)
+
+    def _normalize_weather_label(self, label: str | None) -> str | None:
+        if not label:
+            return None
+        text = str(label).strip().lower()
+        if not text:
+            return None
+        keyword_map: list[tuple[tuple[str, ...], str]] = [
+            (("indoor", "помещ", "inside", "room"), "indoor"),
+            (("ноч", "night"), "night"),
+            (("гроза", "storm", "thunder", "молн"), "storm"),
+            (("снег", "snow", "снеж", "метел", "blizzard"), "snow"),
+            (("дожд", "rain", "ливн", "drizzle", "wet"), "rain"),
+            (("туман", "fog", "mist", "дымк", "haze", "смог"), "fog"),
+            (("пасмур", "overcast", "сплошн", "тучн", "серое небо"), "overcast"),
+            (("облач", "cloud"), "cloudy"),
+            (("закат", "sunset", "рассвет", "sunrise", "golden hour"), "partly_cloudy"),
+            (("солне", "ясн", "clear", "sunny", "bright sun"), "clear"),
+        ]
+        for needles, token in keyword_map:
+            for needle in needles:
+                if needle in text:
+                    return token
+        return text.split()[0]
+
+    def _classify_weather_code(self, code: int | None) -> str | None:
+        if code is None:
+            return None
+        mapping = {
+            0: "clear",
+            1: "partly_cloudy",
+            2: "partly_cloudy",
+            3: "overcast",
+            45: "fog",
+            48: "fog",
+            51: "rain",
+            53: "rain",
+            55: "rain",
+            56: "rain",
+            57: "rain",
+            61: "rain",
+            63: "rain",
+            65: "rain",
+            66: "rain",
+            67: "rain",
+            71: "snow",
+            73: "snow",
+            75: "snow",
+            77: "snow",
+            80: "rain",
+            81: "rain",
+            82: "rain",
+            85: "snow",
+            86: "snow",
+            95: "storm",
+            96: "storm",
+            99: "storm",
+        }
+        return mapping.get(code)
+
+    def _get_city_weather_info(self, city_name: str) -> tuple[str | None, str | None]:
         row = self.db.execute(
             "SELECT id, name FROM cities WHERE lower(name)=lower(?)",
             (city_name,),
         ).fetchone()
         if not row:
-            return None
+            return None, None
         weather_row = self.db.execute(
             """
             SELECT temperature, weather_code, wind_speed
@@ -3653,10 +3778,11 @@ class Bot:
             (row["id"],),
         ).fetchone()
         if not weather_row:
-            return None
+            return None, None
         temp = weather_row["temperature"]
         code = weather_row["weather_code"]
         wind = weather_row["wind_speed"]
+        weather_class = self._classify_weather_code(int(code) if code is not None else None)
         emoji = weather_emoji(int(code), None) if code is not None else ""
         parts: list[str] = []
         if temp is not None:
@@ -3666,12 +3792,16 @@ class Bot:
         summary = ", ".join(parts)
         city_display = row["name"]
         if emoji and summary:
-            return f"{emoji} {city_display}: {summary}"
+            return f"{emoji} {city_display}: {summary}", weather_class
         if emoji:
-            return f"{emoji} {city_display}"
+            return f"{emoji} {city_display}", weather_class
         if summary:
-            return f"{city_display}: {summary}"
-        return city_display
+            return f"{city_display}: {summary}", weather_class
+        return city_display, weather_class
+
+    def _get_city_weather_summary(self, city_name: str) -> str | None:
+        summary, _ = self._get_city_weather_info(city_name)
+        return summary
 
     def _overlay_number(
         self, asset: Asset, number: int, config: dict[str, Any]

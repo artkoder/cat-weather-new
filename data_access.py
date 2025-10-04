@@ -482,25 +482,68 @@ class DataAccess:
                 continue
             yield asset
 
-    def fetch_assets_by_categories(
+    def _fetch_assets(
         self,
-        categories: Sequence[str],
         *,
         rubric_id: int | None = None,
         limit: int | None = None,
+        where: Sequence[str] | None = None,
+        params: Sequence[Any] | None = None,
     ) -> list[Asset]:
-        normalized = {c.lower().lstrip("#") for c in categories if c}
-        if not normalized:
-            return []
-        results: list[Asset] = []
-        for asset in self.iter_assets(rubric_id=rubric_id):
-            asset_tags = {t.lower().lstrip("#") for t in asset.categories}
-            if not asset_tags.intersection(normalized):
+        conditions = list(where or [])
+        query_params: list[Any] = list(params or [])
+        if rubric_id is not None:
+            conditions.append("a.rubric_id = ?")
+            query_params.append(rubric_id)
+        sql = (
+            """
+            SELECT a.*, vr.result_json AS vision_payload
+            FROM assets a
+            LEFT JOIN vision_results vr
+              ON vr.asset_id = a.id
+             AND vr.id = (
+                 SELECT id FROM vision_results
+                 WHERE asset_id = a.id
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1
+             )
+            """
+        )
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY COALESCE(a.last_used_at, a.created_at) ASC, a.id ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            query_params.append(limit)
+        rows = self.conn.execute(sql, query_params).fetchall()
+        assets: list[Asset] = []
+        for row in rows:
+            asset = self._asset_from_row(row)
+            if not asset:
                 continue
-            results.append(asset)
-            if limit is not None and len(results) >= limit:
-                break
-        return results
+            assets.append(asset)
+        return assets
+
+    def fetch_assets_by_vision_category(
+        self,
+        category: str,
+        *,
+        rubric_id: int | None = None,
+        limit: int | None = None,
+        require_arch_view: bool = False,
+    ) -> list[Asset]:
+        if not category:
+            return []
+        where = ["LOWER(COALESCE(a.vision_category, '')) = ?"]
+        params: list[Any] = [category.lower()]
+        if require_arch_view:
+            where.append("TRIM(COALESCE(a.vision_arch_view, '')) != ''")
+        return self._fetch_assets(
+            rubric_id=rubric_id,
+            limit=limit,
+            where=where,
+            params=params,
+        )
 
     def delete_assets(self, asset_ids: Sequence[int]) -> None:
         if not asset_ids:

@@ -207,6 +207,9 @@ CREATE_TABLES = [
     """CREATE TABLE IF NOT EXISTS asset_channel (
             channel_id INTEGER PRIMARY KEY
         )""",
+    """CREATE TABLE IF NOT EXISTS recognition_channel (
+            channel_id INTEGER PRIMARY KEY
+        )""",
 
 
         """CREATE TABLE IF NOT EXISTS weather_cache_period (
@@ -314,7 +317,8 @@ class Bot:
         self.db.commit()
         self.pending = {}
         self.failed_fetches: dict[int, tuple[int, datetime]] = {}
-        self.asset_channel_id = self.get_asset_channel()
+        self.weather_assets_channel_id = self.get_weather_assets_channel()
+        self.recognition_channel_id = self.get_recognition_channel()
 
         self.session: ClientSession | None = None
         self.running = False
@@ -442,57 +446,66 @@ class Bot:
         self.db.close()
 
     async def handle_edited_message(self, message):
-        if self.asset_channel_id and message.get('chat', {}).get('id') == self.asset_channel_id:
-            info = self._collect_asset_metadata(message)
-            message_id = info.get("message_id")
-            tg_chat_id = info.get("tg_chat_id")
-            if not message_id or not tg_chat_id:
-                return
-            if self.data.is_recognized_message(tg_chat_id, message_id):
-                logging.info(
-                    "Skipping recognized edit %s in channel %s",
-                    message_id,
-                    tg_chat_id,
-                )
-                return
-            existing = self.data.get_asset_by_message(tg_chat_id, message_id)
-            if existing:
-                self.data.update_asset(
-                    existing.id,
-                    template=info.get("caption"),
-                    caption=info.get("caption"),
-                    hashtags=info.get("hashtags"),
-                    kind=info.get("kind"),
-                    file_meta=info.get("file_meta"),
-                    author_user_id=info.get("author_user_id"),
-                    author_username=info.get("author_username"),
-                    sender_chat_id=info.get("sender_chat_id"),
-                    via_bot_id=info.get("via_bot_id"),
-                    forward_from_user=info.get("forward_from_user"),
-                    forward_from_chat=info.get("forward_from_chat"),
-                    metadata=info.get("metadata"),
-                )
-                asset_id = existing.id
-            else:
-                asset_id = self.add_asset(
-                    message_id,
-                    info.get("hashtags", ""),
-                    info.get("caption"),
-                    channel_id=tg_chat_id,
-                    metadata=info.get("metadata"),
-                    tg_chat_id=tg_chat_id,
-                    kind=info.get("kind"),
-                    file_meta=info.get("file_meta"),
-                    author_user_id=info.get("author_user_id"),
-                    author_username=info.get("author_username"),
-                    sender_chat_id=info.get("sender_chat_id"),
-                    via_bot_id=info.get("via_bot_id"),
-                    forward_from_user=info.get("forward_from_user"),
-                    forward_from_chat=info.get("forward_from_chat"),
-                )
-            if asset_id:
-                self._schedule_ingest_job(asset_id, reason="edit")
+        chat_id = message.get("chat", {}).get("id")
+        if chat_id is None:
             return
+        is_weather_channel = chat_id == self.weather_assets_channel_id
+        is_recognition_channel = chat_id == self.recognition_channel_id
+        if not is_weather_channel and not is_recognition_channel:
+            return
+        info = self._collect_asset_metadata(message)
+        message_id = info.get("message_id")
+        tg_chat_id = info.get("tg_chat_id")
+        if not message_id or not tg_chat_id:
+            return
+        if self.data.is_recognized_message(tg_chat_id, message_id):
+            logging.info(
+                "Skipping recognized edit %s in channel %s",
+                message_id,
+                tg_chat_id,
+            )
+            return
+        origin = "recognition" if is_recognition_channel else "weather"
+        existing = self.data.get_asset_by_message(tg_chat_id, message_id)
+        if existing:
+            self.data.update_asset(
+                existing.id,
+                template=info.get("caption"),
+                caption=info.get("caption"),
+                hashtags=info.get("hashtags"),
+                kind=info.get("kind"),
+                file_meta=info.get("file_meta"),
+                author_user_id=info.get("author_user_id"),
+                author_username=info.get("author_username"),
+                sender_chat_id=info.get("sender_chat_id"),
+                via_bot_id=info.get("via_bot_id"),
+                forward_from_user=info.get("forward_from_user"),
+                forward_from_chat=info.get("forward_from_chat"),
+                metadata=info.get("metadata"),
+                origin=origin,
+            )
+            asset_id = existing.id
+        else:
+            asset_id = self.add_asset(
+                message_id,
+                info.get("hashtags", ""),
+                info.get("caption"),
+                channel_id=tg_chat_id,
+                metadata=info.get("metadata"),
+                tg_chat_id=tg_chat_id,
+                kind=info.get("kind"),
+                file_meta=info.get("file_meta"),
+                author_user_id=info.get("author_user_id"),
+                author_username=info.get("author_username"),
+                sender_chat_id=info.get("sender_chat_id"),
+                via_bot_id=info.get("via_bot_id"),
+                forward_from_user=info.get("forward_from_user"),
+                forward_from_chat=info.get("forward_from_chat"),
+                origin=origin,
+            )
+        if asset_id and is_recognition_channel:
+            self._schedule_ingest_job(asset_id, reason="edit")
+        return
 
     async def api_request(
         self,
@@ -1376,18 +1389,35 @@ class Bot:
         return rows
 
     def set_asset_channel(self, channel_id: int):
-        self.db.execute("DELETE FROM asset_channel")
-        self.db.execute(
-            "INSERT INTO asset_channel (channel_id) VALUES (?)",
-            (channel_id,),
-        )
-        self.db.commit()
-        self.asset_channel_id = channel_id
+        self.set_weather_assets_channel(channel_id)
+        self.set_recognition_channel(channel_id)
 
-    def get_asset_channel(self) -> int | None:
+    def set_weather_assets_channel(self, channel_id: int | None):
+        self._store_single_channel("asset_channel", channel_id)
+        self.weather_assets_channel_id = channel_id
+
+    def get_weather_assets_channel(self) -> int | None:
         cur = self.db.execute("SELECT channel_id FROM asset_channel LIMIT 1")
         row = cur.fetchone()
         return row["channel_id"] if row else None
+
+    def set_recognition_channel(self, channel_id: int | None):
+        self._store_single_channel("recognition_channel", channel_id)
+        self.recognition_channel_id = channel_id
+
+    def get_recognition_channel(self) -> int | None:
+        cur = self.db.execute("SELECT channel_id FROM recognition_channel LIMIT 1")
+        row = cur.fetchone()
+        return row["channel_id"] if row else None
+
+    def _store_single_channel(self, table: str, channel_id: int | None) -> None:
+        self.db.execute(f"DELETE FROM {table}")
+        if channel_id is not None:
+            self.db.execute(
+                f"INSERT INTO {table} (channel_id) VALUES (?)",
+                (channel_id,),
+            )
+        self.db.commit()
 
     def add_asset(
         self,
@@ -1406,8 +1436,9 @@ class Bot:
         via_bot_id: int | None = None,
         forward_from_user: int | None = None,
         forward_from_chat: int | None = None,
+        origin: str = "weather",
     ) -> int:
-        source_channel = channel_id or self.asset_channel_id or 0
+        source_channel = channel_id or self.weather_assets_channel_id or 0
         asset_id = self.data.save_asset(
             source_channel,
             message_id,
@@ -1424,9 +1455,42 @@ class Bot:
             forward_from_user=forward_from_user,
             forward_from_chat=forward_from_chat,
             metadata=metadata,
+            origin=origin,
         )
         logging.info("Stored asset %s tags=%s", message_id, hashtags)
         return asset_id
+
+    async def _prompt_channel_selection(
+        self,
+        user_id: int,
+        *,
+        pending_key: str,
+        callback_prefix: str,
+        prompt: str,
+    ) -> None:
+        cur = self.db.execute('SELECT chat_id, title FROM channels')
+        rows = cur.fetchall()
+        if not rows:
+            await self.api_request(
+                'sendMessage',
+                {'chat_id': user_id, 'text': 'No channels available'},
+            )
+            return
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': r['title'], 'callback_data': f'{callback_prefix}:{r["chat_id"]}'}]
+                for r in rows
+            ]
+        }
+        self.pending[user_id] = {pending_key: True}
+        await self.api_request(
+            'sendMessage',
+            {
+                'chat_id': user_id,
+                'text': prompt,
+                'reply_markup': keyboard,
+            },
+        )
 
     def _schedule_ingest_job(self, asset_id: int, *, reason: str) -> None:
         if not asset_id:
@@ -1924,7 +1988,7 @@ class Bot:
             caption = self._render_template(caption) or caption
         from_chat = None
         if asset:
-            from_chat = asset.get("channel_id") or self.asset_channel_id
+            from_chat = asset.get("channel_id") or self.weather_assets_channel_id
         if asset and from_chat:
 
             logging.info("Copying asset %s to %s", asset["message_id"], channel_id)
@@ -1935,13 +1999,6 @@ class Bot:
                     "from_chat_id": from_chat,
                     "message_id": asset["message_id"],
                     "caption": caption or None,
-                },
-            )
-            await self.api_request(
-                "deleteMessage",
-                {
-                    "chat_id": from_chat,
-                    "message_id": asset["message_id"],
                 },
             )
 
@@ -1982,7 +2039,10 @@ class Bot:
     async def handle_message(self, message):
         global TZ_OFFSET
 
-        if self.asset_channel_id and message.get('chat', {}).get('id') == self.asset_channel_id:
+        chat_id = message.get("chat", {}).get("id")
+        is_weather_channel = chat_id == self.weather_assets_channel_id
+        is_recognition_channel = chat_id == self.recognition_channel_id
+        if chat_id and (is_weather_channel or is_recognition_channel):
             info = self._collect_asset_metadata(message)
             message_id = info.get("message_id", 0)
             tg_chat_id = info.get("tg_chat_id", 0)
@@ -1997,6 +2057,7 @@ class Bot:
                     tg_chat_id,
                 )
                 return
+            origin = "recognition" if is_recognition_channel else "weather"
             asset_id = self.add_asset(
                 message_id,
                 info.get("hashtags", ""),
@@ -2012,8 +2073,9 @@ class Bot:
                 via_bot_id=info.get("via_bot_id"),
                 forward_from_user=info.get("forward_from_user"),
                 forward_from_chat=info.get("forward_from_chat"),
+                origin=origin,
             )
-            if asset_id:
+            if asset_id and is_recognition_channel:
                 self._schedule_ingest_job(asset_id, reason="new_message")
             return
 
@@ -2043,7 +2105,9 @@ class Bot:
                 (
                     "*Каналы и расписания*\n"
                     "- `/channels` — все подключённые каналы (раздел «Каналы» админ-интерфейса).\n"
-                    "- `/set_assets_channel` — выбрать канал хранения ассетов перед запуском конвейера.\n"
+                    "- `/set_weather_assets_channel` — выбрать канал, из которого погода копирует готовые посты.\n"
+                    "- `/set_recognition_channel` — включить распознавание и автоочистку отдельного канала.\n"
+                    "- `/set_assets_channel` — быстрый режим: назначает оба канала одинаковыми для совместимости.\n"
                     "- `/scheduled` — список очереди публикаций с кнопками `Cancel` и `Reschedule`.\n"
                     "- `/history` — последние отправленные посты с отметкой времени.\n"
                     "- `/setup_weather` — мастер настройки расписаний рубрик для выбранных каналов.\n"
@@ -2743,14 +2807,30 @@ class Bot:
             return
 
         if text.startswith('/set_assets_channel') and self.is_superadmin(user_id):
-            cur = self.db.execute('SELECT chat_id, title FROM channels')
-            rows = cur.fetchall()
-            if not rows:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No channels available'})
-                return
-            keyboard = {'inline_keyboard': [[{'text': r['title'], 'callback_data': f'asset_ch:{r["chat_id"]}'}] for r in rows]}
-            self.pending[user_id] = {'set_assets': True}
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Select asset channel', 'reply_markup': keyboard})
+            await self._prompt_channel_selection(
+                user_id,
+                pending_key='set_assets',
+                callback_prefix='asset_ch',
+                prompt='Select asset channel',
+            )
+            return
+
+        if text.startswith('/set_weather_assets_channel') and self.is_superadmin(user_id):
+            await self._prompt_channel_selection(
+                user_id,
+                pending_key='set_weather_assets',
+                callback_prefix='weather_ch',
+                prompt='Select weather assets channel',
+            )
+            return
+
+        if text.startswith('/set_recognition_channel') and self.is_superadmin(user_id):
+            await self._prompt_channel_selection(
+                user_id,
+                pending_key='set_recognition',
+                callback_prefix='recognition_ch',
+                prompt='Select recognition channel',
+            )
             return
 
 
@@ -3019,6 +3099,16 @@ class Bot:
             self.set_asset_channel(cid)
             del self.pending[user_id]
             await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Asset channel set'})
+        elif data.startswith('weather_ch:') and user_id in self.pending and self.pending[user_id].get('set_weather_assets'):
+            cid = int(data.split(':')[1])
+            self.set_weather_assets_channel(cid)
+            del self.pending[user_id]
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather assets channel set'})
+        elif data.startswith('recognition_ch:') and user_id in self.pending and self.pending[user_id].get('set_recognition'):
+            cid = int(data.split(':')[1])
+            self.set_recognition_channel(cid)
+            del self.pending[user_id]
+            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Recognition channel set'})
         elif data.startswith('wrnow:') and self.is_superadmin(user_id):
             cid = int(data.split(':')[1])
 

@@ -18,6 +18,7 @@ class Asset:
     channel_id: int
     tg_chat_id: int
     message_id: int
+    origin: str
     caption_template: str | None
     caption: str | None
     hashtags: str | None
@@ -156,6 +157,7 @@ class DataAccess:
         metadata: dict[str, Any] | None = None,
         categories: Iterable[str] | None = None,
         rubric_id: int | None = None,
+        origin: str = "weather",
     ) -> int:
         """Insert or update asset metadata."""
 
@@ -170,6 +172,7 @@ class DataAccess:
                 channel_id,
                 tg_chat_id,
                 message_id,
+                origin,
                 caption_template,
                 caption,
                 hashtags,
@@ -193,7 +196,7 @@ class DataAccess:
                 rubric_id,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(tg_chat_id, message_id) DO UPDATE SET
                 channel_id=excluded.channel_id,
                 caption_template=excluded.caption_template,
@@ -217,12 +220,14 @@ class DataAccess:
                 forward_from_chat=excluded.forward_from_chat,
                 metadata=COALESCE(excluded.metadata, assets.metadata),
                 rubric_id=COALESCE(excluded.rubric_id, assets.rubric_id),
+                origin=excluded.origin,
                 updated_at=excluded.updated_at
             """,
             (
                 channel_id,
                 tg_chat_id,
                 message_id,
+                origin,
                 template,
                 caption,
                 hashtags,
@@ -297,6 +302,7 @@ class DataAccess:
         exif_present: bool | None = None,
         local_path: str | None = None,
         vision_caption: str | None = None,
+        origin: str | None = None,
     ) -> None:
         """Update selected asset fields while preserving unset values."""
 
@@ -372,6 +378,8 @@ class DataAccess:
             values["vision_confidence"] = vision_confidence
         if vision_caption is not None:
             values["vision_caption"] = vision_caption
+        if origin is not None:
+            values["origin"] = origin
         performed_write = False
         if values:
             assignments = ", ".join(f"{k} = ?" for k in values)
@@ -463,6 +471,7 @@ class DataAccess:
             channel_id=row["channel_id"],
             tg_chat_id=row["tg_chat_id"],
             message_id=row["message_id"],
+            origin=row["origin"] if "origin" in row.keys() else "weather",
             caption_template=row["caption_template"],
             caption=row["caption"],
             hashtags=row["hashtags"],
@@ -623,6 +632,8 @@ class DataAccess:
         for row in rows:
             asset = self._asset_from_row(row)
             if not asset:
+                continue
+            if asset.origin and asset.origin.lower() != "weather":
                 continue
             if normalized:
                 asset_tags = {t.lower() for t in asset.categories}

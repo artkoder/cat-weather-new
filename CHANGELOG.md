@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 - `/help` command that delivers a Markdown help guide with links to admin-interface workflows and manual button instructions.
+- Dual asset channel support with new `/set_weather_assets_channel` and `/set_recognition_channel` commands plus migration `0014_split_asset_channels.sql` that creates the recognition table and marks asset origins.
+- Regression coverage that simulates both channels to ensure weather posts ignore recognition-only assets.
+
+### Changed
+- `/set_assets_channel` now updates both channel roles for backward compatibility, while `publish_weather` only copies from the weather storage channel and leaves source messages untouched.
 
 ## [1.3.0] - 2024-05-17
 ### Added

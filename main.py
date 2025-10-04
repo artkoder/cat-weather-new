@@ -435,8 +435,8 @@ class Bot:
                     forward_from_user=info.get("forward_from_user"),
                     forward_from_chat=info.get("forward_from_chat"),
                 )
-            job_id = self.jobs.enqueue("ingest", {"asset_id": asset_id}, dedupe=True)
-            logging.info("Scheduled ingest job %s for asset %s after edit", job_id, asset_id)
+            if asset_id:
+                self._schedule_ingest_job(asset_id, reason="edit")
             return
 
     async def api_request(
@@ -1373,6 +1373,25 @@ class Bot:
         logging.info("Stored asset %s tags=%s", message_id, hashtags)
         return asset_id
 
+    def _schedule_ingest_job(self, asset_id: int, *, reason: str) -> None:
+        if not asset_id:
+            logging.warning("Skipping ingest scheduling with missing asset id (%s)", reason)
+            return
+        asset = self.data.get_asset(asset_id)
+        if not asset:
+            logging.warning("Asset %s not found when scheduling ingest (%s)", asset_id, reason)
+            return
+        job_id = self.jobs.enqueue("ingest", {"asset_id": asset_id}, dedupe=True)
+        logging.info(
+            "Scheduled ingest job %s for asset %s (kind=%s, file_id=%s, author=%s, reason=%s)",
+            job_id,
+            asset_id,
+            asset.kind or "unknown",
+            asset.file_id,
+            asset.author_user_id,
+            reason,
+        )
+
     def _collect_asset_metadata(self, message: dict[str, Any]) -> dict[str, Any]:
         caption = message.get("caption") or message.get("text") or ""
         tags = " ".join(re.findall(r"#\S+", caption))
@@ -1906,8 +1925,7 @@ class Bot:
                 forward_from_chat=info.get("forward_from_chat"),
             )
             if asset_id:
-                job_id = self.jobs.enqueue("ingest", {"asset_id": asset_id}, dedupe=True)
-                logging.info("Scheduled ingest job %s for asset %s", job_id, asset_id)
+                self._schedule_ingest_job(asset_id, reason="new_message")
             return
 
 

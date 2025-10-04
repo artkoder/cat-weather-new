@@ -372,17 +372,20 @@ class DataAccess:
             values["vision_confidence"] = vision_confidence
         if vision_caption is not None:
             values["vision_caption"] = vision_caption
-        if not values:
-            return
-        assignments = ", ".join(f"{k} = ?" for k in values)
-        params: list[Any] = list(values.values())
-        params.append(asset_id)
-        sql = f"UPDATE assets SET {assignments}, updated_at=? WHERE id=?"
-        params.insert(-1, datetime.utcnow().isoformat())
-        self.conn.execute(sql, params)
+        performed_write = False
+        if values:
+            assignments = ", ".join(f"{k} = ?" for k in values)
+            params: list[Any] = list(values.values())
+            params.append(asset_id)
+            sql = f"UPDATE assets SET {assignments}, updated_at=? WHERE id=?"
+            params.insert(-1, datetime.utcnow().isoformat())
+            self.conn.execute(sql, params)
+            performed_write = True
         if vision_results is not None:
             self._store_vision_result(row.id, vision_results)
-        self.conn.commit()
+            performed_write = True
+        if performed_write:
+            self.conn.commit()
 
     def get_asset(self, asset_id: int) -> Asset | None:
         return self._fetch_asset("a.id = ?", (asset_id,))

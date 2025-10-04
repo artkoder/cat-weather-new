@@ -1697,29 +1697,42 @@ class Bot:
             "name": "vision_classification",
             "schema": {
                 "type": "object",
+                "title": "Vision classification payload",
+                "description": (
+                    "Заполни сведения о категории сюжета, архитектурном виде, погоде на фото и "
+                    "цветах согласно §3.1."
+                ),
                 "properties": {
                     "category": {
                         "type": "string",
-                        "description": "Основная категория сюжета фотографии",
+                        "description": "Основная классификация сюжета фотографии",
+                        "minLength": 1,
                     },
                     "arch_view": {
                         "type": "string",
-                        "description": "Описание архитектурных элементов или вида (если есть)",
+                        "description": "Описание архитектурных элементов или вида (если их нет — пустая строка)",
                         "default": "",
                     },
                     "photo_weather": {
                         "type": "string",
-                        "description": "Краткое описание погодных условий на фото",
+                        "description": "Краткое описание погодных условий, видимых на изображении",
+                        "minLength": 1,
                     },
                     "flower_varieties": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Список цветов, которые видны на изображении",
+                        "description": "Перечень цветов, различимых на фото",
+                        "items": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
+                        "minItems": 0,
                         "default": [],
                     },
                     "confidence": {
                         "type": "number",
-                        "description": "Уверенность модели от 0 до 1",
+                        "description": "Уверенность модели (0.0–1.0)",
+                        "minimum": 0,
+                        "maximum": 1,
                     },
                 },
                 "required": ["category", "photo_weather"],
@@ -1727,14 +1740,14 @@ class Bot:
             },
         }
         system_prompt = (
-            "Ты помощник Котопогода. Определи содержимое фотографии и верни JSON с полями "
-            "category, arch_view, photo_weather, flower_varieties, confidence. "
-            "category — краткая категория сюжета. arch_view — описание архитектурных элементов или вида (если отсутствует, верни пустую строку). "
-            "photo_weather — краткая сводка погоды на изображении. flower_varieties — массив названий цветов или пустой массив. "
+            "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме, "
+            "с полями category, arch_view, photo_weather, flower_varieties и confidence. "
+            "category — краткая классификация сюжета. arch_view — архитектурный ракурс (если нет, оставь пустую строку). "
+            "photo_weather — сводка погоды, которую видно на фото. flower_varieties — массив названий цветов или пустой массив. "
             "confidence — число от 0 до 1."
         )
         user_prompt = (
-            "Проанализируй фото и заполни поля category, arch_view, photo_weather, flower_varieties, confidence."
+            "Определи по фото категорию, архитектурный вид, погоду и перечисли заметные цветы. Верни только JSON согласно схеме."
         )
         self._enforce_openai_limit(job, "gpt-4o-mini")
         response = await self.openai.classify_image(
@@ -1777,19 +1790,21 @@ class Bot:
                 confidence = None
         else:
             confidence = None
-        caption_lines = [f"Распознано: {category}"]
         location_parts: list[str] = []
         if asset.city:
             location_parts.append(asset.city)
         if asset.country and asset.country not in location_parts:
             location_parts.append(asset.country)
+        summary_parts: list[str] = [category]
         if location_parts:
-            caption_lines.append(f"Локация: {', '.join(location_parts)}")
+            summary_parts.append(", ".join(location_parts))
+        if photo_weather:
+            summary_parts.append(f"Погода: {photo_weather}")
+        caption_lines = ["Распознано: " + " • ".join(summary_parts)]
         if arch_view:
             caption_lines.append(f"Архитектурный вид: {arch_view}")
         if flower_varieties:
             caption_lines.append("Цветы: " + ", ".join(flower_varieties))
-        caption_lines.append(f"Погода на фото: {photo_weather}")
         if confidence is not None:
             display_confidence = confidence * 100 if 0 <= confidence <= 1 else confidence
             caption_lines.append(f"Уверенность модели: {display_confidence:.0f}%")

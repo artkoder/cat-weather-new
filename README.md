@@ -26,6 +26,10 @@
 - `/set_assets_channel` – legacy shortcut that assigns the same channel to both roles for backward compatibility. Run it as `/set_assets_channel confirm` and only if you truly want a shared channel.
 - `/setup_weather` – wizard that assigns rubric schedules to channels when new destinations are added.
 - `/list_weather_channels` – admin dashboard showing rubric schedules, last run timestamps and inline `Run now`/`Stop` actions.
+- `/rubrics` – superadmin dashboard with inline controls for rubric channels, schedules and enablement flags.
+- `/rubric_add <code> [title]` – create a new rubric with a disabled schedule stub and immediately open the inline editor.
+- `/rubric_edit <code>` – reopen the inline editor for the selected rubric to tweak channels or schedules.
+- `/rubric_delete <code>` – remove the rubric and its persisted schedule state from SQLite.
 - `/history` and `/scheduled` – inspect previously published posts and queued schedules, including rubric drops copied from the assets channel (each scheduled item comes with inline `Cancel`/`Reschedule` controls).
 
 ### Manual posting tools
@@ -40,6 +44,13 @@
 - `/addcity <name> <lat> <lon>`, `/cities` – manage the city directory used by the weather cache.
 - `/addsea <name> <lat> <lon>`, `/seas` – maintain the sea catalogue that powers shoreline forecasts.
 - `/amber` – open the inline picker for the Янтарный канал, then drill down to channel-specific toggles.
+
+### Rubric inline editor & migration steps
+- After upgrading, run `/rubrics` as a superadmin to inspect existing rubrics and regenerate inline keyboards for each entry.
+- Use the `Включить/Выключить` button to flip the rubric’s `enabled` flag, then update `channel_id`/`test_channel_id` via the respective buttons—send a numeric channel id or `clear` to reset.
+- Add or edit schedules by clicking the inline buttons: the bot will ask for a JSON snippet with `time`, `tz`, `days` and `channel_id`, which is written back to the rubric config immediately.
+- Remove obsolete schedules with the inline `Удалить` button or delete the entire rubric via `/rubric_delete <code>` (also available as an inline action).
+- CI migrations are automatic; no extra SQL is required. The new JSON helpers in `data_access.py` persist configs under the existing `description` column, so earlier deployments retain their settings.
 
 ### Channel configuration & migration
 - Upgrading from previous releases automatically copies the legacy assets channel into both the weather storage and recognition tables, so existing setups continue to work. Once the bot is updated configure two independent storages by running `/set_weather_assets_channel` and `/set_recognition_channel` separately. Use `/set_assets_channel confirm` only if you prefer to keep a single shared channel.

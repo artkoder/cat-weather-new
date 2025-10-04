@@ -1,9 +1,10 @@
 # .github/workflows/auto-merge.yml
 name: Enable Auto-Merge (all PRs to main)
+
 on:
   pull_request:
     branches: [ main ]
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
   contents: read
@@ -11,10 +12,11 @@ permissions:
 
 jobs:
   enable:
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
       - uses: peter-evans/enable-pull-request-automerge@v3
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          pull-request-number: ${{ github.event.pull_request.number }}
           merge-method: squash
-

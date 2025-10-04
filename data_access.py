@@ -396,6 +396,13 @@ class DataAccess:
             (tg_chat_id, message_id),
         )
 
+    def is_recognized_message(self, tg_chat_id: int, message_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM assets WHERE tg_chat_id=? AND recognized_message_id=? LIMIT 1",
+            (tg_chat_id, message_id),
+        ).fetchone()
+        return row is not None
+
     def _fetch_asset(self, where_clause: str, params: Iterable[Any]) -> Asset | None:
         query = f"""
             SELECT a.*, vr.result_json AS vision_payload

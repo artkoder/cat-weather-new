@@ -1,12 +1,16 @@
 import json
 import os
-import pytest
 import sys
-import sqlite3
 from datetime import datetime, timedelta
+from io import BytesIO
+
+import pytest
+import sqlite3
+from PIL import Image
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from main import Bot, Job
+from openai_client import OpenAIResponse
 
 os.environ.setdefault('TELEGRAM_BOT_TOKEN', 'dummy')
 
@@ -141,6 +145,162 @@ async def test_photo_triggers_ingest_and_vision(tmp_path, caplog):
     vision_log = any('queued for vision job' in rec.message for rec in caplog.records)
     assert ingest_log and vision_log
     assert any('reason=new_message' in msg for msg in ingest_messages)
+    await bot.close()
+
+
+@pytest.mark.asyncio
+
+async def test_recognized_message_skips_reingest(tmp_path):
+    bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
+    bot.set_asset_channel(-100123)
+
+    img = Image.new('RGB', (10, 10), color='white')
+    buffer = BytesIO()
+    img.save(buffer, format='JPEG')
+    image_bytes = buffer.getvalue()
+
+    recognized_mid = 555
+
+    async def fake_download(file_id):  # type: ignore[override]
+        return image_bytes
+
+    async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
+        if method == 'sendPhoto':
+            return {'ok': True, 'result': {'message_id': recognized_mid}}
+        return {'ok': True, 'result': {}}
+
+    class DummyOpenAI:
+        def __init__(self):
+            self.api_key = 'test-key'
+
+        async def classify_image(self, **kwargs):
+            return OpenAIResponse(
+                {
+                    'category': 'кот',
+                    'arch_view': '',
+                    'photo_weather': 'солнечно',
+                    'flower_varieties': [],
+                    'confidence': 0.9,
+                },
+                prompt_tokens=10,
+                completion_tokens=5,
+                total_tokens=15,
+                request_id='req-1',
+            )
+
+    bot._download_file = fake_download  # type: ignore[assignment]
+    bot.api_request = fake_api_request  # type: ignore[assignment]
+    bot.openai = DummyOpenAI()
+
+    message = {
+        'message_id': 42,
+        'date': int(datetime.utcnow().timestamp()),
+        'chat': {'id': -100123},
+        'caption': '#котопогода исходник',
+        'photo': [
+            {
+                'file_id': 'ph_small',
+                'file_unique_id': 'uniq_small',
+                'file_size': 10,
+                'width': 320,
+                'height': 200,
+            },
+            {
+                'file_id': 'ph_large',
+                'file_unique_id': 'uniq_large',
+                'file_size': 30,
+                'width': 1920,
+                'height': 1080,
+            },
+        ],
+    }
+
+    await bot.handle_message(message)
+
+    ingest_row = bot.db.execute(
+        "SELECT * FROM jobs_queue WHERE name='ingest' ORDER BY id LIMIT 1"
+    ).fetchone()
+    assert ingest_row is not None
+    ingest_payload = json.loads(ingest_row['payload']) if ingest_row['payload'] else {}
+    ingest_job = Job(
+        id=ingest_row['id'],
+        name=ingest_row['name'],
+        payload=ingest_payload,
+        status=ingest_row['status'],
+        attempts=ingest_row['attempts'],
+        available_at=datetime.fromisoformat(ingest_row['available_at'])
+        if ingest_row['available_at']
+        else None,
+        last_error=ingest_row['last_error'],
+        created_at=datetime.fromisoformat(ingest_row['created_at']),
+        updated_at=datetime.fromisoformat(ingest_row['updated_at']),
+    )
+
+    await bot._job_ingest(ingest_job)
+
+    vision_row = bot.db.execute(
+        "SELECT * FROM jobs_queue WHERE name='vision' ORDER BY id LIMIT 1"
+    ).fetchone()
+    assert vision_row is not None
+    vision_payload = json.loads(vision_row['payload']) if vision_row['payload'] else {}
+    vision_job = Job(
+        id=vision_row['id'],
+        name=vision_row['name'],
+        payload=vision_payload,
+        status=vision_row['status'],
+        attempts=vision_row['attempts'],
+        available_at=datetime.fromisoformat(vision_row['available_at'])
+        if vision_row['available_at']
+        else None,
+        last_error=vision_row['last_error'],
+        created_at=datetime.fromisoformat(vision_row['created_at']),
+        updated_at=datetime.fromisoformat(vision_row['updated_at']),
+    )
+
+    await bot._job_vision(vision_job)
+
+    asset_id = ingest_payload['asset_id']
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.recognized_message_id == recognized_mid
+
+    bot.db.execute('DELETE FROM jobs_queue')
+    bot.db.commit()
+
+    asset_count = bot.db.execute('SELECT COUNT(*) FROM assets').fetchone()[0]
+
+    recognized_message = {
+        'message_id': recognized_mid,
+        'date': int(datetime.utcnow().timestamp()),
+        'chat': {'id': -100123},
+        'caption': 'Распознано: кот',
+        'photo': [
+            {
+                'file_id': 'vision_small',
+                'file_unique_id': 'vision_small_unique',
+                'file_size': 12,
+                'width': 320,
+                'height': 200,
+            },
+            {
+                'file_id': 'vision_large',
+                'file_unique_id': 'vision_large_unique',
+                'file_size': 34,
+                'width': 1920,
+                'height': 1080,
+            },
+        ],
+    }
+
+    await bot.handle_message(recognized_message)
+
+    ingest_jobs = bot.db.execute(
+        "SELECT COUNT(*) FROM jobs_queue WHERE name='ingest'"
+    ).fetchone()[0]
+    assert ingest_jobs == 0
+    asset_count_after = bot.db.execute('SELECT COUNT(*) FROM assets').fetchone()[0]
+    assert asset_count_after == asset_count
+
     await bot.close()
 
 

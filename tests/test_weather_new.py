@@ -580,6 +580,83 @@ async def test_weather_and_recognition_channels_do_not_mix(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_weather_publish_survives_shared_channel_then_splits(tmp_path):
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    bot.set_weather_assets_channel(-200001)
+
+    calls: list[tuple[str, dict | None]] = []
+
+    async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
+        calls.append((method, data))
+        return {'ok': True, 'result': {'message_id': 700}}
+
+    bot.api_request = fake_api_request  # type: ignore[assignment]
+
+    weather_message = {
+        'message_id': 33,
+        'date': int(datetime.utcnow().timestamp()),
+        'chat': {'id': -200001},
+        'caption': '#погода шаблон',
+    }
+
+    await bot.handle_message(weather_message)
+
+    weather_row = bot.db.execute(
+        "SELECT origin FROM assets WHERE tg_chat_id=? AND message_id=?",
+        (-200001, 33),
+    ).fetchone()
+    assert weather_row is not None and weather_row['origin'] == 'weather'
+
+    ok = await bot.publish_weather(-400001, None, record=False)
+    assert ok
+
+    copy_calls = [payload for method, payload in calls if method == 'copyMessage']
+    assert copy_calls and copy_calls[0]['message_id'] == 33
+    assert copy_calls[0]['from_chat_id'] == -200001
+
+    delete_calls = [method for method, _ in calls if method == 'deleteMessage']
+    assert not delete_calls
+
+    pre_ingest_jobs = bot.db.execute(
+        "SELECT COUNT(*) FROM jobs_queue WHERE name='ingest'",
+    ).fetchone()[0]
+    assert pre_ingest_jobs == 0
+
+    bot.set_recognition_channel(-300001)
+
+    recognition_message = {
+        'message_id': 44,
+        'date': int(datetime.utcnow().timestamp()),
+        'chat': {'id': -300001},
+        'caption': '#распознавание кот',
+        'photo': [
+            {
+                'file_id': 'rec_photo',
+                'file_unique_id': 'rec_unique',
+                'file_size': 10,
+                'width': 640,
+                'height': 480,
+            }
+        ],
+    }
+
+    await bot.handle_message(recognition_message)
+
+    recognition_row = bot.db.execute(
+        "SELECT origin FROM assets WHERE tg_chat_id=? AND message_id=?",
+        (-300001, 44),
+    ).fetchone()
+    assert recognition_row is not None and recognition_row['origin'] == 'recognition'
+
+    ingest_jobs = bot.db.execute(
+        "SELECT COUNT(*) FROM jobs_queue WHERE name='ingest'",
+    ).fetchone()[0]
+    assert ingest_jobs == 1
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 
 async def test_template_russian_and_period(tmp_path):
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))

@@ -23,7 +23,7 @@
 - `/channels` – print every channel known to the bot so superadmins can audit bindings.
 - `/set_weather_assets_channel` – bind the private storage channel whose posts are copied by the weather scheduler.
 - `/set_recognition_channel` – pick the recognition/ingestion channel whose uploads trigger EXIF checks and vision jobs.
-- `/set_assets_channel` – legacy shortcut that assigns the same channel to both roles for backward compatibility.
+- `/set_assets_channel` – legacy shortcut that assigns the same channel to both roles for backward compatibility. Run it as `/set_assets_channel confirm` and only if you truly want a shared channel.
 - `/setup_weather` – wizard that assigns rubric schedules to channels when new destinations are added.
 - `/list_weather_channels` – admin dashboard showing rubric schedules, last run timestamps and inline `Run now`/`Stop` actions.
 - `/history` and `/scheduled` – inspect previously published posts and queued schedules, including rubric drops copied from the assets channel (each scheduled item comes with inline `Cancel`/`Reschedule` controls).
@@ -42,7 +42,7 @@
 - `/amber` – open the inline picker for the Янтарный канал, then drill down to channel-specific toggles.
 
 ### Channel configuration & migration
-- Upgrading from previous releases automatically copies the legacy assets channel into both the weather storage and recognition tables, so existing setups continue to work. Once the bot is updated you can run `/set_weather_assets_channel` and `/set_recognition_channel` to decouple the roles. Use `/set_assets_channel` if you prefer to keep a single shared channel.
+- Upgrading from previous releases automatically copies the legacy assets channel into both the weather storage and recognition tables, so existing setups continue to work. Once the bot is updated configure two independent storages by running `/set_weather_assets_channel` and `/set_recognition_channel` separately. Use `/set_assets_channel confirm` only if you prefer to keep a single shared channel.
 
 ## User Stories
 ### Implemented

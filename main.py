@@ -450,7 +450,12 @@ class Bot:
         if chat_id is None:
             return
         is_weather_channel = chat_id == self.weather_assets_channel_id
-        is_recognition_channel = chat_id == self.recognition_channel_id
+        is_recognition_channel = (
+            chat_id is not None
+            and self.recognition_channel_id is not None
+            and chat_id == self.recognition_channel_id
+            and self.recognition_channel_id != self.weather_assets_channel_id
+        )
         if not is_weather_channel and not is_recognition_channel:
             return
         info = self._collect_asset_metadata(message)
@@ -2041,7 +2046,12 @@ class Bot:
 
         chat_id = message.get("chat", {}).get("id")
         is_weather_channel = chat_id == self.weather_assets_channel_id
-        is_recognition_channel = chat_id == self.recognition_channel_id
+        is_recognition_channel = (
+            chat_id is not None
+            and self.recognition_channel_id is not None
+            and chat_id == self.recognition_channel_id
+            and self.recognition_channel_id != self.weather_assets_channel_id
+        )
         if chat_id and (is_weather_channel or is_recognition_channel):
             info = self._collect_asset_metadata(message)
             message_id = info.get("message_id", 0)
@@ -2807,6 +2817,24 @@ class Bot:
             return
 
         if text.startswith('/set_assets_channel') and self.is_superadmin(user_id):
+            parts = text.split(maxsplit=1)
+            confirmed = len(parts) > 1 and parts[1].strip().lower() == 'confirm'
+            if not confirmed:
+                await self.api_request(
+                    'sendMessage',
+                    {
+                        'chat_id': user_id,
+                        'text': (
+                            'Команда `/set_assets_channel` устанавливает один и тот же канал для '
+                            'хранилища погоды и распознавания. Используйте её только если это '
+                            'действительно необходимо и подтвердите действие командой '
+                            '`/set_assets_channel confirm`. Для раздельных складов вызовите '
+                            'по очереди `/set_weather_assets_channel` и `/set_recognition_channel`.'
+                        ),
+                        'parse_mode': 'Markdown',
+                    },
+                )
+                return
             await self._prompt_channel_selection(
                 user_id,
                 pending_key='set_assets',

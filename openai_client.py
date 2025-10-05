@@ -76,9 +76,14 @@ class OpenAIClient:
                     ],
                 },
             ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": schema,
+            "response": {
+                "modalities": ["text"],
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "json_schema": schema,
+                    }
+                },
             },
         }
         return await self._submit_request(payload)
@@ -101,9 +106,14 @@ class OpenAIClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": schema,
+            "response": {
+                "modalities": ["text"],
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "json_schema": schema,
+                    }
+                },
             },
         }
         if temperature is not None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Dict
 
@@ -16,6 +17,7 @@ class OpenAIResponse:
     completion_tokens: int | None
     total_tokens: int | None
     request_id: str | None = None
+    meta: Dict[str, Any] | None = None
 
 
 class OpenAIClient:
@@ -98,8 +100,10 @@ class OpenAIClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        started = time.perf_counter()
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(url, json=payload, headers=headers)
+        duration = time.perf_counter() - started
         if response.status_code != 200:
             logging.error("OpenAI API error %s: %s", response.status_code, response.text)
             raise RuntimeError(f"OpenAI API error {response.status_code}")
@@ -132,4 +136,16 @@ class OpenAIClient:
                 parsed = {"raw": message_text}
         else:
             parsed = {}
-        return OpenAIResponse(parsed, prompt_tokens, completion_tokens, total_tokens, request_id)
+        meta: Dict[str, Any] | None = {
+            "model": payload.get("model"),
+            "duration_ms": round(duration * 1000, 2),
+            "status_code": response.status_code,
+        }
+        return OpenAIResponse(
+            parsed,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            request_id,
+            meta,
+        )

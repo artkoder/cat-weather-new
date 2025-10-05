@@ -22,6 +22,7 @@ import piexif
 from data_access import Asset, DataAccess, Rubric
 from jobs import Job, JobDelayed, JobQueue
 from openai_client import OpenAIClient
+from supabase_client import SupabaseClient
 from weather_migration import migrate_weather_publish_channels
 
 if TYPE_CHECKING:
@@ -324,6 +325,7 @@ class Bot:
         self.jobs.register_handler("vision", self._job_vision)
         self.jobs.register_handler("publish_rubric", self._job_publish_rubric)
         self.openai = OpenAIClient(os.getenv("OPENAI_API_KEY"))
+        self.supabase = SupabaseClient()
         self._model_limits = self._load_model_limits()
         asset_dir = os.getenv("ASSET_STORAGE_DIR")
         self.asset_storage = Path(asset_dir).expanduser() if asset_dir else Path("/tmp/bot_assets")
@@ -456,7 +458,7 @@ class Bot:
             logging.warning(reason)
             raise JobDelayed(resume_at, reason)
 
-    def _record_openai_usage(
+    async def _record_openai_usage(
         self,
         model: str,
         response: "OpenAIResponse" | None,
@@ -488,6 +490,25 @@ class Bot:
                 total_today,
                 limit,
             )
+        meta: dict[str, Any] = {}
+        if response.meta:
+            meta.update(response.meta)
+        if job is not None:
+            job_meta: dict[str, Any] = {
+                "id": job.id,
+                "name": job.name,
+            }
+            if isinstance(job.payload, dict):
+                job_meta["payload_keys"] = sorted(job.payload.keys())
+            meta["job"] = job_meta
+        await self.supabase.insert_token_usage(
+            model=model,
+            prompt_tokens=response.prompt_tokens,
+            completion_tokens=response.completion_tokens,
+            total_tokens=response.total_tokens,
+            request_id=response.request_id,
+            meta=meta or None,
+        )
 
     async def start(self):
         self.session = ClientSession()
@@ -499,6 +520,7 @@ class Bot:
         await self.jobs.stop()
         if self.session:
             await self.session.close()
+        await self.supabase.aclose()
 
         self.db.close()
 
@@ -2042,7 +2064,7 @@ class Bot:
             vision_caption=caption_text,
             local_path=local_path,
         )
-        self._record_openai_usage("gpt-4o-mini", response, job=job)
+        await self._record_openai_usage("gpt-4o-mini", response, job=job)
         if not self.dry_run and new_mid:
             await self.api_request(
                 "deleteMessage",
@@ -5025,7 +5047,7 @@ class Bot:
                 logging.exception("Failed to generate flowers copy (attempt %s)", attempt)
                 response = None
             if response:
-                self._record_openai_usage("gpt-4o", response, job=job)
+                await self._record_openai_usage("gpt-4o", response, job=job)
             if not response or not isinstance(response.content, dict):
                 continue
             greeting = str(response.content.get("greeting") or "").strip()
@@ -5291,7 +5313,7 @@ class Bot:
                 logging.exception("Failed to generate guess_arch caption (attempt %s)", attempt)
                 response = None
             if response:
-                self._record_openai_usage("gpt-4o", response, job=job)
+                await self._record_openai_usage("gpt-4o", response, job=job)
             if not response or not isinstance(response.content, dict):
                 continue
             caption = str(response.content.get("caption") or "").strip()

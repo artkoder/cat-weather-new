@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict
 
 import httpx
@@ -24,10 +26,39 @@ class OpenAIClient:
     """Minimal OpenAI wrapper that tracks token usage."""
 
     def __init__(self, api_key: str | None, *, base_url: str | None = None) -> None:
-        self.api_key = api_key
+        self.api_key = api_key.strip() if api_key else None
         self.base_url = base_url or "https://api.openai.com/v1"
         if not self.api_key:
+            self.api_key = self._load_api_key_from_env()
+        if not self.api_key:
             logging.warning("OpenAI API key not configured; vision tasks will be skipped")
+
+    def _load_api_key_from_env(self) -> str | None:
+        env_key = os.getenv("OPENAI_API_KEY")
+        if env_key and env_key.strip():
+            return env_key.strip()
+        file_path = os.getenv("OPENAI_API_KEY_FILE")
+        if file_path:
+            try:
+                contents = Path(file_path).expanduser().read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                logging.error("OPENAI_API_KEY_FILE %s not found", file_path)
+                return None
+            except OSError as exc:
+                logging.error("Failed reading OPENAI_API_KEY_FILE %s: %s", file_path, exc)
+                return None
+            if contents:
+                return contents
+        return None
+
+    def refresh_api_key(self) -> str | None:
+        new_key = self._load_api_key_from_env()
+        if new_key and new_key != self.api_key:
+            logging.info("OpenAI API key refreshed from environment")
+        self.api_key = new_key or self.api_key
+        if not self.api_key:
+            logging.warning("OpenAI API key not configured; vision tasks will be skipped")
+        return self.api_key
 
     async def classify_image(
         self,

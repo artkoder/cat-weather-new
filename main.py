@@ -5262,10 +5262,9 @@ class Bot:
         with Image.open(local_path) as src:
             base = src.convert("RGBA")
             overlay_img = self._load_overlay_image(candidate, number, base.size)
-            offset = (
-                int(base.width * 0.05),
-                int(base.height * 0.05),
-            )
+            min_side = min(base.width, base.height)
+            padding = 12 if min_side < 480 else 24
+            offset = (padding, padding)
             base.paste(overlay_img, offset, overlay_img)
             output_path = self.asset_storage / f"{asset.id}_numbered_{number}.png"
             base.convert("RGB").save(output_path)

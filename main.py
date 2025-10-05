@@ -989,7 +989,12 @@ class Bot:
         row = self._get_sea_cache(sea_id)
         if not row or row['wave'] is None:
             return
-        wave = row['wave']
+        wave_raw = row['wave']
+        try:
+            wave = float(wave_raw)
+        except (TypeError, ValueError):
+            logging.warning('Unable to parse wave height %r for sea %s', wave_raw, sea_id)
+            return
         now = datetime.utcnow()
         if wave >= 1.5:
             if not state['active']:

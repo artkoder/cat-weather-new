@@ -32,3 +32,22 @@ async def test_amber_notification(tmp_path):
     await bot.check_amber()
     assert any(c[0] == 'sendMessage' for c in calls)
     await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_amber_wave_string(tmp_path):
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    bot.db.execute("INSERT INTO seas (id, name, lat, lon) VALUES (1, 'sea', 0, 0)")
+    bot.db.commit()
+    bot.set_amber_sea(1)
+    bot.db.execute(
+        "INSERT INTO sea_cache (sea_id, updated, current, morning, day, evening, night, wave, morning_wave, day_wave, evening_wave, night_wave) "
+        "VALUES (1, ?, 15, 15,15,15,15, '1.6',0,0,0,0)",
+        (datetime.utcnow().isoformat(),),
+    )
+    bot.db.commit()
+    await bot.check_amber()
+    state = bot.db.execute('SELECT storm_start, active FROM amber_state WHERE sea_id=1').fetchone()
+    assert state['active'] == 1
+    assert state['storm_start'] is not None
+    await bot.close()

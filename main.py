@@ -1990,6 +1990,8 @@ class Bot:
                     local_path,
                     asset_id,
                 )
+            if self.openai and not self.openai.api_key:
+                self.openai.refresh_api_key()
             if self.dry_run or not self.openai or not self.openai.api_key:
                 if self.dry_run:
                     logging.info(

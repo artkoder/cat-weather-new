@@ -23,6 +23,18 @@ def _insert_rubric(bot: Bot, code: str, config: dict, rubric_id: int = 1) -> Non
 
 
 @pytest.mark.asyncio
+async def test_default_rubrics_created_on_boot(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    rubrics = {rubric.code: rubric for rubric in bot.data.list_rubrics()}
+    assert {"flowers", "guess_arch"}.issubset(rubrics.keys())
+    for code in ("flowers", "guess_arch"):
+        config = rubrics[code].config
+        assert config.get("enabled") is False
+        assert config.get("schedules") == []
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_rubric_scheduler_enqueues_jobs(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {
@@ -587,9 +599,9 @@ async def test_rubrics_overview_lists_configs(tmp_path):
     dashboard_method, dashboard_data = send_calls[0]
     assert dashboard_method == "sendMessage"
     assert dashboard_data is not None
-    assert "Управление рубриками" in dashboard_data.get("text", "")
+    assert "Карточки рубрик" in dashboard_data.get("text", "")
     dashboard_keyboard = dashboard_data.get("reply_markup", {}).get("inline_keyboard", [])
-    assert dashboard_keyboard and dashboard_keyboard[0][0]["text"] == "Управление рубриками"
+    assert dashboard_keyboard and dashboard_keyboard[0][0]["text"] == "Обновить карточки"
 
     flowers_message = send_calls[1][1]
     assert flowers_message is not None
@@ -876,9 +888,22 @@ async def test_rubric_publish_callback_success(tmp_path):
     await bot.handle_update(
         {
             "callback_query": {
+                "id": "cb-confirm",
+                "from": {"id": 1},
+                "data": "rubric_publish_confirm:flowers:prod",
+                "message": message,
+            }
+        }
+    )
+    assert bot.rubric_pending_runs[(1, "flowers")] == "prod"
+    api_calls.clear()
+
+    await bot.handle_update(
+        {
+            "callback_query": {
                 "id": "cb-success",
                 "from": {"id": 1},
-                "data": "rubric_publish:flowers:prod",
+                "data": "rubric_publish_execute:flowers:prod",
                 "message": message,
             }
         }
@@ -886,6 +911,7 @@ async def test_rubric_publish_callback_success(tmp_path):
 
     assert recorded["code"] == "flowers"
     assert recorded["test"] is False
+    assert bot.rubric_pending_runs == {}
 
     ack_payloads = [payload for method, payload, _ in api_calls if method == "answerCallbackQuery"]
     assert any(payload and payload.get("callback_query_id") == "cb-success" for payload in ack_payloads)
@@ -928,9 +954,22 @@ async def test_rubric_publish_callback_error(tmp_path):
     await bot.handle_update(
         {
             "callback_query": {
+                "id": "cb-error-confirm",
+                "from": {"id": 1},
+                "data": "rubric_publish_confirm:flowers:test",
+                "message": message,
+            }
+        }
+    )
+    assert bot.rubric_pending_runs[(1, "flowers")] == "test"
+    api_calls.clear()
+
+    await bot.handle_update(
+        {
+            "callback_query": {
                 "id": "cb-error",
                 "from": {"id": 1},
-                "data": "rubric_publish:flowers:test",
+                "data": "rubric_publish_execute:flowers:test",
                 "message": message,
             }
         }
@@ -939,6 +978,7 @@ async def test_rubric_publish_callback_error(tmp_path):
     ack_payloads = [payload for method, payload, _ in api_calls if method == "answerCallbackQuery"]
     assert any(payload and payload.get("callback_query_id") == "cb-error" for payload in ack_payloads)
     assert any(payload and payload.get("show_alert") is True for payload in ack_payloads)
+    assert bot.rubric_pending_runs == {}
 
     send_payloads = [payload for method, payload, _ in api_calls if method == "sendMessage"]
     assert send_payloads, "callback should send error details"
@@ -946,5 +986,64 @@ async def test_rubric_publish_callback_error(tmp_path):
     assert error_message["chat_id"] == 1
     assert "⚠️ тестовая публикация рубрики flowers не запущена" in error_message["text"]
     assert "нет подходящих ассетов" in error_message["text"]
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_rubric_publish_cancel_resets_pending(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    bot.db.execute(
+        "INSERT OR REPLACE INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)",
+        (1, "boss", "+00:00"),
+    )
+    bot.db.commit()
+    _insert_rubric(bot, "flowers", {"enabled": True, "channel_id": -1}, rubric_id=12)
+
+    api_calls: list[tuple[str, dict | None, Any]] = []
+
+    async def fake_api(method, payload=None, *, files=None):
+        api_calls.append((method, payload, files))
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+
+    invoked = {"called": False}
+
+    def fail_if_called(*args, **kwargs):
+        invoked["called"] = True
+        return 0
+
+    bot.enqueue_rubric = fail_if_called  # type: ignore[assignment]
+
+    message = {"message_id": 7, "chat": {"id": 1}}
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "cb-cancel-confirm",
+                "from": {"id": 1},
+                "data": "rubric_publish_confirm:flowers:prod",
+                "message": message,
+            }
+        }
+    )
+    assert bot.rubric_pending_runs[(1, "flowers")] == "prod"
+    api_calls.clear()
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "cb-cancel",
+                "from": {"id": 1},
+                "data": "rubric_publish_cancel:flowers",
+                "message": message,
+            }
+        }
+    )
+
+    assert bot.rubric_pending_runs == {}
+    assert invoked["called"] is False
+    ack_payloads = [payload for method, payload, _ in api_calls if method == "answerCallbackQuery"]
+    assert any(payload and payload.get("callback_query_id") == "cb-cancel" for payload in ack_payloads)
 
     await bot.close()

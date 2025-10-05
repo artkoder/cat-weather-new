@@ -370,6 +370,7 @@ class Bot:
         self.session: ClientSession | None = None
         self.running = False
         self.manual_buttons: dict[tuple[int, int], dict[str, list[list[dict]]]] = {}
+        self.rubric_pending_runs: dict[tuple[int, str], str] = {}
 
     def _ensure_default_rubrics(self) -> None:
         created: list[str] = []
@@ -414,8 +415,18 @@ class Bot:
         for code in list(stored.keys()):
             if code not in valid:
                 stored.pop(code, None)
+                self._clear_rubric_pending_run(user_id, code)
         if not stored:
             self.rubric_overview_messages.pop(user_id, None)
+
+    def _get_rubric_pending_run(self, user_id: int, code: str) -> str | None:
+        return self.rubric_pending_runs.get((user_id, code))
+
+    def _set_rubric_pending_run(self, user_id: int, code: str, mode: str) -> None:
+        self.rubric_pending_runs[(user_id, code)] = mode
+
+    def _clear_rubric_pending_run(self, user_id: int, code: str) -> None:
+        self.rubric_pending_runs.pop((user_id, code), None)
 
     async def _render_rubric_cards(
         self, user_id: int, rubrics: Sequence[Rubric]
@@ -2263,19 +2274,6 @@ class Bot:
         user_id = message['from']['id']
         username = message['from'].get('username')
 
-        pending_state = self.pending.get(user_id, {})
-        create_state = (
-            pending_state.get('rubric_create')
-            if isinstance(pending_state, dict)
-            else None
-        )
-        if create_state:
-            if not self.is_superadmin(user_id):
-                self.pending.pop(user_id, None)
-            else:
-                await self._handle_rubric_creation_input(user_id, text, create_state)
-            return
-
         if user_id in self.pending and self.pending[user_id].get('rubric_input'):
             if not self.is_superadmin(user_id):
                 del self.pending[user_id]
@@ -2292,38 +2290,30 @@ class Bot:
         if text.startswith('/help'):
             help_messages = [
                 (
-                    "*Основные команды*\n\n"
-                    "*Доступ и настройки*\n"
-                    "- `/help` — краткая памятка с ключевыми сценариями.\n"
+                    "*Быстрый старт*\n\n"
                     "- `/start` — запросить доступ или подтвердить, что бот уже активирован.\n"
-                    "- `/tz <±HH:MM>` — установить личный часовой пояс для расписаний.\n"
+                    "- `/help` — показать эту памятку.\n"
+                    "- `/pending` — очередь заявок с кнопками `Approve`/`Reject`.\n"
                     "- `/list_users` — список администраторов и операторов.\n"
-                    "- `/pending` → кнопки `Approve`/`Reject` для очереди заявок.\n"
-                    "- `/approve <id>` / `/reject <id>` — ручное утверждение или отказ.\n"
-                    "- `/add_user <id>` / `/remove_user <id>` — постоянное добавление или удаление доступа.\n"
+                    "- `/tz` — смена личного часового пояса (бот попросит выбрать значение).\n"
                 ),
                 (
-                    "*Каналы и расписания*\n"
-                    "- `/channels` — все подключённые каналы (раздел «Каналы» админ-интерфейса).\n"
-                    "- `/set_weather_assets_channel` — выбрать канал, из которого погода копирует готовые посты.\n"
-                    "- `/set_recognition_channel` — включить распознавание и автоочистку отдельного канала.\n"
-                    "- `/set_assets_channel` — быстрый режим: назначает оба канала одинаковыми для совместимости.\n"
-                    "- `/scheduled` — список очереди публикаций с кнопками `Cancel` и `Reschedule`.\n"
-                    "- `/history` — последние отправленные посты с отметкой времени.\n"
-                    "- `/setup_weather` — мастер настройки расписаний рубрик для выбранных каналов.\n"
-                    "- `/list_weather_channels` — обзор рубрик: показывает время, дату последнего запуска и кнопки `Run now`/`Stop`.\n"
-                    "- `/rubrics` — карточки рубрик и кнопка «Управление рубриками» для всех настроек.\n"
-                    "  Внутри карточек доступны `▶️ Запустить` и `🧪 Тест` для мгновенного запуска публикации без CLI.\n"
+                    "*Рубрики*\n"
+                    "- `/rubrics` — карточки `flowers` и `guess_arch` со всеми кнопками управления.\n"
+                    "  • `Включить/Выключить` меняет статус.\n"
+                    "  • `Канал` и `Тест-канал` открывают кнопочный список каналов.\n"
+                    "  • `Добавить расписание` запускает пошаговый мастер (время → дни → канал → сохранение).\n"
+                    "  • `▶️ Запустить` и `🧪 Тест` просят подтверждение перед постановкой задачи в очередь.\n"
+                    "  • `Удалить рубрику` доступна внизу карточки и очищает запись после подтверждения.\n"
                 ),
                 (
-                    "*Работа с постами, погодой и ручные действия*\n"
-                    "- `/addbutton <post_url> <текст> <url>` — добавить кнопку к посту; используйте `t.me/c/...` из истории канала.\n"
-                    "- `/delbutton <post_url>` — удалить все кнопки у поста; изменения сохраняются в базе.\n"
-                    "- `/addweatherbutton <post_url> <текст> [url]` — быстрый доступ к свежему прогнозу, можно опустить URL после `/weather now`.\n"
-                    "- `/weatherposts [update]` — перечень активных погодных шаблонов и кнопка остановки рассылки.\n"
-                    "- `/regweather <post_url> <template>` — зарегистрировать новый шаблон для автоподстановки погоды.\n"
-                    "- `/weather [now]` — посмотреть кэш погоды и морей или форсировать обновление.\n"
-                    "- `/addcity`, `/cities` и `/addsea`, `/seas` — управлять справочниками городов и морей; `/amber` открывает выбор канала с кнопкой «Янтарный».")
+                    "*Каналы и погода*\n"
+                    "- `/channels` — список подключённых каналов.\n"
+                    "- `/set_weather_assets_channel` и `/set_recognition_channel` открывают кнопочный выбор канала.\n"
+                    "- `/setup_weather` и `/list_weather_channels` показывают расписания с кнопками `Run now`/`Stop`.\n"
+                    "- `/weather`, `/history`, `/scheduled` — статусные отчёты, где управлять публикациями можно прямо из inline-кнопок.\n"
+                    "- `/amber` — кнопочное управление каналом Янтарный."
+                )
             ]
             if not self.is_authorized(user_id):
                 help_messages.insert(
@@ -2335,7 +2325,7 @@ class Bot:
                     ),
                 )
             help_messages.append(
-                "Подробная документация: файл `README.md` → раздел *Commands* и журнал изменений `CHANGELOG.md`."
+                "Подробная документация: файл `README.md` → раздел *Operator Interface* и журнал изменений `CHANGELOG.md`."
             )
             for chunk in help_messages:
                 await self.api_request(
@@ -3493,12 +3483,46 @@ class Bot:
             })
         elif data == 'rubric_dashboard' and self.is_superadmin(user_id):
             await self._send_rubric_dashboard(user_id, message=query.get('message'))
-        elif data == 'rubric_create' and self.is_superadmin(user_id):
-            await self._start_rubric_creation(user_id, query)
         elif data.startswith('rubric_overview:') and self.is_superadmin(user_id):
             code = data.split(':', 1)[1]
             await self._send_rubric_overview(user_id, code, message=query.get('message'))
-        elif data.startswith('rubric_publish:') and self.is_superadmin(user_id):
+        elif data.startswith('rubric_publish_confirm:') and self.is_superadmin(user_id):
+            parts = data.split(':', 2)
+            if len(parts) < 3:
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Некорректный запрос рубрики',
+                        'show_alert': True,
+                    },
+                )
+                return
+            _, code, mode = parts
+            if mode not in {'prod', 'test'}:
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Неизвестный режим запуска',
+                        'show_alert': True,
+                    },
+                )
+                return
+            self._set_rubric_pending_run(user_id, code, mode)
+            await self._send_rubric_overview(user_id, code, message=query.get('message'))
+            await self.api_request(
+                'answerCallbackQuery',
+                {
+                    'callback_query_id': query['id'],
+                    'text': 'Подтвердите запуск кнопкой ниже',
+                },
+            )
+        elif data.startswith('rubric_publish_cancel:') and self.is_superadmin(user_id):
+            code = data.split(':', 1)[1]
+            self._clear_rubric_pending_run(user_id, code)
+            await self._send_rubric_overview(user_id, code, message=query.get('message'))
+        elif data.startswith('rubric_publish_execute:') and self.is_superadmin(user_id):
             parts = data.split(':', 2)
             if len(parts) < 3:
                 await self.api_request(
@@ -3517,6 +3541,8 @@ class Bot:
                 job_id = self.enqueue_rubric(code, test=is_test)
             except Exception as exc:  # noqa: PERF203 - feedback path
                 logging.exception('Failed to enqueue rubric %s (test=%s)', code, is_test)
+                self._clear_rubric_pending_run(user_id, code)
+                await self._send_rubric_overview(user_id, code, message=query.get('message'))
                 await self.api_request(
                     'answerCallbackQuery',
                     {
@@ -3544,6 +3570,8 @@ class Bot:
                     job_id,
                     user_id,
                 )
+                self._clear_rubric_pending_run(user_id, code)
+                await self._send_rubric_overview(user_id, code, message=query.get('message'))
                 await self.api_request(
                     'answerCallbackQuery',
                     {
@@ -3563,6 +3591,7 @@ class Bot:
                 )
         elif data.startswith('rubric_toggle:') and self.is_superadmin(user_id):
             code = data.split(':', 1)[1]
+            self._clear_rubric_pending_run(user_id, code)
             rubric = self.data.get_rubric_by_code(code)
             if rubric:
                 config = self._normalize_rubric_config(rubric.config)
@@ -3573,6 +3602,7 @@ class Bot:
             parts = data.split(':')
             if len(parts) >= 3:
                 code = parts[1]
+                self._clear_rubric_pending_run(user_id, code)
                 target = parts[2]
                 field = 'channel_id' if target == 'main' else 'test_channel_id'
                 self.pending[user_id] = {
@@ -3727,6 +3757,7 @@ class Bot:
                         )
         elif data.startswith('rubric_sched_add:') and self.is_superadmin(user_id):
             code = data.split(':', 1)[1]
+            self._clear_rubric_pending_run(user_id, code)
             rubric = self.data.get_rubric_by_code(code)
             if not rubric:
                 return
@@ -3764,6 +3795,7 @@ class Bot:
             parts = data.split(':')
             if len(parts) == 3:
                 code, idx_str = parts[1], parts[2]
+                self._clear_rubric_pending_run(user_id, code)
                 try:
                     idx = int(idx_str)
                 except ValueError:
@@ -3795,6 +3827,7 @@ class Bot:
             parts = data.split(':')
             if len(parts) == 3:
                 code, idx_str = parts[1], parts[2]
+                self._clear_rubric_pending_run(user_id, code)
                 rubric = self.data.get_rubric_by_code(code)
                 if rubric:
                     config = self._normalize_rubric_config(rubric.config)
@@ -3903,6 +3936,8 @@ class Bot:
             state = self.pending.get(user_id, {}).get('rubric_input')
             if state and state.get('mode') == 'schedule_wizard':
                 code = state.get('code')
+                if code:
+                    self._clear_rubric_pending_run(user_id, code)
                 schedule_data = dict(state.get('schedule') or {})
                 if isinstance(schedule_data.get('days'), tuple):
                     schedule_data['days'] = list(schedule_data['days'])
@@ -3926,6 +3961,8 @@ class Bot:
             state = self.pending.get(user_id, {}).get('rubric_input')
             if state and state.get('mode') == 'schedule_wizard':
                 code = state.get('code')
+                if code:
+                    self._clear_rubric_pending_run(user_id, code)
                 message_obj = state.get('message')
                 del self.pending[user_id]
                 if code:
@@ -3938,6 +3975,7 @@ class Bot:
             parts = data.split(':')
             if len(parts) == 3:
                 code, idx_str = parts[1], parts[2]
+                self._clear_rubric_pending_run(user_id, code)
                 try:
                     idx = int(idx_str)
                 except ValueError:
@@ -3951,6 +3989,7 @@ class Bot:
                     })
         elif data.startswith('rubric_delete:') and self.is_superadmin(user_id):
             code = data.split(':', 1)[1]
+            self._clear_rubric_pending_run(user_id, code)
             if self.data.delete_rubric(code):
                 message_obj = query.get('message')
                 if message_obj:
@@ -4498,13 +4537,6 @@ class Bot:
         }
         await self.api_request("editMessageText", payload)
 
-    def _clear_rubric_create_state(self, user_id: int) -> None:
-        state = self.pending.get(user_id)
-        if isinstance(state, dict):
-            state.pop('rubric_create', None)
-            if not state:
-                self.pending.pop(user_id, None)
-
     async def _send_rubric_dashboard(
         self,
         user_id: int,
@@ -4521,9 +4553,13 @@ class Bot:
                 }
         rubrics = self.data.list_rubrics()
         lines: list[str] = [
-            "Управление рубриками",
+            "Карточки рубрик",
             "",
-            "Нажмите «Управление рубриками», чтобы обновить карточки. Все настройки выполняются кнопками в каждой рубрике: включение, выбор каналов, тестовые публикации и расписания.",
+            (
+                "Бот автоматически создаёт рубрики `flowers` и `guess_arch`."
+                " Управляйте ими прямо в карточках:"
+                " включение, выбор каналов, расписания и ручные запуски."
+            ),
         ]
         if rubrics:
             lines.append("")
@@ -4539,19 +4575,11 @@ class Bot:
         keyboard_rows: list[list[dict[str, Any]]] = [
             [
                 {
-                    "text": "Управление рубриками",
+                    "text": "Обновить карточки",
                     "callback_data": "rubric_dashboard",
                 }
             ]
         ]
-        keyboard_rows.append(
-            [
-                {
-                    "text": "➕ Создать рубрику",
-                    "callback_data": "rubric_create",
-                }
-            ]
-        )
         keyboard = {"inline_keyboard": keyboard_rows}
         text = "\n".join(lines).strip()
         chat_id: int | None = None
@@ -4586,90 +4614,8 @@ class Bot:
             }
         await self._render_rubric_cards(user_id, rubrics)
 
-    async def _start_rubric_creation(self, user_id: int, query: dict[str, Any]) -> None:
-        state = self.pending.setdefault(user_id, {})
-        state.pop('rubric_input', None)
-        state['rubric_create'] = {'message': query.get('message')}
-        instructions = (
-            "Отправьте код новой рубрики и необязательный заголовок.\n"
-            "Формат: `<код> [название]`. Допустимы латинские буквы, цифры и подчёркивания.\n"
-            "Напишите `cancel`, чтобы отменить."
-        )
-        await self.api_request(
-            'sendMessage',
-            {
-                'chat_id': user_id,
-                'text': instructions,
-                'parse_mode': 'Markdown',
-            },
-        )
-
-    async def _handle_rubric_creation_input(
-        self,
-        user_id: int,
-        text: str,
-        state: dict[str, Any],
-    ) -> None:
-        content = (text or "").strip()
-        message_obj = state.get('message') if isinstance(state, dict) else None
-        if not content:
-            await self.api_request(
-                'sendMessage',
-                {
-                    'chat_id': user_id,
-                    'text': 'Код рубрики не может быть пустым. Попробуйте снова или напишите `cancel`.',
-                    'parse_mode': 'Markdown',
-                },
-            )
-            return
-        if content.lower() in {'cancel', 'отмена'}:
-            self._clear_rubric_create_state(user_id)
-            await self.api_request(
-                'sendMessage',
-                {'chat_id': user_id, 'text': 'Создание рубрики отменено.'},
-            )
-            await self._send_rubric_dashboard(user_id, message=message_obj)
-            return
-        parts = content.split(maxsplit=1)
-        code = parts[0].strip().lower()
-        if not re.fullmatch(r'[a-z0-9_]+', code):
-            await self.api_request(
-                'sendMessage',
-                {
-                    'chat_id': user_id,
-                    'text': 'Код может содержать только латинские буквы, цифры и подчёркивания.',
-                },
-            )
-            return
-        title = parts[1].strip() if len(parts) > 1 else code.replace('_', ' ').title()
-        existing = self.data.get_rubric_by_code(code)
-        if existing:
-            self._clear_rubric_create_state(user_id)
-            await self.api_request(
-                'sendMessage',
-                {
-                    'chat_id': user_id,
-                    'text': f'Рубрика {code} уже существует. Открываю редактор.',
-                },
-            )
-            await self._send_rubric_dashboard(user_id, message=message_obj)
-            await self._send_rubric_overview(user_id, code)
-            return
-        config = {'enabled': False, 'schedules': []}
-        rubric = self.data.upsert_rubric(code, title, config=config)
-        self._clear_rubric_create_state(user_id)
-        await self.api_request(
-            'sendMessage',
-            {
-                'chat_id': user_id,
-                'text': f'Рубрика {rubric.title} ({rubric.code}) создана.',
-            },
-        )
-        await self._send_rubric_dashboard(user_id, message=message_obj)
-        await self._send_rubric_overview(user_id, rubric.code)
-
     def _build_rubric_overview(
-        self, rubric: Rubric
+        self, rubric: Rubric, *, pending_mode: str | None = None
     ) -> tuple[str, dict[str, Any], dict[str, Any]]:
         config = self._normalize_rubric_config(rubric.config)
         title_line = f"{rubric.title} ({rubric.code})"
@@ -4702,24 +4648,41 @@ class Bot:
                 )
         else:
             lines.append("—")
+        if pending_mode:
+            mode_label = "рабочую" if pending_mode == "prod" else "тестовую"
+            lines.append(f"Запуск: подтвердите {mode_label} публикацию.")
 
         keyboard_rows: list[list[dict[str, Any]]] = []
         toggle_text = "Выключить" if enabled else "Включить"
         keyboard_rows.append([
             {"text": toggle_text, "callback_data": f"rubric_toggle:{rubric.code}"},
         ])
-        keyboard_rows.append(
-            [
-                {
-                    "text": "▶️ Запустить",
-                    "callback_data": f"rubric_publish:{rubric.code}:prod",
-                },
-                {
-                    "text": "🧪 Тест",
-                    "callback_data": f"rubric_publish:{rubric.code}:test",
-                },
-            ]
-        )
+        if pending_mode:
+            keyboard_rows.append(
+                [
+                    {
+                        "text": "✅ Подтвердить",
+                        "callback_data": f"rubric_publish_execute:{rubric.code}:{pending_mode}",
+                    },
+                    {
+                        "text": "✖️ Отмена",
+                        "callback_data": f"rubric_publish_cancel:{rubric.code}",
+                    },
+                ]
+            )
+        else:
+            keyboard_rows.append(
+                [
+                    {
+                        "text": "▶️ Запустить",
+                        "callback_data": f"rubric_publish_confirm:{rubric.code}:prod",
+                    },
+                    {
+                        "text": "🧪 Тест",
+                        "callback_data": f"rubric_publish_confirm:{rubric.code}:test",
+                    },
+                ]
+            )
         keyboard_rows.append(
             [
                 {
@@ -4795,7 +4758,8 @@ class Bot:
             else:
                 await self.api_request("sendMessage", payload)
             return
-        text, _, keyboard = self._build_rubric_overview(rubric)
+        pending_mode = self._get_rubric_pending_run(user_id, code)
+        text, _, keyboard = self._build_rubric_overview(rubric, pending_mode=pending_mode)
         payload = {"text": text, "reply_markup": keyboard}
         if message:
             chat_id = message.get("chat", {}).get("id", user_id)

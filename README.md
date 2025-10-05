@@ -9,48 +9,36 @@
 - **Admin workflow**. Superadmins manage user access, asset channel binding and rubric schedules directly inside Telegram via commands and inline buttons. The admin interface also exposes manual approval queues and quick status messages for rubric runs.
 - **Operations guardrails**. OpenAI usage is rate-limited per model, reverse geocoding calls Nominatim with throttling, and each rubric publication is persisted with metadata for auditing through the admin tools.
 
-## Commands
-### Quick reference
-- `/help` – condensed cheat sheet with the most common workflows, matching the bot’s inline help output.
+## Operator Interface
 
 ### Access & governance
-- `/start` – registers the requester and assigns the first superadmin on first launch.
-- `/tz <±HH:MM>` – lets each operator set a personal timezone used when formatting schedules and history.
-- `/pending`, `/approve <id>`, `/reject <id>` – manage the onboarding queue from the Telegram admin interface (the `/pending` view exposes inline Approve/Reject buttons).
-- `/add_user <id>`, `/remove_user <id>`, `/list_users` – grant or revoke long-term access to the scheduler and rubric tools.
+- `/start` регистрирует первого супер-админа и показывает статус повторным пользователям.
+- `/pending` открывает очередь заявок с кнопками `Approve`/`Reject`; ручное подтверждение больше не требуется.
+- `/list_users` выводит текущих администраторов и операторов.
+- `/tz` запускает кнопочный выбор часового пояса для личных уведомлений и расписаний.
+- `/help` повторяет памятку с описанием всех кнопочных сценариев.
 
-### Channels & scheduling
-- `/channels` – print every channel known to the bot so superadmins can audit bindings.
-- `/set_weather_assets_channel` – bind the private storage channel whose posts are copied by the weather scheduler.
-- `/set_recognition_channel` – pick the recognition/ingestion channel whose uploads trigger EXIF checks and vision jobs.
-- `/set_assets_channel` – legacy shortcut that assigns the same channel to both roles for backward compatibility. Run it as `/set_assets_channel confirm` and only if you truly want a shared channel.
-- `/setup_weather` – wizard that assigns rubric schedules to channels when new destinations are added.
-- `/list_weather_channels` – admin dashboard showing rubric schedules, last run timestamps and inline `Run now`/`Stop` actions.
-- `/rubrics` – superadmin dashboard с готовыми рубриками `flowers` и `guess_arch`; из него запускаются все кнопочные настройки и создание новых рубрик.
-- `/history` and `/scheduled` – inspect previously published posts and queued schedules, including rubric drops copied from the assets channel (each scheduled item comes with inline `Cancel`/`Reschedule` controls).
+### Рубрики
+- При инициализации бот автоматически создаёт `flowers` и `guess_arch` в выключенном состоянии и без расписаний.
+- `/rubrics` показывает карточки каждой рубрики. Внутри доступны кнопки:
+  - `Включить/Выключить` — мгновенное переключение статуса.
+  - `Канал` и `Тест-канал` — список каналов с пагинацией и поиском, всё через inline-кнопки.
+  - `Добавить расписание` — пошаговый мастер (выбор времени, минут, дней недели и канала), который также позволяет редактировать или отключать отдельные слоты.
+  - `▶️ Запустить` и `🧪 Тест` — сперва показывают запрос подтверждения, затем ставят задачу `publish_rubric` в очередь и отправляют номер задания.
+  - `Удалить рубрику` — кнопка внизу карточки, удаляющая запись после подтверждения Telegram.
 
-### Manual posting tools
-- `/addbutton <post_url> <text> <url>` – add a custom inline button to any stored asset or published post. Use `t.me/c/<id>/<message>` links from the source channel history.
-- `/delbutton <post_url>` – remove all inline buttons from a post and clear persisted metadata in SQLite.
-- `/addweatherbutton <post_url> <text> [url]` – attach a forecast button; omit the URL after triggering `/weather now` to reuse the latest stored link.
-- `/weatherposts [update]` – list every registered weather template, optionally refreshing rendered content before showing inline removal buttons.
-- `/regweather <post_url> <template>` – register a message as a weather template so the bot can substitute placeholders on each publication.
+### Мастер расписаний
+- Временной шаг сначала предлагает часы, затем минуты; выбор отображается прямо в тексте карточки.
+- Список дней недели отмечает активные значения галочками, а кнопки `Все`, `Очистить` и `Готово` завершают выбор без ввода текста.
+- При переключении на «Канал» мастер открывает тот же канал-пикер, что и карточка рубрики, с возможностью вернуться назад одним нажатием.
+- Кнопки `Сохранить` и `Отмена` фиксируют изменения и сразу возвращают к карточке рубрики.
 
-### Weather registry & geography
-- `/weather [now]` – display cached city and sea data or force an immediate refresh.
-- `/addcity <name> <lat> <lon>`, `/cities` – manage the city directory used by the weather cache.
-- `/addsea <name> <lat> <lon>`, `/seas` – maintain the sea catalogue that powers shoreline forecasts.
-- `/amber` – open the inline picker for the Янтарный канал, then drill down to channel-specific toggles.
-
-### Rubric inline editor & migration steps
-- После запуска две штатные рубрики (`flowers`, `guess_arch`) создаются автоматически; вызовите `/rubrics`, чтобы открыть их карточки. Кнопка «Управление рубриками» в верхнем сообщении обновляет список при повторном вызове.
-- Кнопки `Включить/Выключить`, `Канал`, `Тест-канал`, `Добавить расписание` и т.п. выполняют настройку целиком через inline-формы — никаких ручных ID или JSON больше не требуется.
-- Планировщик расписаний теперь полностью кнопочный: выберите `Добавить расписание`, укажите время, часовой пояс, дни недели и канал через последовательность inline-подсказок.
-- Лишние слоты удаляются кнопкой `Удалить`, а вся рубрика стирается через `Удалить рубрику`; вернуться к управлению можно кнопкой `↩️ Управление рубриками`.
-- CI migrations are automatic; no extra SQL is required. The new JSON helpers in `data_access.py` persist configs under the existing `description` column, so earlier deployments retain their settings.
-
-### Channel configuration & migration
-- Upgrading from previous releases automatically copies the legacy assets channel into both the weather storage and recognition tables, so existing setups continue to work. Once the bot is updated configure two independent storages by running `/set_weather_assets_channel` and `/set_recognition_channel` separately. Use `/set_assets_channel confirm` only if you prefer to keep a single shared channel.
+### Каналы, погода и история
+- `/channels` — аудит подключённых каналов.
+- `/set_weather_assets_channel` и `/set_recognition_channel` — кнопочный выбор каналов для хранения ассетов и входного распознавания.
+- `/setup_weather` и `/list_weather_channels` — управление погодными рассылками с кнопками `Run now`/`Stop` и отметками последнего запуска.
+- `/weather`, `/history`, `/scheduled` — статусные отчёты с возможностью отменять или переносить публикации прямо из inline-интерфейса.
+- `/amber` — отдельный раздел для каналов Янтарного проекта, также полностью кнопочный.
 
 ## User Stories
 ### Implemented

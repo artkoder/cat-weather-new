@@ -4868,6 +4868,7 @@ class Bot:
             "flowers",
             rubric_id=rubric.id,
             limit=max_count,
+            random_order=True,
         )
         if len(assets) < min_count:
             logging.warning(
@@ -5096,6 +5097,7 @@ class Bot:
             rubric_id=rubric.id,
             limit=candidate_limit,
             require_arch_view=True,
+            random_order=True,
         )
         assets: list[Asset] = []
         for asset in candidates:

@@ -166,6 +166,54 @@ async def test_publish_flowers_removes_assets(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flowers_asset_selection_random(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "assets": {"min": 4, "max": 4},
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+    now = datetime.utcnow().isoformat()
+    for idx in range(10):
+        file_meta = {"file_id": f"rf{idx}"}
+        asset_id = bot.data.save_asset(
+            -2100,
+            300 + idx,
+            None,
+            "",
+            tg_chat_id=-2100,
+            caption="",
+            kind="photo",
+            file_meta=file_meta,
+            metadata={"date": now},
+            categories=["flowers"],
+            rubric_id=1,
+        )
+        bot.data.update_asset(
+            asset_id,
+            vision_category="flowers",
+            vision_photo_weather="солнечно",
+            city=f"Город {idx}",
+        )
+
+    selections = [
+        [
+            asset.id
+            for asset in bot.data.fetch_assets_by_vision_category(
+                "flowers",
+                rubric_id=1,
+                limit=4,
+                random_order=True,
+            )
+        ]
+        for _ in range(3)
+    ]
+    assert all(len(selection) == 4 for selection in selections)
+    assert len({tuple(selection) for selection in selections}) > 1
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_publish_guess_arch_with_overlays(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     storage = tmp_path / "storage"
@@ -242,6 +290,55 @@ async def test_publish_guess_arch_with_overlays(tmp_path):
     assert not numbered_exists
     delete_calls = [call for call in calls if call["method"] == "deleteMessage"]
     assert len(delete_calls) == 4
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_guess_arch_asset_selection_random(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "assets": {"min": 4, "max": 4},
+    }
+    _insert_rubric(bot, "guess_arch", config, rubric_id=2)
+    now = datetime.utcnow().isoformat()
+    for idx in range(12):
+        file_meta = {"file_id": f"ra{idx}"}
+        asset_id = bot.data.save_asset(
+            -3200,
+            800 + idx,
+            None,
+            "",
+            tg_chat_id=-3200,
+            caption="",
+            kind="photo",
+            file_meta=file_meta,
+            metadata={"date": now},
+            categories=["architecture"],
+            rubric_id=2,
+        )
+        bot.data.update_asset(
+            asset_id,
+            vision_category="architecture",
+            vision_arch_view="фасад",
+            vision_photo_weather="пасмурно",
+        )
+
+    selections = [
+        [
+            asset.id
+            for asset in bot.data.fetch_assets_by_vision_category(
+                "architecture",
+                rubric_id=2,
+                limit=4,
+                require_arch_view=True,
+                random_order=True,
+            )
+        ]
+        for _ in range(3)
+    ]
+    assert all(len(selection) == 4 for selection in selections)
+    assert len({tuple(selection) for selection in selections}) > 1
     await bot.close()
 
 

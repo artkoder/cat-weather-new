@@ -10,6 +10,7 @@ from PIL import Image
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+import data_access
 from data_access import Asset
 from main import Bot
 from openai_client import OpenAIResponse
@@ -210,6 +211,73 @@ async def test_flowers_asset_selection_random(tmp_path):
     ]
     assert all(len(selection) == 4 for selection in selections)
     assert len({tuple(selection) for selection in selections}) > 1
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_publish_flowers_uses_distinct_assets(tmp_path, monkeypatch):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "assets": {"min": 4, "max": 4},
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+    now = datetime.utcnow().isoformat()
+    for idx in range(8):
+        file_meta = {"file_id": f"rf{idx}"}
+        asset_id = bot.data.save_asset(
+            -2100,
+            400 + idx,
+            None,
+            "",
+            tg_chat_id=-2100,
+            caption="",
+            kind="photo",
+            file_meta=file_meta,
+            metadata={"date": now},
+            categories=["flowers"],
+            rubric_id=1,
+        )
+        bot.data.update_asset(
+            asset_id,
+            vision_category="flowers",
+            vision_photo_weather="солнечно",
+            city=f"Город {idx}",
+        )
+
+    used_media: list[list[str]] = []
+
+    async def fake_api(method, data=None, *, files=None):
+        if method == "sendMediaGroup":
+            assert data is not None
+            used_media.append([item["media"] for item in data["media"]])
+            return {"ok": True, "result": [{"message_id": len(used_media)}]}
+        return {"ok": True}
+
+    async def fake_cleanup(assets, *, extra_paths=None):
+        return None
+
+    shuffle_calls = {"count": 0}
+
+    def rotating_shuffle(seq):
+        if not seq:
+            return
+        shuffle_calls["count"] += 1
+        shift = shuffle_calls["count"] % len(seq)
+        if shift:
+            seq[:] = seq[shift:] + seq[:shift]
+
+    monkeypatch.setattr(data_access.random, "shuffle", rotating_shuffle)
+    bot.api_request = fake_api  # type: ignore[assignment]
+    monkeypatch.setattr(bot, "_cleanup_assets", fake_cleanup)
+
+    ok_first = await bot.publish_rubric("flowers", channel_id=-700)
+    ok_second = await bot.publish_rubric("flowers", channel_id=-700)
+
+    assert ok_first and ok_second
+    assert len(used_media) == 2
+    assert used_media[0] != used_media[1]
+
     await bot.close()
 
 

@@ -5016,6 +5016,7 @@ class Bot:
             message_id = int(result_payload.get("message_id") or 0)
         else:
             message_id = 0
+        self.data.mark_assets_used(asset.id for asset in assets)
         metadata = {
             "rubric_code": rubric.code,
             "asset_ids": [asset.id for asset in assets],
@@ -5279,6 +5280,7 @@ class Bot:
             message_id = int(result_payload.get("message_id") or 0)
         else:
             message_id = 0
+        self.data.mark_assets_used(asset.id for asset in assets)
         metadata = {
             "rubric_code": rubric.code,
             "asset_ids": [asset.id for asset in assets],

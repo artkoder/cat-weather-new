@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Any, Iterable, Iterator, Sequence
@@ -541,6 +542,7 @@ class DataAccess:
         where: Sequence[str] | None = None,
         params: Sequence[Any] | None = None,
         random_order: bool = False,
+        mark_used: bool = False,
     ) -> list[Asset]:
         conditions = list(where or [])
         query_params: list[Any] = list(params or [])
@@ -563,13 +565,11 @@ class DataAccess:
         )
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
-        if random_order:
-            sql += " ORDER BY RANDOM()"
-        else:
-            sql += " ORDER BY COALESCE(a.last_used_at, a.created_at) ASC, a.id ASC"
-        if limit is not None:
+        sql += " ORDER BY COALESCE(a.last_used_at, a.created_at) ASC, a.id ASC"
+        apply_limit = limit if limit is not None and not random_order else None
+        if apply_limit is not None:
             sql += " LIMIT ?"
-            query_params.append(limit)
+            query_params.append(apply_limit)
         rows = self.conn.execute(sql, query_params).fetchall()
         assets: list[Asset] = []
         for row in rows:
@@ -577,6 +577,12 @@ class DataAccess:
             if not asset:
                 continue
             assets.append(asset)
+        if random_order and len(assets) > 1:
+            random.shuffle(assets)
+        if limit is not None:
+            assets = assets[:limit]
+        if mark_used:
+            self.mark_assets_used(asset.id for asset in assets)
         return assets
 
     def fetch_assets_by_vision_category(
@@ -587,6 +593,7 @@ class DataAccess:
         limit: int | None = None,
         require_arch_view: bool = False,
         random_order: bool = False,
+        mark_used: bool = False,
     ) -> list[Asset]:
         if not category:
             return []
@@ -600,7 +607,19 @@ class DataAccess:
             where=where,
             params=params,
             random_order=random_order,
+            mark_used=mark_used,
         )
+
+    def mark_assets_used(self, asset_ids: Iterable[int]) -> None:
+        ids = [int(asset_id) for asset_id in asset_ids]
+        if not ids:
+            return
+        now_iso = datetime.utcnow().isoformat()
+        self.conn.executemany(
+            "UPDATE assets SET last_used_at=?, updated_at=? WHERE id=?",
+            [(now_iso, now_iso, asset_id) for asset_id in ids],
+        )
+        self.conn.commit()
 
     def delete_assets(self, asset_ids: Sequence[int]) -> None:
         if not asset_ids:

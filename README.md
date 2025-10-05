@@ -90,7 +90,7 @@
 
 ## Job Queue and Manual Rubrics
 - The SQLite-backed job queue starts automatically when the bot boots, loads due jobs every second and executes handlers concurrently according to `JobQueue(concurrency=...)` settings. Failed jobs retry with exponential backoff up to five attempts before being marked as `failed`. Inspect `jobs_queue` via any SQLite tool for troubleshooting.
-- Для ручного запуска откройте карточку рубрики в интерфейсе оператора и воспользуйтесь кнопками `Запустить` (боевой канал) или `Тест-публикация` (тестовый канал). Бот поставит задачу `publish_rubric` через очередь и сразу пришлёт уведомление с номером задания, поэтому можно проверять статус без выхода из Telegram.
+- Для ручного запуска откройте карточку рубрики в интерфейсе оператора и воспользуйтесь кнопками `▶️ Запустить` (боевой канал) или `🧪 Тест` (тестовый канал). Бот поставит задачу `publish_rubric` через очередь и сразу пришлёт уведомление с номером задания, поэтому можно проверять статус без выхода из Telegram.
 - The job queue deduplicates identical pending payloads, so repeated runs from the same button are safe.
 - For ad-hoc publication bypassing the queue entirely, call `publish_rubric` inside the same context; it returns `True` on success and records the run in `posts_history` for later review.
 

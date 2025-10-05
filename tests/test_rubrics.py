@@ -842,3 +842,109 @@ async def test_overlay_offset_respects_safe_zone(tmp_path, monkeypatch):
     assert captured_offsets[-1] == (12, 12)
 
     await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_rubric_publish_callback_success(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    bot.db.execute(
+        "INSERT OR REPLACE INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)",
+        (1, "boss", "+00:00"),
+    )
+    bot.db.commit()
+    _insert_rubric(bot, "flowers", {"enabled": True, "channel_id": -1}, rubric_id=10)
+
+    api_calls: list[tuple[str, dict | None, Any]] = []
+
+    async def fake_api(method, payload=None, *, files=None):
+        api_calls.append((method, payload, files))
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+
+    recorded: dict[str, Any] = {}
+
+    def fake_enqueue(code: str, *, test: bool = False, channel_id: int | None = None) -> int:
+        recorded["code"] = code
+        recorded["test"] = test
+        recorded["channel_id"] = channel_id
+        return 314
+
+    bot.enqueue_rubric = fake_enqueue  # type: ignore[assignment]
+
+    message = {"message_id": 5, "chat": {"id": 1}}
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "cb-success",
+                "from": {"id": 1},
+                "data": "rubric_publish:flowers:prod",
+                "message": message,
+            }
+        }
+    )
+
+    assert recorded["code"] == "flowers"
+    assert recorded["test"] is False
+
+    ack_payloads = [payload for method, payload, _ in api_calls if method == "answerCallbackQuery"]
+    assert any(payload and payload.get("callback_query_id") == "cb-success" for payload in ack_payloads)
+    assert any(payload and "Задача поставлена" in payload.get("text", "") for payload in ack_payloads)
+
+    send_payloads = [payload for method, payload, _ in api_calls if method == "sendMessage"]
+    assert send_payloads, "callback should send confirmation message"
+    confirmation = send_payloads[-1]
+    assert confirmation["chat_id"] == 1
+    assert "✅ Рабочая публикация рубрики flowers" in confirmation["text"]
+    assert "#314" in confirmation["text"]
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_rubric_publish_callback_error(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    bot.db.execute(
+        "INSERT OR REPLACE INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)",
+        (1, "boss", "+00:00"),
+    )
+    bot.db.commit()
+    _insert_rubric(bot, "flowers", {"enabled": True, "test_channel_id": -2}, rubric_id=11)
+
+    api_calls: list[tuple[str, dict | None, Any]] = []
+
+    async def fake_api(method, payload=None, *, files=None):
+        api_calls.append((method, payload, files))
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+
+    def failing_enqueue(code: str, *, test: bool = False, channel_id: int | None = None) -> int:
+        raise ValueError("нет подходящих ассетов")
+
+    bot.enqueue_rubric = failing_enqueue  # type: ignore[assignment]
+
+    message = {"message_id": 6, "chat": {"id": 1}}
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "cb-error",
+                "from": {"id": 1},
+                "data": "rubric_publish:flowers:test",
+                "message": message,
+            }
+        }
+    )
+
+    ack_payloads = [payload for method, payload, _ in api_calls if method == "answerCallbackQuery"]
+    assert any(payload and payload.get("callback_query_id") == "cb-error" for payload in ack_payloads)
+    assert any(payload and payload.get("show_alert") is True for payload in ack_payloads)
+
+    send_payloads = [payload for method, payload, _ in api_calls if method == "sendMessage"]
+    assert send_payloads, "callback should send error details"
+    error_message = send_payloads[-1]
+    assert error_message["chat_id"] == 1
+    assert "⚠️ тестовая публикация рубрики flowers не запущена" in error_message["text"]
+    assert "нет подходящих ассетов" in error_message["text"]
+
+    await bot.close()

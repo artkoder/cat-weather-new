@@ -2303,6 +2303,7 @@ class Bot:
                     "- `/setup_weather` — мастер настройки расписаний рубрик для выбранных каналов.\n"
                     "- `/list_weather_channels` — обзор рубрик: показывает время, дату последнего запуска и кнопки `Run now`/`Stop`.\n"
                     "- `/rubrics` — карточки рубрик и кнопка «Управление рубриками» для всех настроек.\n"
+                    "  Внутри карточек доступны `▶️ Запустить` и `🧪 Тест` для мгновенного запуска публикации без CLI.\n"
                 ),
                 (
                     "*Работа с постами, погодой и ручные действия*\n"
@@ -3501,10 +3502,11 @@ class Bot:
                 return
             _, code, mode = parts
             is_test = mode == 'test'
+            run_label = 'Тестовая' if is_test else 'Рабочая'
             try:
                 job_id = self.enqueue_rubric(code, test=is_test)
             except Exception as exc:  # noqa: PERF203 - feedback path
-                logging.exception('Failed to enqueue rubric %s', code)
+                logging.exception('Failed to enqueue rubric %s (test=%s)', code, is_test)
                 await self.api_request(
                     'answerCallbackQuery',
                     {
@@ -3513,17 +3515,25 @@ class Bot:
                         'show_alert': True,
                     },
                 )
+                reason = str(exc).strip() or 'неизвестная ошибка'
                 await self.api_request(
                     'sendMessage',
                     {
                         'chat_id': user_id,
                         'text': (
-                            'Не удалось запланировать '
-                            f"{'тестовую ' if is_test else ''}публикацию рубрики {code}: {exc}"
+                            f"⚠️ {run_label.lower()} публикация рубрики {code} не запущена.\n"
+                            f"Причина: {reason}"
                         ),
                     },
                 )
             else:
+                logging.info(
+                    'Enqueued %s publication for rubric %s (job_id=%s, user_id=%s)',
+                    'test' if is_test else 'prod',
+                    code,
+                    job_id,
+                    user_id,
+                )
                 await self.api_request(
                     'answerCallbackQuery',
                     {
@@ -3536,8 +3546,8 @@ class Bot:
                     {
                         'chat_id': user_id,
                         'text': (
-                            f"{('Тестовая ' if is_test else 'Рабочая ')}публикация рубрики {code}"
-                            f" поставлена в очередь (задача #{job_id})."
+                            f"✅ {run_label} публикация рубрики {code} поставлена в очередь"
+                            f" (задача #{job_id})."
                         ),
                     },
                 )
@@ -4691,11 +4701,11 @@ class Bot:
         keyboard_rows.append(
             [
                 {
-                    "text": "Запустить",
+                    "text": "▶️ Запустить",
                     "callback_data": f"rubric_publish:{rubric.code}:prod",
                 },
                 {
-                    "text": "Тест-публикация",
+                    "text": "🧪 Тест",
                     "callback_data": f"rubric_publish:{rubric.code}:test",
                 },
             ]

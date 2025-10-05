@@ -301,7 +301,7 @@ class DataAccess:
         vision_flower_varieties: list[str] | None = None,
         vision_confidence: float | None = None,
         exif_present: bool | None = None,
-        local_path: str | None = None,
+        local_path: str | None | object = _UNSET,
         vision_caption: str | None = None,
         origin: str | None = None,
     ) -> None:
@@ -365,7 +365,7 @@ class DataAccess:
             values["country"] = country
         if exif_present is not None:
             values["exif_present"] = int(bool(exif_present))
-        if local_path is not None:
+        if local_path is not _UNSET:
             values["local_path"] = local_path
         if vision_category is not None:
             values["vision_category"] = vision_category

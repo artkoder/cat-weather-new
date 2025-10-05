@@ -1911,37 +1911,42 @@ class Bot:
         downloaded_path = await self._download_file(file_id, target_path)
         if not downloaded_path:
             raise RuntimeError(f"Failed to download file for asset {asset_id}")
-        local_path = str(downloaded_path)
-        gps = None
-        if asset.kind == "photo":
-            gps = self._extract_gps(downloaded_path)
-            if not gps:
-                author_id = asset.author_user_id
-                if author_id:
-                    await self.api_request(
-                        "sendMessage",
-                        {
-                            "chat_id": author_id,
-                            "text": "В изображении отсутствуют EXIF-данные с координатами.",
-                        },
-                    )
-        update_kwargs: dict[str, Any] = {
-            "local_path": local_path,
-            "exif_present": bool(gps),
-        }
-        if gps:
-            lat, lon = gps
-            update_kwargs["latitude"] = lat
-            update_kwargs["longitude"] = lon
-            address = await self._reverse_geocode(lat, lon)
-            if address:
-                city = address.get("city") or address.get("town") or address.get("village")
-                country = address.get("country")
-                if city:
-                    update_kwargs["city"] = city
-                if country:
-                    update_kwargs["country"] = country
-        self.data.update_asset(asset_id, **update_kwargs)
+        cleanup_path = str(downloaded_path)
+        try:
+            gps = None
+            if asset.kind == "photo":
+                gps = self._extract_gps(downloaded_path)
+                if not gps:
+                    author_id = asset.author_user_id
+                    if author_id:
+                        await self.api_request(
+                            "sendMessage",
+                            {
+                                "chat_id": author_id,
+                                "text": "В изображении отсутствуют EXIF-данные с координатами.",
+                            },
+                        )
+            update_kwargs: dict[str, Any] = {
+                "local_path": None,
+                "exif_present": bool(gps),
+            }
+            if gps:
+                lat, lon = gps
+                update_kwargs["latitude"] = lat
+                update_kwargs["longitude"] = lon
+                address = await self._reverse_geocode(lat, lon)
+                if address:
+                    city = address.get("city") or address.get("town") or address.get("village")
+                    country = address.get("country")
+                    if city:
+                        update_kwargs["city"] = city
+                    if country:
+                        update_kwargs["country"] = country
+            self.data.update_asset(asset_id, **update_kwargs)
+        finally:
+            self._remove_file(cleanup_path)
+            if asset.local_path and asset.local_path != cleanup_path:
+                self._remove_file(asset.local_path)
         tz_offset = self.get_tz_offset(asset.author_user_id) if asset.author_user_id else TZ_OFFSET
         vision_job = self.jobs.enqueue(
             "vision", {"asset_id": asset_id, "tz_offset": tz_offset}
@@ -1952,6 +1957,7 @@ class Bot:
     async def _job_vision(self, job: Job):
         start_time = datetime.utcnow()
         asset_id = job.payload.get("asset_id") if job.payload else None
+        cleanup_paths: list[str] = []
         logging.info("Starting vision job %s for asset %s", job.id, asset_id)
         try:
             if not asset_id:
@@ -1976,25 +1982,29 @@ class Bot:
                 "width": asset.width,
                 "height": asset.height,
             }
-            local_path = asset.local_path
+            local_path = asset.local_path if asset.local_path else None
+            if local_path and os.path.exists(local_path):
+                logging.info(
+                    "Vision job %s using cached file %s for asset %s",
+                    job.id,
+                    local_path,
+                    asset_id,
+                )
+                cleanup_paths.append(local_path)
+            else:
+                local_path = None
             if not local_path and not self.dry_run:
                 target_path = self._build_local_file_path(asset_id, file_meta)
                 downloaded_path = await self._download_file(file_id, target_path)
                 if downloaded_path:
                     local_path = str(downloaded_path)
+                    cleanup_paths.append(local_path)
                     logging.info(
                         "Vision job %s downloaded asset %s to %s",
                         job.id,
                         asset_id,
                         local_path,
                     )
-            if local_path and os.path.exists(local_path):
-                logging.info(
-                    "Vision job %s using local file %s for asset %s",
-                    job.id,
-                    local_path,
-                    asset_id,
-                )
             if self.openai and not self.openai.api_key:
                 self.openai.refresh_api_key()
             if self.dry_run or not self.openai or not self.openai.api_key:
@@ -2010,7 +2020,9 @@ class Bot:
                         job.id,
                         asset_id,
                     )
-                self.data.update_asset(asset_id, vision_results={"status": "skipped"})
+                self.data.update_asset(
+                    asset_id, vision_results={"status": "skipped"}, local_path=None
+                )
                 return
             if not local_path or not os.path.exists(local_path):
                 raise RuntimeError(f"Local file for asset {asset_id} not found")
@@ -2195,7 +2207,7 @@ class Bot:
                 vision_flower_varieties=flower_varieties,
                 vision_confidence=confidence,
                 vision_caption=caption_text,
-                local_path=local_path,
+                local_path=None,
             )
             await self._record_openai_usage("4o-mini", response, job=job)
             if not self.dry_run and new_mid:
@@ -2210,6 +2222,8 @@ class Bot:
                     {"chat_id": asset.channel_id, "message_id": asset.message_id},
                 )
         finally:
+            for path in cleanup_paths:
+                self._remove_file(path)
             duration = (datetime.utcnow() - start_time).total_seconds()
             logging.info(
                 "Vision job %s for asset %s completed in %.2fs",
@@ -4992,6 +5006,30 @@ class Bot:
                     result.add(mapping[key])
         return result
 
+    async def _ensure_asset_source(self, asset: Asset) -> tuple[str | None, bool]:
+        """Provide a local path for an asset and flag whether it should be removed."""
+
+        local_path = asset.local_path if asset.local_path else None
+        if local_path and os.path.exists(local_path):
+            return local_path, True
+        if not asset.file_id or self.dry_run:
+            return None, False
+        file_meta = {
+            "file_id": asset.file_id,
+            "file_unique_id": asset.file_unique_id,
+            "file_name": asset.file_name,
+            "mime_type": asset.mime_type,
+            "duration": asset.duration,
+            "file_size": asset.file_size,
+            "width": asset.width,
+            "height": asset.height,
+        }
+        target_path = self._build_local_file_path(asset.id, file_meta)
+        downloaded_path = await self._download_file(asset.file_id, target_path)
+        if not isinstance(downloaded_path, Path):
+            return None, False
+        return str(downloaded_path), True
+
     def _compute_next_rubric_run(
         self,
         *,
@@ -5292,9 +5330,21 @@ class Bot:
             )
             return False
         overlay_paths: list[str] = []
+        source_files: list[tuple[int, str, bool]] = []
         try:
             for idx, asset in enumerate(assets, start=1):
-                path = self._overlay_number(asset, idx, config)
+                source_path, should_cleanup = await self._ensure_asset_source(asset)
+                if not source_path:
+                    logging.warning(
+                        "Asset %s missing source file for guess_arch overlay", asset.id
+                    )
+                    for created in overlay_paths:
+                        self._remove_file(created)
+                    return False
+                source_files.append((asset.id, source_path, should_cleanup))
+                path = self._overlay_number(
+                    asset, idx, config, source_path=source_path
+                )
                 if not path:
                     for created in overlay_paths:
                         self._remove_file(created)
@@ -5305,6 +5355,16 @@ class Bot:
             for created in overlay_paths:
                 self._remove_file(created)
             return False
+        finally:
+            for asset_id, source_path, should_cleanup in source_files:
+                if should_cleanup:
+                    self._remove_file(source_path)
+                    try:
+                        self.data.update_asset(asset_id, local_path=None)
+                    except Exception:
+                        logging.exception(
+                            "Failed to clear local_path for asset %s after overlay", asset_id
+                        )
         caption_text, hashtags = await self._generate_guess_arch_copy(
             rubric, len(assets), weather_text, job=job
         )
@@ -5647,11 +5707,16 @@ class Bot:
         return summary
 
     def _overlay_number(
-        self, asset: Asset, number: int, config: dict[str, Any]
+        self,
+        asset: Asset,
+        number: int,
+        config: dict[str, Any],
+        *,
+        source_path: str | None = None,
     ) -> str | None:
-        local_path = asset.local_path
+        local_path = source_path or asset.local_path
         if not local_path or not os.path.exists(local_path):
-            logging.warning("Asset %s missing local file for overlay", asset.id)
+            logging.warning("Asset %s missing source file for overlay", asset.id)
             return None
         overlays_dir = (
             config.get("overlays_dir")

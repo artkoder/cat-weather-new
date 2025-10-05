@@ -540,6 +540,7 @@ class DataAccess:
         limit: int | None = None,
         where: Sequence[str] | None = None,
         params: Sequence[Any] | None = None,
+        random_order: bool = False,
     ) -> list[Asset]:
         conditions = list(where or [])
         query_params: list[Any] = list(params or [])
@@ -562,7 +563,10 @@ class DataAccess:
         )
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
-        sql += " ORDER BY COALESCE(a.last_used_at, a.created_at) ASC, a.id ASC"
+        if random_order:
+            sql += " ORDER BY RANDOM()"
+        else:
+            sql += " ORDER BY COALESCE(a.last_used_at, a.created_at) ASC, a.id ASC"
         if limit is not None:
             sql += " LIMIT ?"
             query_params.append(limit)
@@ -582,6 +586,7 @@ class DataAccess:
         rubric_id: int | None = None,
         limit: int | None = None,
         require_arch_view: bool = False,
+        random_order: bool = False,
     ) -> list[Asset]:
         if not category:
             return []
@@ -594,6 +599,7 @@ class DataAccess:
             limit=limit,
             where=where,
             params=params,
+            random_order=random_order,
         )
 
     def delete_assets(self, asset_ids: Sequence[int]) -> None:

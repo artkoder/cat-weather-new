@@ -60,15 +60,26 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
+            "modalities": ["text"],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": schema,
+                "strict": True,
+            },
             "input": [
                 {
                     "role": "system",
-                    "content": system_prompt,
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": system_prompt,
+                        }
+                    ],
                 },
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": user_prompt},
+                        {"type": "input_text", "text": user_prompt},
                         {
                             "type": "input_image",
                             "image_base64": base64.b64encode(image_bytes).decode("ascii"),
@@ -76,15 +87,6 @@ class OpenAIClient:
                     ],
                 },
             ],
-            "response": {
-                "modalities": ["text"],
-                "text": {
-                    "format": {
-                        "type": "json_schema",
-                        "json_schema": schema,
-                    }
-                },
-            },
         }
         return await self._submit_request(payload)
 
@@ -102,19 +104,22 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "input": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response": {
-                "modalities": ["text"],
-                "text": {
-                    "format": {
-                        "type": "json_schema",
-                        "json_schema": schema,
-                    }
-                },
+            "modalities": ["text"],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": schema,
+                "strict": True,
             },
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
         }
         if temperature is not None:
             payload["temperature"] = temperature
@@ -137,9 +142,24 @@ class OpenAIClient:
             raise RuntimeError(f"OpenAI API error {response.status_code}")
         data = response.json()
         usage = data.get("usage") or {}
-        prompt_tokens = usage.get("prompt_tokens")
-        completion_tokens = usage.get("completion_tokens")
+        prompt_tokens = usage.get("input_tokens")
+        if prompt_tokens is None:
+            prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("output_tokens")
+        if completion_tokens is None:
+            completion_tokens = usage.get("completion_tokens")
         total_tokens = usage.get("total_tokens")
+        if total_tokens is None:
+            tokens_sum = 0
+            has_value = False
+            if isinstance(prompt_tokens, int):
+                tokens_sum += prompt_tokens
+                has_value = True
+            if isinstance(completion_tokens, int):
+                tokens_sum += completion_tokens
+                has_value = True
+            if has_value:
+                total_tokens = tokens_sum
         request_id = data.get("id") or response.headers.get("x-request-id")
         content = data.get("output") or data.get("response") or {}
         if isinstance(content, list) and content:

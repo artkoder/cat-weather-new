@@ -97,8 +97,17 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     assert captured["url"].endswith("/responses")
     payload = captured["payload"]
     assert payload["model"] == "gpt-vision"
-    assert payload["response"]["modalities"] == ["text"]
-    assert payload["response"]["text"]["format"]["json_schema"] is schema
+    assert payload["modalities"] == ["text"]
+    assert payload["response_format"]["type"] == "json_schema"
+    assert payload["response_format"]["json_schema"] is schema
+    assert payload["response_format"]["strict"] is True
+    system_content = payload["input"][0]["content"][0]
+    assert system_content == {
+        "type": "input_text",
+        "text": "classify image",
+    }
+    user_text = payload["input"][1]["content"][0]
+    assert user_text == {"type": "input_text", "text": "What do you see?"}
     image_part = payload["input"][1]["content"][1]
     assert image_part["type"] == "input_image"
     assert base64.b64decode(image_part["image_base64"]) == b"fake-bytes"
@@ -157,8 +166,17 @@ async def test_generate_json_uses_text_response_payload(monkeypatch):
 
     payload = captured["payload"]
     assert payload["model"] == "gpt-json"
-    assert payload["response"]["modalities"] == ["text"]
-    assert payload["response"]["text"]["format"]["json_schema"] is schema
+    assert payload["modalities"] == ["text"]
+    assert payload["response_format"]["type"] == "json_schema"
+    assert payload["response_format"]["json_schema"] is schema
+    assert payload["response_format"]["strict"] is True
+    system_content = payload["input"][0]["content"][0]
+    assert system_content == {
+        "type": "input_text",
+        "text": "You are a helpful assistant",
+    }
+    user_content = payload["input"][1]["content"][0]
+    assert user_content == {"type": "input_text", "text": "Say hello"}
     assert payload["temperature"] == 0.1
     assert payload["top_p"] == 0.9
 

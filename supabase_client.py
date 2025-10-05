@@ -5,28 +5,24 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
 
 def _json_default(value: Any) -> Any:
-    """Fallback serializer that keeps non-JSON objects readable."""
-
     if isinstance(value, datetime):
         return value.isoformat()
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
+    raise TypeError(f"Type {type(value)!r} is not JSON serializable")
 
 
-def _normalize_meta(meta: Any) -> Any:
+def _strict_meta(meta: Any) -> Any:
     if meta is None:
         return None
     try:
-        serialized = json.dumps(meta, default=_json_default)
-    except TypeError:
-        serialized = json.dumps(str(meta))
+        serialized = json.dumps(meta, default=_json_default, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise TypeError("Supabase meta must be JSON serializable") from exc
     return json.loads(serialized)
 
 
@@ -74,11 +70,7 @@ class SupabaseClient:
         total_tokens: int | None,
         request_id: str | None,
         meta: Dict[str, Any] | None = None,
-    ) -> bool:
-        if not self._client:
-            logging.debug("Supabase client disabled; skipping token usage upload")
-            return False
-
+    ) -> Tuple[bool, Dict[str, Any], str | None]:
         payload: Dict[str, Any] = {
             "bot": "kotopogoda",
             "model": model,
@@ -87,9 +79,13 @@ class SupabaseClient:
             "total_tokens": total_tokens,
             "request_id": request_id,
             "endpoint": "responses",
-            "meta": _normalize_meta(meta),
+            "meta": _strict_meta(meta),
             "at": datetime.now(timezone.utc).isoformat(),
         }
+        if not self._client:
+            logging.debug("Supabase client disabled; skipping token usage upload")
+            return False, payload, "disabled"
+
         try:
             response = await self._client.post(
                 "/token_usage",
@@ -97,22 +93,8 @@ class SupabaseClient:
                 headers={"Prefer": "return=minimal"},
             )
             if response.status_code not in (200, 201, 204):
-                logging.error(
-                    "Supabase token usage insert failed: %s %s",
-                    response.status_code,
-                    response.text,
-                    extra={"log_token_usage": payload},
-                )
-                return False
-            logging.info(
-                "Supabase token usage insert succeeded",
-                extra={"log_token_usage": payload},
-            )
-            return True
+                message = f"HTTP {response.status_code}: {response.text}".strip()
+                return False, payload, message
+            return True, payload, None
         except httpx.HTTPError as exc:
-            logging.error(
-                "Supabase token usage insert error: %s",
-                exc,
-                extra={"log_token_usage": payload},
-            )
-            return False
+            return False, payload, str(exc)

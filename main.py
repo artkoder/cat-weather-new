@@ -543,7 +543,7 @@ class Bot:
             if isinstance(job.payload, dict):
                 job_meta["payload_keys"] = sorted(job.payload.keys())
             meta["job"] = job_meta
-        await self.supabase.insert_token_usage(
+        success, payload, error = await self.supabase.insert_token_usage(
             model=model,
             prompt_tokens=response.prompt_tokens,
             completion_tokens=response.completion_tokens,
@@ -551,6 +551,16 @@ class Bot:
             request_id=response.request_id,
             meta=meta or None,
         )
+        log_context = {"log_token_usage": payload}
+        if success:
+            logging.info("Supabase token usage insert succeeded", extra=log_context)
+        else:
+            if error == "disabled":
+                logging.debug("Supabase client disabled; token usage skipped", extra=log_context)
+            elif error:
+                logging.error("Supabase token usage insert failed: %s", error, extra=log_context)
+            else:
+                logging.error("Supabase token usage insert failed", extra=log_context)
 
     async def start(self):
         self.session = ClientSession()

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
-- Supabase integration that mirrors OpenAI token usage into `token_usage` via `SUPABASE_URL`/`SUPABASE_KEY`, including job metadata for downstream analytics.
+- Supabase integration that mirrors OpenAI token usage into `token_usage` via `SUPABASE_URL`/`SUPABASE_KEY`, including job metadata for downstream analytics and structured `log_token_usage` log lines mirroring the payload when inserts succeed or fail.
 - `/help` command that delivers a Markdown help guide with links to admin-interface workflows and manual button instructions.
 - Dual asset channel support with new `/set_weather_assets_channel` and `/set_recognition_channel` commands plus migration `0014_split_asset_channels.sql` that creates the recognition table and marks asset origins.
 - Regression coverage that simulates both channels to ensure weather posts ignore recognition-only assets.

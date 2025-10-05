@@ -362,6 +362,7 @@ class Bot:
         self.db.commit()
         self.pending = {}
         self.rubric_dashboards: dict[int, dict[str, int]] = {}
+        self.rubric_overview_messages: dict[int, dict[str, dict[str, int]]] = {}
         self.failed_fetches: dict[int, tuple[int, datetime]] = {}
         self.weather_assets_channel_id = self.get_weather_assets_channel()
         self.recognition_channel_id = self.get_recognition_channel()
@@ -382,6 +383,47 @@ class Bot:
             created.append(code)
         if created:
             logging.info("Initialized default rubrics: %s", ", ".join(created))
+
+    def _get_rubric_overview_target(
+        self, user_id: int, code: str
+    ) -> dict[str, Any] | None:
+        stored = self.rubric_overview_messages.get(user_id, {}).get(code)
+        if not stored:
+            return None
+        chat_id = stored.get("chat_id")
+        message_id = stored.get("message_id")
+        if chat_id is None or message_id is None:
+            return None
+        return {"chat": {"id": chat_id}, "message_id": message_id}
+
+    def _remember_rubric_overview(
+        self, user_id: int, code: str, *, chat_id: int, message_id: int
+    ) -> None:
+        self.rubric_overview_messages.setdefault(user_id, {})[code] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+        }
+
+    def _cleanup_rubric_overviews(
+        self, user_id: int, valid_codes: Iterable[str]
+    ) -> None:
+        stored = self.rubric_overview_messages.get(user_id)
+        if not stored:
+            return
+        valid = set(valid_codes)
+        for code in list(stored.keys()):
+            if code not in valid:
+                stored.pop(code, None)
+        if not stored:
+            self.rubric_overview_messages.pop(user_id, None)
+
+    async def _render_rubric_cards(
+        self, user_id: int, rubrics: Sequence[Rubric]
+    ) -> None:
+        for rubric in rubrics:
+            target = self._get_rubric_overview_target(user_id, rubric.code)
+            await self._send_rubric_overview(user_id, rubric.code, message=target)
+        self._cleanup_rubric_overviews(user_id, [rubric.code for rubric in rubrics])
 
     def _tz_offset_delta(self, tz_offset: str | None) -> timedelta:
         tzinfo = self._parse_tz_offset(tz_offset or TZ_OFFSET)
@@ -2260,7 +2302,7 @@ class Bot:
                     "- `/history` — последние отправленные посты с отметкой времени.\n"
                     "- `/setup_weather` — мастер настройки расписаний рубрик для выбранных каналов.\n"
                     "- `/list_weather_channels` — обзор рубрик: показывает время, дату последнего запуска и кнопки `Run now`/`Stop`.\n"
-                    "- `/rubrics` — список всех рубрик и переход в inline-редактор.\n"
+                    "- `/rubrics` — карточки рубрик и кнопка «Управление рубриками» для всех настроек.\n"
                 ),
                 (
                     "*Работа с постами, погодой и ручные действия*\n"
@@ -4458,29 +4500,30 @@ class Bot:
                     "message_id": stored.get("message_id"),
                 }
         rubrics = self.data.list_rubrics()
-        lines: list[str] = []
-        keyboard_rows: list[list[dict[str, Any]]] = []
+        lines: list[str] = [
+            "Управление рубриками",
+            "",
+            "Нажмите «Управление рубриками», чтобы обновить карточки. Все настройки выполняются кнопками в каждой рубрике: включение, выбор каналов, тестовые публикации и расписания.",
+        ]
         if rubrics:
-            lines.append("Доступные рубрики:")
+            lines.append("")
+            lines.append("Состояние:")
             for rubric in rubrics:
                 config = self._normalize_rubric_config(rubric.config)
                 enabled = config.get("enabled", False)
                 status = "✅" if enabled else "❌"
                 lines.append(f"{status} {rubric.title} ({rubric.code})")
-                keyboard_rows.append(
-                    [
-                        {
-                            "text": f"{status} {rubric.title}",
-                            "callback_data": f"rubric_overview:{rubric.code}",
-                        }
-                    ]
-                )
         else:
+            lines.append("")
             lines.append("Рубрики ещё не созданы.")
-        lines.append("")
-        lines.append(
-            "Используйте кнопки ниже, чтобы открыть настройки или добавить новую рубрику."
-        )
+        keyboard_rows: list[list[dict[str, Any]]] = [
+            [
+                {
+                    "text": "Управление рубриками",
+                    "callback_data": "rubric_dashboard",
+                }
+            ]
+        ]
         keyboard_rows.append(
             [
                 {
@@ -4489,15 +4532,6 @@ class Bot:
                 }
             ]
         )
-        if rubrics:
-            keyboard_rows.append(
-                [
-                    {
-                        "text": "🔄 Обновить список",
-                        "callback_data": "rubric_dashboard",
-                    }
-                ]
-            )
         keyboard = {"inline_keyboard": keyboard_rows}
         text = "\n".join(lines).strip()
         chat_id: int | None = None
@@ -4530,6 +4564,7 @@ class Bot:
                 "chat_id": chat_id,
                 "message_id": message_id,
             }
+        await self._render_rubric_cards(user_id, rubrics)
 
     async def _start_rubric_creation(self, user_id: int, query: dict[str, Any]) -> None:
         state = self.pending.setdefault(user_id, {})
@@ -4705,7 +4740,7 @@ class Bot:
         keyboard_rows.append(
             [
                 {
-                    "text": "⬅️ К списку рубрик",
+                    "text": "↩️ Управление рубриками",
                     "callback_data": "rubric_dashboard",
                 }
             ]
@@ -4743,16 +4778,30 @@ class Bot:
         text, _, keyboard = self._build_rubric_overview(rubric)
         payload = {"text": text, "reply_markup": keyboard}
         if message:
-            payload.update(
-                {
-                    "chat_id": message.get("chat", {}).get("id", user_id),
-                    "message_id": message.get("message_id"),
-                }
-            )
+            chat_id = message.get("chat", {}).get("id", user_id)
+            message_id = message.get("message_id")
+            payload.update({"chat_id": chat_id, "message_id": message_id})
             await self.api_request("editMessageText", payload)
+            if chat_id is not None and message_id is not None:
+                self._remember_rubric_overview(
+                    user_id, code, chat_id=chat_id, message_id=message_id
+                )
         else:
             payload["chat_id"] = user_id
-            await self.api_request("sendMessage", payload)
+            response = await self.api_request("sendMessage", payload)
+            if response and response.get("ok"):
+                result = response.get("result")
+                if isinstance(result, dict):
+                    chat = result.get("chat") or {}
+                    chat_id = chat.get("id", user_id)
+                    message_id = result.get("message_id")
+                    if chat_id is not None and message_id is not None:
+                        self._remember_rubric_overview(
+                            user_id,
+                            code,
+                            chat_id=chat_id,
+                            message_id=message_id,
+                        )
 
     def enqueue_rubric(
         self,

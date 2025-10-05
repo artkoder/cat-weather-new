@@ -4,7 +4,7 @@
 [Полную историю изменений см. в `CHANGELOG.md`](CHANGELOG.md).
 
 - **Asset ingestion**. The bot listens to the dedicated recognition channel for new submissions while weather-ready assets live in a separate storage channel. Every photo must contain GPS EXIF data so the bot can resolve the city through Nominatim; authors without coordinates receive an automatic reminder.
-- **Recognition pipeline**. After ingestion the asynchronous job queue schedules a `vision` task that classifies the photo with OpenAI `gpt-4o-mini`, storing the rubric category, architectural details and detected flowers while respecting per-model daily token quotas configured via environment variables.
+- **Recognition pipeline**. After ingestion the asynchronous job queue schedules a `vision` task that classifies the photo with OpenAI `4o-mini`, storing the rubric category, architectural details and detected flowers while respecting per-model daily token quotas configured via environment variables.
 - **Rubric automation**. Two daily rubrics are supported out of the box: `flowers` creates a carousel with greetings for cities detected in flower assets, while `guess_arch` prepares a numbered architecture quiz with optional overlays and weather context. Both rubrics consume recognized assets and clean them up after publishing, auto-initialize on first run and are fully managed through the `/rubrics` inline dashboard.
 - **Admin workflow**. Superadmins manage user access, asset channel binding and rubric schedules directly inside Telegram via commands and inline buttons. The admin interface also exposes manual approval queues and quick status messages for rubric runs.
 - **Operations guardrails**. OpenAI usage is rate-limited per model, reverse geocoding calls Nominatim with throttling, and each rubric publication is persisted with metadata for auditing through the admin tools.
@@ -60,8 +60,7 @@
 - `TZ_OFFSET` – default timezone applied to schedules until users pick their own offset.
 - `SCHED_INTERVAL_SEC` – polling cadence for the scheduler loop (default `30`).
 - `PORT` – aiohttp listener used when calling `web.run_app`; defaults to `8080` and must align with the port exposed by your hosting provider.
-- `OPENAI_API_KEY` – key used by the recognition pipeline and rubric copy generators; when missing, related jobs are skipped automatically.
-- `OPENAI_API_KEY_FILE` – optional path to a file containing the OpenAI key. When set, the bot reads and trims the file contents and uses it if the variable `OPENAI_API_KEY` itself is not defined.
+- `4O_API_KEY` – key used by the recognition pipeline and rubric copy generators; when missing, related jobs are skipped automatically.
 - `OPENAI_DAILY_TOKEN_LIMIT`, `OPENAI_DAILY_TOKEN_LIMIT_4O`, `OPENAI_DAILY_TOKEN_LIMIT_4O_MINI` – optional per-model quotas that gate new OpenAI jobs until the next UTC reset.
 - `PORT` – HTTP port that `web.run_app` listens on (default `8080`). Ensure it matches the port exposed by your proxy or hosting platform (Fly.io, Docker, etc.) so inbound requests reach the app.
 - `SUPABASE_URL`, `SUPABASE_KEY` – optional credentials for the Supabase project that receives OpenAI token usage events. When configured the bot mirrors SQLite usage rows into the `token_usage` table for centralized analytics, storing `bot`, `model`, prompt/completion/total token counts, `request_id`, `endpoint` (`responses`), strictly JSON-serialized `meta` and timestamp `at` in UTC ISO8601. Each Supabase call also emits a structured `log_token_usage` record – identical for successes and failures – so log shippers can archive the same payloads even when Supabase is unreachable.
@@ -96,7 +95,7 @@ The bot targets Fly.io and exposes a single aiohttp application on port `8080`. 
    python main.py
    ```
 
-Provision Fly.io secrets (`TELEGRAM_BOT_TOKEN`, `WEBHOOK_URL`, `OPENAI_API_KEY`, token limits) before the first deployment.
+Provision Fly.io secrets (`TELEGRAM_BOT_TOKEN`, `WEBHOOK_URL`, `4O_API_KEY`, token limits) before the first deployment.
 
 ## Legacy
 Historical documentation for the weather scheduler, including sea temperature handling and template placeholders, now lives in `docs/weather.md`. Those features remain in the codebase for backward compatibility but are no longer part of the primary rubric workflow.

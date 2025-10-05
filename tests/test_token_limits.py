@@ -36,17 +36,17 @@ async def test_token_usage_total_respects_timezone(tmp_path):
     ]
     for ts, total in entries:
         bot.data.log_token_usage(
-            "gpt-4o",
+            "4o",
             total,
             None,
             total,
             timestamp=ts,
         )
     total = bot.data.get_daily_token_usage_total(
-        day=date(2024, 6, 2), models={"gpt-4o"}, tz_offset="+03:00"
+        day=date(2024, 6, 2), models={"4o"}, tz_offset="+03:00"
     )
     assert total == 18
     # Default timezone fallback should use global TZ_OFFSET when tz is None
-    default_total = bot.data.get_daily_token_usage_total(models={"gpt-4o"})
+    default_total = bot.data.get_daily_token_usage_total(models={"4o"})
     assert isinstance(default_total, int)
     await bot.close()

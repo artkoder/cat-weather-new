@@ -21,7 +21,7 @@ async def test_insert_token_usage_success(monkeypatch):
 
     meta = {"source": "test", "time": datetime(2024, 1, 1, tzinfo=timezone.utc)}
     success, payload, error = await client.insert_token_usage(
-        model="gpt-4o",
+        model="4o",
         prompt_tokens=10,
         completion_tokens=5,
         total_tokens=15,
@@ -45,7 +45,7 @@ async def test_insert_token_usage_http_error(monkeypatch):
     monkeypatch.setattr(client._client, "post", post_mock)
 
     success, payload, error = await client.insert_token_usage(
-        model="gpt-4o",
+        model="4o",
         prompt_tokens=None,
         completion_tokens=None,
         total_tokens=None,
@@ -56,7 +56,7 @@ async def test_insert_token_usage_http_error(monkeypatch):
 
     assert success is False
     assert "boom" in (error or "")
-    assert payload["model"] == "gpt-4o"
+    assert payload["model"] == "4o"
 
 
 @pytest.mark.asyncio
@@ -65,7 +65,7 @@ async def test_insert_token_usage_meta_strict():
 
     with pytest.raises(TypeError):
         await client.insert_token_usage(
-            model="gpt-4o",
+            model="4o",
             prompt_tokens=1,
             completion_tokens=2,
             total_tokens=3,

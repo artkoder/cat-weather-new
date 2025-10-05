@@ -423,7 +423,7 @@ async def test_guess_arch_asset_selection_random(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_generate_flowers_uses_gpt4o(tmp_path):
+async def test_generate_flowers_uses_4o(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {"enabled": True}
     _insert_rubric(bot, "flowers", config, rubric_id=1)
@@ -453,7 +453,7 @@ async def test_generate_flowers_uses_gpt4o(tmp_path):
     assert hashtags == ["котопогода", "цветы"]
     assert calls, "generate_json was not called"
     request = calls[0]
-    assert request["model"] == "gpt-4o"
+    assert request["model"] == "4o"
     assert 0.9 <= request["temperature"] <= 1.1
     assert request["top_p"] == 0.9
 
@@ -508,7 +508,7 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_generate_guess_arch_uses_gpt4o(tmp_path):
+async def test_generate_guess_arch_uses_4o(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {"enabled": True}
     _insert_rubric(bot, "guess_arch", config, rubric_id=2)
@@ -538,7 +538,7 @@ async def test_generate_guess_arch_uses_gpt4o(tmp_path):
     assert hashtags == ["угадай", "архитектура"]
     assert calls
     request = calls[0]
-    assert request["model"] == "gpt-4o"
+    assert request["model"] == "4o"
     assert 0.9 <= request["temperature"] <= 1.1
     assert request["top_p"] == 0.9
 

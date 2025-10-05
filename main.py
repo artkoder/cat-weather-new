@@ -3391,6 +3391,60 @@ class Bot:
         elif data.startswith('rubric_overview:') and self.is_superadmin(user_id):
             code = data.split(':', 1)[1]
             await self._send_rubric_overview(user_id, code, message=query.get('message'))
+        elif data.startswith('rubric_publish:') and self.is_superadmin(user_id):
+            parts = data.split(':', 2)
+            if len(parts) < 3:
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Некорректный запрос рубрики',
+                        'show_alert': True,
+                    },
+                )
+                return
+            _, code, mode = parts
+            is_test = mode == 'test'
+            try:
+                job_id = self.enqueue_rubric(code, test=is_test)
+            except Exception as exc:  # noqa: PERF203 - feedback path
+                logging.exception('Failed to enqueue rubric %s', code)
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Ошибка запуска рубрики',
+                        'show_alert': True,
+                    },
+                )
+                await self.api_request(
+                    'sendMessage',
+                    {
+                        'chat_id': user_id,
+                        'text': (
+                            'Не удалось запланировать '
+                            f"{'тестовую ' if is_test else ''}публикацию рубрики {code}: {exc}"
+                        ),
+                    },
+                )
+            else:
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Задача поставлена в очередь',
+                    },
+                )
+                await self.api_request(
+                    'sendMessage',
+                    {
+                        'chat_id': user_id,
+                        'text': (
+                            f"{('Тестовая ' if is_test else 'Рабочая ')}публикация рубрики {code}"
+                            f" поставлена в очередь (задача #{job_id})."
+                        ),
+                    },
+                )
         elif data.startswith('rubric_toggle:') and self.is_superadmin(user_id):
             code = data.split(':', 1)[1]
             rubric = self.data.get_rubric_by_code(code)
@@ -4545,6 +4599,18 @@ class Bot:
         keyboard_rows.append([
             {"text": toggle_text, "callback_data": f"rubric_toggle:{rubric.code}"},
         ])
+        keyboard_rows.append(
+            [
+                {
+                    "text": "Запустить",
+                    "callback_data": f"rubric_publish:{rubric.code}:prod",
+                },
+                {
+                    "text": "Тест-публикация",
+                    "callback_data": f"rubric_publish:{rubric.code}:test",
+                },
+            ]
+        )
         keyboard_rows.append(
             [
                 {

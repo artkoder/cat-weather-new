@@ -88,23 +88,8 @@
 
 ## Job Queue and Manual Rubrics
 - The SQLite-backed job queue starts automatically when the bot boots, loads due jobs every second and executes handlers concurrently according to `JobQueue(concurrency=...)` settings. Failed jobs retry with exponential backoff up to five attempts before being marked as `failed`. Inspect `jobs_queue` via any SQLite tool for troubleshooting.
-- To enqueue a rubric manually without waiting for the scheduler, run the following snippet with valid environment variables:
-  ```bash
-  python - <<'PY'
-  import asyncio, os
-  from main import Bot
-
-  async def trigger():
-      bot = Bot(os.environ["TELEGRAM_BOT_TOKEN"], os.environ.get("DB_PATH", "/data/bot.db"))
-      await bot.start()
-      # replace channel id with the target Telegram channel id
-      await bot.enqueue_rubric("flowers", channel_id=-1001234567890)
-      await bot.close()
-
-  asyncio.run(trigger())
-  PY
-  ```
-  Replace `flowers` with `guess_arch` as needed. The job queue deduplicates identical pending payloads, so repeated runs are safe.
+- Для ручного запуска откройте карточку рубрики в интерфейсе оператора и воспользуйтесь кнопками `Запустить` (боевой канал) или `Тест-публикация` (тестовый канал). Бот поставит задачу `publish_rubric` через очередь и сразу пришлёт уведомление с номером задания, поэтому можно проверять статус без выхода из Telegram.
+- The job queue deduplicates identical pending payloads, so repeated runs from the same button are safe.
 - For ad-hoc publication bypassing the queue entirely, call `publish_rubric` inside the same context; it returns `True` on success and records the run in `posts_history` for later review.
 
 ## Deployment

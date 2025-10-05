@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict
@@ -123,6 +124,11 @@ class JobQueue:
             ("running", start, job.id),
         )
         self.conn.commit()
+        start_time = time.perf_counter()
+        attempt_number = job.attempts + 1
+        logging.info(
+            "Starting job %s (%s) attempt %s", job.id, job.name, attempt_number
+        )
         try:
             await handler(job)
         except JobDelayed as delayed:
@@ -151,6 +157,10 @@ class JobQueue:
                 ("done", datetime.utcnow().isoformat(), job.id),
             )
             self.conn.commit()
+            duration = time.perf_counter() - start_time
+            logging.info(
+                "Completed job %s (%s) in %.3f seconds", job.id, job.name, duration
+            )
         finally:
             self._inflight.discard(job.id)
 
@@ -216,6 +226,9 @@ class JobQueue:
             job = self._row_to_job(row)
             self._inflight.add(job_id)
             await self._queue.put(job)
+            logging.debug(
+                "Queued job %s (%s) for worker", job.id, job.name
+            )
 
     def _row_to_job(self, row: sqlite3.Row) -> Job:
         payload = row["payload"]
@@ -294,6 +307,9 @@ class JobQueue:
         )
         self.conn.commit()
         job_id = int(cur.lastrowid)
+        logging.info(
+            "Enqueued job %s (%s) with status %s", job_id, name, status
+        )
         if status == "queued" and self._running:
             row = self.conn.execute(
                 "SELECT * FROM jobs_queue WHERE id=?", (job_id,)
@@ -303,4 +319,7 @@ class JobQueue:
                 self._inflight.add(job_id)
                 loop = self._loop or asyncio.get_running_loop()
                 loop.call_soon(self._queue.put_nowait, job)
+                logging.debug(
+                    "Dispatched job %s (%s) to worker queue", job.id, job.name
+                )
         return job_id

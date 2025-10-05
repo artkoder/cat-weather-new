@@ -479,6 +479,43 @@ class Bot:
             limits = {"4o": default_limit, "4o-mini": default_limit}
         return limits
 
+    async def run_openai_health_check(self) -> None:
+        if not self.openai or not self.openai.api_key:
+            logging.warning("OpenAI FAIL: API key missing; skipping health check")
+            return
+
+        schema = {
+            "name": "openai_health_check",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "ok": {"type": "boolean"},
+                },
+                "required": ["ok"],
+                "additionalProperties": False,
+            },
+        }
+
+        try:
+            response = await self.openai.generate_json(
+                model="4o",
+                system_prompt="You are a readiness probe.",
+                user_prompt="Return a JSON object with ok=true.",
+                schema=schema,
+                temperature=0.0,
+            )
+        except Exception:
+            logging.exception("OpenAI health check request failed")
+            logging.warning("OpenAI FAIL: request error")
+            return
+
+        await self._record_openai_usage("4o", response)
+
+        if response and isinstance(response.content, dict) and response.content.get("ok") is True:
+            logging.info("OpenAI OK")
+        else:
+            logging.warning("OpenAI FAIL: unexpected response %s", response.content if response else None)
+
     def _enforce_openai_limit(self, job: Job | None, model: str) -> None:
         if (
             job is None
@@ -5782,6 +5819,7 @@ def create_app():
         logging.info("Application startup")
         try:
             await bot.start()
+            await bot.run_openai_health_check()
             await ensure_webhook(bot, webhook_base)
         except Exception:
             logging.exception("Error during startup")

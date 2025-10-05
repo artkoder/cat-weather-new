@@ -60,11 +60,15 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "modalities": ["text"],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": schema,
-                "strict": True,
+            "response": {
+                "modalities": ["text"],
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "json_schema": schema,
+                        "strict": True,
+                    }
+                },
             },
             "input": [
                 {
@@ -104,11 +108,15 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "modalities": ["text"],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": schema,
-                "strict": True,
+            "response": {
+                "modalities": ["text"],
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        "json_schema": schema,
+                        "strict": True,
+                    }
+                },
             },
             "input": [
                 {

@@ -10,6 +10,7 @@ from PIL import Image
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+from data_access import Asset
 from main import Bot
 from openai_client import OpenAIResponse
 
@@ -624,3 +625,78 @@ async def test_overlay_size_stays_within_expected_ratio(tmp_path):
 
     await bot.close()
 
+
+
+@pytest.mark.asyncio
+async def test_overlay_offset_respects_safe_zone(tmp_path, monkeypatch):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    overlays_dir = tmp_path / "overlays"
+    overlays_dir.mkdir()
+
+    captured_offsets: list[tuple[int, int] | None] = []
+    original_paste = Image.Image.paste
+
+    def capture_paste(self, im, box=None, mask=None):  # type: ignore[override]
+        captured_offsets.append(box)
+        return original_paste(self, im, box, mask)
+
+    monkeypatch.setattr(Image.Image, "paste", capture_paste)
+
+    def make_asset(idx: int, size: tuple[int, int]) -> Asset:
+        path = tmp_path / f"base_{idx}.png"
+        Image.new("RGB", size, (255, 255, 255)).save(path)
+        return Asset(
+            id=idx,
+            channel_id=1,
+            tg_chat_id=1,
+            message_id=idx,
+            origin="test",
+            caption_template=None,
+            caption=None,
+            hashtags=None,
+            categories=[],
+            kind="photo",
+            file_id=f"file-{idx}",
+            file_unique_id=f"unique-{idx}",
+            file_name=path.name,
+            mime_type="image/png",
+            file_size=None,
+            width=size[0],
+            height=size[1],
+            duration=None,
+            recognized_message_id=None,
+            exif_present=False,
+            latitude=None,
+            longitude=None,
+            city=None,
+            country=None,
+            author_user_id=None,
+            author_username=None,
+            sender_chat_id=None,
+            via_bot_id=None,
+            forward_from_user=None,
+            forward_from_chat=None,
+            local_path=str(path),
+            metadata=None,
+            vision_results=None,
+            rubric_id=None,
+            vision_category=None,
+            vision_arch_view=None,
+            vision_photo_weather=None,
+            vision_flower_varieties=None,
+            vision_confidence=None,
+            vision_caption=None,
+        )
+
+    large_asset = make_asset(1, (1280, 720))
+    captured_offsets.clear()
+    bot._overlay_number(large_asset, 1, {"overlays_dir": str(overlays_dir)})
+    assert captured_offsets[-1] == (24, 24)
+
+    small_asset = make_asset(2, (320, 640))
+    captured_offsets.clear()
+    bot._overlay_number(small_asset, 2, {"overlays_dir": str(overlays_dir)})
+    assert captured_offsets[-1] == (12, 12)
+
+    await bot.close()

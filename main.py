@@ -10,6 +10,7 @@ import os
 import random
 import re
 import sqlite3
+from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone, time as dtime
 from pathlib import Path
 
@@ -90,6 +91,28 @@ CHANNEL_SEARCH_CONTROLS = [
     ("Сбросить", "rubric_channel_search_clear"),
     ("Готово", "rubric_channel_search_done"),
 ]
+
+
+DEFAULT_RUBRIC_PRESETS: dict[str, dict[str, Any]] = {
+    "flowers": {
+        "title": "Цветы",
+        "config": {
+            "enabled": False,
+            "schedules": [],
+            "assets": {"min": 4, "max": 6, "categories": ["flowers"]},
+        },
+    },
+    "guess_arch": {
+        "title": "Угадай архитектуру",
+        "config": {
+            "enabled": False,
+            "schedules": [],
+            "assets": {"min": 4, "max": 4, "categories": ["architecture"]},
+            "weather_city": "Kaliningrad",
+            "overlays_dir": "overlays",
+        },
+    },
+}
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
@@ -294,6 +317,7 @@ class Bot:
             self.db.execute(stmt)
         self.db.commit()
         self.data = DataAccess(self.db)
+        self._ensure_default_rubrics()
         if migrate_weather_publish_channels(self.db, tz_offset=TZ_OFFSET):
             self.db.commit()
         self.jobs = JobQueue(self.db, concurrency=1)
@@ -336,6 +360,7 @@ class Bot:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
         self.db.commit()
         self.pending = {}
+        self.rubric_dashboards: dict[int, dict[str, int]] = {}
         self.failed_fetches: dict[int, tuple[int, datetime]] = {}
         self.weather_assets_channel_id = self.get_weather_assets_channel()
         self.recognition_channel_id = self.get_recognition_channel()
@@ -343,6 +368,19 @@ class Bot:
         self.session: ClientSession | None = None
         self.running = False
         self.manual_buttons: dict[tuple[int, int], dict[str, list[list[dict]]]] = {}
+
+    def _ensure_default_rubrics(self) -> None:
+        created: list[str] = []
+        for code, preset in DEFAULT_RUBRIC_PRESETS.items():
+            if self.data.get_rubric_by_code(code):
+                continue
+            title = preset.get("title") or code.title()
+            raw_config = preset.get("config") or {}
+            config = deepcopy(raw_config)
+            self.data.upsert_rubric(code, title, config=config)
+            created.append(code)
+        if created:
+            logging.info("Initialized default rubrics: %s", ", ".join(created))
 
     def _tz_offset_delta(self, tz_offset: str | None) -> timedelta:
         tzinfo = self._parse_tz_offset(tz_offset or TZ_OFFSET)
@@ -2119,6 +2157,19 @@ class Bot:
         user_id = message['from']['id']
         username = message['from'].get('username')
 
+        pending_state = self.pending.get(user_id, {})
+        create_state = (
+            pending_state.get('rubric_create')
+            if isinstance(pending_state, dict)
+            else None
+        )
+        if create_state:
+            if not self.is_superadmin(user_id):
+                self.pending.pop(user_id, None)
+            else:
+                await self._handle_rubric_creation_input(user_id, text, create_state)
+            return
+
         if user_id in self.pending and self.pending[user_id].get('rubric_input'):
             if not self.is_superadmin(user_id):
                 del self.pending[user_id]
@@ -2155,10 +2206,7 @@ class Bot:
                     "- `/history` — последние отправленные посты с отметкой времени.\n"
                     "- `/setup_weather` — мастер настройки расписаний рубрик для выбранных каналов.\n"
                     "- `/list_weather_channels` — обзор рубрик: показывает время, дату последнего запуска и кнопки `Run now`/`Stop`.\n"
-                    "- `/rubrics` — список всех рубрик с inline-кнопками для каналов и расписаний.\n"
-                    "- `/rubric_add <code> [title]` — создать новую рубрику и открыть редактор.\n"
-                    "- `/rubric_edit <code>` — открыть редактор существующей рубрики.\n"
-                    "- `/rubric_delete <code>` — удалить рубрику и связанные расписания.\n"
+                    "- `/rubrics` — список всех рубрик и переход в inline-редактор.\n"
                 ),
                 (
                     "*Работа с постами, погодой и ручные действия*\n"
@@ -2335,89 +2383,11 @@ class Bot:
             return
 
         if text.startswith('/rubrics') and self.is_superadmin(user_id):
-            rubrics = self.data.list_rubrics()
-            if not rubrics:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Рубрики не найдены',
-                })
-            else:
-                for rubric in rubrics:
-                    await self._send_rubric_overview(user_id, rubric.code)
+            await self._send_rubric_dashboard(user_id)
             return
 
-        if text.startswith('/rubric_add') and self.is_superadmin(user_id):
-            parts = text.split(maxsplit=2)
-            if len(parts) < 2:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Использование: /rubric_add <code> [title]'
-                })
-                return
-            code = parts[1].strip()
-            if not code:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Код рубрики не может быть пустым'
-                })
-                return
-            existing = self.data.get_rubric_by_code(code)
-            if existing:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'Рубрика {code} уже существует, используйте /rubric_edit {code}',
-                })
-                await self._send_rubric_overview(user_id, code)
-                return
-            title = parts[2].strip() if len(parts) > 2 else code.title()
-            config = {'enabled': False, 'schedules': []}
-            rubric = self.data.upsert_rubric(code, title, config=config)
-            await self.api_request('sendMessage', {
-                'chat_id': user_id,
-                'text': f'Рубрика {rubric.code} создана',
-            })
-            await self._send_rubric_overview(user_id, rubric.code)
-            return
 
-        if text.startswith('/rubric_edit') and self.is_superadmin(user_id):
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Использование: /rubric_edit <code>'
-                })
-                return
-            code = parts[1].strip()
-            rubric = self.data.get_rubric_by_code(code)
-            if not rubric:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'Рубрика {code} не найдена'
-                })
-                return
-            await self._send_rubric_overview(user_id, code)
-            return
 
-        if text.startswith('/rubric_delete') and self.is_superadmin(user_id):
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Использование: /rubric_delete <code>'
-                })
-                return
-            code = parts[1].strip()
-            if self.data.delete_rubric(code):
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'Рубрика {code} удалена'
-                })
-            else:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'Рубрика {code} не найдена'
-                })
-            return
 
         if text.startswith('/approve') and self.is_superadmin(user_id):
             parts = text.split()
@@ -3414,6 +3384,13 @@ class Bot:
                 'text': f"{title} {icon}",
                 'reply_markup': keyboard,
             })
+        elif data == 'rubric_dashboard' and self.is_superadmin(user_id):
+            await self._send_rubric_dashboard(user_id, message=query.get('message'))
+        elif data == 'rubric_create' and self.is_superadmin(user_id):
+            await self._start_rubric_creation(user_id, query)
+        elif data.startswith('rubric_overview:') and self.is_superadmin(user_id):
+            code = data.split(':', 1)[1]
+            await self._send_rubric_overview(user_id, code, message=query.get('message'))
         elif data.startswith('rubric_toggle:') and self.is_superadmin(user_id):
             code = data.split(':', 1)[1]
             rubric = self.data.get_rubric_by_code(code)
@@ -3817,6 +3794,7 @@ class Bot:
                         'chat_id': user_id,
                         'text': f'Рубрика {code} удалена',
                     })
+                await self._send_rubric_dashboard(user_id)
             else:
                 await self.api_request('sendMessage', {
                     'chat_id': user_id,
@@ -4350,6 +4328,183 @@ class Bot:
         }
         await self.api_request("editMessageText", payload)
 
+    def _clear_rubric_create_state(self, user_id: int) -> None:
+        state = self.pending.get(user_id)
+        if isinstance(state, dict):
+            state.pop('rubric_create', None)
+            if not state:
+                self.pending.pop(user_id, None)
+
+    async def _send_rubric_dashboard(
+        self,
+        user_id: int,
+        *,
+        message: dict[str, Any] | None = None,
+    ) -> None:
+        target = message
+        if target is None:
+            stored = self.rubric_dashboards.get(user_id)
+            if stored:
+                target = {
+                    "chat": {"id": stored.get("chat_id")},
+                    "message_id": stored.get("message_id"),
+                }
+        rubrics = self.data.list_rubrics()
+        lines: list[str] = []
+        keyboard_rows: list[list[dict[str, Any]]] = []
+        if rubrics:
+            lines.append("Доступные рубрики:")
+            for rubric in rubrics:
+                config = self._normalize_rubric_config(rubric.config)
+                enabled = config.get("enabled", False)
+                status = "✅" if enabled else "❌"
+                lines.append(f"{status} {rubric.title} ({rubric.code})")
+                keyboard_rows.append(
+                    [
+                        {
+                            "text": f"{status} {rubric.title}",
+                            "callback_data": f"rubric_overview:{rubric.code}",
+                        }
+                    ]
+                )
+        else:
+            lines.append("Рубрики ещё не созданы.")
+        lines.append("")
+        lines.append(
+            "Используйте кнопки ниже, чтобы открыть настройки или добавить новую рубрику."
+        )
+        keyboard_rows.append(
+            [
+                {
+                    "text": "➕ Создать рубрику",
+                    "callback_data": "rubric_create",
+                }
+            ]
+        )
+        if rubrics:
+            keyboard_rows.append(
+                [
+                    {
+                        "text": "🔄 Обновить список",
+                        "callback_data": "rubric_dashboard",
+                    }
+                ]
+            )
+        keyboard = {"inline_keyboard": keyboard_rows}
+        text = "\n".join(lines).strip()
+        chat_id: int | None = None
+        message_id: int | None = None
+        if target:
+            chat = target.get("chat") or {}
+            chat_id = chat.get("id")
+            message_id = target.get("message_id")
+            if chat_id is not None and message_id is not None:
+                payload = {
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text,
+                    "reply_markup": keyboard,
+                }
+                await self.api_request("editMessageText", payload)
+        if chat_id is None or message_id is None:
+            response = await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": text, "reply_markup": keyboard},
+            )
+            if response and response.get("ok"):
+                result = response.get("result")
+                if isinstance(result, dict):
+                    chat = result.get("chat") or {}
+                    chat_id = chat.get("id")
+                    message_id = result.get("message_id")
+        if chat_id is not None and message_id is not None:
+            self.rubric_dashboards[user_id] = {
+                "chat_id": chat_id,
+                "message_id": message_id,
+            }
+
+    async def _start_rubric_creation(self, user_id: int, query: dict[str, Any]) -> None:
+        state = self.pending.setdefault(user_id, {})
+        state.pop('rubric_input', None)
+        state['rubric_create'] = {'message': query.get('message')}
+        instructions = (
+            "Отправьте код новой рубрики и необязательный заголовок.\n"
+            "Формат: `<код> [название]`. Допустимы латинские буквы, цифры и подчёркивания.\n"
+            "Напишите `cancel`, чтобы отменить."
+        )
+        await self.api_request(
+            'sendMessage',
+            {
+                'chat_id': user_id,
+                'text': instructions,
+                'parse_mode': 'Markdown',
+            },
+        )
+
+    async def _handle_rubric_creation_input(
+        self,
+        user_id: int,
+        text: str,
+        state: dict[str, Any],
+    ) -> None:
+        content = (text or "").strip()
+        message_obj = state.get('message') if isinstance(state, dict) else None
+        if not content:
+            await self.api_request(
+                'sendMessage',
+                {
+                    'chat_id': user_id,
+                    'text': 'Код рубрики не может быть пустым. Попробуйте снова или напишите `cancel`.',
+                    'parse_mode': 'Markdown',
+                },
+            )
+            return
+        if content.lower() in {'cancel', 'отмена'}:
+            self._clear_rubric_create_state(user_id)
+            await self.api_request(
+                'sendMessage',
+                {'chat_id': user_id, 'text': 'Создание рубрики отменено.'},
+            )
+            await self._send_rubric_dashboard(user_id, message=message_obj)
+            return
+        parts = content.split(maxsplit=1)
+        code = parts[0].strip().lower()
+        if not re.fullmatch(r'[a-z0-9_]+', code):
+            await self.api_request(
+                'sendMessage',
+                {
+                    'chat_id': user_id,
+                    'text': 'Код может содержать только латинские буквы, цифры и подчёркивания.',
+                },
+            )
+            return
+        title = parts[1].strip() if len(parts) > 1 else code.replace('_', ' ').title()
+        existing = self.data.get_rubric_by_code(code)
+        if existing:
+            self._clear_rubric_create_state(user_id)
+            await self.api_request(
+                'sendMessage',
+                {
+                    'chat_id': user_id,
+                    'text': f'Рубрика {code} уже существует. Открываю редактор.',
+                },
+            )
+            await self._send_rubric_dashboard(user_id, message=message_obj)
+            await self._send_rubric_overview(user_id, code)
+            return
+        config = {'enabled': False, 'schedules': []}
+        rubric = self.data.upsert_rubric(code, title, config=config)
+        self._clear_rubric_create_state(user_id)
+        await self.api_request(
+            'sendMessage',
+            {
+                'chat_id': user_id,
+                'text': f'Рубрика {rubric.title} ({rubric.code}) создана.',
+            },
+        )
+        await self._send_rubric_dashboard(user_id, message=message_obj)
+        await self._send_rubric_overview(user_id, rubric.code)
+
     def _build_rubric_overview(
         self, rubric: Rubric
     ) -> tuple[str, dict[str, Any], dict[str, Any]]:
@@ -4427,6 +4582,14 @@ class Bot:
                     },
                 ]
             )
+        keyboard_rows.append(
+            [
+                {
+                    "text": "⬅️ К списку рубрик",
+                    "callback_data": "rubric_dashboard",
+                }
+            ]
+        )
         keyboard_rows.append(
             [
                 {

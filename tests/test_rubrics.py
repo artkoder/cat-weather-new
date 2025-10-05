@@ -18,23 +18,7 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 
 
 def _insert_rubric(bot: Bot, code: str, config: dict, rubric_id: int = 1) -> None:
-    now = datetime.utcnow().isoformat()
-    bot.db.execute(
-        """
-        INSERT INTO rubrics (id, code, title, description, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(code) DO UPDATE SET description=excluded.description, updated_at=excluded.updated_at
-        """,
-        (
-            rubric_id,
-            code,
-            code.title(),
-            json.dumps(config),
-            now,
-            now,
-        ),
-    )
-    bot.db.commit()
+    bot.data.upsert_rubric(code, code.title(), config=config)
 
 
 @pytest.mark.asyncio
@@ -421,7 +405,12 @@ async def test_rubrics_overview_lists_configs(tmp_path):
     assert "flowers" in data["text"].lower()
     keyboard = data["reply_markup"]["inline_keyboard"]
     assert any(
-        btn.get("callback_data") == "rubric_sched_add:flowers"
+        btn.get("callback_data") == "rubric_overview:flowers"
+        for row in keyboard
+        for btn in row
+    )
+    assert any(
+        btn.get("callback_data") == "rubric_create"
         for row in keyboard
         for btn in row
     )
@@ -450,11 +439,21 @@ async def test_rubric_channel_and_schedule_edit_flow(tmp_path):
     bot.db.commit()
 
     calls.clear()
-    await bot.handle_update({"message": {"text": "/rubric_edit flowers", "from": {"id": 1}}})
+    await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
     assert calls and calls[-1][0] == "sendMessage"
 
     message = {"chat": {"id": 1}, "message_id": 100}
     base_callback = {"id": "1", "from": {"id": 1}, "message": message}
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                **base_callback,
+                "data": "rubric_overview:flowers",
+            }
+        }
+    )
+    assert any(method == "editMessageText" for method, _ in calls)
 
     await bot.handle_update(
         {

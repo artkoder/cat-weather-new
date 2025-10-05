@@ -5,7 +5,7 @@
 
 - **Asset ingestion**. The bot listens to the dedicated recognition channel for new submissions while weather-ready assets live in a separate storage channel. Every photo must contain GPS EXIF data so the bot can resolve the city through Nominatim; authors without coordinates receive an automatic reminder.
 - **Recognition pipeline**. After ingestion the asynchronous job queue schedules a `vision` task that classifies the photo with OpenAI `gpt-4o-mini`, storing the rubric category, architectural details and detected flowers while respecting per-model daily token quotas configured via environment variables.
-- **Rubric automation**. Two daily rubrics are supported out of the box: `flowers` creates a carousel with greetings for cities detected in flower assets, while `guess_arch` prepares a numbered architecture quiz with optional overlays and weather context. Both rubrics consume recognized assets and clean them up after publishing.
+- **Rubric automation**. Two daily rubrics are supported out of the box: `flowers` creates a carousel with greetings for cities detected in flower assets, while `guess_arch` prepares a numbered architecture quiz with optional overlays and weather context. Both rubrics consume recognized assets and clean them up after publishing, auto-initialize on first run and are fully managed through the `/rubrics` inline dashboard.
 - **Admin workflow**. Superadmins manage user access, asset channel binding and rubric schedules directly inside Telegram via commands and inline buttons. The admin interface also exposes manual approval queues and quick status messages for rubric runs.
 - **Operations guardrails**. OpenAI usage is rate-limited per model, reverse geocoding calls Nominatim with throttling, and each rubric publication is persisted with metadata for auditing through the admin tools.
 
@@ -26,10 +26,7 @@
 - `/set_assets_channel` – legacy shortcut that assigns the same channel to both roles for backward compatibility. Run it as `/set_assets_channel confirm` and only if you truly want a shared channel.
 - `/setup_weather` – wizard that assigns rubric schedules to channels when new destinations are added.
 - `/list_weather_channels` – admin dashboard showing rubric schedules, last run timestamps and inline `Run now`/`Stop` actions.
-- `/rubrics` – superadmin dashboard with inline controls for rubric channels, schedules and enablement flags.
-- `/rubric_add <code> [title]` – create a new rubric with a disabled schedule stub and immediately open the inline editor.
-- `/rubric_edit <code>` – reopen the inline editor for the selected rubric to tweak channels or schedules.
-- `/rubric_delete <code>` – remove the rubric and its persisted schedule state from SQLite.
+- `/rubrics` – superadmin dashboard с готовыми рубриками `flowers` и `guess_arch`; из него запускаются все кнопочные настройки и создание новых рубрик.
 - `/history` and `/scheduled` – inspect previously published posts and queued schedules, including rubric drops copied from the assets channel (each scheduled item comes with inline `Cancel`/`Reschedule` controls).
 
 ### Manual posting tools
@@ -46,10 +43,10 @@
 - `/amber` – open the inline picker for the Янтарный канал, then drill down to channel-specific toggles.
 
 ### Rubric inline editor & migration steps
-- After upgrading, run `/rubrics` as a superadmin to inspect existing rubrics and regenerate inline keyboards for each entry.
-- Use the `Включить/Выключить` button to flip the rubric’s `enabled` flag, then update `channel_id`/`test_channel_id` via the respective buttons—send a numeric channel id or `clear` to reset.
-- Add or edit schedules by clicking the inline buttons: the bot will ask for a JSON snippet with `time`, `tz`, `days` and `channel_id`, which is written back to the rubric config immediately.
-- Remove obsolete schedules with the inline `Удалить` button or delete the entire rubric via `/rubric_delete <code>` (also available as an inline action).
+- После запуска две штатные рубрики (`flowers`, `guess_arch`) создаются автоматически; вызовите `/rubrics`, чтобы открыть их список и перейти в карточку нужной рубрики.
+- Кнопки `Включить/Выключить`, `Канал` и `Тест-канал` управляют статусом и привязками напрямую — бот попросит ввести числовой идентификатор или `clear`, чтобы сбросить значение.
+- Планировщик расписаний теперь полностью кнопочный: выберите `Добавить расписание`, укажите время, часовой пояс, дни недели и канал через последовательность inline-подсказок.
+- Лишние слоты удаляются кнопкой `Удалить`, а вся рубрика стирается через `Удалить рубрику`; вернуться к списку можно по кнопке `⬅️ К списку рубрик`.
 - CI migrations are automatic; no extra SQL is required. The new JSON helpers in `data_access.py` persist configs under the existing `description` column, so earlier deployments retain their settings.
 
 ### Channel configuration & migration

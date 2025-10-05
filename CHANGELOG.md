@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/set_assets_channel` now updates both channel roles for backward compatibility, while `publish_weather` only copies from the weather storage channel and leaves source messages untouched.
 - `guess_arch` overlays now scale to 10–16% of the shortest image side so custom PNG badges stay proportional across photo sizes.
 
+- Telegram file downloads now stream directly to disk during ingest and vision jobs, reducing memory usage and ensuring GPS extraction reads from the stored files instead of in-memory buffers.
+
 ## [1.3.0] - 2024-05-17
 ### Added
 - Automatic recognition pipeline that classifies ingested assets with OpenAI `gpt-4o-mini`, stores architectural metadata and detects flowers for downstream rubrics.

@@ -468,16 +468,35 @@ async def test_generate_guess_arch_uses_gpt4o(tmp_path):
 @pytest.mark.asyncio
 async def test_rubrics_overview_lists_configs(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    message_counter = 0
     calls: list[tuple[str, dict[str, Any] | None]] = []
 
     async def fake_api(method, data=None, *, files=None):
+        nonlocal message_counter
         calls.append((method, data))
+        if method == "sendMessage":
+            message_counter += 1
+            chat_id = data.get("chat_id") if isinstance(data, dict) else None
+            return {
+                "ok": True,
+                "result": {"message_id": message_counter, "chat": {"id": chat_id}},
+            }
+        if method == "editMessageText":
+            return {
+                "ok": True,
+                "result": {
+                    "message_id": data.get("message_id") if isinstance(data, dict) else None,
+                    "chat": {"id": data.get("chat_id") if isinstance(data, dict) else None},
+                },
+            }
         return {"ok": True}
 
     bot.api_request = fake_api  # type: ignore
     await bot.start()
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+    rubrics = bot.data.list_rubrics()
+    assert {r.code for r in rubrics} == {"flowers", "guess_arch"}
     bot.data.upsert_rubric(
         "flowers",
         "Flowers",
@@ -495,206 +514,165 @@ async def test_rubrics_overview_lists_configs(tmp_path):
 
     calls.clear()
     await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
-    assert calls, "Expected a message with rubric overview"
-    method, data = calls[0]
-    assert method == "sendMessage"
-    assert data is not None
-    assert "flowers" in data["text"].lower()
-    keyboard = data["reply_markup"]["inline_keyboard"]
+    send_calls = [item for item in calls if item[0] == "sendMessage"]
+    assert len(send_calls) == 3
+    dashboard_method, dashboard_data = send_calls[0]
+    assert dashboard_method == "sendMessage"
+    assert dashboard_data is not None
+    assert "Управление рубриками" in dashboard_data.get("text", "")
+    dashboard_keyboard = dashboard_data.get("reply_markup", {}).get("inline_keyboard", [])
+    assert dashboard_keyboard and dashboard_keyboard[0][0]["text"] == "Управление рубриками"
+
+    flowers_message = send_calls[1][1]
+    assert flowers_message is not None
+    assert "flowers" in flowers_message.get("text", "").lower()
+    flowers_keyboard = flowers_message["reply_markup"]["inline_keyboard"]
     assert any(
-        btn.get("callback_data") == "rubric_overview:flowers"
-        for row in keyboard
+        btn.get("callback_data") == "rubric_toggle:flowers"
+        for row in flowers_keyboard
         for btn in row
     )
-    assert any(
-        btn.get("callback_data") == "rubric_create"
-        for row in keyboard
-        for btn in row
-    )
+    assert bot.rubric_overview_messages[1]["flowers"]["message_id"] is not None
+
+    guess_message = send_calls[2][1]
+    assert guess_message is not None
+    assert "guess_arch" in guess_message.get("text", "")
+
+    calls.clear()
+    await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
+    edit_calls = [item for item in calls if item[0] == "editMessageText"]
+    assert len(edit_calls) == 3
     await bot.close()
 
 
 @pytest.mark.asyncio
 async def test_rubric_channel_and_schedule_edit_flow(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    message_counter = 0
     calls: list[tuple[str, dict[str, Any] | None]] = []
 
     async def fake_api(method, data=None, *, files=None):
+        nonlocal message_counter
         calls.append((method, data))
+        if method == "sendMessage":
+            message_counter += 1
+            chat_id = data.get("chat_id") if isinstance(data, dict) else None
+            return {
+                "ok": True,
+                "result": {"message_id": message_counter, "chat": {"id": chat_id}},
+            }
+        if method in {"editMessageText", "editMessageReplyMarkup"}:
+            return {
+                "ok": True,
+                "result": {
+                    "message_id": data.get("message_id") if isinstance(data, dict) else None,
+                    "chat": {"id": data.get("chat_id") if isinstance(data, dict) else None},
+                },
+            }
         return {"ok": True}
 
     bot.api_request = fake_api  # type: ignore
     await bot.start()
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
-    bot.data.upsert_rubric(
-        "flowers",
-        "Flowers",
-        config={"enabled": False, "schedules": [], "tz": "+03:00"},
-    )
     bot.db.execute("INSERT INTO channels (chat_id, title) VALUES (?, ?)", (-100, "Main"))
+    bot.db.execute("INSERT INTO channels (chat_id, title) VALUES (?, ?)", (-200, "Test"))
+    bot.db.execute("INSERT INTO channels (chat_id, title) VALUES (?, ?)", (-300, "ArchMain"))
+    bot.db.execute("INSERT INTO channels (chat_id, title) VALUES (?, ?)", (-400, "ArchTest"))
     bot.db.commit()
 
-    calls.clear()
     await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
-    assert calls and calls[-1][0] == "sendMessage"
-
-    message = {"chat": {"id": 1}, "message_id": 100}
-    base_callback = {"id": "1", "from": {"id": 1}, "message": message}
-
-    await bot.handle_update(
-        {
-            "callback_query": {
-                **base_callback,
-                "data": "rubric_overview:flowers",
-            }
-        }
-    )
-    assert any(method == "editMessageText" for method, _ in calls)
+    flowers_info = bot.rubric_overview_messages[1]["flowers"]
+    guess_info = bot.rubric_overview_messages[1]["guess_arch"]
+    flowers_message = {"chat": {"id": 1}, "message_id": flowers_info["message_id"]}
+    guess_message = {"chat": {"id": 1}, "message_id": guess_info["message_id"]}
 
     await bot.handle_update(
-        {
-            "callback_query": {
-                **base_callback,
-                "data": "rubric_channel:flowers:main",
-            }
-        }
+        {"callback_query": {"id": "f0", "from": {"id": 1}, "data": "rubric_toggle:flowers", "message": flowers_message}}
     )
     await bot.handle_update(
-        {
-            "callback_query": {
-                **base_callback,
-                "data": "rubric_channel_set:-100",
-            }
-        }
+        {"callback_query": {"id": "g0", "from": {"id": 1}, "data": "rubric_toggle:guess_arch", "message": guess_message}}
     )
-    config = bot.data.get_rubric_config("flowers")
-    assert config is not None
-    assert config["channel_id"] == -100
-
-    schedule_message = {"chat": {"id": 1}, "message_id": 101}
-    schedule_callback = {"id": "2", "from": {"id": 1}, "message": schedule_message}
 
     await bot.handle_update(
-        {
-            "callback_query": {
-                **schedule_callback,
-                "data": "rubric_sched_add:flowers",
-            }
-        }
+        {"callback_query": {"id": "f1", "from": {"id": 1}, "data": "rubric_channel:flowers:main", "message": flowers_message}}
     )
     await bot.handle_update(
-        {
-            "callback_query": {
-                **schedule_callback,
-                "data": "rubric_sched_time",
-            }
-        }
+        {"callback_query": {"id": "f2", "from": {"id": 1}, "data": "rubric_channel_set:-100", "message": flowers_message}}
     )
     await bot.handle_update(
-        {
-            "callback_query": {
-                **schedule_callback,
-                "data": "rubric_sched_hour:9",
-            }
-        }
+        {"callback_query": {"id": "f3", "from": {"id": 1}, "data": "rubric_channel:flowers:test", "message": flowers_message}}
     )
     await bot.handle_update(
-        {
-            "callback_query": {
-                **schedule_callback,
-                "data": "rubric_sched_minute:30",
-            }
-        }
+        {"callback_query": {"id": "f4", "from": {"id": 1}, "data": "rubric_channel_set:-200", "message": flowers_message}}
     )
-    await bot.handle_update(
-        {
-            "callback_query": {
-                **schedule_callback,
-                "data": "rubric_sched_days",
-            }
-        }
-    )
-    await bot.handle_update(
-        {
-            "callback_query": {
-                **schedule_callback,
-                "data": "rubric_sched_day:mon",
-            }
-        }
-    )
-    await bot.handle_update(
-        {
-            "callback_query": {
-                **schedule_callback,
-                "data": "rubric_sched_day:tue",
-            }
-        }
-    )
-    await bot.handle_update(
-        {
-            "callback_query": {
-                **schedule_callback,
-                "data": "rubric_sched_days_done",
-            }
-        }
-    )
-    await bot.handle_update(
-        {
-            "callback_query": {
-                **schedule_callback,
-                "data": "rubric_sched_save",
-            }
-        }
-    )
-    config = bot.data.get_rubric_config("flowers")
-    assert config is not None
-    schedules = config.get("schedules")
-    assert isinstance(schedules, list) and len(schedules) == 1
-    assert schedules[0]["time"] == "09:30"
-    assert schedules[0]["enabled"] is True
-    assert schedules[0]["days"] == ["mon", "tue"]
-    assert schedules[0]["tz"] == "+03:00"
 
     await bot.handle_update(
-        {
-            "callback_query": {
-                "id": "3",
-                "from": {"id": 1},
-                "data": "rubric_sched_toggle:flowers:0",
-                "message": {"chat": {"id": 1}, "message_id": 102},
-            }
-        }
+        {"callback_query": {"id": "f5", "from": {"id": 1}, "data": "rubric_sched_add:flowers", "message": flowers_message}}
     )
-    config = bot.data.get_rubric_config("flowers")
-    assert config is not None
-    assert config["schedules"][0]["enabled"] is False
+    wizard_message = bot.pending[1]["rubric_input"]["message"]
+    wizard_callback = {"id": "f6", "from": {"id": 1}, "message": wizard_message}
+    await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_time"}})
+    await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_hour:9"}})
+    await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_minute:30"}})
+    await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_days"}})
+    await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_day:mon"}})
+    await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_day:tue"}})
+    await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_days_done"}})
+    await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_save"}})
 
     await bot.handle_update(
-        {
-            "callback_query": {
-                "id": "4",
-                "from": {"id": 1},
-                "data": "rubric_sched_del:flowers:0",
-                "message": {"chat": {"id": 1}, "message_id": 103},
-            }
-        }
+        {"callback_query": {"id": "f7", "from": {"id": 1}, "data": "rubric_sched_toggle:flowers:0", "message": flowers_message}}
     )
-    config = bot.data.get_rubric_config("flowers")
-    assert config is not None
-    assert config.get("schedules") == []
 
     await bot.handle_update(
-        {
-            "callback_query": {
-                "id": "5",
-                "from": {"id": 1},
-                "data": "rubric_delete:flowers",
-                "message": {"chat": {"id": 1}, "message_id": 104},
-            }
-        }
+        {"callback_query": {"id": "g1", "from": {"id": 1}, "data": "rubric_channel:guess_arch:main", "message": guess_message}}
     )
-    assert bot.data.get_rubric_by_code("flowers") is None
+    await bot.handle_update(
+        {"callback_query": {"id": "g2", "from": {"id": 1}, "data": "rubric_channel_set:-300", "message": guess_message}}
+    )
+    await bot.handle_update(
+        {"callback_query": {"id": "g3", "from": {"id": 1}, "data": "rubric_channel:guess_arch:test", "message": guess_message}}
+    )
+    await bot.handle_update(
+        {"callback_query": {"id": "g4", "from": {"id": 1}, "data": "rubric_channel_set:-400", "message": guess_message}}
+    )
+    await bot.handle_update(
+        {"callback_query": {"id": "g5", "from": {"id": 1}, "data": "rubric_sched_add:guess_arch", "message": guess_message}}
+    )
+    g_wizard_message = bot.pending[1]["rubric_input"]["message"]
+    g_wizard_callback = {"id": "g6", "from": {"id": 1}, "message": g_wizard_message}
+    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_time"}})
+    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_hour:10"}})
+    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_minute:15"}})
+    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_days"}})
+    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_day:wed"}})
+    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_days_done"}})
+    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_save"}})
+
+    await bot.handle_update(
+        {"callback_query": {"id": "f8", "from": {"id": 1}, "data": "rubric_toggle:flowers", "message": flowers_message}}
+    )
+    await bot.handle_update(
+        {"callback_query": {"id": "g7", "from": {"id": 1}, "data": "rubric_toggle:guess_arch", "message": guess_message}}
+    )
+
+    flowers_config = bot.data.get_rubric_config("flowers")
+    assert flowers_config is not None
+    assert flowers_config.get("channel_id") == -100
+    assert flowers_config.get("test_channel_id") == -200
+    assert flowers_config.get("enabled") is False
+    assert flowers_config.get("schedules") and flowers_config["schedules"][0]["time"] == "09:30"
+    assert flowers_config["schedules"][0]["enabled"] is False
+    assert flowers_config["schedules"][0]["days"] == ["mon", "tue"]
+
+    guess_config = bot.data.get_rubric_config("guess_arch")
+    assert guess_config is not None
+    assert guess_config.get("channel_id") == -300
+    assert guess_config.get("test_channel_id") == -400
+    assert guess_config.get("enabled") is False
+    assert guess_config.get("schedules") and guess_config["schedules"][0]["time"] == "10:15"
+    assert guess_config["schedules"][0]["days"] == ["wed"]
 
     await bot.close()
 

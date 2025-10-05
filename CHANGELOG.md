@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Regression coverage that simulates both channels to ensure weather posts ignore recognition-only assets.
 
 ### Changed
+- Updated the OpenAI Responses payload to use the latest `response_format` schema and
+  ensured token usage metrics persist to Supabase with non-null totals.
 - `/set_assets_channel` now updates both channel roles for backward compatibility, while `publish_weather` only copies from the weather storage channel and leaves source messages untouched.
 - `guess_arch` overlays now scale to 10–16% of the shortest image side so custom PNG badges stay proportional across photo sizes.
 

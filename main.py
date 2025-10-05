@@ -1943,195 +1943,272 @@ class Bot:
         )
         logging.info("Asset %s queued for vision job %s after ingest", asset_id, vision_job)
 
+
     async def _job_vision(self, job: Job):
+        start_time = datetime.utcnow()
         asset_id = job.payload.get("asset_id") if job.payload else None
-        if not asset_id:
-            logging.warning("Vision job %s missing asset_id", job.id)
-            return
-        asset = self.data.get_asset(asset_id)
-        if not asset:
-            logging.warning("Asset %s missing for vision", asset_id)
-            return
-        file_id = asset.file_id
-        if not file_id:
-            logging.warning("Asset %s has no file for vision", asset_id)
-            return
-        file_meta = {
-            "file_id": asset.file_id,
-            "file_unique_id": asset.file_unique_id,
-            "file_name": asset.file_name,
-            "mime_type": asset.mime_type,
-            "duration": asset.duration,
-            "file_size": asset.file_size,
-            "width": asset.width,
-            "height": asset.height,
-        }
-        local_path = asset.local_path
-        if not local_path and not self.dry_run:
-            target_path = self._build_local_file_path(asset_id, file_meta)
-            downloaded_path = await self._download_file(file_id, target_path)
-            if downloaded_path:
-                local_path = str(downloaded_path)
-        if self.dry_run or not self.openai or not self.openai.api_key:
-            self.data.update_asset(asset_id, vision_results={"status": "skipped"})
-            return
-        if not local_path or not os.path.exists(local_path):
-            raise RuntimeError(f"Local file for asset {asset_id} not found")
-        with open(local_path, "rb") as fh:
-            image_bytes = fh.read()
-        schema = {
-            "name": "vision_classification",
-            "schema": {
-                "type": "object",
-                "title": "Vision classification payload",
-                "description": (
-                    "Заполни сведения о категории сюжета, архитектурном виде, погоде на фото и "
-                    "цветах согласно §3.1."
-                ),
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "description": "Основная классификация сюжета фотографии",
-                        "minLength": 1,
-                    },
-                    "arch_view": {
-                        "type": "string",
-                        "description": "Описание архитектурных элементов или вида (если их нет — пустая строка)",
-                        "default": "",
-                    },
-                    "photo_weather": {
-                        "type": "string",
-                        "description": "Краткое описание погодных условий, видимых на изображении",
-                        "minLength": 1,
-                    },
-                    "flower_varieties": {
-                        "type": "array",
-                        "description": "Перечень цветов, различимых на фото",
-                        "items": {
+        logging.info("Starting vision job %s for asset %s", job.id, asset_id)
+        try:
+            if not asset_id:
+                logging.warning("Vision job %s missing asset_id", job.id)
+                return
+            asset = self.data.get_asset(asset_id)
+            if not asset:
+                logging.warning("Asset %s missing for vision", asset_id)
+                return
+            file_id = asset.file_id
+            if not file_id:
+                logging.warning("Asset %s has no file for vision", asset_id)
+                return
+
+            file_meta = {
+                "file_id": asset.file_id,
+                "file_unique_id": asset.file_unique_id,
+                "file_name": asset.file_name,
+                "mime_type": asset.mime_type,
+                "duration": asset.duration,
+                "file_size": asset.file_size,
+                "width": asset.width,
+                "height": asset.height,
+            }
+            local_path = asset.local_path
+            if not local_path and not self.dry_run:
+                target_path = self._build_local_file_path(asset_id, file_meta)
+                downloaded_path = await self._download_file(file_id, target_path)
+                if downloaded_path:
+                    local_path = str(downloaded_path)
+                    logging.info(
+                        "Vision job %s downloaded asset %s to %s",
+                        job.id,
+                        asset_id,
+                        local_path,
+                    )
+            if local_path and os.path.exists(local_path):
+                logging.info(
+                    "Vision job %s using local file %s for asset %s",
+                    job.id,
+                    local_path,
+                    asset_id,
+                )
+            if self.dry_run or not self.openai or not self.openai.api_key:
+                if self.dry_run:
+                    logging.info(
+                        "Vision job %s skipped for asset %s: dry run enabled",
+                        job.id,
+                        asset_id,
+                    )
+                else:
+                    logging.warning(
+                        "Vision job %s skipped for asset %s: OpenAI key missing",
+                        job.id,
+                        asset_id,
+                    )
+                self.data.update_asset(asset_id, vision_results={"status": "skipped"})
+                return
+            if not local_path or not os.path.exists(local_path):
+                raise RuntimeError(f"Local file for asset {asset_id} not found")
+            with open(local_path, "rb") as fh:
+                image_bytes = fh.read()
+
+            schema = {
+                "name": "vision_classification",
+                "schema": {
+                    "type": "object",
+                    "title": "Vision classification payload",
+                    "description": (
+                        "Заполни сведения о категории сюжета, архитектурном виде, погоде на фото и "
+                        "цветах согласно §3.1."
+                    ),
+                    "properties": {
+                        "category": {
                             "type": "string",
+                            "description": "Основная классификация сюжета фотографии",
                             "minLength": 1,
                         },
-                        "minItems": 0,
-                        "default": [],
+                        "arch_view": {
+                            "type": "string",
+                            "description": "Описание архитектурных элементов или вида (если их нет — пустая строка)",
+                            "default": "",
+                        },
+                        "photo_weather": {
+                            "type": "string",
+                            "description": "Краткое описание погодных условий, видимых на изображении",
+                            "minLength": 1,
+                        },
+                        "flower_varieties": {
+                            "type": "array",
+                            "description": "Перечень цветов, различимых на фото",
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                            },
+                            "minItems": 0,
+                            "default": [],
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "description": "Уверенность модели (0.0–1.0)",
+                            "minimum": 0,
+                            "maximum": 1,
+                        },
                     },
-                    "confidence": {
-                        "type": "number",
-                        "description": "Уверенность модели (0.0–1.0)",
-                        "minimum": 0,
-                        "maximum": 1,
-                    },
+                    "required": ["category", "photo_weather"],
+                    "additionalProperties": False,
                 },
-                "required": ["category", "photo_weather"],
-                "additionalProperties": False,
-            },
-        }
-        system_prompt = (
-            "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме, "
-            "с полями category, arch_view, photo_weather, flower_varieties и confidence. "
-            "category — краткая классификация сюжета. arch_view — архитектурный ракурс (если нет, оставь пустую строку). "
-            "photo_weather — сводка погоды, которую видно на фото. flower_varieties — массив названий цветов или пустой массив. "
-            "confidence — число от 0 до 1."
-        )
-        user_prompt = (
-            "Определи по фото категорию, архитектурный вид, погоду и перечисли заметные цветы. Верни только JSON согласно схеме."
-        )
-        self._enforce_openai_limit(job, "gpt-4o-mini")
-        response = await self.openai.classify_image(
-            model="gpt-4o-mini",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            image_bytes=image_bytes,
-            schema=schema,
-        )
-        if response is None:
-            self.data.update_asset(asset_id, vision_results={"status": "skipped"})
-            return
-        result = response.content
-        if not isinstance(result, dict):
-            raise RuntimeError("Invalid response from vision model")
-        category = str(result.get("category", "")).strip()
-        photo_weather = str(result.get("photo_weather", "")).strip()
-        if not category or not photo_weather:
-            raise RuntimeError("Invalid response from vision model")
-        arch_view = str(result.get("arch_view", "")).strip()
-        raw_flowers = result.get("flower_varieties")
-        flower_varieties: list[str] = []
-        if isinstance(raw_flowers, list):
-            for item in raw_flowers:
-                text = str(item).strip()
+            }
+            system_prompt = (
+                "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме, "
+                "с полями category, arch_view, photo_weather, flower_varieties и confidence. "
+                "category — краткая классификация сюжета. arch_view — архитектурный ракурс (если нет, оставь пустую строку). "
+                "photo_weather — сводка погоды, которую видно на фото. flower_varieties — массив названий цветов или пустой массив."
+                "confidence — число от 0 до 1."
+            )
+            user_prompt = (
+                "Определи по фото категорию, архитектурный вид, погоду и перечисли заметные цветы. Верни только JSON согласно схеме."
+            )
+            self._enforce_openai_limit(job, "gpt-4o-mini")
+            logging.info(
+                "Vision job %s classifying asset %s using gpt-4o-mini from %s",
+                job.id,
+                asset_id,
+                local_path,
+            )
+            response = await self.openai.classify_image(
+                model="gpt-4o-mini",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                image_bytes=image_bytes,
+                schema=schema,
+            )
+            if response is None:
+                logging.warning(
+                    "Vision job %s for asset %s returned no response",
+                    job.id,
+                    asset_id,
+                )
+                self.data.update_asset(asset_id, vision_results={"status": "skipped"})
+                return
+            result = response.content
+            if not isinstance(result, dict):
+                raise RuntimeError("Invalid response from vision model")
+            category = str(result.get("category", "")).strip()
+            photo_weather = str(result.get("photo_weather", "")).strip()
+            if not category or not photo_weather:
+                raise RuntimeError("Invalid response from vision model")
+            arch_view = str(result.get("arch_view", "")).strip()
+            raw_flowers = result.get("flower_varieties")
+            flower_varieties: list[str] = []
+            if isinstance(raw_flowers, list):
+                for item in raw_flowers:
+                    text = str(item).strip()
+                    if text:
+                        flower_varieties.append(text)
+            elif raw_flowers:
+                text = str(raw_flowers).strip()
                 if text:
                     flower_varieties.append(text)
-        elif raw_flowers:
-            text = str(raw_flowers).strip()
-            if text:
-                flower_varieties.append(text)
-        raw_confidence = result.get("confidence")
-        confidence: float | None
-        if isinstance(raw_confidence, (int, float)):
-            confidence = float(raw_confidence)
-        elif isinstance(raw_confidence, str):
-            try:
+            raw_confidence = result.get("confidence")
+            confidence: float | None
+            if isinstance(raw_confidence, (int, float)):
                 confidence = float(raw_confidence)
-            except ValueError:
+            elif isinstance(raw_confidence, str):
+                try:
+                    confidence = float(raw_confidence)
+                except ValueError:
+                    confidence = None
+            else:
                 confidence = None
-        else:
-            confidence = None
-        location_parts: list[str] = []
-        if asset.city:
-            location_parts.append(asset.city)
-        if asset.country and asset.country not in location_parts:
-            location_parts.append(asset.country)
-        summary_parts: list[str] = [category]
-        if location_parts:
-            summary_parts.append(", ".join(location_parts))
-        if photo_weather:
-            summary_parts.append(f"Погода: {photo_weather}")
-        caption_lines = ["Распознано: " + " • ".join(summary_parts)]
-        if arch_view:
-            caption_lines.append(f"Архитектурный вид: {arch_view}")
-        if flower_varieties:
-            caption_lines.append("Цветы: " + ", ".join(flower_varieties))
-        if confidence is not None:
-            display_confidence = confidence * 100 if 0 <= confidence <= 1 else confidence
-            caption_lines.append(f"Уверенность модели: {display_confidence:.0f}%")
-        caption_text = "\n".join(line for line in caption_lines if line)
-        result_payload = {
-            "status": "ok",
-            "provider": "gpt-4o-mini",
-            "category": category,
-            "arch_view": arch_view,
-            "photo_weather": photo_weather,
-            "flower_varieties": flower_varieties,
-            "confidence": confidence,
-        }
-        resp = await self.api_request(
-            "sendPhoto",
-            {
-                "chat_id": asset.channel_id,
-                "photo": file_id,
-                "caption": caption_text,
-            },
-        )
-        if not resp.get("ok"):
-            raise RuntimeError(f"Failed to publish vision result: {resp}")
-        new_mid = resp.get("result", {}).get("message_id") if resp.get("result") else None
-        self.data.update_asset(
-            asset_id,
-            recognized_message_id=new_mid,
-            vision_results=result_payload,
-            vision_category=category,
-            vision_arch_view=arch_view,
-            vision_photo_weather=photo_weather,
-            vision_flower_varieties=flower_varieties,
-            vision_confidence=confidence,
-            vision_caption=caption_text,
-            local_path=local_path,
-        )
-        await self._record_openai_usage("gpt-4o-mini", response, job=job)
-        if not self.dry_run and new_mid:
-            await self.api_request(
-                "deleteMessage",
-                {"chat_id": asset.channel_id, "message_id": asset.message_id},
+            location_parts: list[str] = []
+            if asset.city:
+                location_parts.append(asset.city)
+            if asset.country and asset.country not in location_parts:
+                location_parts.append(asset.country)
+            summary_parts: list[str] = [category]
+            if location_parts:
+                summary_parts.append(", ".join(location_parts))
+            if photo_weather:
+                summary_parts.append(f"Погода: {photo_weather}")
+            caption_lines = ["Распознано: " + " • ".join(summary_parts)]
+            if arch_view:
+                caption_lines.append(f"Архитектурный вид: {arch_view}")
+            if flower_varieties:
+                caption_lines.append("Цветы: " + ", ".join(flower_varieties))
+            if confidence is not None:
+                display_confidence = confidence * 100 if 0 <= confidence <= 1 else confidence
+                caption_lines.append(f"Уверенность модели: {display_confidence:.0f}%")
+            caption_text = "\n".join(line for line in caption_lines if line)
+            result_payload = {
+                "status": "ok",
+                "provider": "gpt-4o-mini",
+                "category": category,
+                "arch_view": arch_view,
+                "photo_weather": photo_weather,
+                "flower_varieties": flower_varieties,
+                "confidence": confidence,
+            }
+            logging.info(
+                "Vision job %s classified asset %s: category=%s, weather=%s, arch_view=%s, flowers=%s",
+                job.id,
+                asset_id,
+                category,
+                photo_weather,
+                arch_view,
+                ", ".join(flower_varieties) if flower_varieties else "-",
+            )
+            resp = await self.api_request(
+                "sendPhoto",
+                {
+                    "chat_id": asset.channel_id,
+                    "photo": file_id,
+                    "caption": caption_text,
+                },
+            )
+            if not resp.get("ok"):
+                logging.error(
+                    "Vision job %s failed to publish result for asset %s: %s",
+                    job.id,
+                    asset_id,
+                    resp,
+                )
+                raise RuntimeError(f"Failed to publish vision result: {resp}")
+            new_mid = resp.get("result", {}).get("message_id") if resp.get("result") else None
+            logging.info(
+                "Vision job %s posted classification for asset %s: message_id=%s",
+                job.id,
+                asset_id,
+                new_mid,
+            )
+            self.data.update_asset(
+                asset_id,
+                recognized_message_id=new_mid,
+                vision_results=result_payload,
+                vision_category=category,
+                vision_arch_view=arch_view,
+                vision_photo_weather=photo_weather,
+                vision_flower_varieties=flower_varieties,
+                vision_confidence=confidence,
+                vision_caption=caption_text,
+                local_path=local_path,
+            )
+            await self._record_openai_usage("gpt-4o-mini", response, job=job)
+            if not self.dry_run and new_mid:
+                logging.info(
+                    "Vision job %s deleting original message %s for asset %s",
+                    job.id,
+                    asset.message_id,
+                    asset_id,
+                )
+                await self.api_request(
+                    "deleteMessage",
+                    {"chat_id": asset.channel_id, "message_id": asset.message_id},
+                )
+        finally:
+            duration = (datetime.utcnow() - start_time).total_seconds()
+            logging.info(
+                "Vision job %s for asset %s completed in %.2fs",
+                job.id,
+                asset_id,
+                duration,
             )
 
     def next_asset(self, tags: set[str] | None):

@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -5279,7 +5280,11 @@ class Bot:
                 overlay_img = overlay_src.convert("RGBA").copy()
         else:
             overlay_img = self._create_number_overlay(number, min(base_size))
-        max_side = max(96, min(base_size) // 4)
+        min_side = min(base_size)
+        min_target = max(1, math.ceil(min_side * 0.10))
+        max_target = max(min_target, math.floor(min_side * 0.16))
+        target = round(min_side * 0.12)
+        max_side = max(min_target, min(target, max_target))
         overlay_img = overlay_img.resize((max_side, max_side), Image.LANCZOS)
         return overlay_img
 

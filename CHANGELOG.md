@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `/set_assets_channel` now updates both channel roles for backward compatibility, while `publish_weather` only copies from the weather storage channel and leaves source messages untouched.
+- `guess_arch` overlays now scale to 10–16% of the shortest image side so custom PNG badges stay proportional across photo sizes.
 
 ## [1.3.0] - 2024-05-17
 ### Added

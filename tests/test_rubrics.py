@@ -601,3 +601,26 @@ async def test_rubric_channel_and_schedule_edit_flow(tmp_path):
 
     await bot.close()
 
+
+@pytest.mark.asyncio
+async def test_overlay_size_stays_within_expected_ratio(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    custom_overlay_path = tmp_path / "custom_overlay.png"
+    Image.new("RGBA", (640, 320), (255, 0, 0, 255)).save(custom_overlay_path)
+
+    cases = [
+        (custom_overlay_path, (1600, 1200)),
+        (tmp_path / "missing_overlay.png", (600, 900)),
+        (tmp_path / "missing_overlay.png", (240, 960)),
+    ]
+
+    for overlay_path, base_size in cases:
+        overlay = bot._load_overlay_image(overlay_path, 1, base_size)
+        min_side = min(base_size)
+        ratio = overlay.width / min_side
+        assert overlay.size[0] == overlay.size[1]
+        assert 0.10 <= ratio <= 0.16
+
+    await bot.close()
+

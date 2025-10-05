@@ -85,6 +85,7 @@
 
 ### Local assets & overlays
 - Store overlay PNGs for the `guess_arch` rubric inside the directory referenced by the rubric config (default `main.py` → `overlays`). Files named `1.png`, `2.png`, etc., are overlaid on published photos; the bot auto-generates numeric badges when files are missing.
+- Keep badge graphics roughly within 10–16% of the shorter photo side. The bot rescales custom overlays into this window before compositing so numbers stay legible without hiding too much of the picture.
 - Persist asset storage on a volume so ingestion and recognition jobs can retry without re-downloading media. Temporary directories will break overlay generation and duplicate detection after restarts.
 
 ## Job Queue and Manual Rubrics

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import io
 import json
 import logging
 import math
@@ -14,7 +13,7 @@ from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone, time as dtime
 from pathlib import Path
 
-from typing import Any, Iterable, TYPE_CHECKING
+from typing import Any, BinaryIO, Iterable, TYPE_CHECKING
 
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont
@@ -1655,7 +1654,9 @@ class Bot:
             "forward_from_chat": forward_from_chat,
         }
 
-    async def _download_file(self, file_id: str) -> bytes | None:
+    async def _download_file(
+        self, file_id: str, dest_path: str | Path | None = None
+    ) -> Path | bytes | None:
         if self.dry_run:
             return b""
         if not self.session:
@@ -1666,12 +1667,36 @@ class Bot:
         if not file_path:
             logging.error("No file_path returned for file %s", file_id)
             return None
+        if dest_path is None:
+            logging.error("Destination path is required for file %s", file_id)
+            return None
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp_dest = (
+            dest.with_suffix(dest.suffix + ".part")
+            if dest.suffix
+            else dest.with_name(dest.name + ".part")
+        )
         url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
-        async with self.session.get(url) as file_resp:
-            if file_resp.status != 200:
-                logging.error("Failed to download file %s: HTTP %s", file_id, file_resp.status)
-                return None
-            return await file_resp.read()
+        try:
+            async with self.session.get(url) as file_resp:
+                if file_resp.status != 200:
+                    logging.error(
+                        "Failed to download file %s: HTTP %s", file_id, file_resp.status
+                    )
+                    return None
+                with tmp_dest.open("wb") as fh:
+                    async for chunk in file_resp.content.iter_chunked(64 * 1024):
+                        if not chunk:
+                            continue
+                        fh.write(chunk)
+            tmp_dest.replace(dest)
+            return dest
+        except Exception:
+            logging.exception("Failed to stream download for file %s", file_id)
+            with contextlib.suppress(FileNotFoundError):
+                tmp_dest.unlink()
+            return None
 
     @staticmethod
     def _convert_gps(value, ref) -> float | None:
@@ -1689,9 +1714,11 @@ class Bot:
             logging.exception("Failed to convert GPS coordinates")
             return None
 
-    def _extract_gps(self, data: bytes) -> tuple[float, float] | None:
+    def _extract_gps(
+        self, image_source: str | Path | BinaryIO
+    ) -> tuple[float, float] | None:
         try:
-            with Image.open(io.BytesIO(data)) as img:
+            with Image.open(image_source, mode="r") as img:
                 exif_bytes = img.info.get("exif")
             if not exif_bytes:
                 return None
@@ -1733,7 +1760,7 @@ class Bot:
         self._last_geocode_at = datetime.utcnow()
         return data.get("address", {}) if isinstance(data, dict) else {}
 
-    def _store_local_file(self, asset_id: int, file_meta: dict[str, Any], data: bytes) -> str:
+    def _build_local_file_path(self, asset_id: int, file_meta: dict[str, Any]) -> Path:
         suffix = ""
         file_name = file_meta.get("file_name")
         if file_name:
@@ -1743,7 +1770,10 @@ class Bot:
                 suffix = "." + file_meta["mime_type"].split("/")[-1]
         unique = file_meta.get("file_unique_id") or str(asset_id)
         filename = f"{asset_id}_{unique}{suffix}" if suffix else f"{asset_id}_{unique}"
-        path = self.asset_storage / filename
+        return self.asset_storage / filename
+
+    def _store_local_file(self, asset_id: int, file_meta: dict[str, Any], data: bytes) -> str:
+        path = self._build_local_file_path(asset_id, file_meta)
         try:
             path.write_bytes(data)
         except Exception:
@@ -1777,9 +1807,6 @@ class Bot:
                 "Asset %s queued for vision job %s after ingest (dry run)", asset_id, vision_job
             )
             return
-        data = await self._download_file(file_id)
-        if not data:
-            raise RuntimeError(f"Failed to download file for asset {asset_id}")
         file_meta = {
             "file_id": asset.file_id,
             "file_unique_id": asset.file_unique_id,
@@ -1790,10 +1817,14 @@ class Bot:
             "width": asset.width,
             "height": asset.height,
         }
-        local_path = self._store_local_file(asset_id, file_meta, data)
+        target_path = self._build_local_file_path(asset_id, file_meta)
+        downloaded_path = await self._download_file(file_id, target_path)
+        if not downloaded_path:
+            raise RuntimeError(f"Failed to download file for asset {asset_id}")
+        local_path = str(downloaded_path)
         gps = None
         if asset.kind == "photo":
-            gps = self._extract_gps(data)
+            gps = self._extract_gps(downloaded_path)
             if not gps:
                 author_id = asset.author_user_id
                 if author_id:
@@ -1852,9 +1883,10 @@ class Bot:
         }
         local_path = asset.local_path
         if not local_path and not self.dry_run:
-            data = await self._download_file(file_id)
-            if data:
-                local_path = self._store_local_file(asset_id, file_meta, data)
+            target_path = self._build_local_file_path(asset_id, file_meta)
+            downloaded_path = await self._download_file(file_id, target_path)
+            if downloaded_path:
+                local_path = str(downloaded_path)
         if self.dry_run or not self.openai or not self.openai.api_key:
             self.data.update_asset(asset_id, vision_results={"status": "skipped"})
             return

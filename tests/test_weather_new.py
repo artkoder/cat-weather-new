@@ -3,6 +3,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 import sqlite3
@@ -223,8 +224,10 @@ async def test_recognized_message_skips_reingest(tmp_path):
 
     recognized_mid = 555
 
-    async def fake_download(file_id):  # type: ignore[override]
-        return image_bytes
+    async def fake_download(file_id, dest_path=None):  # type: ignore[override]
+        assert dest_path is not None
+        Path(dest_path).write_bytes(image_bytes)
+        return Path(dest_path)
 
     async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
         if method == 'sendPhoto':
@@ -378,8 +381,10 @@ async def test_recognized_edit_skips_reingest(tmp_path):
 
     recognized_mid = 777
 
-    async def fake_download(file_id):  # type: ignore[override]
-        return image_bytes
+    async def fake_download(file_id, dest_path=None):  # type: ignore[override]
+        assert dest_path is not None
+        Path(dest_path).write_bytes(image_bytes)
+        return Path(dest_path)
 
     async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
         if method == 'sendPhoto':

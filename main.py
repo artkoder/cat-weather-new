@@ -392,13 +392,13 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
                     "minLength": 1,
                 },
                 "confidence": {
-                    "type": "number",
+                    "type": ["number", "null"],
                     "description": "Уверенность в определении стиля (0 — неизвестно, 1 — уверен).",
                     "minimum": 0,
                     "maximum": 1,
                 },
             },
-            "required": ["label"],
+            "required": ["label", "confidence"],
         },
         "safety": {
             "type": "object",
@@ -3110,14 +3110,12 @@ class Bot:
                             confidence_value = None
                     if confidence_value is not None:
                         confidence_value = min(max(confidence_value, 0.0), 1.0)
-                    arch_style = {"label": label}
-                    if confidence_value is not None:
-                        arch_style["confidence"] = confidence_value
+                    arch_style = {"label": label, "confidence": confidence_value}
                 else:
                     arch_style = None
             elif isinstance(arch_style_raw, str):
                 label = arch_style_raw.strip()
-                arch_style = {"label": label} if label else None
+                arch_style = {"label": label, "confidence": None} if label else None
             else:
                 arch_style = None
             usage = response.usage if isinstance(response.usage, dict) else {}

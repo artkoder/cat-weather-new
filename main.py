@@ -2294,8 +2294,11 @@ class Bot:
         street_line = " ".join(street_parts)
 
         location_parts: list[str] = []
+        district = address.get("district")
         if isinstance(city, str) and city.strip():
             location_parts.append(city.strip())
+        elif isinstance(district, str) and district.strip():
+            location_parts.append(district.strip())
         if isinstance(state, str) and state.strip():
             location_parts.append(state.strip())
         if isinstance(country, str) and country.strip():
@@ -2313,17 +2316,20 @@ class Bot:
 
         has_osm_components = bool(street_line or location_line)
 
-        pieces: list[str] = []
+        address_parts: list[str] = []
         if street_line:
-            pieces.append(street_line)
+            address_parts.append(street_line)
         if location_line:
-            pieces.append(location_line)
-        pieces.append(f"lat {lat:.5f}, lon {lon:.5f}")
+            address_parts.append(location_line)
 
-        caption_line = f"Адрес (EXIF): {'; '.join(pieces)}"
+        coords_fragment = f"(lat {lat:.5f}, lon {lon:.5f})"
+        if address_parts:
+            caption_line = f"Адрес (EXIF): {', '.join(address_parts)} {coords_fragment}"
+        else:
+            caption_line = f"Адрес (EXIF): lat {lat:.5f}, lon {lon:.5f}"
 
         dedupe_values: set[str] = set()
-        for value in (city, state, country):
+        for value in (street, district, city, state, country):
             if isinstance(value, str) and value.strip():
                 dedupe_values.add(value.strip().lower())
 

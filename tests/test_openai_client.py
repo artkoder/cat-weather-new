@@ -99,8 +99,8 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     assert payload["model"] == "gpt-vision"
     text_config = payload["text"]["format"]
     assert text_config["type"] == "json_schema"
-    assert text_config["json_schema"]["name"] == "asset_vision_v1"
-    assert text_config["json_schema"]["schema"] is schema
+    assert text_config["name"] == "asset_vision_v1"
+    assert text_config["schema"] is schema
     assert text_config["strict"] is True
     system_content = payload["input"][0]["content"][0]
     assert system_content == {
@@ -171,8 +171,8 @@ async def test_generate_json_uses_text_response_payload(monkeypatch):
     assert payload["model"] == "gpt-json"
     text_config = payload["text"]["format"]
     assert text_config["type"] == "json_schema"
-    assert text_config["json_schema"]["name"] == "post_text_v1"
-    assert text_config["json_schema"]["schema"] is schema
+    assert text_config["name"] == "post_text_v1"
+    assert text_config["schema"] is schema
     assert text_config["strict"] is True
     system_content = payload["input"][0]["content"][0]
     assert system_content == {

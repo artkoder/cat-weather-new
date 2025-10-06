@@ -57,7 +57,7 @@ def test_update_asset_persists_vision_results(db_connection):
         "architecture_wide": True,
         "weather_image": "cloudy",
         "season_guess": "spring",
-        "arch_style": "gothic",
+        "arch_style": {"label": "gothic", "confidence": 0.9},
         "safety": {"nsfw": False, "reason": "безопасно"},
         "category": "architecture",
         "photo_weather": "cloudy",
@@ -174,8 +174,17 @@ def test_asset_vision_schema_definition():
             },
             "framing": {
                 "type": "string",
-                "description": "Кадровка/ракурс снимка (например, close-up, medium shot, wide shot).",
-                "minLength": 1,
+                "description": (
+                    "Кадровка/ракурс снимка. Используй один из вариантов: close-up, medium shot, wide shot, detail, panorama, aerial shot."
+                ),
+                "enum": [
+                    "close-up",
+                    "medium shot",
+                    "wide shot",
+                    "detail",
+                    "panorama",
+                    "aerial shot",
+                ],
             },
             "architecture_close_up": {
                 "type": "boolean",
@@ -187,16 +196,46 @@ def test_asset_vision_schema_definition():
             },
             "weather_image": {
                 "type": "string",
-                "description": "Краткое описание погодных условий на фото (на английском).",
-                "minLength": 1,
+                "description": (
+                    "Краткое описание погодных условий на фото (на английском). Выбирай из категорий: indoor, sunny, cloudy, rainy, snowy, foggy, stormy, twilight, night."
+                ),
+                "enum": [
+                    "indoor",
+                    "sunny",
+                    "cloudy",
+                    "rainy",
+                    "snowy",
+                    "foggy",
+                    "stormy",
+                    "twilight",
+                    "night",
+                ],
             },
             "season_guess": {
                 "type": ["string", "null"],
                 "description": "Предполагаемый сезон (spring, summer, autumn, winter) или null, если неясно.",
+                "enum": ["spring", "summer", "autumn", "winter", None],
             },
             "arch_style": {
-                "type": ["string", "null"],
-                "description": "Предполагаемый архитектурный стиль, если распознан.",
+                "type": ["object", "null"],
+                "description": (
+                    "Предполагаемый архитектурный стиль. Либо null, либо объект с label (строка) и confidence (число 0..1)."
+                ),
+                "additionalProperties": False,
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Название архитектурного стиля (на английском).",
+                        "minLength": 1,
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Уверенность в определении стиля (0 — неизвестно, 1 — уверен).",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
+                },
+                "required": ["label"],
             },
             "safety": {
                 "type": "object",

@@ -1984,9 +1984,13 @@ class Bot:
         try:
             with Image.open(image_source, mode="r") as img:
                 exif_bytes = img.info.get("exif")
-            if not exif_bytes:
-                return None
-            exif_dict = piexif.load(exif_bytes)
+            if exif_bytes:
+                exif_dict = piexif.load(exif_bytes)
+            else:
+                if isinstance(image_source, (str, Path)):
+                    exif_dict = piexif.load(str(image_source))
+                else:
+                    return None
         except Exception:
             logging.exception("Failed to parse EXIF metadata")
             return None

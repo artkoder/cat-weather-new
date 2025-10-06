@@ -111,8 +111,7 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     assert user_text == {"type": "input_text", "text": "What do you see?"}
     image_part = payload["input"][1]["content"][1]
     assert image_part["type"] == "input_image"
-    assert image_part["image_url"].startswith("data:image/jpeg;base64,")
-    encoded = image_part["image_url"].split(",", 1)[1]
+    encoded = image_part["image_base64"]
     assert base64.b64decode(encoded) == b"fake-bytes"
 
     assert result is not None

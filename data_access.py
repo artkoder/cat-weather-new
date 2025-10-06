@@ -713,6 +713,10 @@ class DataAccess:
                     if description or label
                     else None
                 )
+            if not photo_weather and result.get("photo_weather_display") is not None:
+                photo_weather = (
+                    str(result.get("photo_weather_display")).strip() or None
+                )
             if not photo_weather and result.get("photo_weather") is not None:
                 photo_weather = str(result.get("photo_weather")).strip() or None
             flowers_raw = result.get("flower_varieties")
@@ -743,6 +747,17 @@ class DataAccess:
                     confidence = float(raw_confidence)
                 except ValueError:
                     confidence = None
+            if confidence is None:
+                raw_location_confidence = result.get("location_confidence")
+                if isinstance(raw_location_confidence, (int, float)):
+                    confidence = float(raw_location_confidence)
+                elif isinstance(raw_location_confidence, str):
+                    try:
+                        confidence = float(raw_location_confidence)
+                    except ValueError:
+                        confidence = None
+                if confidence is not None:
+                    confidence = min(max(confidence, 0.0), 1.0)
         if isinstance(flowers_raw, list):
             flowers_json = json.dumps(flowers_raw)
         elif flowers_raw is None:

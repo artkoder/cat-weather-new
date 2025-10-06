@@ -74,6 +74,19 @@ WEATHER_HEADER_PATTERN = re.compile(
 )
 
 
+WEATHER_TAG_TRANSLATIONS: dict[str, str] = {
+    "indoor": "в помещении",
+    "sunny": "солнечно",
+    "cloudy": "пасмурно",
+    "rainy": "дождливо",
+    "snowy": "снежно",
+    "foggy": "туманно",
+    "stormy": "шторм",
+    "twilight": "сумеречно",
+    "night": "ночь",
+}
+
+
 ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
     "type": "object",
     "title": "asset_vision_v1",
@@ -116,10 +129,10 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
             "description": "Предполагаемый город, если распознаётся.",
         },
         "location_confidence": {
-            "type": ["string", "null"],
-            "description": (
-                "Степень уверенности в указанной локации (например: low, medium, high, certain)."
-            ),
+            "type": "number",
+            "description": "Числовая уверенность в локации (0 — нет уверенности, 1 — полностью уверен).",
+            "minimum": 0,
+            "maximum": 1,
         },
         "landmarks": {
             "type": "array",
@@ -139,27 +152,9 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
                 "type": "string",
                 "minLength": 1,
             },
+            "minItems": 3,
+            "maxItems": 12,
             "default": [],
-        },
-        "weather": {
-            "type": "object",
-            "description": "Погода, которую можно определить по фото.",
-            "additionalProperties": False,
-            "properties": {
-                "label": {
-                    "type": "string",
-                    "description": (
-                        "Краткая машинно-читаемая метка: indoor, sunny, cloudy, rainy, snowy, foggy, stormy, twilight, night."
-                    ),
-                    "minLength": 1,
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Небольшое текстовое описание погоды на русском.",
-                    "minLength": 1,
-                },
-            },
-            "required": ["label", "description"],
         },
         "safety": {
             "type": "object",
@@ -170,8 +165,9 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
             "properties": {
                 "nsfw": {"type": "boolean"},
                 "reason": {
-                    "type": ["string", "null"],
+                    "type": "string",
                     "description": "Краткое пояснение статуса безопасности (на русском).",
+                    "minLength": 1,
                 },
             },
             "required": ["nsfw", "reason"],
@@ -187,7 +183,6 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
         "location_confidence",
         "landmarks",
         "tags",
-        "weather",
         "safety",
     ],
 }
@@ -2199,13 +2194,14 @@ class Bot:
 
             system_prompt = (
                 "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме asset_vision_v1. "
-                "caption — краткое описание сцены на русском. guess_country/guess_city — строка или null, если нельзя определить. "
-                "arch_view — true, если в кадре есть архитектурный ракурс; is_outdoor — true для съёмки на улице. weather содержит label (indoor/sunny/cloudy/rainy/snowy/foggy/stormy/twilight/night) и описание на русском. "
-                "objects — список заметных объектов (если есть цветы, укажи их виды). landmarks — распознанные достопримечательности. tags — ключевые теги в нижнем регистре. location_confidence — степень уверенности (low/medium/high/certain или null). "
-                "safety включает булево поле nsfw и reason (краткое пояснение на русском, даже если всё безопасно)."
+                "Структура включает поля: arch_view (boolean), caption (строка на русском), objects (массив строк), is_outdoor (boolean), "
+                "guess_country и guess_city (строка или null), location_confidence (число 0..1), landmarks (массив строк), tags (от 3 до 12 тегов) "
+                "и safety (объект с nsfw:boolean и reason:string). reason всегда непустая строка. location_confidence — числовая уверенность: 0 значит нет уверенности, 1 — максимум. "
+                "В objects перечисляй заметные элементы, цветы называй видами. В tags используй английские слова в нижнем регистре, включая погодные категории (например, sunny, cloudy, indoor)."
             )
             user_prompt = (
-                "Опиши сцену, погоду, объекты, теги, достопримечательности и безопасность фото. Если локация неочевидна, возвращай null и укажи уровень уверенности."
+                "Опиши сцену, перечисли объекты, теги, достопримечательности, архитектуру и безопасность фото. "
+                "Если локация неочевидна, ставь guess_country/guess_city = null и указывай низкую числовую уверенность."
             )
             self._enforce_openai_limit(job, "gpt-4o-mini")
             logging.info(
@@ -2233,16 +2229,6 @@ class Bot:
             if not isinstance(result, dict):
                 raise RuntimeError("Invalid response from vision model")
             caption = str(result.get("caption", "")).strip()
-            weather_info = result.get("weather")
-            weather_label = ""
-            weather_description = ""
-            if isinstance(weather_info, dict):
-                label = weather_info.get("label")
-                description = weather_info.get("description")
-                if isinstance(label, str):
-                    weather_label = label.strip()
-                if isinstance(description, str):
-                    weather_description = description.strip()
             guess_country_raw = result.get("guess_country")
             guess_city_raw = result.get("guess_city")
             if isinstance(guess_country_raw, str):
@@ -2314,18 +2300,34 @@ class Bot:
                     safety_reason = reason_raw.strip() or None
                 elif reason_raw is not None:
                     safety_reason = str(reason_raw).strip() or None
+            if not safety_reason:
+                safety_reason = (
+                    "обнаружен чувствительный контент"
+                    if nsfw_flag
+                    else "безопасно"
+                )
             location_confidence_raw = result.get("location_confidence")
-            if isinstance(location_confidence_raw, str):
-                location_confidence = location_confidence_raw.strip().lower() or None
-            elif location_confidence_raw is None:
-                location_confidence = None
-            else:
-                location_confidence = str(location_confidence_raw).strip().lower() or None
-            if not caption or not weather_label:
+            location_confidence: float | None = None
+            if isinstance(location_confidence_raw, (int, float)):
+                location_confidence = float(location_confidence_raw)
+            elif isinstance(location_confidence_raw, str):
+                try:
+                    location_confidence = float(location_confidence_raw.strip())
+                except ValueError:
+                    location_confidence = None
+            if location_confidence is not None:
+                location_confidence = min(max(location_confidence, 0.0), 1.0)
+            if not caption:
                 raise RuntimeError("Invalid response from vision model")
-            weather_summary = weather_description or weather_label
             category = self._derive_primary_scene(caption, tags)
-            photo_weather = weather_label
+            photo_weather = None
+            photo_weather_display: str | None = None
+            for tag_value in tags:
+                translated = WEATHER_TAG_TRANSLATIONS.get(tag_value)
+                if translated:
+                    photo_weather = tag_value
+                    photo_weather_display = translated
+                    break
             flower_varieties: list[str] = []
             if "flowers" in tags:
                 flower_varieties = [obj for obj in objects if obj]
@@ -2343,17 +2345,11 @@ class Bot:
             if guess_country and guess_country.lower() not in existing_lower:
                 location_parts.append(guess_country)
                 existing_lower.add(guess_country.lower())
-            confidence_map = {
-                "low": "низкая",
-                "medium": "средняя",
-                "high": "высокая",
-                "certain": "точная",
-            }
-            confidence_display = (
-                confidence_map.get(location_confidence, location_confidence)
-                if location_confidence
-                else None
-            )
+            confidence_display: str | None = None
+            if location_confidence is not None and math.isfinite(location_confidence):
+                confidence_percent = int(round(location_confidence * 100))
+                confidence_percent = max(0, min(100, confidence_percent))
+                confidence_display = f"{confidence_percent}%"
             caption_lines = [f"Распознано: {caption}"]
             if location_parts:
                 location_line = ", ".join(location_parts)
@@ -2362,8 +2358,8 @@ class Bot:
                 caption_lines.append("Локация: " + location_line)
             elif confidence_display:
                 caption_lines.append(f"Уверенность в локации: {confidence_display}")
-            if weather_summary:
-                caption_lines.append(f"Погода: {weather_summary}")
+            if photo_weather_display:
+                caption_lines.append(f"Обстановка: {photo_weather_display}")
             caption_lines.append(f"На улице: {'да' if is_outdoor else 'нет'}")
             caption_lines.append(f"Архитектура: {'да' if arch_view else 'нет'}")
             if landmarks:
@@ -2396,23 +2392,20 @@ class Bot:
                 "location_confidence": location_confidence,
                 "landmarks": landmarks,
                 "tags": tags,
-                "weather": {
-                    "label": weather_label,
-                    "description": weather_description or weather_label,
-                },
                 "safety": {"nsfw": nsfw_flag, "reason": safety_reason},
                 "category": category,
                 "photo_weather": photo_weather,
+                "photo_weather_display": photo_weather_display,
                 "flower_varieties": flower_varieties,
             }
             logging.info(
-                "Vision job %s classified asset %s: scene=%s, weather=%s, arch=%s, tags=%s",
+                "Vision job %s classified asset %s: scene=%s, arch=%s, tags=%s, weather_tag=%s",
                 job.id,
                 asset_id,
                 caption,
-                weather_label,
                 arch_view,
                 ", ".join(tags) if tags else "-",
+                photo_weather or "-",
             )
             resp = await self.api_request(
                 "sendPhoto",
@@ -2444,6 +2437,7 @@ class Bot:
                 vision_category=category,
                 vision_arch_view="yes" if arch_view else "",
                 vision_photo_weather=photo_weather,
+                vision_confidence=location_confidence,
                 vision_flower_varieties=flower_varieties,
                 vision_caption=caption_text,
                 local_path=None,

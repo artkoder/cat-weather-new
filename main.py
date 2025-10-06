@@ -451,6 +451,31 @@ class Bot:
         self.asset_storage = Path(asset_dir).expanduser() if asset_dir else Path("/tmp/bot_assets")
         self.asset_storage.mkdir(parents=True, exist_ok=True)
         self._last_geocode_at: datetime | None = None
+        ttl_hours_raw = os.getenv("REVGEO_CACHE_TTL_HOURS", "24")
+        try:
+            ttl_hours = float(ttl_hours_raw)
+        except ValueError:
+            logging.warning(
+                "Invalid REVGEO_CACHE_TTL_HOURS=%s, defaulting to 24h", ttl_hours_raw
+            )
+            ttl_hours = 24.0
+        fail_ttl_minutes_raw = os.getenv("REVGEO_FAIL_TTL_MINUTES", "15")
+        try:
+            fail_ttl_minutes = float(fail_ttl_minutes_raw)
+        except ValueError:
+            logging.warning(
+                "Invalid REVGEO_FAIL_TTL_MINUTES=%s, defaulting to 15m",
+                fail_ttl_minutes_raw,
+            )
+            fail_ttl_minutes = 15.0
+        self._revgeo_ttl = timedelta(hours=max(ttl_hours, 0.0) or 24.0)
+        self._revgeo_fail_ttl = timedelta(minutes=max(fail_ttl_minutes, 0.0) or 15.0)
+        self._revgeo_cache: dict[tuple[float, float], tuple[dict[str, Any], datetime]] = {}
+        self._revgeo_fallback_cache: dict[tuple[float, float], tuple[str, datetime]] = {}
+        self._revgeo_fail_cache: dict[tuple[float, float], datetime] = {}
+        self._revgeo_semaphore = asyncio.Semaphore(1)
+        self._twogis_api_key = os.getenv("TWOGIS_API_KEY")
+        self._twogis_backoff_seconds = 1.0
         # ensure new columns exist when upgrading
         for table, column in (
             ("users", "username"),
@@ -2054,28 +2079,201 @@ class Bot:
             readable[ifd] = formatted
         return readable
 
-    async def _reverse_geocode(self, lat: float, lon: float) -> dict[str, Any]:
+    async def reverse_geocode_osm(self, lat: float, lon: float) -> dict[str, Any]:
         if self.dry_run or not self.session:
             return {}
+
+        async with self._revgeo_semaphore:
+            now = datetime.utcnow()
+            if self._last_geocode_at:
+                elapsed = (now - self._last_geocode_at).total_seconds()
+                if elapsed < 1:
+                    await asyncio.sleep(1 - elapsed)
+
+            url = "https://nominatim.openstreetmap.org/reverse"
+            params = {
+                "lat": f"{lat:.6f}",
+                "lon": f"{lon:.6f}",
+                "format": "jsonv2",
+                "zoom": "18",
+                "addressdetails": "1",
+                "accept-language": "ru",
+            }
+            headers = {"User-Agent": "kotopogoda-bot/1.0 (+контакт)"}
+
+            try:
+                async with self.session.get(url, params=params, headers=headers) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"HTTP {resp.status}")
+                    data = await resp.json()
+            finally:
+                self._last_geocode_at = datetime.utcnow()
+
+        if not isinstance(data, dict):
+            return {}
+
+        address = data.get("address")
+        if not isinstance(address, dict):
+            return {}
+
+        def _pick(keys: Sequence[str]) -> str | None:
+            for key in keys:
+                value = address.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return None
+
+        return {
+            "street": _pick(["road", "pedestrian", "footway", "residential"]),
+            "house_number": _pick(["house_number"]),
+            "district": _pick(["suburb", "district"]),
+            "city": _pick(["city", "town", "village", "hamlet"]),
+            "state": _pick(["state"]),
+            "country": _pick(["country"]),
+            "postcode": _pick(["postcode"]),
+        }
+
+    async def _reverse_geocode(self, lat: float, lon: float) -> dict[str, Any]:
+        empty = {
+            "street": None,
+            "house_number": None,
+            "district": None,
+            "city": None,
+            "state": None,
+            "country": None,
+            "postcode": None,
+            "fallback": None,
+        }
+
+        if self.dry_run or not self.session:
+            return empty
+
+        key = (round(lat, 5), round(lon, 5))
         now = datetime.utcnow()
-        if self._last_geocode_at:
-            elapsed = (now - self._last_geocode_at).total_seconds()
-            if elapsed < 1:
-                await asyncio.sleep(1 - elapsed)
-        url = "https://nominatim.openstreetmap.org/reverse"
+
+        cached = self._revgeo_cache.get(key)
+        if cached and now - cached[1] < self._revgeo_ttl:
+            result = {**cached[0], "fallback": None}
+            fallback_cached = self._revgeo_fallback_cache.get(key)
+            if fallback_cached and now - fallback_cached[1] < self._revgeo_ttl:
+                result["fallback"] = fallback_cached[0]
+            return result
+
+        fallback_cached = self._revgeo_fallback_cache.get(key)
+        if fallback_cached and now - fallback_cached[1] < self._revgeo_ttl:
+            return {**empty, "fallback": fallback_cached[0]}
+
+        fail_cached = self._revgeo_fail_cache.get(key)
+        if fail_cached and now - fail_cached < self._revgeo_fail_ttl:
+            return empty
+
+        try:
+            components = await self.reverse_geocode_osm(lat, lon)
+        except Exception as exc:
+            logging.warning(
+                "REVGEO fail provider=osm lat=%.5f lon=%.5f error=%s",
+                lat,
+                lon,
+                exc,
+            )
+            components = {}
+
+        if components:
+            logging.info(
+                "REVGEO ok provider=osm lat=%.5f lon=%.5f street=%s city=%s country=%s",
+                lat,
+                lon,
+                components.get("street"),
+                components.get("city"),
+                components.get("country"),
+            )
+            self._revgeo_cache[key] = (components, now)
+            self._revgeo_fail_cache.pop(key, None)
+            return {**components, "fallback": None}
+
+        twogis_fallback = await self._reverse_geocode_twogis(lat, lon)
+        if twogis_fallback:
+            logging.info(
+                "REVGEO ok provider=2gis lat=%.5f lon=%.5f text=%s",
+                lat,
+                lon,
+                twogis_fallback,
+            )
+            formatted = f"Адрес (2ГИС): {twogis_fallback}"
+            self._revgeo_fallback_cache[key] = (formatted, now)
+            self._revgeo_fail_cache.pop(key, None)
+            return {**empty, "fallback": formatted}
+
+        self._revgeo_fail_cache[key] = now
+        return empty
+
+    async def _reverse_geocode_twogis(self, lat: float, lon: float) -> str | None:
+        if not self._twogis_api_key or not self.session:
+            return None
+
         params = {
             "lat": f"{lat:.6f}",
             "lon": f"{lon:.6f}",
-            "format": "jsonv2",
+            "type": "building",
+            "fields": "items.full_name,items.address_name",
+            "key": self._twogis_api_key,
         }
-        headers = {"User-Agent": "KotopogodaBot/1.0"}
-        async with self.session.get(url, params=params, headers=headers) as resp:
-            if resp.status != 200:
-                logging.warning("Reverse geocode failed with HTTP %s", resp.status)
-                return {}
-            data = await resp.json()
-        self._last_geocode_at = datetime.utcnow()
-        return data.get("address", {}) if isinstance(data, dict) else {}
+        url = "https://catalog.api.2gis.com/3.0/items/geocode"
+
+        try:
+            async with self.session.get(url, params=params) as resp:
+                if resp.status == 429:
+                    delay = min(self._twogis_backoff_seconds, 60.0)
+                    logging.warning(
+                        "REVGEO warn provider=2gis lat=%.5f lon=%.5f status=429 retry_in=%.1fs",
+                        lat,
+                        lon,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    self._twogis_backoff_seconds = min(self._twogis_backoff_seconds * 2, 60.0)
+                    return None
+                if resp.status != 200:
+                    text = await resp.text()
+                    delay = min(self._twogis_backoff_seconds, 60.0)
+                    logging.warning(
+                        "REVGEO warn provider=2gis lat=%.5f lon=%.5f status=%s body=%s retry_in=%.1fs",
+                        lat,
+                        lon,
+                        resp.status,
+                        text,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    self._twogis_backoff_seconds = min(self._twogis_backoff_seconds * 2, 60.0)
+                    return None
+                data = await resp.json()
+        except Exception as exc:
+            delay = min(self._twogis_backoff_seconds, 60.0)
+            logging.warning(
+                "REVGEO warn provider=2gis lat=%.5f lon=%.5f error=%s retry_in=%.1fs",
+                lat,
+                lon,
+                exc,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            self._twogis_backoff_seconds = min(self._twogis_backoff_seconds * 2, 60.0)
+            return None
+
+        self._twogis_backoff_seconds = 1.0
+
+        items = (
+            data.get("result", {}).get("items")
+            if isinstance(data, dict)
+            else None
+        )
+        if not items:
+            return None
+        best = items[0]
+        if not isinstance(best, dict):
+            return None
+        return best.get("full_name") or best.get("address_name") or best.get("name")
 
     def _build_local_file_path(self, asset_id: int, file_meta: dict[str, Any]) -> Path:
         suffix = ""

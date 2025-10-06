@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -49,6 +50,40 @@ class DummyAsyncClient:
     ) -> DummyResponse:
         self._callback(url, json, headers)
         return DummyResponse(self._response_payload)
+
+
+class ErrorResponse:
+    def __init__(self, payload: dict[str, Any], status_code: int = 400) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.headers: dict[str, str] = {}
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+    @property
+    def text(self) -> str:
+        return json.dumps(self._payload)
+
+
+class ErrorAsyncClient:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    async def __aenter__(self) -> "ErrorAsyncClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:  # type: ignore[override]
+        return None
+
+    async def post(
+        self,
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str],
+    ) -> ErrorResponse:
+        return ErrorResponse(self._payload)
 
 
 @pytest.mark.asyncio
@@ -187,3 +222,46 @@ async def test_generate_json_uses_text_response_payload(monkeypatch):
     assert result.content == expected_result
     assert result.total_tokens == 10
     assert result.request_id == "resp_json"
+
+
+@pytest.mark.asyncio
+async def test_logs_invalid_json_schema_details(monkeypatch, caplog):
+    error_payload = {
+        "error": {
+            "type": "invalid_json_schema",
+            "message": "Schema validation failed",
+        }
+    }
+
+    monkeypatch.setattr(
+        "httpx.AsyncClient", lambda timeout=120: ErrorAsyncClient(error_payload)
+    )
+
+    client = OpenAIClient("test-key")
+    oversized_value = "x" * 1200
+    schema = {
+        "type": "object",
+        "properties": {
+            "details": {
+                "type": "string",
+                "description": oversized_value,
+            }
+        },
+        "required": ["details"],
+    }
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(RuntimeError):
+            await client.generate_json(
+                model="gpt-json",
+                system_prompt="Validate schema",
+                user_prompt="Return data",
+                schema=schema,
+            )
+
+    messages = [record.getMessage() for record in caplog.records]
+    relevant = [message for message in messages if "invalid_json_schema" in message]
+    assert relevant, f"Expected invalid_json_schema log, got {messages!r}"
+    log_message = relevant[0]
+    assert "post_text_v1" in log_message
+    assert "truncated=True" in log_message

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import contextlib
 import json
 import logging
@@ -33,9 +34,14 @@ logging.basicConfig(level=logging.INFO)
 # Default database path points to /data which is mounted as a Fly.io volume.
 # This ensures information like registered channels and scheduled posts
 # persists across deployments unless DB_PATH is explicitly overridden.
+def _env_flag(value: str) -> bool:
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 TZ_OFFSET = os.getenv("TZ_OFFSET", "+00:00")
 SCHED_INTERVAL_SEC = int(os.getenv("SCHED_INTERVAL_SEC", "30"))
+ASSETS_DEBUG_EXIF = _env_flag(os.getenv("ASSETS_DEBUG_EXIF", "1"))
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 WMO_EMOJI = {
     0: "\u2600\ufe0f",
@@ -2005,6 +2011,49 @@ class Bot:
             return None
         return lat, lon
 
+    def _extract_exif_full(
+        self, image_source: str | Path | BinaryIO
+    ) -> dict[str, dict[str, Any]]:
+        try:
+            with Image.open(image_source, mode="r") as img:
+                exif_bytes = img.info.get("exif")
+            if exif_bytes:
+                exif_dict = piexif.load(exif_bytes)
+            else:
+                exif_dict = piexif.load(str(image_source))
+        except Exception:
+            logging.exception("Failed to parse EXIF metadata")
+            return {}
+
+        def _format_value(value: Any) -> Any:
+            if isinstance(value, bytes):
+                try:
+                    return value.decode("utf-8")
+                except UnicodeDecodeError:
+                    return value.hex()
+            if isinstance(value, dict):
+                return {k: _format_value(v) for k, v in value.items()}
+            if isinstance(value, tuple):
+                return [_format_value(v) for v in value]
+            if isinstance(value, list):
+                return [_format_value(v) for v in value]
+            return value
+
+        readable: dict[str, dict[str, Any]] = {}
+        for ifd in ("0th", "Exif", "GPS", "1st"):
+            source = exif_dict.get(ifd)
+            if not isinstance(source, dict):
+                continue
+            tag_map = piexif.TAGS.get(ifd, {})
+            formatted: dict[str, Any] = {}
+            for tag_id, raw_value in source.items():
+                tag_info = tag_map.get(tag_id)
+                tag_name = tag_info.get("name") if tag_info else None
+                name = tag_name or str(tag_id)
+                formatted[name] = _format_value(raw_value)
+            readable[ifd] = formatted
+        return readable
+
     async def _reverse_geocode(self, lat: float, lon: float) -> dict[str, Any]:
         if self.dry_run or not self.session:
             return {}
@@ -2544,6 +2593,43 @@ class Bot:
                 vision_caption=caption_text,
                 local_path=None,
             )
+            if ASSETS_DEBUG_EXIF and not self.dry_run and new_mid:
+                try:
+                    debug_path: str | None = (
+                        local_path if local_path and os.path.exists(local_path) else None
+                    )
+                    if not debug_path:
+                        target_path = self._build_local_file_path(asset_id, file_meta)
+                        downloaded_path = await self._download_file(file_id, target_path)
+                        if downloaded_path:
+                            debug_path = str(downloaded_path)
+                            cleanup_paths.append(debug_path)
+                    if debug_path and os.path.exists(debug_path):
+                        exif_payload = self._extract_exif_full(debug_path)
+                        exif_json = json.dumps(exif_payload, ensure_ascii=False, indent=2)
+                        message_text = f"EXIF (raw)\n{exif_json}" if exif_json else "EXIF (raw)"
+                        if len(message_text) <= 3500:
+                            await self.api_request(
+                                "sendMessage",
+                                {
+                                    "chat_id": asset.channel_id,
+                                    "text": message_text,
+                                    "reply_to_message_id": new_mid,
+                                },
+                            )
+                        else:
+                            buffer = io.BytesIO(exif_json.encode("utf-8"))
+                            await self.api_request(
+                                "sendDocument",
+                                {
+                                    "chat_id": asset.channel_id,
+                                    "caption": "EXIF (raw)",
+                                    "reply_to_message_id": new_mid,
+                                },
+                                files={"document": ("exif.json", buffer.getvalue())},
+                            )
+                except Exception:
+                    logging.exception("Failed to publish EXIF debug for asset %s", asset_id)
             if not self.dry_run and new_mid:
                 logging.info(
                     "Vision job %s deleting original message %s for asset %s",

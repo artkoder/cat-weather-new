@@ -91,6 +91,7 @@ def test_update_asset_persists_vision_results(db_connection):
     assert row["confidence"] == pytest.approx(0.82)
     stored_payload = json.loads(row["result_json"])
     assert stored_payload["caption"] == "Архитектурный фасад"
+    assert stored_payload["arch_style"]["confidence"] == pytest.approx(0.9)
 
     asset = data.get_asset(asset_id)
     assert asset is not None
@@ -98,6 +99,45 @@ def test_update_asset_persists_vision_results(db_connection):
     assert asset.vision_photo_weather == "overcast"
     assert asset.vision_confidence == pytest.approx(0.82)
     assert asset.vision_results == payload
+
+    skip_payload = {"status": "skipped"}
+    data.update_asset(asset_id, vision_results=skip_payload)
+    skipped_row = db_connection.execute(
+        "SELECT status, provider FROM vision_results WHERE asset_id=? ORDER BY id DESC LIMIT 1",
+        (asset_id,),
+    ).fetchone()
+    assert skipped_row["status"] == "skipped"
+    assert skipped_row["provider"] is None
+
+
+def test_update_asset_persists_null_confidence(db_connection):
+    data = DataAccess(db_connection)
+    asset_id = data.save_asset(
+        channel_id=1,
+        message_id=11,
+        template=None,
+        hashtags=None,
+        tg_chat_id=1,
+        caption=None,
+        kind="photo",
+    )
+
+    payload = {
+        "status": "ok",
+        "provider": "test-model",
+        "arch_style": {"label": "art_deco", "confidence": None},
+    }
+
+    data.update_asset(asset_id, vision_results=payload)
+
+    row = db_connection.execute(
+        "SELECT result_json FROM vision_results WHERE asset_id=? ORDER BY id DESC LIMIT 1",
+        (asset_id,),
+    ).fetchone()
+
+    assert row is not None
+    stored_payload = json.loads(row["result_json"])
+    assert stored_payload["arch_style"]["confidence"] is None
 
     skip_payload = {"status": "skipped"}
     data.update_asset(asset_id, vision_results=skip_payload)
@@ -224,13 +264,13 @@ def test_asset_vision_schema_definition():
                         "minLength": 1,
                     },
                     "confidence": {
-                        "type": "number",
+                        "type": ["number", "null"],
                         "description": "Уверенность в определении стиля (0 — неизвестно, 1 — уверен).",
                         "minimum": 0,
                         "maximum": 1,
                     },
                 },
-                "required": ["label"],
+                "required": ["label", "confidence"],
             },
             "safety": {
                 "type": "object",

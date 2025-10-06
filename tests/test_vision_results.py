@@ -49,13 +49,13 @@ def test_update_asset_persists_vision_results(db_connection):
         "is_outdoor": True,
         "guess_country": "Россия",
         "guess_city": "Калининград",
-        "location_confidence": "high",
+        "location_confidence": 0.82,
         "landmarks": ["Кафедральный собор"],
-        "tags": ["architecture", "flowers"],
-        "weather": {"label": "cloudy", "description": "пасмурно"},
+        "tags": ["architecture", "flowers", "cloudy"],
         "safety": {"nsfw": False, "reason": "безопасно"},
         "category": "architecture",
         "photo_weather": "cloudy",
+        "photo_weather_display": "пасмурно",
         "flower_varieties": ["роза"],
     }
 
@@ -65,6 +65,7 @@ def test_update_asset_persists_vision_results(db_connection):
         vision_category=payload["category"],
         vision_arch_view="yes",
         vision_photo_weather=payload["photo_weather"],
+        vision_confidence=payload["location_confidence"],
         vision_flower_varieties=payload["flower_varieties"],
     )
 
@@ -81,7 +82,7 @@ def test_update_asset_persists_vision_results(db_connection):
     assert row["arch_view"] == "yes"
     assert row["photo_weather"] == "пасмурно"
     assert json.loads(row["flower_varieties"]) == ["роза"]
-    assert row["confidence"] is None
+    assert row["confidence"] == pytest.approx(0.82)
     stored_payload = json.loads(row["result_json"])
     assert stored_payload["caption"] == "Архитектурный фасад"
 
@@ -89,6 +90,7 @@ def test_update_asset_persists_vision_results(db_connection):
     assert asset is not None
     assert asset.vision_category == "architecture"
     assert asset.vision_photo_weather == "cloudy"
+    assert asset.vision_confidence == pytest.approx(0.82)
     assert asset.vision_results == payload
 
     skip_payload = {"status": "skipped"}
@@ -143,8 +145,10 @@ def test_asset_vision_schema_definition():
                 "description": "Предполагаемый город, если распознаётся.",
             },
             "location_confidence": {
-                "type": ["string", "null"],
-                "description": "Степень уверенности в указанной локации (например: low, medium, high, certain).",
+                "type": "number",
+                "description": "Числовая уверенность в локации (0 — нет уверенности, 1 — полностью уверен).",
+                "minimum": 0,
+                "maximum": 1,
             },
             "landmarks": {
                 "type": "array",
@@ -158,27 +162,9 @@ def test_asset_vision_schema_definition():
                     "Набор тегов (на английском в нижнем регистре) для downstream-логики: architecture, flowers, people, animals и т.п."
                 ),
                 "items": {"type": "string", "minLength": 1},
+                "minItems": 3,
+                "maxItems": 12,
                 "default": [],
-            },
-            "weather": {
-                "type": "object",
-                "description": "Погода, которую можно определить по фото.",
-                "additionalProperties": False,
-                "properties": {
-                    "label": {
-                        "type": "string",
-                        "description": (
-                            "Краткая машинно-читаемая метка: indoor, sunny, cloudy, rainy, snowy, foggy, stormy, twilight, night."
-                        ),
-                        "minLength": 1,
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Небольшое текстовое описание погоды на русском.",
-                        "minLength": 1,
-                    },
-                },
-                "required": ["label", "description"],
             },
             "safety": {
                 "type": "object",
@@ -187,8 +173,9 @@ def test_asset_vision_schema_definition():
                 "properties": {
                     "nsfw": {"type": "boolean"},
                     "reason": {
-                        "type": ["string", "null"],
+                        "type": "string",
                         "description": "Краткое пояснение статуса безопасности (на русском).",
+                        "minLength": 1,
                     },
                 },
                 "required": ["nsfw", "reason"],
@@ -204,7 +191,6 @@ def test_asset_vision_schema_definition():
             "location_confidence",
             "landmarks",
             "tags",
-            "weather",
             "safety",
         ],
     }

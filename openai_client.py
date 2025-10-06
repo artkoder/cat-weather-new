@@ -160,38 +160,28 @@ class OpenAIClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        response_format = (
+        response_format_raw = (
             payload.get("response_format") if isinstance(payload, dict) else None
         )
+        response_format = (
+            response_format_raw if isinstance(response_format_raw, dict) else {}
+        )
+        json_schema_raw = response_format.get("json_schema")
         json_schema_section = (
-            response_format.get("json_schema")
-            if isinstance(response_format, dict)
-            else None
+            json_schema_raw if isinstance(json_schema_raw, dict) else {}
         )
-        schema_name = (
-            json_schema_section.get("name")
-            if isinstance(json_schema_section, dict)
-            else None
-        )
+        schema_name = json_schema_section.get("name")
         if not schema_name or not str(schema_name).strip():
             raise ValueError(
                 "OpenAI payload must include response_format.json_schema.name"
             )
-        schema_body = (
-            json_schema_section.get("schema")
-            if isinstance(json_schema_section, dict)
-            else None
-        )
+        schema_body = json_schema_section.get("schema")
         schema_keys: list[str] | None = None
         schema_key_count: int | None = None
         if isinstance(schema_body, dict):
             schema_key_count = len(schema_body)
             schema_keys = sorted(schema_body.keys())[:5]
-        strict_flag = (
-            json_schema_section.get("strict")
-            if isinstance(json_schema_section, dict)
-            else None
-        )
+        strict_flag = json_schema_section.get("strict")
         logging.debug(
             "OpenAI payload schema summary: name=%s strict=%s key_count=%s sample_keys=%s",
             schema_name,

@@ -17,7 +17,12 @@ from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Sequence, TYPE_CHECKING
 
 from aiohttp import web, ClientSession, FormData
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+try:  # pragma: no cover - optional dependency
+    from PIL import ImageCms  # type: ignore
+except Exception:  # pragma: no cover - fallback when LittleCMS is unavailable
+    ImageCms = None  # type: ignore[assignment]
 import piexif
 
 from data_access import Asset, DataAccess, Rubric
@@ -92,6 +97,74 @@ WEATHER_TAG_TRANSLATIONS: dict[str, str] = {
     "night": "ночь",
 }
 
+
+def ensure_photo_bytes(source: bytes | str | os.PathLike[str]) -> bytes:
+    """Convert an image to an sRGB JPEG under Telegram limits.
+
+    Args:
+        source: Either raw bytes or a path-like object pointing to the image.
+
+    Returns:
+        JPEG bytes with EXIF orientation applied and the longer side capped at
+        2560 pixels.
+    """
+
+    if isinstance(source, (bytes, bytearray)):
+        payload = bytes(source)
+    elif isinstance(source, (str, os.PathLike)):
+        with open(source, "rb") as fh:
+            payload = fh.read()
+    else:  # pragma: no cover - defensive
+        raise TypeError("Unsupported image source type")
+
+    with Image.open(io.BytesIO(payload)) as img:
+        img = ImageOps.exif_transpose(img)
+        converted = img
+
+        icc_profile = converted.info.get("icc_profile") if hasattr(converted, "info") else None
+        if icc_profile and ImageCms is not None:
+            try:
+                src_profile = ImageCms.ImageCmsProfile(io.BytesIO(icc_profile))
+                dst_profile = ImageCms.createProfile("sRGB")
+                converted = ImageCms.profileToProfile(
+                    converted, src_profile, dst_profile, outputMode="RGB"
+                )
+            except Exception:  # pragma: no cover - fallback when conversion fails
+                logging.exception("Failed to convert ICC profile to sRGB")
+                converted = converted.convert("RGB")
+        elif converted.mode != "RGB":
+            converted = converted.convert("RGB")
+        else:
+            converted = converted.copy()
+
+        width, height = converted.size
+        max_side = max(width, height)
+        if max_side > 2560:
+            scale = 2560 / float(max_side)
+            new_width = max(1, int(round(width * scale)))
+            new_height = max(1, int(round(height * scale)))
+            if hasattr(Image, "Resampling"):
+                resample = Image.Resampling.LANCZOS
+            else:  # pragma: no cover - Pillow < 9 compatibility
+                resample = Image.LANCZOS  # type: ignore[attr-defined]
+            converted = converted.resize((new_width, new_height), resample)
+
+        max_bytes = 10 * 1024 * 1024
+        quality = 85
+        min_quality = 40
+        step = 5
+
+        while True:
+            buffer = io.BytesIO()
+            converted.save(buffer, format="JPEG", quality=quality, optimize=True)
+            data = buffer.getvalue()
+            if len(data) <= max_bytes or quality <= min_quality:
+                if len(data) > max_bytes and quality <= min_quality:
+                    logging.warning(
+                        "Compressed photo exceeds %s bytes even at quality %s", max_bytes, quality
+                    )
+                return data
+            quality = max(min_quality, quality - step)
 
 ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -2952,43 +3025,100 @@ class Bot:
                 response.completion_tokens if response and response.completion_tokens is not None else "-",
                 response.total_tokens if response and response.total_tokens is not None else "-",
             )
-            resp = await self.api_request(
-                "copyMessage",
-                {
-                    "chat_id": asset.channel_id,
-                    "from_chat_id": asset.channel_id,
-                    "message_id": asset.message_id,
-                    "caption": caption_text or None,
-                },
-            )
-            method_used = "copyMessage"
-            if not resp.get("ok"):
-                logging.error(
-                    "Vision job %s failed to copy message for asset %s: %s",
-                    job.id,
-                    asset_id,
-                    resp,
-                )
-                fallback_method = "sendPhoto" if asset.kind == "photo" else "sendDocument"
-                file_field = "photo" if fallback_method == "sendPhoto" else "document"
+            delete_original_after_post = False
+            if asset.kind == "photo":
+                method_used = "copyMessage"
                 resp = await self.api_request(
-                    fallback_method,
+                    "copyMessage",
                     {
                         "chat_id": asset.channel_id,
-                        file_field: file_id,
-                        "caption": caption_text,
+                        "from_chat_id": asset.channel_id,
+                        "message_id": asset.message_id,
+                        "caption": caption_text or None,
                     },
                 )
-                method_used = fallback_method
                 if not resp.get("ok"):
                     logging.error(
-                        "Vision job %s failed to publish result for asset %s via %s: %s",
+                        "Vision job %s failed to copy message for asset %s: %s",
                         job.id,
                         asset_id,
-                        fallback_method,
                         resp,
                     )
-                    raise RuntimeError(f"Failed to publish vision result: {resp}")
+                    fallback_method = "sendPhoto" if asset.kind == "photo" else "sendDocument"
+                    file_field = "photo" if fallback_method == "sendPhoto" else "document"
+                    resp = await self.api_request(
+                        fallback_method,
+                        {
+                            "chat_id": asset.channel_id,
+                            file_field: file_id,
+                            "caption": caption_text,
+                        },
+                    )
+                    method_used = fallback_method
+                    if not resp.get("ok"):
+                        logging.error(
+                            "Vision job %s failed to publish result for asset %s via %s: %s",
+                            job.id,
+                            asset_id,
+                            fallback_method,
+                            resp,
+                        )
+                        raise RuntimeError(f"Failed to publish vision result: {resp}")
+            else:
+                photo_source: bytes | str | os.PathLike[str] | None = None
+                if local_path and os.path.exists(local_path):
+                    photo_source = local_path
+                elif not self.dry_run:
+                    target_path = self._build_local_file_path(asset_id, file_meta)
+                    downloaded_path = await self._download_file(file_id, target_path)
+                    if downloaded_path:
+                        local_path = str(downloaded_path)
+                        cleanup_paths.append(local_path)
+                        photo_source = local_path
+                if not photo_source:
+                    raise RuntimeError("Unable to load asset for conversion")
+
+                photo_bytes = ensure_photo_bytes(photo_source)
+                attach_name = "photo"
+                filename = asset.file_name or "photo.jpg"
+                if not filename.lower().endswith((".jpg", ".jpeg")):
+                    filename = f"{Path(filename).stem or 'photo'}.jpg"
+                resp = await self.api_request(
+                    "sendPhoto",
+                    {
+                        "chat_id": asset.channel_id,
+                        "caption": caption_text or None,
+                        "photo": f"attach://{attach_name}",
+                    },
+                    files={attach_name: (filename, photo_bytes)},
+                )
+                method_used = "sendPhoto"
+                delete_original_after_post = True
+                if not resp.get("ok"):
+                    logging.error(
+                        "Vision job %s failed to publish converted photo for asset %s: %s",
+                        job.id,
+                        asset_id,
+                        resp,
+                    )
+                    resp = await self.api_request(
+                        "sendDocument",
+                        {
+                            "chat_id": asset.channel_id,
+                            "document": file_id,
+                            "caption": caption_text,
+                        },
+                    )
+                    method_used = "sendDocument"
+                    delete_original_after_post = False
+                    if not resp.get("ok"):
+                        logging.error(
+                            "Vision job %s failed to publish result for asset %s via sendDocument: %s",
+                            job.id,
+                            asset_id,
+                            resp,
+                        )
+                        raise RuntimeError(f"Failed to publish vision result: {resp}")
             new_mid = resp.get("result", {}).get("message_id") if resp.get("result") else None
             logging.info(
                 "Vision job %s posted classification for asset %s via %s: message_id=%s",
@@ -3051,17 +3181,30 @@ class Bot:
                             )
                 except Exception:
                     logging.exception("Failed to publish EXIF debug for asset %s", asset_id)
-            if not self.dry_run and new_mid:
+            if (
+                delete_original_after_post
+                and not self.dry_run
+                and new_mid
+                and asset.message_id
+            ):
                 logging.info(
-                    "Vision job %s deleting original message %s for asset %s",
+                    "Vision job %s deleting original document message %s for asset %s",
                     job.id,
                     asset.message_id,
                     asset_id,
                 )
-                await self.api_request(
+                delete_resp = await self.api_request(
                     "deleteMessage",
                     {"chat_id": asset.channel_id, "message_id": asset.message_id},
                 )
+                if not delete_resp.get("ok"):
+                    logging.error(
+                        "Vision job %s failed to delete original message %s for asset %s: %s",
+                        job.id,
+                        asset.message_id,
+                        asset_id,
+                        delete_resp,
+                    )
         finally:
             for path in cleanup_paths:
                 self._remove_file(path)

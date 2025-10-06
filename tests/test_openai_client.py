@@ -54,7 +54,7 @@ class DummyAsyncClient:
 @pytest.mark.asyncio
 async def test_classify_image_uses_text_response_payload(monkeypatch):
     captured: dict[str, Any] = {}
-    schema = {"name": "vision", "schema": {"type": "object"}}
+    schema = {"type": "object"}
     expected_result = {"label": "cat", "confidence": 0.9}
     response_payload = {
         "output": [
@@ -99,8 +99,8 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     assert payload["model"] == "gpt-vision"
     text_config = payload["text"]["format"]
     assert text_config["type"] == "json_schema"
-    assert text_config["json_schema"]["name"] == "vision"
-    assert text_config["json_schema"]["schema"] is schema["schema"]
+    assert text_config["json_schema"]["name"] == "asset_vision_v1"
+    assert text_config["json_schema"]["schema"] is schema
     assert text_config["strict"] is True
     system_content = payload["input"][0]["content"][0]
     assert system_content == {
@@ -126,7 +126,7 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_json_uses_text_response_payload(monkeypatch):
     captured: dict[str, Any] = {}
-    schema = {"name": "json", "schema": {"type": "object"}}
+    schema = {"type": "object"}
     expected_result = {"message": "hello"}
     response_payload = {
         "output": [
@@ -171,8 +171,8 @@ async def test_generate_json_uses_text_response_payload(monkeypatch):
     assert payload["model"] == "gpt-json"
     text_config = payload["text"]["format"]
     assert text_config["type"] == "json_schema"
-    assert text_config["json_schema"]["name"] == "json"
-    assert text_config["json_schema"]["schema"] is schema["schema"]
+    assert text_config["json_schema"]["name"] == "post_text_v1"
+    assert text_config["json_schema"]["schema"] is schema
     assert text_config["strict"] is True
     system_content = payload["input"][0]["content"][0]
     assert system_content == {

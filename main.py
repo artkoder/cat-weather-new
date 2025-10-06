@@ -485,15 +485,12 @@ class Bot:
             return
 
         schema = {
-            "name": "openai_health_check",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "ok": {"type": "boolean"},
-                },
-                "required": ["ok"],
-                "additionalProperties": False,
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
             },
+            "required": ["ok"],
+            "additionalProperties": False,
         }
 
         try:
@@ -502,6 +499,7 @@ class Bot:
                 system_prompt="You are a readiness probe.",
                 user_prompt="Return a JSON object with ok=true.",
                 schema=schema,
+                schema_name="health_check_v1",
                 temperature=0.0,
             )
         except Exception:
@@ -2067,50 +2065,47 @@ class Bot:
                 image_bytes = fh.read()
 
             schema = {
-                "name": "vision_classification",
-                "schema": {
-                    "type": "object",
-                    "title": "Vision classification payload",
-                    "description": (
-                        "Заполни сведения о категории сюжета, архитектурном виде, погоде на фото и "
-                        "цветах согласно §3.1."
-                    ),
-                    "properties": {
-                        "category": {
-                            "type": "string",
-                            "description": "Основная классификация сюжета фотографии",
-                            "minLength": 1,
-                        },
-                        "arch_view": {
-                            "type": "string",
-                            "description": "Описание архитектурных элементов или вида (если их нет — пустая строка)",
-                            "default": "",
-                        },
-                        "photo_weather": {
-                            "type": "string",
-                            "description": "Краткое описание погодных условий, видимых на изображении",
-                            "minLength": 1,
-                        },
-                        "flower_varieties": {
-                            "type": "array",
-                            "description": "Перечень цветов, различимых на фото",
-                            "items": {
-                                "type": "string",
-                                "minLength": 1,
-                            },
-                            "minItems": 0,
-                            "default": [],
-                        },
-                        "confidence": {
-                            "type": "number",
-                            "description": "Уверенность модели (0.0–1.0)",
-                            "minimum": 0,
-                            "maximum": 1,
-                        },
+                "type": "object",
+                "title": "Vision classification payload",
+                "description": (
+                    "Заполни сведения о категории сюжета, архитектурном виде, погоде на фото и "
+                    "цветах согласно §3.1."
+                ),
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Основная классификация сюжета фотографии",
+                        "minLength": 1,
                     },
-                    "required": ["category", "photo_weather"],
-                    "additionalProperties": False,
+                    "arch_view": {
+                        "type": "string",
+                        "description": "Описание архитектурных элементов или вида (если их нет — пустая строка)",
+                        "default": "",
+                    },
+                    "photo_weather": {
+                        "type": "string",
+                        "description": "Краткое описание погодных условий, видимых на изображении",
+                        "minLength": 1,
+                    },
+                    "flower_varieties": {
+                        "type": "array",
+                        "description": "Перечень цветов, различимых на фото",
+                        "items": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
+                        "minItems": 0,
+                        "default": [],
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Уверенность модели (0.0–1.0)",
+                        "minimum": 0,
+                        "maximum": 1,
+                    },
                 },
+                "required": ["category", "photo_weather"],
+                "additionalProperties": False,
             }
             system_prompt = (
                 "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме, "
@@ -5199,19 +5194,16 @@ class Bot:
             )
         prompt = " ".join(prompt_parts)
         schema = {
-            "name": "flowers_post",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "greeting": {"type": "string"},
-                    "hashtags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                    },
+            "type": "object",
+            "properties": {
+                "greeting": {"type": "string"},
+                "hashtags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
                 },
-                "required": ["greeting", "hashtags"],
             },
+            "required": ["greeting", "hashtags"],
         }
         attempts = 3
         for attempt in range(1, attempts + 1):
@@ -5488,19 +5480,16 @@ class Bot:
         if weather_text:
             prompt += f" Добавь аккуратную фразу с погодой: {weather_text}."
         schema = {
-            "name": "guess_arch_post",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "caption": {"type": "string"},
-                    "hashtags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                    },
+            "type": "object",
+            "properties": {
+                "caption": {"type": "string"},
+                "hashtags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
                 },
-                "required": ["caption", "hashtags"],
             },
+            "required": ["caption", "hashtags"],
         }
         attempts = 3
         for attempt in range(1, attempts + 1):

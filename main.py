@@ -41,7 +41,7 @@ def _env_flag(value: str) -> bool:
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 TZ_OFFSET = os.getenv("TZ_OFFSET", "+00:00")
 SCHED_INTERVAL_SEC = int(os.getenv("SCHED_INTERVAL_SEC", "30"))
-ASSETS_DEBUG_EXIF = _env_flag(os.getenv("ASSETS_DEBUG_EXIF", "1"))
+ASSETS_DEBUG_EXIF = _env_flag(os.getenv("ASSETS_DEBUG_EXIF", "0"))
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 WMO_EMOJI = {
     0: "\u2600\ufe0f",

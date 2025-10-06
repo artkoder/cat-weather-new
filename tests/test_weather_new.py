@@ -230,6 +230,8 @@ async def test_recognized_message_skips_reingest(tmp_path):
         return Path(dest_path)
 
     async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
+        if method == 'copyMessage':
+            return {'ok': True, 'result': {'message_id': recognized_mid}}
         if method == 'sendPhoto':
             return {'ok': True, 'result': {'message_id': recognized_mid}}
         return {'ok': True, 'result': {}}
@@ -392,6 +394,8 @@ async def test_recognized_edit_skips_reingest(tmp_path):
         return Path(dest_path)
 
     async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
+        if method == 'copyMessage':
+            return {'ok': True, 'result': {'message_id': recognized_mid}}
         if method == 'sendPhoto':
             return {'ok': True, 'result': {'message_id': recognized_mid}}
         return {'ok': True, 'result': {}}

@@ -692,7 +692,11 @@ class DataAccess:
                         continue
                     seen.add(text)
                     normalized_tags.append(text)
-            category = result.get("category") or result.get("primary_scene")
+            category = (
+                result.get("category")
+                or result.get("caption")
+                or result.get("primary_scene")
+            )
             if not category and normalized_tags:
                 category = normalized_tags[0]
             arch_view_value = result.get("arch_view")

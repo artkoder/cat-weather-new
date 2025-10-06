@@ -2408,26 +2408,48 @@ class Bot:
                 photo_weather or "-",
             )
             resp = await self.api_request(
-                "sendPhoto",
+                "copyMessage",
                 {
                     "chat_id": asset.channel_id,
-                    "photo": file_id,
-                    "caption": caption_text,
+                    "from_chat_id": asset.channel_id,
+                    "message_id": asset.message_id,
+                    "caption": caption_text or None,
                 },
             )
+            method_used = "copyMessage"
             if not resp.get("ok"):
                 logging.error(
-                    "Vision job %s failed to publish result for asset %s: %s",
+                    "Vision job %s failed to copy message for asset %s: %s",
                     job.id,
                     asset_id,
                     resp,
                 )
-                raise RuntimeError(f"Failed to publish vision result: {resp}")
+                fallback_method = "sendPhoto" if asset.kind == "photo" else "sendDocument"
+                file_field = "photo" if fallback_method == "sendPhoto" else "document"
+                resp = await self.api_request(
+                    fallback_method,
+                    {
+                        "chat_id": asset.channel_id,
+                        file_field: file_id,
+                        "caption": caption_text,
+                    },
+                )
+                method_used = fallback_method
+                if not resp.get("ok"):
+                    logging.error(
+                        "Vision job %s failed to publish result for asset %s via %s: %s",
+                        job.id,
+                        asset_id,
+                        fallback_method,
+                        resp,
+                    )
+                    raise RuntimeError(f"Failed to publish vision result: {resp}")
             new_mid = resp.get("result", {}).get("message_id") if resp.get("result") else None
             logging.info(
-                "Vision job %s posted classification for asset %s: message_id=%s",
+                "Vision job %s posted classification for asset %s via %s: message_id=%s",
                 job.id,
                 asset_id,
+                method_used,
                 new_mid,
             )
             self.data.update_asset(

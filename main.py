@@ -237,8 +237,18 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
         },
         "framing": {
             "type": "string",
-            "description": "Кадровка/ракурс снимка (например, close-up, medium shot, wide shot).",
-            "minLength": 1,
+            "description": (
+                "Кадровка/ракурс снимка. Используй один из вариантов: close-up, medium shot, "
+                "wide shot, detail, panorama, aerial shot."
+            ),
+            "enum": [
+                "close-up",
+                "medium shot",
+                "wide shot",
+                "detail",
+                "panorama",
+                "aerial shot",
+            ],
         },
         "architecture_close_up": {
             "type": "boolean",
@@ -250,16 +260,54 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
         },
         "weather_image": {
             "type": "string",
-            "description": "Краткое описание погодных условий на фото (на английском).",
-            "minLength": 1,
+            "description": (
+                "Краткое описание погодных условий на фото (на английском). Выбирай из категорий: "
+                "indoor, sunny, cloudy, rainy, snowy, foggy, stormy, twilight, night."
+            ),
+            "enum": [
+                "indoor",
+                "sunny",
+                "cloudy",
+                "rainy",
+                "snowy",
+                "foggy",
+                "stormy",
+                "twilight",
+                "night",
+            ],
         },
         "season_guess": {
             "type": ["string", "null"],
             "description": "Предполагаемый сезон (spring, summer, autumn, winter) или null, если неясно.",
+            "enum": [
+                "spring",
+                "summer",
+                "autumn",
+                "winter",
+                None,
+            ],
         },
         "arch_style": {
-            "type": ["string", "null"],
-            "description": "Предполагаемый архитектурный стиль, если распознан.",
+            "type": ["object", "null"],
+            "description": (
+                "Предполагаемый архитектурный стиль. Либо null, либо объект с label (строка) "
+                "и confidence (число 0..1)."
+            ),
+            "additionalProperties": False,
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Название архитектурного стиля (на английском).",
+                    "minLength": 1,
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": "Уверенность в определении стиля (0 — неизвестно, 1 — уверен).",
+                    "minimum": 0,
+                    "maximum": 1,
+                },
+            },
+            "required": ["label"],
         },
         "safety": {
             "type": "object",
@@ -2620,11 +2668,13 @@ class Bot:
 
             system_prompt = (
                 "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме asset_vision_v1. "
-                "Структура включает поля: arch_view (boolean), caption (строка на русском), objects (массив строк), is_outdoor (boolean), "
-                "guess_country и guess_city (строка или null), location_confidence (число 0..1), landmarks (массив строк), tags (от 3 до 12 тегов), framing (строка), "
-                "architecture_close_up и architecture_wide (boolean), weather_image (строка), season_guess (строка или null), arch_style (строка или null) и safety (объект с nsfw:boolean и reason:string). "
-                "reason всегда непустая строка. location_confidence — числовая уверенность: 0 значит нет уверенности, 1 — максимум. В objects перечисляй заметные элементы, цветы называй видами. "
-                "В tags используй английские слова в нижнем регистре, включая погодные категории (например, sunny, cloudy, indoor)."
+                "Структура включает arch_view (boolean), caption (строка на русском), objects (массив строк), is_outdoor (boolean), guess_country/guess_city (строка или null), "
+                "location_confidence (число 0..1), landmarks (массив строк), tags (3-12 элементов в нижнем регистре), framing, архитектурные признаки, погодное описание, сезон и безопасность. "
+                "Поле framing обязательно и принимает только close-up, medium shot, wide shot, detail, panorama, aerial shot. "
+                "weather_image описывает нюансы погоды и выбирается из indoor, sunny, cloudy, rainy, snowy, foggy, stormy, twilight, night. "
+                "season_guess — spring, summer, autumn, winter или null. arch_style либо null, либо объект с label (название стиля на английском) и confidence (0..1). "
+                "В objects перечисляй заметные элементы, цветы называй видами. В tags используй английские слова в нижнем регистре и обязательно включай погодный тег. "
+                "Поле safety содержит nsfw:boolean и reason:string, где reason всегда непустая строка на русском."
             )
             user_prompt = (
                 "Опиши сцену, перечисли объекты, теги, достопримечательности, архитектуру и безопасность фото. Укажи кадровку (framing), "
@@ -2698,12 +2748,37 @@ class Bot:
             else:
                 season_guess = str(season_guess_raw).strip().lower() or None
             arch_style_raw = result.get("arch_style")
-            if isinstance(arch_style_raw, str):
-                arch_style = arch_style_raw.strip() or None
-            elif arch_style_raw is None:
-                arch_style = None
+            arch_style: dict[str, Any] | None
+            if isinstance(arch_style_raw, dict):
+                label_raw = arch_style_raw.get("label")
+                if isinstance(label_raw, str):
+                    label = label_raw.strip()
+                elif label_raw is None:
+                    label = ""
+                else:
+                    label = str(label_raw).strip()
+                if label:
+                    confidence_value: float | None = None
+                    confidence_raw = arch_style_raw.get("confidence")
+                    if isinstance(confidence_raw, (int, float)):
+                        confidence_value = float(confidence_raw)
+                    elif isinstance(confidence_raw, str):
+                        try:
+                            confidence_value = float(confidence_raw.strip())
+                        except ValueError:
+                            confidence_value = None
+                    if confidence_value is not None:
+                        confidence_value = min(max(confidence_value, 0.0), 1.0)
+                    arch_style = {"label": label}
+                    if confidence_value is not None:
+                        arch_style["confidence"] = confidence_value
+                else:
+                    arch_style = None
+            elif isinstance(arch_style_raw, str):
+                label = arch_style_raw.strip()
+                arch_style = {"label": label} if label else None
             else:
-                arch_style = str(arch_style_raw).strip() or None
+                arch_style = None
             supabase_meta = {
                 "asset_id": asset_id,
                 "channel_id": asset.channel_id,

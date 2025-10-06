@@ -74,6 +74,105 @@ WEATHER_HEADER_PATTERN = re.compile(
 )
 
 
+ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "title": "asset_vision_v1",
+    "description": (
+        "Структурированное описание фото для классификации рубрик, "
+        "угадывания города и оценки безопасности."
+    ),
+    "additionalProperties": False,
+    "properties": {
+        "primary_scene": {
+            "type": "string",
+            "description": "Короткое описание основного сюжета (на русском языке).",
+            "minLength": 1,
+        },
+        "guess_country": {
+            "type": ["string", "null"],
+            "description": "Предполагаемая страна, если есть контекст.",
+        },
+        "guess_city": {
+            "type": ["string", "null"],
+            "description": "Предполагаемый город, если распознаётся.",
+        },
+        "arch_view": {
+            "type": "boolean",
+            "description": "Присутствует ли в кадре архитектурный ракурс (здания, фасады, панорамы).",
+        },
+        "weather": {
+            "type": "object",
+            "description": "Погода, которую можно определить по фото.",
+            "additionalProperties": False,
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": (
+                        "Краткая машинно-читаемая метка: indoor, sunny, cloudy, rainy, snowy, foggy, stormy, twilight, night."
+                    ),
+                    "minLength": 1,
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Небольшое текстовое описание погоды на русском.",
+                    "minLength": 1,
+                },
+            },
+            "required": ["label", "description"],
+        },
+        "objects": {
+            "type": "array",
+            "description": (
+                "Список заметных объектов или деталей. Если присутствуют цветы, укажи их вид."
+            ),
+            "items": {
+                "type": "string",
+                "minLength": 1,
+            },
+            "default": [],
+        },
+        "tags": {
+            "type": "array",
+            "description": (
+                "Набор тегов (на английском в нижнем регистре) для downstream-логики: architecture, flowers, people, animals и т.п."
+            ),
+            "items": {
+                "type": "string",
+                "minLength": 1,
+            },
+            "default": [],
+        },
+        "safety": {
+            "type": "object",
+            "description": "Флаги чувствительного контента (True если категория потенциально нарушает правила).",
+            "additionalProperties": False,
+            "properties": {
+                "nsfw": {"type": "boolean"},
+                "violence": {"type": "boolean"},
+                "self_harm": {"type": "boolean"},
+                "hate": {"type": "boolean"},
+            },
+            "required": ["nsfw", "violence", "self_harm", "hate"],
+        },
+        "notes": {
+            "type": "string",
+            "description": "Дополнительные наблюдения, если они нужны редакции.",
+            "default": "",
+        },
+    },
+    "required": [
+        "primary_scene",
+        "guess_country",
+        "guess_city",
+        "arch_view",
+        "weather",
+        "objects",
+        "tags",
+        "safety",
+    ],
+}
+
+
 CHANNEL_PICKER_PAGE_SIZE = 6
 CHANNEL_SEARCH_CHARSETS = {
     "rus": list("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"),
@@ -2078,58 +2177,15 @@ class Bot:
             with open(local_path, "rb") as fh:
                 image_bytes = fh.read()
 
-            schema = {
-                "type": "object",
-                "title": "Vision classification payload",
-                "description": (
-                    "Заполни сведения о категории сюжета, архитектурном виде, погоде на фото и "
-                    "цветах согласно §3.1."
-                ),
-                "properties": {
-                    "category": {
-                        "type": "string",
-                        "description": "Основная классификация сюжета фотографии",
-                        "minLength": 1,
-                    },
-                    "arch_view": {
-                        "type": "string",
-                        "description": "Описание архитектурных элементов или вида (если их нет — пустая строка)",
-                        "default": "",
-                    },
-                    "photo_weather": {
-                        "type": "string",
-                        "description": "Краткое описание погодных условий, видимых на изображении",
-                        "minLength": 1,
-                    },
-                    "flower_varieties": {
-                        "type": "array",
-                        "description": "Перечень цветов, различимых на фото",
-                        "items": {
-                            "type": "string",
-                            "minLength": 1,
-                        },
-                        "minItems": 0,
-                        "default": [],
-                    },
-                    "confidence": {
-                        "type": "number",
-                        "description": "Уверенность модели (0.0–1.0)",
-                        "minimum": 0,
-                        "maximum": 1,
-                    },
-                },
-                "required": ["category", "photo_weather"],
-                "additionalProperties": False,
-            }
             system_prompt = (
-                "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме, "
-                "с полями category, arch_view, photo_weather, flower_varieties и confidence. "
-                "category — краткая классификация сюжета. arch_view — архитектурный ракурс (если нет, оставь пустую строку). "
-                "photo_weather — сводка погоды, которую видно на фото. flower_varieties — массив названий цветов или пустой массив."
-                "confidence — число от 0 до 1."
+                "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме asset_vision_v1. "
+                "primary_scene — короткое описание сюжета. guess_country/guess_city — предположение о локации (null, если нельзя определить). "
+                "arch_view — true, если в кадре есть архитектурный ракурс. weather включает label (indoor/sunny/cloudy/rainy/snowy/foggy/stormy/twilight/night) и подробное описание на русском. "
+                "objects — перечень заметных объектов (если есть цветы, укажи их виды). tags — набор ключевых тегов в нижнем регистре (например, architecture, flowers, people). "
+                "safety — булевы флаги nsfw, violence, self_harm, hate. notes — опционально важные детали."
             )
             user_prompt = (
-                "Определи по фото категорию, архитектурный вид, погоду и перечисли заметные цветы. Верни только JSON согласно схеме."
+                "Опиши основную сцену, погоду, объекты, теги и безопасность фото. Если сомневаешься в городе или стране, верни null."
             )
             self._enforce_openai_limit(job, "gpt-4o-mini")
             logging.info(
@@ -2143,7 +2199,7 @@ class Bot:
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 image_bytes=image_bytes,
-                schema=schema,
+                schema=ASSET_VISION_V1_SCHEMA,
             )
             if response is None:
                 logging.warning(
@@ -2156,48 +2212,101 @@ class Bot:
             result = response.content
             if not isinstance(result, dict):
                 raise RuntimeError("Invalid response from vision model")
-            category = str(result.get("category", "")).strip()
-            photo_weather = str(result.get("photo_weather", "")).strip()
-            if not category or not photo_weather:
-                raise RuntimeError("Invalid response from vision model")
-            arch_view = str(result.get("arch_view", "")).strip()
-            raw_flowers = result.get("flower_varieties")
-            flower_varieties: list[str] = []
-            if isinstance(raw_flowers, list):
-                for item in raw_flowers:
-                    text = str(item).strip()
-                    if text:
-                        flower_varieties.append(text)
-            elif raw_flowers:
-                text = str(raw_flowers).strip()
-                if text:
-                    flower_varieties.append(text)
-            raw_confidence = result.get("confidence")
-            confidence: float | None
-            if isinstance(raw_confidence, (int, float)):
-                confidence = float(raw_confidence)
-            elif isinstance(raw_confidence, str):
-                try:
-                    confidence = float(raw_confidence)
-                except ValueError:
-                    confidence = None
+            primary_scene = str(result.get("primary_scene", "")).strip()
+            weather_info = result.get("weather") if isinstance(result, dict) else None
+            weather_label = ""
+            weather_description = ""
+            if isinstance(weather_info, dict):
+                weather_label = str(weather_info.get("label", "")).strip()
+                weather_description = str(weather_info.get("description", "")).strip()
+            guess_country_raw = result.get("guess_country") if isinstance(result, dict) else None
+            guess_city_raw = result.get("guess_city") if isinstance(result, dict) else None
+            if isinstance(guess_country_raw, str):
+                guess_country = guess_country_raw.strip() or None
+            elif guess_country_raw is None:
+                guess_country = None
             else:
-                confidence = None
+                guess_country = str(guess_country_raw).strip() or None
+            if isinstance(guess_city_raw, str):
+                guess_city = guess_city_raw.strip() or None
+            elif guess_city_raw is None:
+                guess_city = None
+            else:
+                guess_city = str(guess_city_raw).strip() or None
+            arch_view_raw = result.get("arch_view") if isinstance(result, dict) else None
+            arch_view = bool(arch_view_raw) if isinstance(arch_view_raw, bool) else str(arch_view_raw).strip().lower() in {"1", "true", "yes", "да"}
+            raw_objects = result.get("objects") if isinstance(result, dict) else None
+            objects: list[str] = []
+            if isinstance(raw_objects, list):
+                seen_objects: set[str] = set()
+                for item in raw_objects:
+                    text = str(item).strip()
+                    if not text:
+                        continue
+                    if text in seen_objects:
+                        continue
+                    seen_objects.add(text)
+                    objects.append(text)
+            raw_tags = result.get("tags") if isinstance(result, dict) else None
+            tags: list[str] = []
+            if isinstance(raw_tags, list):
+                seen_tags: set[str] = set()
+                for tag in raw_tags:
+                    text = str(tag).strip().lower()
+                    if not text or text in seen_tags:
+                        continue
+                    seen_tags.add(text)
+                    tags.append(text)
+            safety_raw = result.get("safety") if isinstance(result, dict) else None
+            safety_flags: dict[str, bool] = {}
+            if isinstance(safety_raw, dict):
+                for key in ("nsfw", "violence", "self_harm", "hate"):
+                    value = safety_raw.get(key)
+                    safety_flags[key] = bool(value) if isinstance(value, bool) else str(value).strip().lower() in {"1", "true", "yes", "да"}
+            if isinstance(result, dict):
+                notes_raw = result.get("notes", "")
+                if isinstance(notes_raw, str):
+                    notes = notes_raw.strip()
+                else:
+                    notes = ""
+            else:
+                notes = ""
+            if not primary_scene or not weather_label:
+                raise RuntimeError("Invalid response from vision model")
+            weather_summary = weather_description or weather_label
+            category = self._derive_primary_scene(primary_scene, tags)
+            photo_weather = weather_label
+            flower_varieties: list[str] = []
+            if "flowers" in tags:
+                flower_varieties = [obj for obj in objects if obj]
+            confidence = None
             location_parts: list[str] = []
             if asset.city:
                 location_parts.append(asset.city)
             if asset.country and asset.country not in location_parts:
                 location_parts.append(asset.country)
-            summary_parts: list[str] = [category]
+            if guess_city and guess_city.lower() not in {part.lower() for part in location_parts}:
+                location_parts.insert(0, guess_city)
+            if guess_country and (not location_parts or guess_country.lower() not in {part.lower() for part in location_parts}):
+                location_parts.append(guess_country)
+            summary_parts: list[str] = [primary_scene]
             if location_parts:
                 summary_parts.append(", ".join(location_parts))
-            if photo_weather:
-                summary_parts.append(f"Погода: {photo_weather}")
+            if weather_summary:
+                summary_parts.append(f"Погода: {weather_summary}")
             caption_lines = ["Распознано: " + " • ".join(summary_parts)]
-            if arch_view:
-                caption_lines.append(f"Архитектурный вид: {arch_view}")
+            caption_lines.append(f"Архитектура: {'да' if arch_view else 'нет'}")
             if flower_varieties:
                 caption_lines.append("Цветы: " + ", ".join(flower_varieties))
+            if objects and (not flower_varieties or len(objects) > len(flower_varieties)):
+                caption_lines.append("Объекты: " + ", ".join(objects))
+            if tags:
+                caption_lines.append("Теги: " + ", ".join(tags))
+            flagged = [name for name, flagged in safety_flags.items() if flagged]
+            if flagged:
+                caption_lines.append("⚠️ Флаги безопасности: " + ", ".join(flagged))
+            if notes:
+                caption_lines.append(notes)
             if confidence is not None:
                 display_confidence = confidence * 100 if 0 <= confidence <= 1 else confidence
                 caption_lines.append(f"Уверенность модели: {display_confidence:.0f}%")
@@ -2205,20 +2314,31 @@ class Bot:
             result_payload = {
                 "status": "ok",
                 "provider": "gpt-4o-mini",
-                "category": category,
+                "primary_scene": primary_scene,
+                "guess_country": guess_country,
+                "guess_city": guess_city,
                 "arch_view": arch_view,
+                "weather": {
+                    "label": weather_label,
+                    "description": weather_description or weather_label,
+                },
+                "objects": objects,
+                "tags": tags,
+                "safety": safety_flags,
+                "notes": notes,
+                "category": category,
                 "photo_weather": photo_weather,
                 "flower_varieties": flower_varieties,
                 "confidence": confidence,
             }
             logging.info(
-                "Vision job %s classified asset %s: category=%s, weather=%s, arch_view=%s, flowers=%s",
+                "Vision job %s classified asset %s: scene=%s, weather=%s, arch=%s, tags=%s",
                 job.id,
                 asset_id,
-                category,
-                photo_weather,
+                primary_scene,
+                weather_label,
                 arch_view,
-                ", ".join(flower_varieties) if flower_varieties else "-",
+                ", ".join(tags) if tags else "-",
             )
             resp = await self.api_request(
                 "sendPhoto",
@@ -2248,7 +2368,7 @@ class Bot:
                 recognized_message_id=new_mid,
                 vision_results=result_payload,
                 vision_category=category,
-                vision_arch_view=arch_view,
+                vision_arch_view="yes" if arch_view else "",
                 vision_photo_weather=photo_weather,
                 vision_flower_varieties=flower_varieties,
                 vision_confidence=confidence,
@@ -5075,6 +5195,16 @@ class Bot:
         if not isinstance(downloaded_path, Path):
             return None, False
         return str(downloaded_path), True
+
+    def _derive_primary_scene(self, primary_scene: str, tags: Sequence[str]) -> str:
+        normalized_tags = [tag.lower() for tag in tags if tag]
+        if "architecture" in normalized_tags:
+            return "architecture"
+        if "flowers" in normalized_tags:
+            return "flowers"
+        if normalized_tags:
+            return normalized_tags[0]
+        return primary_scene or "unknown"
 
     def _compute_next_rubric_run(
         self,

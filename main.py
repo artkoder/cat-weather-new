@@ -2275,6 +2275,60 @@ class Bot:
             return None
         return best.get("full_name") or best.get("address_name") or best.get("name")
 
+    def _format_exif_address_caption(
+        self, address: dict[str, Any] | None, lat: float, lon: float
+    ) -> tuple[str, set[str], bool]:
+        address = address or {}
+
+        street = address.get("street")
+        house_number = address.get("house_number")
+        city = address.get("city")
+        state = address.get("state")
+        country = address.get("country")
+
+        street_parts: list[str] = []
+        if isinstance(street, str) and street.strip():
+            street_parts.append(street.strip())
+        if isinstance(house_number, str) and house_number.strip():
+            street_parts.append(house_number.strip())
+        street_line = " ".join(street_parts)
+
+        location_parts: list[str] = []
+        if isinstance(city, str) and city.strip():
+            location_parts.append(city.strip())
+        if isinstance(state, str) and state.strip():
+            location_parts.append(state.strip())
+        if isinstance(country, str) and country.strip():
+            location_parts.append(country.strip())
+
+        outside_region = (
+            isinstance(state, str)
+            and state.strip()
+            and state.strip() != "Калининградская область"
+        )
+
+        location_line = ", ".join(location_parts)
+        if location_line and outside_region:
+            location_line += " [вне региона]"
+
+        has_osm_components = bool(street_line or location_line)
+
+        pieces: list[str] = []
+        if street_line:
+            pieces.append(street_line)
+        if location_line:
+            pieces.append(location_line)
+        pieces.append(f"lat {lat:.5f}, lon {lon:.5f}")
+
+        caption_line = f"Адрес (EXIF): {'; '.join(pieces)}"
+
+        dedupe_values: set[str] = set()
+        for value in (city, state, country):
+            if isinstance(value, str) and value.strip():
+                dedupe_values.add(value.strip().lower())
+
+        return caption_line, dedupe_values, has_osm_components
+
     def _build_local_file_path(self, asset_id: int, file_meta: dict[str, Any]) -> Path:
         suffix = ""
         file_name = file_meta.get("file_name")
@@ -2666,26 +2720,33 @@ class Bot:
                         asset_id,
                     )
                     exif_address = {}
-                exif_city = (
-                    (exif_address or {}).get("city")
-                    or (exif_address or {}).get("town")
-                    or (exif_address or {}).get("village")
-                    if exif_address
-                    else None
+
+                fallback_text: str | None = None
+                if isinstance(exif_address, dict):
+                    fallback_value = exif_address.get("fallback")
+                    if isinstance(fallback_value, str):
+                        fallback_text = fallback_value
+
+                formatted_exif, dedupe_values, has_osm_components = (
+                    self._format_exif_address_caption(
+                        exif_address if isinstance(exif_address, dict) else None,
+                        exif_lat,
+                        exif_lon,
+                    )
                 )
-                exif_country = (exif_address or {}).get("country") if exif_address else None
-                exif_parts: list[str] = []
-                if exif_city and exif_city.lower() not in existing_lower:
-                    exif_parts.append(exif_city)
-                if exif_country and exif_country.lower() not in existing_lower:
-                    exif_parts.append(exif_country)
-                coords_text = f"lat {exif_lat:.5f}, lon {exif_lon:.5f}"
-                if exif_parts:
-                    exif_line = f"Локация (EXIF): {', '.join(exif_parts)} ({coords_text})"
-                else:
-                    exif_line = f"Локация (EXIF): {coords_text}"
-                if exif_line not in caption_lines:
-                    caption_lines.append(exif_line)
+
+                for value in dedupe_values:
+                    existing_lower.add(value)
+
+                if formatted_exif and formatted_exif not in caption_lines:
+                    caption_lines.append(formatted_exif)
+
+                if (
+                    fallback_text
+                    and not has_osm_components
+                    and fallback_text not in caption_lines
+                ):
+                    caption_lines.append(fallback_text)
             if location_parts:
                 location_line = ", ".join(location_parts)
                 if confidence_display:
@@ -2714,6 +2775,11 @@ class Bot:
                 )
             elif safety_reason:
                 caption_lines.append("Безопасность: " + safety_reason)
+
+            attribution_line = "Адрес: OSM/Nominatim"
+            if attribution_line not in caption_lines:
+                caption_lines.append(attribution_line)
+
             caption_text = "\n".join(line for line in caption_lines if line)
             location_log_parts: list[str] = []
             if guess_city:

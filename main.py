@@ -162,6 +162,32 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
             "maxItems": 12,
             "default": [],
         },
+        "framing": {
+            "type": "string",
+            "description": "Кадровка/ракурс снимка (например, close-up, medium shot, wide shot).",
+            "minLength": 1,
+        },
+        "architecture_close_up": {
+            "type": "boolean",
+            "description": "Есть ли крупный план архитектурных деталей.",
+        },
+        "architecture_wide": {
+            "type": "boolean",
+            "description": "Есть ли широкий архитектурный план или панорама.",
+        },
+        "weather_image": {
+            "type": "string",
+            "description": "Краткое описание погодных условий на фото (на английском).",
+            "minLength": 1,
+        },
+        "season_guess": {
+            "type": ["string", "null"],
+            "description": "Предполагаемый сезон (spring, summer, autumn, winter) или null, если неясно.",
+        },
+        "arch_style": {
+            "type": ["string", "null"],
+            "description": "Предполагаемый архитектурный стиль, если распознан.",
+        },
         "safety": {
             "type": "object",
             "description": (
@@ -189,6 +215,11 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
         "location_confidence",
         "landmarks",
         "tags",
+        "framing",
+        "architecture_close_up",
+        "architecture_wide",
+        "weather_image",
+        "season_guess",
         "safety",
     ],
 }
@@ -2517,12 +2548,14 @@ class Bot:
             system_prompt = (
                 "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме asset_vision_v1. "
                 "Структура включает поля: arch_view (boolean), caption (строка на русском), objects (массив строк), is_outdoor (boolean), "
-                "guess_country и guess_city (строка или null), location_confidence (число 0..1), landmarks (массив строк), tags (от 3 до 12 тегов) "
-                "и safety (объект с nsfw:boolean и reason:string). reason всегда непустая строка. location_confidence — числовая уверенность: 0 значит нет уверенности, 1 — максимум. "
-                "В objects перечисляй заметные элементы, цветы называй видами. В tags используй английские слова в нижнем регистре, включая погодные категории (например, sunny, cloudy, indoor)."
+                "guess_country и guess_city (строка или null), location_confidence (число 0..1), landmarks (массив строк), tags (от 3 до 12 тегов), framing (строка), "
+                "architecture_close_up и architecture_wide (boolean), weather_image (строка), season_guess (строка или null), arch_style (строка или null) и safety (объект с nsfw:boolean и reason:string). "
+                "reason всегда непустая строка. location_confidence — числовая уверенность: 0 значит нет уверенности, 1 — максимум. В objects перечисляй заметные элементы, цветы называй видами. "
+                "В tags используй английские слова в нижнем регистре, включая погодные категории (например, sunny, cloudy, indoor)."
             )
             user_prompt = (
-                "Опиши сцену, перечисли объекты, теги, достопримечательности, архитектуру и безопасность фото. "
+                "Опиши сцену, перечисли объекты, теги, достопримечательности, архитектуру и безопасность фото. Укажи кадровку (framing), "
+                "наличие архитектуры крупным планом и панорам, погодный тег (weather_image), сезон и стиль архитектуры (если можно). "
                 "Если локация неочевидна, ставь guess_country/guess_city = null и указывай низкую числовую уверенность."
             )
             self._enforce_openai_limit(job, "gpt-4o-mini")
@@ -2550,7 +2583,60 @@ class Bot:
             result = response.content
             if not isinstance(result, dict):
                 raise RuntimeError("Invalid response from vision model")
-            supabase_meta = {"asset_id": asset_id, "channel_id": asset.channel_id}
+            framing_raw = result.get("framing")
+            framing: str | None = None
+            if isinstance(framing_raw, str):
+                framing = framing_raw.strip().lower() or None
+            elif framing_raw is not None:
+                framing = str(framing_raw).strip().lower() or None
+            if not framing:
+                raise RuntimeError("Invalid response from vision model: missing framing")
+            architecture_close_up_raw = result.get("architecture_close_up")
+            architecture_close_up = (
+                bool(architecture_close_up_raw)
+                if isinstance(architecture_close_up_raw, bool)
+                else str(architecture_close_up_raw)
+                .strip()
+                .lower()
+                in {"1", "true", "yes", "да"}
+            )
+            architecture_wide_raw = result.get("architecture_wide")
+            architecture_wide = (
+                bool(architecture_wide_raw)
+                if isinstance(architecture_wide_raw, bool)
+                else str(architecture_wide_raw)
+                .strip()
+                .lower()
+                in {"1", "true", "yes", "да"}
+            )
+            weather_image_raw = result.get("weather_image")
+            weather_image: str | None = None
+            if isinstance(weather_image_raw, str):
+                weather_image = weather_image_raw.strip().lower() or None
+            elif weather_image_raw is not None:
+                weather_image = str(weather_image_raw).strip().lower() or None
+            if not weather_image:
+                raise RuntimeError("Invalid response from vision model: missing weather_image")
+            season_guess_raw = result.get("season_guess")
+            if isinstance(season_guess_raw, str):
+                season_guess = season_guess_raw.strip().lower() or None
+            elif season_guess_raw is None:
+                season_guess = None
+            else:
+                season_guess = str(season_guess_raw).strip().lower() or None
+            arch_style_raw = result.get("arch_style")
+            if isinstance(arch_style_raw, str):
+                arch_style = arch_style_raw.strip() or None
+            elif arch_style_raw is None:
+                arch_style = None
+            else:
+                arch_style = str(arch_style_raw).strip() or None
+            supabase_meta = {
+                "asset_id": asset_id,
+                "channel_id": asset.channel_id,
+                "architecture_close_up": architecture_close_up,
+                "architecture_wide": architecture_wide,
+            }
             usage = response.usage if isinstance(response.usage, dict) else {}
             success, payload, error = await self.supabase.insert_token_usage(
                 bot="kotopogoda",
@@ -2636,6 +2722,12 @@ class Bot:
                         continue
                     seen_tags.add(text)
                     tags.append(text)
+            if weather_image and weather_image not in tags:
+                tags.append(weather_image)
+            if architecture_close_up and "architecture_close_up" not in tags:
+                tags.append("architecture_close_up")
+            if architecture_wide and "architecture_wide" not in tags:
+                tags.append("architecture_wide")
             safety_raw = result.get("safety")
             nsfw_flag = False
             safety_reason: str | None = None
@@ -2678,6 +2770,9 @@ class Bot:
                     photo_weather = tag_value
                     photo_weather_display = translated
                     break
+            if not photo_weather and weather_image:
+                photo_weather = weather_image
+                photo_weather_display = WEATHER_TAG_TRANSLATIONS.get(weather_image)
             flower_varieties: list[str] = []
             if "flowers" in tags:
                 flower_varieties = [obj for obj in objects if obj]
@@ -2823,6 +2918,12 @@ class Bot:
                 "location_confidence": location_confidence,
                 "landmarks": landmarks,
                 "tags": tags,
+                "framing": framing,
+                "architecture_close_up": architecture_close_up,
+                "architecture_wide": architecture_wide,
+                "weather_image": weather_image,
+                "season_guess": season_guess,
+                "arch_style": arch_style,
                 "safety": {"nsfw": nsfw_flag, "reason": safety_reason},
                 "category": category,
                 "photo_weather": photo_weather,

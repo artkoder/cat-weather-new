@@ -62,7 +62,7 @@ class OpenAIClient:
         payload = {
             "model": model,
             "text": {
-                "format": self._mk_json_format(schema, "asset_vision_v1"),
+                "format": self.ensure_json_format(schema, "asset_vision_v1"),
             },
             "input": [
                 {
@@ -101,7 +101,7 @@ class OpenAIClient:
         payload = {
             "model": model,
             "text": {
-                "format": self._mk_json_format(schema, schema_name or "post_text_v1"),
+                "format": self.ensure_json_format(schema, schema_name or "post_text_v1"),
             },
             "input": [
                 {
@@ -120,11 +120,13 @@ class OpenAIClient:
             payload["top_p"] = top_p
         return await self._submit_request(payload)
 
-    def _mk_json_format(
-        self, schema: dict[str, Any], name: str, strict: bool = True
+    def ensure_json_format(
+        self, schema: dict[str, Any] | None, name: str, strict: bool = True
     ) -> dict[str, Any]:
         if not name or not str(name).strip():
             raise ValueError("Structured output schema name must be provided")
+        if not isinstance(schema, dict) or not schema:
+            raise ValueError("Structured output schema must be a non-empty dict")
         return {
             "type": "json_schema",
             "json_schema": {"name": name, "schema": schema},
@@ -175,6 +177,22 @@ class OpenAIClient:
         schema_name = json_schema.get("name") if isinstance(json_schema, dict) else None
         if not schema_name or not str(schema_name).strip():
             raise ValueError("OpenAI payload must include text.format.json_schema.name")
+        schema_body = (
+            json_schema.get("schema") if isinstance(json_schema, dict) else None
+        )
+        schema_keys: list[str] | None = None
+        schema_key_count: int | None = None
+        if isinstance(schema_body, dict):
+            schema_key_count = len(schema_body)
+            schema_keys = sorted(schema_body.keys())[:5]
+        strict_flag = format_section.get("strict") if isinstance(format_section, dict) else None
+        logging.debug(
+            "OpenAI payload schema summary: name=%s strict=%s key_count=%s sample_keys=%s",
+            schema_name,
+            strict_flag,
+            schema_key_count,
+            schema_keys,
+        )
 
         max_attempts = 3
         delay = 1.0

@@ -2437,12 +2437,57 @@ class Bot:
             if guess_country and guess_country.lower() not in existing_lower:
                 location_parts.append(guess_country)
                 existing_lower.add(guess_country.lower())
+            exif_coords: tuple[float, float] | None = None
+            if asset.latitude is not None and asset.longitude is not None:
+                try:
+                    exif_coords = (float(asset.latitude), float(asset.longitude))
+                except (TypeError, ValueError):
+                    exif_coords = None
+            if (
+                not exif_coords
+                and local_path
+                and os.path.exists(local_path)
+            ):
+                exif_retry = self._extract_gps(local_path)
+                if exif_retry:
+                    exif_coords = exif_retry
             confidence_display: str | None = None
             if location_confidence is not None and math.isfinite(location_confidence):
                 confidence_percent = int(round(location_confidence * 100))
                 confidence_percent = max(0, min(100, confidence_percent))
                 confidence_display = f"{confidence_percent}%"
             caption_lines = [f"Распознано: {caption}"]
+            if exif_coords:
+                exif_lat, exif_lon = exif_coords
+                exif_address: dict[str, Any] | None = None
+                try:
+                    exif_address = await self._reverse_geocode(exif_lat, exif_lon)
+                except Exception:
+                    logging.exception(
+                        "Reverse geocode failed for EXIF coordinates of asset %s",
+                        asset_id,
+                    )
+                    exif_address = {}
+                exif_city = (
+                    (exif_address or {}).get("city")
+                    or (exif_address or {}).get("town")
+                    or (exif_address or {}).get("village")
+                    if exif_address
+                    else None
+                )
+                exif_country = (exif_address or {}).get("country") if exif_address else None
+                exif_parts: list[str] = []
+                if exif_city and exif_city.lower() not in existing_lower:
+                    exif_parts.append(exif_city)
+                if exif_country and exif_country.lower() not in existing_lower:
+                    exif_parts.append(exif_country)
+                coords_text = f"lat {exif_lat:.5f}, lon {exif_lon:.5f}"
+                if exif_parts:
+                    exif_line = f"Локация (EXIF): {', '.join(exif_parts)} ({coords_text})"
+                else:
+                    exif_line = f"Локация (EXIF): {coords_text}"
+                if exif_line not in caption_lines:
+                    caption_lines.append(exif_line)
             if location_parts:
                 location_line = ", ".join(location_parts)
                 if confidence_display:

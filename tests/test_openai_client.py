@@ -9,7 +9,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from openai_client import OpenAIClient
+from openai_client import OpenAIClient, strictify_schema
 
 
 PNG_BASE64 = (
@@ -189,6 +189,33 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     assert result.endpoint == "/v1/responses"
     assert result.usage["response_id"] == "resp_vision"
     assert result.usage["request_id"] == "req_123"
+
+
+def test_strictify_schema_root_type_remains_object():
+    schema: dict[str, Any] = {
+        "properties": {
+            "child": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string"},
+                },
+            }
+        }
+    }
+
+    result = strictify_schema(schema)
+
+    assert result is schema
+    assert schema["type"] == "object"
+    assert schema["required"] == ["child"]
+    assert schema["additionalProperties"] is False
+
+    child_schema = schema["properties"]["child"]
+    assert set(child_schema["type"]) == {"object", "null"}
+    assert child_schema["additionalProperties"] is False
+    assert child_schema["required"] == ["value"]
+    grandchild_schema = child_schema["properties"]["value"]
+    assert set(grandchild_schema["type"]) == {"string", "null"}
 
 
 def test_build_image_part_png_data_uri():

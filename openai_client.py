@@ -32,22 +32,22 @@ def strictify_schema(schema: dict[str, Any]) -> dict[str, Any]:
     def process_list(items: list[Any]) -> None:
         for item in items:
             if isinstance(item, dict):
-                process_node(item)
+                process_node(item, is_root=False)
             elif isinstance(item, list):
                 process_list(item)
 
-    def process_node(node: dict[str, Any]) -> None:
+    def process_node(node: dict[str, Any], *, is_root: bool) -> None:
         properties = node.get("properties")
         if isinstance(properties, dict):
             for prop_schema in properties.values():
                 if isinstance(prop_schema, dict):
-                    process_node(prop_schema)
+                    process_node(prop_schema, is_root=False)
                 elif isinstance(prop_schema, list):
                     process_list(prop_schema)
 
         items_value = node.get("items")
         if isinstance(items_value, dict):
-            process_node(items_value)
+            process_node(items_value, is_root=False)
         elif isinstance(items_value, list):
             process_list(items_value)
 
@@ -55,12 +55,16 @@ def strictify_schema(schema: dict[str, Any]) -> dict[str, Any]:
             if key in {"properties", "items"}:
                 continue
             if isinstance(value, dict):
-                process_node(value)
+                process_node(value, is_root=False)
             elif isinstance(value, list):
                 process_list(value)
 
-        if "type" in node:
+        if is_root:
+            node["type"] = "object"
+        elif "type" in node:
             node["type"] = _ensure_list_with_null(node["type"])
+        elif properties:
+            node["type"] = _ensure_list_with_null("object")
 
         if isinstance(properties, dict):
             required_existing = node.get("required")
@@ -85,7 +89,7 @@ def strictify_schema(schema: dict[str, Any]) -> dict[str, Any]:
         if is_object and "additionalProperties" not in node:
             node["additionalProperties"] = False
 
-    process_node(schema)
+    process_node(schema, is_root=True)
     return schema
 
 import httpx

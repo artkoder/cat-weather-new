@@ -60,15 +60,13 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "response": {
-                "modalities": ["text"],
-                "text": {
-                    "format": {
-                        "type": "json_schema",
-                        "json_schema": schema,
-                        "strict": True,
-                    }
-                },
+            "modalities": ["text"],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "json_schema": schema,
+                    "strict": True,
+                }
             },
             "input": [
                 {
@@ -86,7 +84,7 @@ class OpenAIClient:
                         {"type": "input_text", "text": user_prompt},
                         {
                             "type": "input_image",
-                            "image_base64": base64.b64encode(image_bytes).decode("ascii"),
+                            "image_url": self._encode_image_as_data_uri(image_bytes),
                         },
                     ],
                 },
@@ -108,15 +106,13 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "response": {
-                "modalities": ["text"],
-                "text": {
-                    "format": {
-                        "type": "json_schema",
-                        "json_schema": schema,
-                        "strict": True,
-                    }
-                },
+            "modalities": ["text"],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "json_schema": schema,
+                    "strict": True,
+                }
             },
             "input": [
                 {
@@ -134,6 +130,33 @@ class OpenAIClient:
         if top_p is not None:
             payload["top_p"] = top_p
         return await self._submit_request(payload)
+
+    def _encode_image_as_data_uri(self, image_bytes: bytes) -> str:
+        mime_type = self._detect_mime_type(image_bytes)
+        base64_data = base64.b64encode(image_bytes).decode("ascii")
+        return f"data:{mime_type};base64,{base64_data}"
+
+    def _detect_mime_type(self, image_bytes: bytes) -> str:
+        header = image_bytes[:12]
+        if header.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if header.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if header[:6] in (b"GIF87a", b"GIF89a"):
+            return "image/gif"
+        if header.startswith(b"BM"):
+            return "image/bmp"
+        if len(image_bytes) >= 12 and header[0:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+            return "image/webp"
+        if header.startswith(b"II*\x00") or header.startswith(b"MM\x00*"):
+            return "image/tiff"
+        if len(image_bytes) >= 12 and header[4:8] == b"ftyp":
+            brand = image_bytes[8:12]
+            if brand in {b"heic", b"heix", b"hevc", b"hevx"}:
+                return "image/heic"
+            if brand in {b"mif1", b"msf1"}:
+                return "image/heif"
+        return "image/jpeg"
 
     async def _submit_request(self, payload: Dict[str, Any]) -> OpenAIResponse:
         url = f"{self.base_url}/responses"

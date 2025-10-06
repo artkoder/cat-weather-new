@@ -2652,7 +2652,11 @@ class Bot:
                     if debug_path and os.path.exists(debug_path):
                         exif_payload = self._extract_exif_full(debug_path)
                         exif_json = json.dumps(exif_payload, ensure_ascii=False, indent=2)
-                        message_text = f"EXIF (raw)\n{exif_json}" if exif_json else "EXIF (raw)"
+                        message_text = (
+                            f"EXIF (raw)\n```json\n{exif_json}\n```"
+                            if exif_json
+                            else "EXIF (raw)"
+                        )
                         if len(message_text) <= 3500:
                             await self.api_request(
                                 "sendMessage",
@@ -2663,7 +2667,7 @@ class Bot:
                                 },
                             )
                         else:
-                            buffer = io.BytesIO(exif_json.encode("utf-8"))
+                            buffer = io.BytesIO(message_text.encode("utf-8"))
                             await self.api_request(
                                 "sendDocument",
                                 {

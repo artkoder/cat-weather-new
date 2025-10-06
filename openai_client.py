@@ -221,6 +221,28 @@ class OpenAIClient:
                     error_type = error_info.get("type")
                 elif isinstance(error_body.get("type"), str):
                     error_type = error_body["type"]  # type: ignore[index]
+            if error_type == "invalid_json_schema":
+                schema_serialized: str
+                try:
+                    if schema_body is None:
+                        schema_serialized = "<missing>"
+                    else:
+                        schema_serialized = json.dumps(schema_body)
+                except TypeError:
+                    schema_serialized = str(schema_body)
+                max_length = 600
+                truncated = schema_serialized
+                truncated_flag = False
+                if len(truncated) > max_length:
+                    truncated = truncated[: max_length - 3] + "..."
+                    truncated_flag = True
+                logging.error(
+                    "OpenAI invalid_json_schema error for schema %s (len=%s truncated=%s): %s",
+                    schema_name,
+                    len(schema_serialized),
+                    truncated_flag,
+                    truncated,
+                )
             if 400 <= response.status_code < 500 and error_type == "invalid_request_error":
                 should_retry = False
 

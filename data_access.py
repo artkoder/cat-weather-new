@@ -676,17 +676,75 @@ class DataAccess:
         payload = json.dumps(result) if not isinstance(result, str) else result
         provider = result.get("provider") if isinstance(result, dict) else None
         status = result.get("status") if isinstance(result, dict) else None
-        category = result.get("category") if isinstance(result, dict) else None
-        arch_view = result.get("arch_view") if isinstance(result, dict) else None
-        photo_weather = result.get("photo_weather") if isinstance(result, dict) else None
-        flowers_raw: Any | None = result.get("flower_varieties") if isinstance(result, dict) else None
+        category = None
+        arch_view = None
+        photo_weather = None
+        flowers_raw: Any | None = None
+        confidence = None
+        if isinstance(result, dict):
+            raw_tags = result.get("tags")
+            normalized_tags: list[str] = []
+            if isinstance(raw_tags, list):
+                seen: set[str] = set()
+                for tag in raw_tags:
+                    text = str(tag).strip().lower()
+                    if not text or text in seen:
+                        continue
+                    seen.add(text)
+                    normalized_tags.append(text)
+            category = result.get("category") or result.get("primary_scene")
+            if not category and normalized_tags:
+                category = normalized_tags[0]
+            arch_view_value = result.get("arch_view")
+            if isinstance(arch_view_value, bool):
+                arch_view = "yes" if arch_view_value else ""
+            elif arch_view_value is not None:
+                arch_view = str(arch_view_value)
+            weather_info = result.get("weather")
+            if isinstance(weather_info, dict):
+                label = weather_info.get("label")
+                description = weather_info.get("description")
+                photo_weather = (
+                    str(description).strip() or str(label).strip()
+                    if description or label
+                    else None
+                )
+            if not photo_weather and result.get("photo_weather") is not None:
+                photo_weather = str(result.get("photo_weather")).strip() or None
+            flowers_raw = result.get("flower_varieties")
+            if flowers_raw is None:
+                if "flowers" in normalized_tags:
+                    objects = result.get("objects")
+                    if isinstance(objects, list):
+                        extracted: list[str] = []
+                        for entry in objects:
+                            if isinstance(entry, str):
+                                value = entry.strip()
+                            elif isinstance(entry, dict):
+                                value = str(
+                                    entry.get("label")
+                                    or entry.get("name")
+                                    or ""
+                                ).strip()
+                            else:
+                                value = ""
+                            if value:
+                                extracted.append(value)
+                        flowers_raw = extracted or None
+            raw_confidence = result.get("confidence")
+            if isinstance(raw_confidence, (int, float)):
+                confidence = float(raw_confidence)
+            elif isinstance(raw_confidence, str):
+                try:
+                    confidence = float(raw_confidence)
+                except ValueError:
+                    confidence = None
         if isinstance(flowers_raw, list):
             flowers_json = json.dumps(flowers_raw)
         elif flowers_raw is None:
             flowers_json = None
         else:
             flowers_json = json.dumps([flowers_raw])
-        confidence = result.get("confidence") if isinstance(result, dict) else None
         now = datetime.utcnow().isoformat()
         self.conn.execute(
             """

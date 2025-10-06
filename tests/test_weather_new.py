@@ -241,11 +241,20 @@ async def test_recognized_message_skips_reingest(tmp_path):
         async def classify_image(self, **kwargs):
             return OpenAIResponse(
                 {
-                    'category': 'кот',
-                    'arch_view': '',
-                    'photo_weather': 'солнечно',
-                    'flower_varieties': [],
-                    'confidence': 0.9,
+                    'primary_scene': 'кот',
+                    'guess_country': None,
+                    'guess_city': None,
+                    'arch_view': False,
+                    'weather': {'label': 'indoor', 'description': 'в помещении'},
+                    'objects': ['кот'],
+                    'tags': ['animals'],
+                    'safety': {
+                        'nsfw': False,
+                        'violence': False,
+                        'self_harm': False,
+                        'hate': False,
+                    },
+                    'notes': '',
                 },
                 prompt_tokens=10,
                 completion_tokens=5,
@@ -398,11 +407,20 @@ async def test_recognized_edit_skips_reingest(tmp_path):
         async def classify_image(self, **kwargs):
             return OpenAIResponse(
                 {
-                    'category': 'кот',
-                    'arch_view': '',
-                    'photo_weather': 'солнечно',
-                    'flower_varieties': [],
-                    'confidence': 0.9,
+                    'primary_scene': 'кот',
+                    'guess_country': None,
+                    'guess_city': None,
+                    'arch_view': False,
+                    'weather': {'label': 'indoor', 'description': 'в помещении'},
+                    'objects': ['кот'],
+                    'tags': ['animals'],
+                    'safety': {
+                        'nsfw': False,
+                        'violence': False,
+                        'self_harm': False,
+                        'hate': False,
+                    },
+                    'notes': '',
                 },
                 prompt_tokens=10,
                 completion_tokens=5,

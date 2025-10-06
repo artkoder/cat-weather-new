@@ -2380,6 +2380,30 @@ class Bot:
             elif safety_reason:
                 caption_lines.append("Безопасность: " + safety_reason)
             caption_text = "\n".join(line for line in caption_lines if line)
+            location_log_parts: list[str] = []
+            if guess_city:
+                location_log_parts.append(guess_city)
+            if guess_country and (
+                not guess_city or guess_country.lower() != guess_city.lower()
+            ):
+                location_log_parts.append(guess_country)
+            location_log = ", ".join(location_log_parts) or "-"
+            confidence_log = (
+                f"{location_confidence:.3f}"
+                if location_confidence is not None and math.isfinite(location_confidence)
+                else "-"
+            )
+            request_id = response.request_id if response else None
+            logging.info(
+                "VISION_RESULT asset=%s model=%s request_id=%s description=%s location=%s confidence=%s caption_len=%s",
+                asset_id,
+                "gpt-4o-mini",
+                request_id or "-",
+                caption,
+                location_log,
+                confidence_log,
+                len(caption_text),
+            )
             result_payload = {
                 "status": "ok",
                 "provider": "gpt-4o-mini",
@@ -2406,6 +2430,14 @@ class Bot:
                 arch_view,
                 ", ".join(tags) if tags else "-",
                 photo_weather or "-",
+            )
+            await self._record_openai_usage("gpt-4o-mini", response, job=job)
+            logging.info(
+                "OpenAI request_id=%s usage in/out/total=%s/%s/%s",
+                request_id or "-",
+                response.prompt_tokens if response and response.prompt_tokens is not None else "-",
+                response.completion_tokens if response and response.completion_tokens is not None else "-",
+                response.total_tokens if response and response.total_tokens is not None else "-",
             )
             resp = await self.api_request(
                 "copyMessage",
@@ -2464,7 +2496,6 @@ class Bot:
                 vision_caption=caption_text,
                 local_path=None,
             )
-            await self._record_openai_usage("gpt-4o-mini", response, job=job)
             if not self.dry_run and new_mid:
                 logging.info(
                     "Vision job %s deleting original message %s for asset %s",

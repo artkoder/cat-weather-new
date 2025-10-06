@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import types
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -14,6 +15,144 @@ from main import Bot, Job
 from openai_client import OpenAIResponse
 
 os.environ.setdefault('TELEGRAM_BOT_TOKEN', 'dummy')
+
+
+async def _run_vision_job_collect_calls(tmp_path, monkeypatch, *, flag_enabled: bool):
+    import main as main_module
+
+    monkeypatch.setattr(main_module, 'ASSETS_DEBUG_EXIF', flag_enabled)
+
+    bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
+    bot.asset_storage = tmp_path
+
+    img = Image.new('RGB', (10, 10), color='white')
+    buffer = BytesIO()
+    img.save(buffer, format='JPEG')
+    image_bytes = buffer.getvalue()
+
+    calls: list[str] = []
+    recognized_mid = 777
+
+    async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
+        calls.append(method)
+        if method in {'copyMessage', 'sendPhoto'}:
+            return {'ok': True, 'result': {'message_id': recognized_mid}}
+        if method == 'sendMessage':
+            return {'ok': True, 'result': {'message_id': recognized_mid + 1}}
+        return {'ok': True, 'result': {}}
+
+    async def fake_download(file_id, dest_path=None):  # type: ignore[override]
+        assert dest_path is not None
+        path = Path(dest_path)
+        path.write_bytes(image_bytes)
+        return path
+
+    class DummyOpenAI:
+        def __init__(self):
+            self.api_key = 'test-key'
+
+        async def classify_image(self, **kwargs):
+            return OpenAIResponse(
+                {
+                    'arch_view': False,
+                    'caption': 'кот',
+                    'objects': ['кот'],
+                    'is_outdoor': False,
+                    'guess_country': None,
+                    'guess_city': None,
+                    'location_confidence': 0.0,
+                    'landmarks': [],
+                    'tags': ['animals', 'indoor', 'pet'],
+                    'safety': {'nsfw': False, 'reason': 'безопасно'},
+                },
+                {
+                    'prompt_tokens': 10,
+                    'completion_tokens': 5,
+                    'total_tokens': 15,
+                    'request_id': 'req-vision',
+                    'endpoint': '/v1/responses',
+                },
+            )
+
+    async def fake_record(self, *args, **kwargs):  # type: ignore[override]
+        return None
+
+    def fake_enforce(self, *args, **kwargs):  # type: ignore[override]
+        return None
+
+    async def fake_insert(self, **kwargs):  # type: ignore[override]
+        return False, {'mock': True}, 'disabled'
+
+    bot.api_request = fake_api_request  # type: ignore[assignment]
+    bot._download_file = fake_download  # type: ignore[assignment]
+    bot.openai = DummyOpenAI()
+    bot._record_openai_usage = types.MethodType(fake_record, bot)  # type: ignore[assignment]
+    bot._enforce_openai_limit = types.MethodType(fake_enforce, bot)  # type: ignore[assignment]
+    bot.supabase.insert_token_usage = types.MethodType(  # type: ignore[assignment]
+        fake_insert, bot.supabase
+    )
+
+    file_meta = {
+        'file_id': 'ph_large',
+        'file_unique_id': 'uniq_large',
+        'file_name': 'sample.jpg',
+        'mime_type': 'image/jpeg',
+        'file_size': len(image_bytes),
+        'width': 1920,
+        'height': 1080,
+    }
+
+    asset_id = bot.data.save_asset(
+        channel_id=-100123,
+        message_id=123,
+        template=None,
+        hashtags='#test',
+        tg_chat_id=-100123,
+        caption='Исходный пост',
+        kind='photo',
+        file_meta=file_meta,
+        origin='recognition',
+    )
+
+    job = Job(
+        id=1,
+        name='vision',
+        payload={'asset_id': asset_id},
+        status='queued',
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_vision(job)
+
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.recognized_message_id == recognized_mid
+
+    await bot.close()
+
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_job_vision_skips_exif_debug_by_default(tmp_path, monkeypatch):
+    calls = await _run_vision_job_collect_calls(
+        tmp_path, monkeypatch, flag_enabled=False
+    )
+    assert 'copyMessage' in calls
+    assert 'sendMessage' not in calls
+
+
+@pytest.mark.asyncio
+async def test_job_vision_sends_exif_debug_when_flag_enabled(tmp_path, monkeypatch):
+    calls = await _run_vision_job_collect_calls(
+        tmp_path, monkeypatch, flag_enabled=True
+    )
+    assert 'copyMessage' in calls
+    assert 'sendMessage' in calls
 
 @pytest.mark.asyncio
 async def test_asset_selection(tmp_path):

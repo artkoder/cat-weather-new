@@ -59,6 +59,7 @@
 - `ASSET_STORAGE_DIR` – optional override for local media storage. Defaults to `/tmp/bot_assets`; ensure the directory persists across deployments if you expect re-ingestion safeguards.
 - `TZ_OFFSET` – default timezone applied to schedules until users pick their own offset.
 - `SCHED_INTERVAL_SEC` – polling cadence for the scheduler loop (default `30`).
+- `ASSETS_DEBUG_EXIF` – when set to a truthy value, replies to recognized messages with a raw EXIF dump for debugging; defaults to disabled (`0`).
 - `PORT` – aiohttp listener used when calling `web.run_app`; defaults to `8080` and must align with the port exposed by your hosting provider.
 - `4O_API_KEY` – key used by the recognition pipeline and rubric copy generators; when missing, related jobs are skipped automatically.
 - `OPENAI_DAILY_TOKEN_LIMIT`, `OPENAI_DAILY_TOKEN_LIMIT_GPT_4O` (`OPENAI_DAILY_TOKEN_LIMIT_4O` legacy), `OPENAI_DAILY_TOKEN_LIMIT_GPT_4O_MINI` (`OPENAI_DAILY_TOKEN_LIMIT_4O_MINI` legacy) – optional per-model quotas that gate new OpenAI jobs until the next UTC reset.

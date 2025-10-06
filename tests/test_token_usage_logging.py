@@ -23,7 +23,7 @@ async def test_record_openai_usage_logs_success(tmp_path, caplog, monkeypatch):
         "completion_tokens": 5,
         "total_tokens": 15,
         "request_id": "req-1",
-        "endpoint": "responses",
+        "endpoint": "/v1/responses",
         "meta": {"job": {"id": 123, "name": "vision", "payload_keys": ["foo"]}},
         "at": "2024-01-01T00:00:00+00:00",
     }

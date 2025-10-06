@@ -680,6 +680,10 @@ class Bot:
         response: "OpenAIResponse" | None,
         *,
         job: Job | None = None,
+        record_supabase: bool = True,
+        supabase_meta: dict[str, Any] | None = None,
+        supabase_endpoint: str | None = None,
+        supabase_bot: str | None = None,
     ) -> None:
         if response is None:
             return
@@ -717,12 +721,18 @@ class Bot:
             if isinstance(job.payload, dict):
                 job_meta["payload_keys"] = sorted(job.payload.keys())
             meta["job"] = job_meta
+        if supabase_meta:
+            meta.update(supabase_meta)
+        if not record_supabase:
+            return
         success, payload, error = await self.supabase.insert_token_usage(
+            bot=supabase_bot or "kotopogoda",
             model=model,
             prompt_tokens=response.prompt_tokens,
             completion_tokens=response.completion_tokens,
             total_tokens=response.total_tokens,
             request_id=response.request_id,
+            endpoint=supabase_endpoint or "/v1/responses",
             meta=meta or None,
         )
         log_context = {"log_token_usage": payload}
@@ -2228,6 +2238,33 @@ class Bot:
             result = response.content
             if not isinstance(result, dict):
                 raise RuntimeError("Invalid response from vision model")
+            supabase_meta = {"asset_id": asset_id, "channel_id": asset.channel_id}
+            success, payload, error = await self.supabase.insert_token_usage(
+                bot="kotopogoda",
+                model="gpt-4o-mini",
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                total_tokens=response.total_tokens,
+                request_id=response.request_id,
+                endpoint="/v1/responses",
+                meta=supabase_meta,
+            )
+            log_context = {"log_token_usage": payload}
+            if success:
+                logging.info("Supabase token usage insert succeeded", extra=log_context)
+            else:
+                if error == "disabled":
+                    logging.debug(
+                        "Supabase client disabled; token usage skipped", extra=log_context
+                    )
+                elif error:
+                    logging.error(
+                        "Supabase token usage insert failed: %s", error, extra=log_context
+                    )
+                else:
+                    logging.error(
+                        "Supabase token usage insert failed", extra=log_context
+                    )
             caption = str(result.get("caption", "")).strip()
             guess_country_raw = result.get("guess_country")
             guess_city_raw = result.get("guess_city")
@@ -2431,7 +2468,12 @@ class Bot:
                 ", ".join(tags) if tags else "-",
                 photo_weather or "-",
             )
-            await self._record_openai_usage("gpt-4o-mini", response, job=job)
+            await self._record_openai_usage(
+                "gpt-4o-mini",
+                response,
+                job=job,
+                record_supabase=False,
+            )
             logging.info(
                 "OpenAI request_id=%s usage in/out/total=%s/%s/%s",
                 request_id or "-",

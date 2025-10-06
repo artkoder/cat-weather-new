@@ -66,7 +66,7 @@ class OpenAIClient:
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "json_schema": self.ensure_json_format(
+                    **self.ensure_json_format(
                         name=schema_name,
                         schema=schema,
                     ),
@@ -111,7 +111,7 @@ class OpenAIClient:
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "json_schema": self.ensure_json_format(
+                    **self.ensure_json_format(
                         name=schema_name or "post_text_v1",
                         schema=schema,
                     ),
@@ -176,15 +176,22 @@ class OpenAIClient:
             if isinstance(text_section, dict):
                 format_section = text_section.get("format", {})
                 if isinstance(format_section, dict):
-                    schema_candidate = format_section.get("json_schema")
-                    if isinstance(schema_candidate, dict):
-                        json_schema_section = schema_candidate
+                    format_type = format_section.get("type")
+                    if format_type == "json_schema":
+                        if any(
+                            key in format_section for key in ("name", "schema", "strict")
+                        ):
+                            json_schema_section = format_section
+                    if json_schema_section is None:
+                        schema_candidate = format_section.get("json_schema")
+                        if isinstance(schema_candidate, dict):
+                            json_schema_section = schema_candidate
         if json_schema_section is None:
             json_schema_section = {}
         schema_name = json_schema_section.get("name")
         if not schema_name or not str(schema_name).strip():
             raise ValueError(
-                "OpenAI payload must include text.format.json_schema.name"
+                "OpenAI payload must include text.format.name (json_schema)"
             )
         schema_body = json_schema_section.get("schema")
         schema_keys: list[str] | None = None

@@ -64,10 +64,15 @@ class DummyAsyncClient:
 
 
 class ErrorResponse:
-    def __init__(self, payload: dict[str, Any], status_code: int = 400) -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        status_code: int = 400,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.status_code = status_code
         self._payload = payload
-        self.headers: dict[str, str] = {}
+        self.headers = headers or {}
 
     def json(self) -> dict[str, Any]:
         return self._payload
@@ -78,8 +83,16 @@ class ErrorResponse:
 
 
 class ErrorAsyncClient:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        *,
+        status_code: int = 400,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self._payload = payload
+        self._status_code = status_code
+        self._headers = headers or {}
 
     async def __aenter__(self) -> "ErrorAsyncClient":
         return self
@@ -94,7 +107,11 @@ class ErrorAsyncClient:
         json: dict[str, Any],
         headers: dict[str, str],
     ) -> ErrorResponse:
-        return ErrorResponse(self._payload)
+        return ErrorResponse(
+            self._payload,
+            status_code=self._status_code,
+            headers=self._headers,
+        )
 
 
 @pytest.mark.asyncio
@@ -310,6 +327,98 @@ async def test_logs_invalid_json_schema_details(monkeypatch, caplog):
     log_message = relevant[0]
     assert "post_text_v1" in log_message
     assert "truncated=True" in log_message
+
+
+@pytest.mark.asyncio
+async def test_retry_warning_logs_request_id_and_truncated_body(monkeypatch, caplog):
+    long_message = "x" * 700
+    error_payload = {"error": {"message": long_message}}
+
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda timeout=120: ErrorAsyncClient(
+            error_payload,
+            status_code=500,
+            headers={"x-request-id": "retry-req"},
+        ),
+    )
+
+    client = OpenAIClient("test-key")
+    schema = {
+        "type": "object",
+        "properties": {"details": {"type": "string"}},
+        "required": ["details"],
+    }
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(RuntimeError):
+            await client.generate_json(
+                model="gpt-json",
+                system_prompt="Validate schema",
+                user_prompt="Return data",
+                schema=schema,
+            )
+
+    warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warning_records, "Expected warning logs for retries"
+    assert any(getattr(r, "request_id", None) == "retry-req" for r in warning_records)
+    assert any(getattr(r, "status_code", None) == 500 for r in warning_records)
+    warning_messages = [record.getMessage() for record in warning_records]
+    assert any("request_id=retry-req" in message for message in warning_messages)
+    assert any("status=500" in message for message in warning_messages)
+    assert any("..." in message for message in warning_messages)
+
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert error_records, "Expected error log after retries exhausted"
+    assert any(getattr(r, "request_id", None) == "retry-req" for r in error_records)
+    assert any(getattr(r, "status_code", None) == 500 for r in error_records)
+    assert any("request_id=retry-req" in record.getMessage() for record in error_records)
+
+
+@pytest.mark.asyncio
+async def test_non_retry_error_logs_request_id_and_truncated_body(monkeypatch, caplog):
+    long_message = "y" * 700
+    error_payload = {
+        "error": {
+            "type": "invalid_request_error",
+            "message": long_message,
+        }
+    }
+
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda timeout=120: ErrorAsyncClient(
+            error_payload,
+            status_code=400,
+            headers={"x-request-id": "nonretry-req"},
+        ),
+    )
+
+    client = OpenAIClient("test-key")
+    schema = {
+        "type": "object",
+        "properties": {"details": {"type": "string"}},
+        "required": ["details"],
+    }
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(RuntimeError):
+            await client.generate_json(
+                model="gpt-json",
+                system_prompt="Validate schema",
+                user_prompt="Return data",
+                schema=schema,
+            )
+
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert error_records, "Expected error log for non-retriable response"
+    record = error_records[0]
+    assert getattr(record, "request_id", None) == "nonretry-req"
+    assert getattr(record, "status_code", None) == 400
+    message = record.getMessage()
+    assert "status=400" in message
+    assert "request_id=nonretry-req" in message
+    assert "..." in message
 
 
 @pytest.mark.asyncio

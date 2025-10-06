@@ -159,6 +159,11 @@ class OpenAIClient:
             "image_url": f"data:{mime_type};base64,{base64_data}",
         }
 
+    def _truncate_for_log(self, value: str, limit: int = 600) -> str:
+        if len(value) <= limit:
+            return value
+        return value[: limit - 3] + "..."
+
     async def _submit_request(self, payload: Dict[str, Any]) -> OpenAIResponse:
         url = f"{self.base_url}/responses"
         headers = {
@@ -264,22 +269,30 @@ class OpenAIClient:
             if 400 <= response.status_code < 500 and error_type == "invalid_request_error":
                 should_retry = False
 
+            request_id = response.headers.get("x-request-id")
+            response_text_for_log = self._truncate_for_log(response.text)
+            log_extra = {"status_code": response.status_code, "request_id": request_id}
+
             if should_retry and attempt < max_attempts:
                 logging.warning(
-                    "OpenAI API error %s (attempt %s/%s): %s",
+                    "OpenAI API error status=%s request_id=%s (attempt %s/%s): %s",
                     response.status_code,
+                    request_id,
                     attempt,
                     max_attempts,
-                    response.text,
+                    response_text_for_log,
+                    extra=log_extra,
                 )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 10)
                 continue
 
             logging.error(
-                "OpenAI API error %s: %s",
+                "OpenAI API error status=%s request_id=%s: %s",
                 response.status_code,
-                response.text,
+                request_id,
+                response_text_for_log,
+                extra=log_extra,
             )
             raise RuntimeError(f"OpenAI API error {response.status_code}")
         else:  # pragma: no cover - safeguard

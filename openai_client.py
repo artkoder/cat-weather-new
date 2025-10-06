@@ -191,6 +191,7 @@ class OpenAIClient:
             schema_name,
             strict_flag,
             schema_key_count,
+
             schema_keys,
         )
 

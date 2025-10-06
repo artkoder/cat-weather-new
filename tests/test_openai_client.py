@@ -329,3 +329,21 @@ async def test_submit_request_requires_json_schema_name():
         await client._submit_request(payload)
 
     assert "text.format.json_schema.name" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_submit_request_requires_json_schema_section():
+    client = OpenAIClient("test-key")
+    payload = {
+        "model": "gpt-json",
+        "text": {
+            "format": {
+                "type": "json_schema",
+            }
+        },
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        await client._submit_request(payload)
+
+    assert "text.format.json_schema.name" in str(exc_info.value)

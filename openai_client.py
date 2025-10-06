@@ -165,12 +165,17 @@ class OpenAIClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        text_raw = payload.get("text") if isinstance(payload, dict) else None
-        text_section = text_raw if isinstance(text_raw, dict) else {}
-        format_raw = text_section.get("format")
-        format_section = format_raw if isinstance(format_raw, dict) else {}
-        json_schema_raw = format_section.get("json_schema")
-        json_schema_section = json_schema_raw if isinstance(json_schema_raw, dict) else {}
+        json_schema_section: dict[str, Any] | None = None
+        if isinstance(payload, dict):
+            text_section = payload.get("text", {})
+            if isinstance(text_section, dict):
+                format_section = text_section.get("format", {})
+                if isinstance(format_section, dict):
+                    schema_candidate = format_section.get("json_schema")
+                    if isinstance(schema_candidate, dict):
+                        json_schema_section = schema_candidate
+        if json_schema_section is None:
+            json_schema_section = {}
         schema_name = json_schema_section.get("name")
         if not schema_name or not str(schema_name).strip():
             raise ValueError(

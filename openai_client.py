@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -61,7 +62,7 @@ class OpenAIClient:
         payload = {
             "model": model,
             "text": {
-                "format": self._build_text_format(schema),
+                "format": self._mk_json_format(schema, "asset_vision_v1"),
             },
             "input": [
                 {
@@ -91,6 +92,7 @@ class OpenAIClient:
         system_prompt: str,
         user_prompt: str,
         schema: dict[str, Any],
+        schema_name: str | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
     ) -> OpenAIResponse | None:
@@ -99,7 +101,7 @@ class OpenAIClient:
         payload = {
             "model": model,
             "text": {
-                "format": self._build_text_format(schema),
+                "format": self._mk_json_format(schema, schema_name or "post_text_v1"),
             },
             "input": [
                 {
@@ -118,20 +120,15 @@ class OpenAIClient:
             payload["top_p"] = top_p
         return await self._submit_request(payload)
 
-    def _build_text_format(self, schema: dict[str, Any]) -> dict[str, Any]:
-        if "name" in schema and "schema" in schema:
-            schema_name = schema["name"]
-            schema_body = schema["schema"]
-        else:
-            schema_name = "response"
-            schema_body = schema
+    def _mk_json_format(
+        self, schema: dict[str, Any], name: str, strict: bool = True
+    ) -> dict[str, Any]:
+        if not name or not str(name).strip():
+            raise ValueError("Structured output schema name must be provided")
         return {
             "type": "json_schema",
-            "json_schema": {
-                "name": schema_name,
-                "schema": schema_body,
-            },
-            "strict": True,
+            "json_schema": {"name": name, "schema": schema},
+            "strict": strict,
         }
 
     def _build_image_part(self, image_bytes: bytes) -> dict[str, Any]:
@@ -170,14 +167,81 @@ class OpenAIClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        started = time.perf_counter()
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(url, json=payload, headers=headers)
-        duration = time.perf_counter() - started
-        if response.status_code != 200:
-            logging.error("OpenAI API error %s: %s", response.status_code, response.text)
+        text_section = payload.get("text") if isinstance(payload, dict) else None
+        format_section = text_section.get("format") if isinstance(text_section, dict) else None
+        json_schema = (
+            format_section.get("json_schema") if isinstance(format_section, dict) else None
+        )
+        schema_name = json_schema.get("name") if isinstance(json_schema, dict) else None
+        if not schema_name or not str(schema_name).strip():
+            raise ValueError("OpenAI payload must include text.format.json_schema.name")
+
+        max_attempts = 3
+        delay = 1.0
+        for attempt in range(1, max_attempts + 1):
+            started = time.perf_counter()
+            try:
+                async with httpx.AsyncClient(timeout=120) as client:
+                    response = await client.post(url, json=payload, headers=headers)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                if attempt >= max_attempts:
+                    logging.error("OpenAI API request failed: %s", exc)
+                    raise
+                logging.warning(
+                    "OpenAI API request failed (attempt %s/%s): %s",
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 10)
+                continue
+
+            duration = time.perf_counter() - started
+            if response.status_code == 200:
+                data = response.json()
+                break
+
+            error_body: dict[str, Any] | None = None
+            try:
+                parsed = response.json()
+                if isinstance(parsed, dict):
+                    error_body = parsed
+            except Exception:  # pragma: no cover - response.json may raise
+                error_body = None
+
+            should_retry = response.status_code in {408, 429} or response.status_code >= 500
+            error_type = None
+            if error_body:
+                error_info = error_body.get("error")
+                if isinstance(error_info, dict):
+                    error_type = error_info.get("type")
+                elif isinstance(error_body.get("type"), str):
+                    error_type = error_body["type"]  # type: ignore[index]
+            if 400 <= response.status_code < 500 and error_type == "invalid_request_error":
+                should_retry = False
+
+            if should_retry and attempt < max_attempts:
+                logging.warning(
+                    "OpenAI API error %s (attempt %s/%s): %s",
+                    response.status_code,
+                    attempt,
+                    max_attempts,
+                    response.text,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 10)
+                continue
+
+            logging.error(
+                "OpenAI API error %s: %s",
+                response.status_code,
+                response.text,
+            )
             raise RuntimeError(f"OpenAI API error {response.status_code}")
-        data = response.json()
+        else:  # pragma: no cover - safeguard
+            raise RuntimeError("OpenAI API request failed after retries")
+
         usage = data.get("usage") or {}
         prompt_tokens = usage.get("input_tokens") or usage.get("prompt_tokens")
         completion_tokens = usage.get("output_tokens") or usage.get("completion_tokens")

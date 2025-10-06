@@ -36,6 +36,8 @@ async def test_insert_token_usage_success(monkeypatch):
     assert payload == post_mock.await_args.kwargs["json"]
     assert payload["meta"]["source"] == "test"
     assert payload["meta"]["time"].startswith("2024-01-01")
+    assert payload["endpoint"] == "/v1/responses"
+    assert payload["bot"] == "kotopogoda"
 
 
 @pytest.mark.asyncio

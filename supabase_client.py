@@ -64,21 +64,23 @@ class SupabaseClient:
     async def insert_token_usage(
         self,
         *,
+        bot: str = "kotopogoda",
         model: str,
         prompt_tokens: int | None,
         completion_tokens: int | None,
         total_tokens: int | None,
         request_id: str | None,
+        endpoint: str = "/v1/responses",
         meta: Dict[str, Any] | None = None,
     ) -> Tuple[bool, Dict[str, Any], str | None]:
         payload: Dict[str, Any] = {
-            "bot": "kotopogoda",
+            "bot": bot,
             "model": model,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
             "request_id": request_id,
-            "endpoint": "responses",
+            "endpoint": endpoint,
             "meta": _strict_meta(meta),
             "at": datetime.now(timezone.utc).isoformat(),
         }

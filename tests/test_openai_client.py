@@ -298,3 +298,20 @@ async def test_logs_invalid_json_schema_details(monkeypatch, caplog):
     log_message = relevant[0]
     assert "post_text_v1" in log_message
     assert "truncated=True" in log_message
+
+
+@pytest.mark.asyncio
+async def test_submit_request_requires_json_schema_name():
+    client = OpenAIClient("test-key")
+    payload = {
+        "model": "gpt-json",
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"schema": {"type": "object"}},
+        },
+    }
+
+    with pytest.raises(ValueError) as exc_info:
+        await client._submit_request(payload)
+
+    assert "response_format.json_schema.name" in str(exc_info.value)

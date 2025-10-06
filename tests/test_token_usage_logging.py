@@ -18,7 +18,7 @@ async def test_record_openai_usage_logs_success(tmp_path, caplog, monkeypatch):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     payload = {
         "bot": "kotopogoda",
-        "model": "4o",
+        "model": "gpt-4o",
         "prompt_tokens": 10,
         "completion_tokens": 5,
         "total_tokens": 15,
@@ -33,7 +33,7 @@ async def test_record_openai_usage_logs_success(tmp_path, caplog, monkeypatch):
 
     job = SimpleNamespace(id=123, name="vision", payload={"foo": "bar"})
     response = OpenAIResponse({}, 10, 5, 15, request_id="req-1", meta={})
-    await bot._record_openai_usage("4o", response, job=job)
+    await bot._record_openai_usage("gpt-4o", response, job=job)
 
     assert mock_insert.await_count == 1
     insert_kwargs = mock_insert.await_args.kwargs
@@ -47,13 +47,13 @@ async def test_record_openai_usage_logs_success(tmp_path, caplog, monkeypatch):
 @pytest.mark.asyncio
 async def test_record_openai_usage_logs_failure(tmp_path, caplog, monkeypatch):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
-    payload = {"bot": "kotopogoda", "model": "4o"}
+    payload = {"bot": "kotopogoda", "model": "gpt-4o"}
     mock_insert = AsyncMock(return_value=(False, payload, "HTTP 500: error"))
     monkeypatch.setattr(bot.supabase, "insert_token_usage", mock_insert)
     caplog.set_level(logging.ERROR)
 
     response = OpenAIResponse({}, 1, 2, 3, request_id="req-2", meta=None)
-    await bot._record_openai_usage("4o", response)
+    await bot._record_openai_usage("gpt-4o", response)
 
     record = next(rec for rec in caplog.records if "Supabase token usage insert failed" in rec.message)
     assert record.log_token_usage == payload

@@ -13,7 +13,7 @@ from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone, time as dtime
 from pathlib import Path
 
-from typing import Any, BinaryIO, Iterable, TYPE_CHECKING
+from typing import Any, BinaryIO, Iterable, Sequence, TYPE_CHECKING
 
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont
@@ -467,16 +467,30 @@ class Bot:
 
         limits: dict[str, int] = {}
         default_limit = parse_limit(os.getenv("OPENAI_DAILY_TOKEN_LIMIT"), "OPENAI_DAILY_TOKEN_LIMIT")
-        limit_4o = parse_limit(os.getenv("OPENAI_DAILY_TOKEN_LIMIT_4O"), "OPENAI_DAILY_TOKEN_LIMIT_4O")
-        limit_4o_mini = parse_limit(
-            os.getenv("OPENAI_DAILY_TOKEN_LIMIT_4O_MINI"), "OPENAI_DAILY_TOKEN_LIMIT_4O_MINI"
+        per_model_env_vars: Sequence[tuple[str, Sequence[str]]] = (
+            (
+                "gpt-4o",
+                (
+                    "OPENAI_DAILY_TOKEN_LIMIT_GPT_4O",
+                    "OPENAI_DAILY_TOKEN_LIMIT_4O",
+                ),
+            ),
+            (
+                "gpt-4o-mini",
+                (
+                    "OPENAI_DAILY_TOKEN_LIMIT_GPT_4O_MINI",
+                    "OPENAI_DAILY_TOKEN_LIMIT_4O_MINI",
+                ),
+            ),
         )
-        if limit_4o is not None:
-            limits["4o"] = limit_4o
-        if limit_4o_mini is not None:
-            limits["4o-mini"] = limit_4o_mini
+        for model, env_names in per_model_env_vars:
+            for env_name in env_names:
+                limit = parse_limit(os.getenv(env_name), env_name)
+                if limit is not None:
+                    limits[model] = limit
+                    break
         if not limits and default_limit is not None:
-            limits = {"4o": default_limit, "4o-mini": default_limit}
+            limits = {model: default_limit for model, _ in per_model_env_vars}
         return limits
 
     async def run_openai_health_check(self) -> None:
@@ -495,7 +509,7 @@ class Bot:
 
         try:
             response = await self.openai.generate_json(
-                model="4o",
+                model="gpt-4o",
                 system_prompt="You are a readiness probe.",
                 user_prompt="Return a JSON object with ok=true.",
                 schema=schema,
@@ -507,7 +521,7 @@ class Bot:
             logging.warning("OpenAI FAIL: request error")
             return
 
-        await self._record_openai_usage("4o", response)
+        await self._record_openai_usage("gpt-4o", response)
 
         if response and isinstance(response.content, dict) and response.content.get("ok") is True:
             logging.info("OpenAI OK")
@@ -2117,15 +2131,15 @@ class Bot:
             user_prompt = (
                 "Определи по фото категорию, архитектурный вид, погоду и перечисли заметные цветы. Верни только JSON согласно схеме."
             )
-            self._enforce_openai_limit(job, "4o-mini")
+            self._enforce_openai_limit(job, "gpt-4o-mini")
             logging.info(
-                "Vision job %s classifying asset %s using 4o-mini from %s",
+                "Vision job %s classifying asset %s using gpt-4o-mini from %s",
                 job.id,
                 asset_id,
                 local_path,
             )
             response = await self.openai.classify_image(
-                model="4o-mini",
+                model="gpt-4o-mini",
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 image_bytes=image_bytes,
@@ -2190,7 +2204,7 @@ class Bot:
             caption_text = "\n".join(line for line in caption_lines if line)
             result_payload = {
                 "status": "ok",
-                "provider": "4o-mini",
+                "provider": "gpt-4o-mini",
                 "category": category,
                 "arch_view": arch_view,
                 "photo_weather": photo_weather,
@@ -2241,7 +2255,7 @@ class Bot:
                 vision_caption=caption_text,
                 local_path=None,
             )
-            await self._record_openai_usage("4o-mini", response, job=job)
+            await self._record_openai_usage("gpt-4o-mini", response, job=job)
             if not self.dry_run and new_mid:
                 logging.info(
                     "Vision job %s deleting original message %s for asset %s",
@@ -5211,14 +5225,14 @@ class Bot:
             try:
                 logging.info(
                     "Запрос генерации текста для цветов: модель=%s temperature=%.2f top_p=0.9 попытка %s/%s",
-                    "4o",
+                    "gpt-4o",
                     temperature,
                     attempt,
                     attempts,
                 )
-                self._enforce_openai_limit(job, "4o")
+                self._enforce_openai_limit(job, "gpt-4o")
                 response = await self.openai.generate_json(
-                    model="4o",
+                    model="gpt-4o",
                     system_prompt=(
                         "Ты редактор телеграм-канала про погоду и уют. "
                         "Создавай дружелюбные тексты."
@@ -5232,7 +5246,7 @@ class Bot:
                 logging.exception("Failed to generate flowers copy (attempt %s)", attempt)
                 response = None
             if response:
-                await self._record_openai_usage("4o", response, job=job)
+                await self._record_openai_usage("gpt-4o", response, job=job)
             if not response or not isinstance(response.content, dict):
                 continue
             greeting = str(response.content.get("greeting") or "").strip()
@@ -5497,14 +5511,14 @@ class Bot:
             try:
                 logging.info(
                     "Запрос генерации текста для guess_arch: модель=%s temperature=%.2f top_p=0.9 попытка %s/%s",
-                    "4o",
+                    "gpt-4o",
                     temperature,
                     attempt,
                     attempts,
                 )
-                self._enforce_openai_limit(job, "4o")
+                self._enforce_openai_limit(job, "gpt-4o")
                 response = await self.openai.generate_json(
-                    model="4o",
+                    model="gpt-4o",
                     system_prompt=(
                         "Ты редактор телеграм-канала о погоде и городе. "
                         "Пиши интересно, но коротко."
@@ -5518,7 +5532,7 @@ class Bot:
                 logging.exception("Failed to generate guess_arch caption (attempt %s)", attempt)
                 response = None
             if response:
-                await self._record_openai_usage("4o", response, job=job)
+                await self._record_openai_usage("gpt-4o", response, job=job)
             if not response or not isinstance(response.content, dict):
                 continue
             caption = str(response.content.get("caption") or "").strip()

@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.0] - 2024-05-17
 ### Added
-- Automatic recognition pipeline that classifies ingested assets with OpenAI `4o-mini`, stores architectural metadata and detects flowers for downstream rubrics.
+- Automatic recognition pipeline that classifies ingested assets with OpenAI `gpt-4o-mini`, stores architectural metadata and detects flowers for downstream rubrics.
 - Persistent asynchronous job queue that schedules recognition, rubric publication and manual overrides with retry/backoff semantics.
 - Daily rubrics «Цветы» and «Угадай» that assemble carousels and quizzes from recognized assets and clean up consumed media.
 - Token accounting with per-model daily quotas to prevent OpenAI overages and surface usage to administrators.

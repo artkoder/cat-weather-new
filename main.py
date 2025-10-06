@@ -719,6 +719,24 @@ class Bot:
         if created:
             logging.info("Initialized default rubrics: %s", ", ".join(created))
 
+    @staticmethod
+    def _is_convertible_image_document(asset: Asset) -> bool:
+        """Return True when a Telegram document can be safely converted to a photo."""
+
+        if asset.kind != "document":
+            return False
+
+        mime = (asset.mime_type or "").lower()
+        if mime.startswith("image/") and not mime.endswith("svg+xml"):
+            return True
+
+        if asset.file_name:
+            ext = Path(asset.file_name).suffix.lower()
+            if ext in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".heic", ".heif", ".bmp"}:
+                return True
+
+        return False
+
     def _get_rubric_overview_target(
         self, user_id: int, code: str
     ) -> dict[str, Any] | None:
@@ -3435,7 +3453,7 @@ class Bot:
                             resp,
                         )
                         raise RuntimeError(f"Failed to publish vision result: {resp}")
-            else:
+            elif self._is_convertible_image_document(asset):
                 photo_source: bytes | str | os.PathLike[str] | None = None
                 if local_path and os.path.exists(local_path):
                     photo_source = local_path
@@ -3490,6 +3508,24 @@ class Bot:
                             resp,
                         )
                         raise RuntimeError(f"Failed to publish vision result: {resp}")
+            else:
+                resp = await self.api_request(
+                    "sendDocument",
+                    {
+                        "chat_id": asset.channel_id,
+                        "document": file_id,
+                        "caption": caption_text,
+                    },
+                )
+                method_used = "sendDocument"
+                if not resp.get("ok"):
+                    logging.error(
+                        "Vision job %s failed to publish result for asset %s via sendDocument: %s",
+                        job.id,
+                        asset_id,
+                        resp,
+                    )
+                    raise RuntimeError(f"Failed to publish vision result: {resp}")
             new_mid = resp.get("result", {}).get("message_id") if resp.get("result") else None
             logging.info(
                 "Vision job %s posted classification for asset %s via %s: message_id=%s",

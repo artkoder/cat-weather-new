@@ -7,6 +7,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import copy
+import piexif
 import pytest
 import sqlite3
 from PIL import Image
@@ -26,6 +28,9 @@ async def _run_vision_job_collect_calls(
     asset_kind: str = 'photo',
     asset_file_name: str = 'sample.jpg',
     asset_mime: str = 'image/jpeg',
+    metadata: dict[str, Any] | None = None,
+    vision_overrides: dict[str, Any] | None = None,
+    exif_month: int | None = None,
 ):
     import main as main_module
 
@@ -36,7 +41,18 @@ async def _run_vision_job_collect_calls(
 
     img = Image.new('RGB', (10, 10), color='white')
     buffer = BytesIO()
-    img.save(buffer, format='JPEG')
+    exif_bytes: bytes | None = None
+    if exif_month is not None:
+        exif_dict = {
+            'Exif': {
+                piexif.ExifIFD.DateTimeOriginal: f"2023:{exif_month:02d}:15 12:00:00".encode('utf-8')
+            }
+        }
+        exif_bytes = piexif.dump(exif_dict)
+    if exif_bytes:
+        img.save(buffer, format='JPEG', exif=exif_bytes)
+    else:
+        img.save(buffer, format='JPEG')
     image_bytes = buffer.getvalue()
 
     calls: list[dict[str, Any]] = []
@@ -63,25 +79,28 @@ async def _run_vision_job_collect_calls(
             self.api_key = 'test-key'
 
         async def classify_image(self, **kwargs):
+            payload = {
+                'arch_view': False,
+                'caption': 'кот',
+                'objects': ['кот'],
+                'is_outdoor': False,
+                'framing': 'close-up',
+                'guess_country': None,
+                'guess_city': None,
+                'location_confidence': 0.0,
+                'landmarks': [],
+                'tags': ['animals', 'indoor', 'pet'],
+                'architecture_close_up': False,
+                'architecture_wide': False,
+                'weather_image': 'indoor',
+                'season_guess': None,
+                'arch_style': None,
+                'safety': {'nsfw': False, 'reason': 'безопасно'},
+            }
+            if vision_overrides:
+                payload.update(copy.deepcopy(vision_overrides))
             return OpenAIResponse(
-                {
-                    'arch_view': False,
-                    'caption': 'кот',
-                    'objects': ['кот'],
-                    'is_outdoor': False,
-                    'framing': 'close-up',
-                    'guess_country': None,
-                    'guess_city': None,
-                    'location_confidence': 0.0,
-                    'landmarks': [],
-                    'tags': ['animals', 'indoor', 'pet'],
-                    'architecture_close_up': False,
-                    'architecture_wide': False,
-                    'weather_image': 'indoor',
-                    'season_guess': None,
-                    'arch_style': None,
-                    'safety': {'nsfw': False, 'reason': 'безопасно'},
-                },
+                payload,
                 {
                     'prompt_tokens': 10,
                     'completion_tokens': 5,
@@ -97,7 +116,10 @@ async def _run_vision_job_collect_calls(
     def fake_enforce(self, *args, **kwargs):  # type: ignore[override]
         return None
 
+    supabase_calls: list[dict[str, Any]] = []
+
     async def fake_insert(self, **kwargs):  # type: ignore[override]
+        supabase_calls.append(kwargs)
         return False, {'mock': True}, 'disabled'
 
     bot.api_request = fake_api_request  # type: ignore[assignment]
@@ -128,6 +150,7 @@ async def _run_vision_job_collect_calls(
         caption='Исходный пост',
         kind=asset_kind,
         file_meta=file_meta,
+        metadata=metadata,
         origin='recognition',
     )
 
@@ -151,12 +174,12 @@ async def _run_vision_job_collect_calls(
 
     await bot.close()
 
-    return calls
+    return calls, asset, supabase_calls
 
 
 @pytest.mark.asyncio
 async def test_job_vision_skips_exif_debug_by_default(tmp_path, monkeypatch):
-    calls = await _run_vision_job_collect_calls(
+    calls, _, _ = await _run_vision_job_collect_calls(
         tmp_path, monkeypatch, flag_enabled=False
     )
     assert any(call['method'] == 'copyMessage' for call in calls)
@@ -165,7 +188,7 @@ async def test_job_vision_skips_exif_debug_by_default(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_job_vision_sends_exif_debug_when_flag_enabled(tmp_path, monkeypatch):
-    calls = await _run_vision_job_collect_calls(
+    calls, _, _ = await _run_vision_job_collect_calls(
         tmp_path, monkeypatch, flag_enabled=True
     )
     assert any(call['method'] == 'copyMessage' for call in calls)
@@ -176,7 +199,7 @@ async def test_job_vision_sends_exif_debug_when_flag_enabled(tmp_path, monkeypat
 async def test_job_vision_converts_document_to_photo_and_deletes_original(
     tmp_path, monkeypatch
 ):
-    calls = await _run_vision_job_collect_calls(
+    calls, _, _ = await _run_vision_job_collect_calls(
         tmp_path,
         monkeypatch,
         flag_enabled=False,
@@ -201,6 +224,47 @@ async def test_job_vision_converts_document_to_photo_and_deletes_original(
 
     copy_calls = [call for call in calls if call['method'] == 'copyMessage']
     assert not copy_calls
+
+
+@pytest.mark.asyncio
+async def test_job_vision_enriches_weather_season_and_style(tmp_path, monkeypatch):
+    overrides = {
+        'weather_image': 'cloudy',
+        'season_guess': 'spring',
+        'arch_style': {'label': 'Gothic', 'confidence': 0.65},
+    }
+    metadata = {'exif_weather': {'enum': 'rainy'}}
+
+    calls, asset, supabase_calls = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        vision_overrides=overrides,
+        metadata=metadata,
+        exif_month=11,
+    )
+
+    assert any(call['method'] == 'copyMessage' for call in calls)
+
+    assert asset.vision_results is not None
+    vision = asset.vision_results
+    assert vision['weather_final'] == 'rainy'
+    assert vision['weather_final_display'] == 'дождливо'
+    assert vision['season_final'] == 'autumn'
+    assert vision['season_final_display'] == 'осень'
+    assert vision['arch_style'] == {'label': 'Gothic', 'confidence': 0.65}
+    assert 'rainy' in vision['tags']
+
+    assert asset.vision_caption is not None
+    assert 'Погода: дождливо' in asset.vision_caption
+    assert 'Сезон: осень' in asset.vision_caption
+    assert 'Стиль: Gothic (≈65%)' in asset.vision_caption
+
+    assert supabase_calls, 'supabase logging should be attempted'
+    meta = supabase_calls[0]['meta']
+    assert meta['weather_final'] == 'rainy'
+    assert meta['season_final'] == 'autumn'
+    assert meta['arch_style'] == {'label': 'Gothic', 'confidence': 0.65}
 
 
 @pytest.mark.asyncio

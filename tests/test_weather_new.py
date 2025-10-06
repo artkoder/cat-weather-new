@@ -5,6 +5,7 @@ import types
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import pytest
 import sqlite3
@@ -17,7 +18,15 @@ from openai_client import OpenAIResponse
 os.environ.setdefault('TELEGRAM_BOT_TOKEN', 'dummy')
 
 
-async def _run_vision_job_collect_calls(tmp_path, monkeypatch, *, flag_enabled: bool):
+async def _run_vision_job_collect_calls(
+    tmp_path,
+    monkeypatch,
+    *,
+    flag_enabled: bool,
+    asset_kind: str = 'photo',
+    asset_file_name: str = 'sample.jpg',
+    asset_mime: str = 'image/jpeg',
+):
     import main as main_module
 
     monkeypatch.setattr(main_module, 'ASSETS_DEBUG_EXIF', flag_enabled)
@@ -30,15 +39,17 @@ async def _run_vision_job_collect_calls(tmp_path, monkeypatch, *, flag_enabled: 
     img.save(buffer, format='JPEG')
     image_bytes = buffer.getvalue()
 
-    calls: list[str] = []
+    calls: list[dict[str, Any]] = []
     recognized_mid = 777
 
     async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
-        calls.append(method)
-        if method in {'copyMessage', 'sendPhoto'}:
+        calls.append({'method': method, 'data': data, 'files': files})
+        if method in {'copyMessage', 'sendPhoto', 'sendDocument'}:
             return {'ok': True, 'result': {'message_id': recognized_mid}}
         if method == 'sendMessage':
             return {'ok': True, 'result': {'message_id': recognized_mid + 1}}
+        if method == 'deleteMessage':
+            return {'ok': True, 'result': True}
         return {'ok': True, 'result': {}}
 
     async def fake_download(file_id, dest_path=None):  # type: ignore[override]
@@ -58,11 +69,17 @@ async def _run_vision_job_collect_calls(tmp_path, monkeypatch, *, flag_enabled: 
                     'caption': 'кот',
                     'objects': ['кот'],
                     'is_outdoor': False,
+                    'framing': 'close-up',
                     'guess_country': None,
                     'guess_city': None,
                     'location_confidence': 0.0,
                     'landmarks': [],
                     'tags': ['animals', 'indoor', 'pet'],
+                    'architecture_close_up': False,
+                    'architecture_wide': False,
+                    'weather_image': 'indoor',
+                    'season_guess': None,
+                    'arch_style': None,
                     'safety': {'nsfw': False, 'reason': 'безопасно'},
                 },
                 {
@@ -95,8 +112,8 @@ async def _run_vision_job_collect_calls(tmp_path, monkeypatch, *, flag_enabled: 
     file_meta = {
         'file_id': 'ph_large',
         'file_unique_id': 'uniq_large',
-        'file_name': 'sample.jpg',
-        'mime_type': 'image/jpeg',
+        'file_name': asset_file_name,
+        'mime_type': asset_mime,
         'file_size': len(image_bytes),
         'width': 1920,
         'height': 1080,
@@ -109,7 +126,7 @@ async def _run_vision_job_collect_calls(tmp_path, monkeypatch, *, flag_enabled: 
         hashtags='#test',
         tg_chat_id=-100123,
         caption='Исходный пост',
-        kind='photo',
+        kind=asset_kind,
         file_meta=file_meta,
         origin='recognition',
     )
@@ -142,8 +159,8 @@ async def test_job_vision_skips_exif_debug_by_default(tmp_path, monkeypatch):
     calls = await _run_vision_job_collect_calls(
         tmp_path, monkeypatch, flag_enabled=False
     )
-    assert 'copyMessage' in calls
-    assert 'sendMessage' not in calls
+    assert any(call['method'] == 'copyMessage' for call in calls)
+    assert not any(call['method'] == 'sendMessage' for call in calls)
 
 
 @pytest.mark.asyncio
@@ -151,8 +168,40 @@ async def test_job_vision_sends_exif_debug_when_flag_enabled(tmp_path, monkeypat
     calls = await _run_vision_job_collect_calls(
         tmp_path, monkeypatch, flag_enabled=True
     )
-    assert 'copyMessage' in calls
-    assert 'sendMessage' in calls
+    assert any(call['method'] == 'copyMessage' for call in calls)
+    assert any(call['method'] == 'sendMessage' for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_job_vision_converts_document_to_photo_and_deletes_original(
+    tmp_path, monkeypatch
+):
+    calls = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        asset_kind='document',
+        asset_file_name='sample.png',
+        asset_mime='image/png',
+    )
+
+    send_photo_calls = [call for call in calls if call['method'] == 'sendPhoto']
+    assert send_photo_calls, 'converted photo should be uploaded'
+    send_photo = send_photo_calls[0]
+    assert send_photo['data'] is not None
+    assert send_photo['data'].get('photo', '').startswith('attach://')
+    assert send_photo['files'] is not None and 'photo' in send_photo['files']
+    filename, blob = send_photo['files']['photo']
+    assert filename.endswith('.jpg')
+    assert blob.startswith(b'\xff\xd8')
+    assert len(blob) <= 10 * 1024 * 1024
+
+    delete_calls = [call for call in calls if call['method'] == 'deleteMessage']
+    assert delete_calls, 'original document message should be deleted'
+
+    copy_calls = [call for call in calls if call['method'] == 'copyMessage']
+    assert not copy_calls
+
 
 @pytest.mark.asyncio
 async def test_asset_selection(tmp_path):
@@ -386,11 +435,17 @@ async def test_recognized_message_skips_reingest(tmp_path):
                     'caption': 'кот',
                     'objects': ['кот'],
                     'is_outdoor': False,
+                    'framing': 'close-up',
                     'guess_country': None,
                     'guess_city': None,
                     'location_confidence': 0.0,
                     'landmarks': [],
                     'tags': ['animals', 'indoor', 'pet'],
+                    'architecture_close_up': False,
+                    'architecture_wide': False,
+                    'weather_image': 'indoor',
+                    'season_guess': None,
+                    'arch_style': None,
                     'safety': {'nsfw': False, 'reason': 'безопасно'},
                 },
                 {
@@ -553,11 +608,17 @@ async def test_recognized_edit_skips_reingest(tmp_path):
                     'caption': 'кот',
                     'objects': ['кот'],
                     'is_outdoor': False,
+                    'framing': 'close-up',
                     'guess_country': None,
                     'guess_city': None,
                     'location_confidence': 0.0,
                     'landmarks': [],
                     'tags': ['animals', 'indoor', 'pet'],
+                    'architecture_close_up': False,
+                    'architecture_wide': False,
+                    'weather_image': 'indoor',
+                    'season_guess': None,
+                    'arch_style': None,
                     'safety': {'nsfw': False, 'reason': 'безопасно'},
                 },
                 {

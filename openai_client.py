@@ -85,8 +85,8 @@ class OpenAIClient:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": user_prompt},
                         self._build_image_part(image_bytes),
+                        {"type": "input_text", "text": user_prompt},
                     ],
                 },
             ],

@@ -155,14 +155,14 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
         "type": "input_text",
         "text": "classify image",
     }
-    user_text = payload["input"][1]["content"][0]
-    assert user_text == {"type": "input_text", "text": "What do you see?"}
-    image_part = payload["input"][1]["content"][1]
+    image_part = payload["input"][1]["content"][0]
     assert image_part["type"] == "input_image"
     image_url = image_part["image_url"]
     assert image_url.startswith("data:image/png;base64,")
     encoded = image_url.split(",", 1)[1]
     assert base64.b64decode(encoded) == PNG_BYTES
+    user_text = payload["input"][1]["content"][1]
+    assert user_text == {"type": "input_text", "text": "What do you see?"}
 
     assert result is not None
     assert result.content == expected_result

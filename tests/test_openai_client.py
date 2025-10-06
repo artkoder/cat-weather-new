@@ -163,10 +163,9 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     text_config = payload["text"]
     format_config = text_config["format"]
     assert format_config["type"] == "json_schema"
-    json_schema_config = format_config["json_schema"]
-    assert json_schema_config["name"] == "asset_vision_v1"
-    assert json_schema_config["schema"] is schema
-    assert json_schema_config["strict"] is True
+    assert format_config["name"] == "asset_vision_v1"
+    assert format_config["schema"] is schema
+    assert format_config["strict"] is True
     system_content = payload["input"][0]["content"][0]
     assert system_content == {
         "type": "input_text",
@@ -266,10 +265,9 @@ async def test_generate_json_uses_text_response_payload(monkeypatch):
     text_config = payload["text"]
     format_config = text_config["format"]
     assert format_config["type"] == "json_schema"
-    json_schema_config = format_config["json_schema"]
-    assert json_schema_config["name"] == "post_text_v1"
-    assert json_schema_config["schema"] is schema
-    assert json_schema_config["strict"] is True
+    assert format_config["name"] == "post_text_v1"
+    assert format_config["schema"] is schema
+    assert format_config["strict"] is True
     system_content = payload["input"][0]["content"][0]
     assert system_content == {
         "type": "input_text",
@@ -437,7 +435,7 @@ async def test_submit_request_requires_json_schema_name():
     with pytest.raises(ValueError) as exc_info:
         await client._submit_request(payload)
 
-    assert "text.format.json_schema.name" in str(exc_info.value)
+    assert "text.format.name (json_schema)" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -455,4 +453,4 @@ async def test_submit_request_requires_json_schema_section():
     with pytest.raises(ValueError) as exc_info:
         await client._submit_request(payload)
 
-    assert "text.format.json_schema.name" in str(exc_info.value)
+    assert "text.format.name (json_schema)" in str(exc_info.value)

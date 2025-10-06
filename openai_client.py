@@ -10,6 +10,84 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict
 
+
+def _ensure_list_with_null(type_value: Any) -> Any:
+    if isinstance(type_value, str):
+        if type_value == "null":
+            return ["null"]
+        return [type_value, "null"]
+    if isinstance(type_value, list):
+        if "null" in type_value:
+            return type_value
+        return [*type_value, "null"]
+    return type_value
+
+
+def strictify_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Apply strict defaults to schema in-place and return it."""
+
+    if not isinstance(schema, dict):
+        raise ValueError("Schema must be a dictionary")
+
+    def process_list(items: list[Any]) -> None:
+        for item in items:
+            if isinstance(item, dict):
+                process_node(item)
+            elif isinstance(item, list):
+                process_list(item)
+
+    def process_node(node: dict[str, Any]) -> None:
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            for prop_schema in properties.values():
+                if isinstance(prop_schema, dict):
+                    process_node(prop_schema)
+                elif isinstance(prop_schema, list):
+                    process_list(prop_schema)
+
+        items_value = node.get("items")
+        if isinstance(items_value, dict):
+            process_node(items_value)
+        elif isinstance(items_value, list):
+            process_list(items_value)
+
+        for key, value in list(node.items()):
+            if key in {"properties", "items"}:
+                continue
+            if isinstance(value, dict):
+                process_node(value)
+            elif isinstance(value, list):
+                process_list(value)
+
+        if "type" in node:
+            node["type"] = _ensure_list_with_null(node["type"])
+
+        if isinstance(properties, dict):
+            required_existing = node.get("required")
+            required: list[str] = []
+            if isinstance(required_existing, list):
+                for item in required_existing:
+                    if isinstance(item, str) and item not in required:
+                        required.append(item)
+            for prop_key in properties.keys():
+                if prop_key not in required:
+                    required.append(prop_key)
+            node["required"] = required
+
+        type_value = node.get("type")
+        is_object = False
+        if isinstance(type_value, str):
+            is_object = type_value == "object"
+        elif isinstance(type_value, list):
+            is_object = "object" in type_value
+        elif type_value is None and isinstance(properties, dict):
+            is_object = True
+        if is_object and "additionalProperties" not in node:
+            node["additionalProperties"] = False
+
+    process_node(schema)
+    return schema
+
 import httpx
 
 
@@ -91,6 +169,7 @@ class OpenAIClient:
     ) -> OpenAIResponse | None:
         if not self.api_key:
             return None
+        strict_schema = strictify_schema(schema)
         payload = {
             "model": model,
             "text": {
@@ -98,7 +177,7 @@ class OpenAIClient:
                     "type": "json_schema",
                     **self.ensure_json_format(
                         name=schema_name,
-                        schema=schema,
+                        schema=strict_schema,
                     ),
                 }
             },
@@ -136,6 +215,7 @@ class OpenAIClient:
     ) -> OpenAIResponse | None:
         if not self.api_key:
             return None
+        strict_schema = strictify_schema(schema)
         payload = {
             "model": model,
             "text": {
@@ -143,7 +223,7 @@ class OpenAIClient:
                     "type": "json_schema",
                     **self.ensure_json_format(
                         name=schema_name or "post_text_v1",
-                        schema=schema,
+                        schema=strict_schema,
                     ),
                 }
             },

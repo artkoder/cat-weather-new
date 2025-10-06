@@ -3534,6 +3534,43 @@ class Bot:
                 method_used,
                 new_mid,
             )
+            weather_display_log = (
+                weather_final_display
+                or photo_weather_display
+                or photo_weather
+                or "-"
+            )
+            weather_source_log: str | None
+            if metadata_weather:
+                weather_source_log = "metadata"
+            elif model_weather:
+                weather_source_log = "model"
+            elif fallback_weather:
+                weather_source_log = "fallback"
+            else:
+                weather_source_log = None
+            if weather_source_log:
+                weather_display_log = f"{weather_display_log} ({weather_source_log})"
+            season_display_log = season_final_display or season_final or "-"
+            arch_style_label = (
+                arch_style.get("label") if isinstance(arch_style, dict) else None
+            )
+            arch_style_confidence = (
+                arch_style.get("confidence") if isinstance(arch_style, dict) else None
+            )
+            arch_confidence_log = (
+                f"{float(arch_style_confidence):.3f}"
+                if isinstance(arch_style_confidence, (int, float))
+                else "-"
+            )
+            logging.info(
+                "VISION: framing=%s weather=%s season=%s arch_style=%s arch_confidence=%s",
+                framing,
+                weather_display_log,
+                season_display_log,
+                arch_style_label or "-",
+                arch_confidence_log,
+            )
             self.data.update_asset(
                 asset_id,
                 recognized_message_id=new_mid,

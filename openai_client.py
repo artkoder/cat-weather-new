@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import imghdr
 import json
 import logging
 import os
@@ -143,10 +144,14 @@ class OpenAIClient:
         }
 
     def _build_image_part(self, image_bytes: bytes) -> dict[str, Any]:
+        image_kind = imghdr.what(None, image_bytes)
+        if not image_kind:
+            raise ValueError("Unable to determine image MIME type")
+        mime_type = f"image/{image_kind}"
         base64_data = base64.b64encode(image_bytes).decode("ascii")
         return {
             "type": "input_image",
-            "image_base64": base64_data,
+            "image_url": f"data:{mime_type};base64,{base64_data}",
         }
 
     async def _submit_request(self, payload: Dict[str, Any]) -> OpenAIResponse:

@@ -12,6 +12,17 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from openai_client import OpenAIClient
 
 
+PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+)
+PNG_BYTES = base64.b64decode(PNG_BASE64)
+
+JPEG_BASE64 = (
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAAaACgDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/AP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAQUCf//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQMBAT8Bf//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQIBAT8Bf//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEABj8Cf//Z"
+)
+JPEG_BYTES = base64.b64decode(JPEG_BASE64)
+
+
 class DummyResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self.status_code = 200
@@ -125,7 +136,7 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
         model="gpt-vision",
         system_prompt="classify image",
         user_prompt="What do you see?",
-        image_bytes=b"fake-bytes",
+        image_bytes=PNG_BYTES,
         schema=schema,
     )
 
@@ -147,8 +158,10 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     assert user_text == {"type": "input_text", "text": "What do you see?"}
     image_part = payload["input"][1]["content"][1]
     assert image_part["type"] == "input_image"
-    encoded = image_part["image_base64"]
-    assert base64.b64decode(encoded) == b"fake-bytes"
+    image_url = image_part["image_url"]
+    assert image_url.startswith("data:image/png;base64,")
+    encoded = image_url.split(",", 1)[1]
+    assert base64.b64decode(encoded) == PNG_BYTES
 
     assert result is not None
     assert result.content == expected_result
@@ -156,6 +169,24 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     assert result.completion_tokens == 5
     assert result.total_tokens == 15
     assert result.request_id == "resp_vision"
+
+
+def test_build_image_part_png_data_uri():
+    client = OpenAIClient("test-key")
+    part = client._build_image_part(PNG_BYTES)
+    assert part["type"] == "input_image"
+    assert part["image_url"].startswith("data:image/png;base64,")
+    encoded = part["image_url"].split(",", 1)[1]
+    assert base64.b64decode(encoded) == PNG_BYTES
+
+
+def test_build_image_part_jpeg_data_uri():
+    client = OpenAIClient("test-key")
+    part = client._build_image_part(JPEG_BYTES)
+    assert part["type"] == "input_image"
+    assert part["image_url"].startswith("data:image/jpeg;base64,")
+    encoded = part["image_url"].split(",", 1)[1]
+    assert base64.b64decode(encoded) == JPEG_BYTES
 
 
 @pytest.mark.asyncio

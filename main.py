@@ -93,6 +93,9 @@ CHANNEL_SEARCH_CONTROLS = [
 ]
 
 
+VK_STORY_LINK = "https://t.me/kgdstories"
+
+
 DEFAULT_RUBRIC_PRESETS: dict[str, dict[str, Any]] = {
     "flowers": {
         "title": "Цветы",
@@ -2473,6 +2476,28 @@ class Bot:
                 )
             return
 
+        if text.startswith('/vk'):
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    'sendMessage',
+                    {'chat_id': user_id, 'text': 'Not authorized'},
+                )
+                return
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': 'Проверить события', 'callback_data': 'vk_events'}]
+                ]
+            }
+            await self.api_request(
+                'sendMessage',
+                {
+                    'chat_id': user_id,
+                    'text': 'Раздел VK: выберите действие',
+                    'reply_markup': keyboard,
+                },
+            )
+            return
+
         # first /start registers superadmin or puts user in queue
         if text.startswith('/start'):
             if self.get_user(user_id):
@@ -3433,6 +3458,32 @@ class Bot:
                     'chat_id': user_id,
                     'text': 'Enter time (HH:MM or DD.MM.YYYY HH:MM)'
                 })
+        elif data == 'vk_events':
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    'sendMessage',
+                    {'chat_id': user_id, 'text': 'Not authorized'},
+                )
+                return
+            message = query.get('message') or {}
+            chat = message.get('chat') or {}
+            chat_id = chat.get('id')
+            if chat_id is None:
+                return
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': 'Создать историю', 'url': VK_STORY_LINK}]
+                ]
+            }
+            await self.api_request(
+                'sendMessage',
+                {
+                    'chat_id': chat_id,
+                    'text': 'События VK: быстрые действия',
+                    'reply_markup': keyboard,
+                },
+            )
+            return
         elif data.startswith('ws_ch:') and user_id in self.pending and self.pending[user_id].get('setup_weather'):
             cid = int(data.split(':')[1])
             self.pending[user_id] = {'channel': cid, 'weather_time': False, 'setup_weather': True}

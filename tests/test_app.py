@@ -8,7 +8,7 @@ from aiohttp import web
 from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from main import create_app, Bot
+from main import create_app, Bot, VK_STORY_LINK
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 os.environ.setdefault("WEBHOOK_URL", "https://example.com")
@@ -188,6 +188,59 @@ async def test_channel_tracking(tmp_path):
     })
     cur = bot.db.execute('SELECT * FROM channels WHERE chat_id=?', (-100,))
     assert cur.fetchone() is None
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_vk_story_link(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def dummy(method, data=None):
+        calls.append((method, data))
+        return {"ok": True}
+
+    bot.api_request = dummy  # type: ignore
+    await bot.start()
+
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+    calls.clear()
+
+    await bot.handle_update({"message": {"text": "/vk", "from": {"id": 1}}})
+
+    send_messages = [payload for method, payload in calls if method == "sendMessage"]
+    assert send_messages
+    vk_payload = send_messages[-1]
+    buttons = vk_payload.get("reply_markup", {}).get("inline_keyboard", [])
+    assert any(
+        button.get("callback_data") == "vk_events"
+        for row in buttons
+        for button in row
+    )
+
+    before = len(calls)
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "cb1",
+                "from": {"id": 1},
+                "data": "vk_events",
+                "message": {"message_id": 10, "chat": {"id": 1}},
+            }
+        }
+    )
+
+    new_calls = calls[before:]
+    story_messages = [payload for method, payload in new_calls if method == "sendMessage"]
+    assert story_messages
+    story_buttons = story_messages[-1].get("reply_markup", {}).get("inline_keyboard", [])
+    assert any(
+        button.get("url") == VK_STORY_LINK
+        for row in story_buttons
+        for button in row
+    )
 
     await bot.close()
 

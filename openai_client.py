@@ -62,8 +62,9 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "text": {
-                "format": self.ensure_json_format(
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": self.ensure_json_format(
                     name=schema_name,
                     schema=schema,
                 ),
@@ -104,8 +105,9 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "text": {
-                "format": self.ensure_json_format(
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": self.ensure_json_format(
                     name=schema_name or "post_text_v1",
                     schema=schema,
                 ),
@@ -135,7 +137,6 @@ class OpenAIClient:
         if not isinstance(schema, dict) or not schema:
             raise ValueError("Structured output schema must be a non-empty dict")
         return {
-            "type": "json_schema",
             "name": name,
             "schema": schema,
             "strict": strict,
@@ -154,22 +155,38 @@ class OpenAIClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        text_section = payload.get("text") if isinstance(payload, dict) else None
-        format_section = text_section.get("format") if isinstance(text_section, dict) else None
+        response_format = (
+            payload.get("response_format") if isinstance(payload, dict) else None
+        )
+        json_schema_section = (
+            response_format.get("json_schema")
+            if isinstance(response_format, dict)
+            else None
+        )
         schema_name = (
-            format_section.get("name") if isinstance(format_section, dict) else None
+            json_schema_section.get("name")
+            if isinstance(json_schema_section, dict)
+            else None
         )
         if not schema_name or not str(schema_name).strip():
-            raise ValueError("OpenAI payload must include text.format.name")
+            raise ValueError(
+                "OpenAI payload must include response_format.json_schema.name"
+            )
         schema_body = (
-            format_section.get("schema") if isinstance(format_section, dict) else None
+            json_schema_section.get("schema")
+            if isinstance(json_schema_section, dict)
+            else None
         )
         schema_keys: list[str] | None = None
         schema_key_count: int | None = None
         if isinstance(schema_body, dict):
             schema_key_count = len(schema_body)
             schema_keys = sorted(schema_body.keys())[:5]
-        strict_flag = format_section.get("strict") if isinstance(format_section, dict) else None
+        strict_flag = (
+            json_schema_section.get("strict")
+            if isinstance(json_schema_section, dict)
+            else None
+        )
         logging.debug(
             "OpenAI payload schema summary: name=%s strict=%s key_count=%s sample_keys=%s",
             schema_name,

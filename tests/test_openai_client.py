@@ -190,6 +190,16 @@ def test_build_image_part_jpeg_data_uri():
     assert base64.b64decode(encoded) == JPEG_BYTES
 
 
+def test_build_image_part_falls_back_to_jpeg(monkeypatch):
+    client = OpenAIClient("test-key")
+    monkeypatch.setattr("openai_client.imghdr.what", lambda *args, **kwargs: None)
+    part = client._build_image_part(PNG_BYTES)
+    assert part["type"] == "input_image"
+    assert part["image_url"].startswith("data:image/jpeg;base64,")
+    encoded = part["image_url"].split(",", 1)[1]
+    assert base64.b64decode(encoded) == PNG_BYTES
+
+
 @pytest.mark.asyncio
 async def test_generate_json_uses_text_response_payload(monkeypatch):
     captured: dict[str, Any] = {}

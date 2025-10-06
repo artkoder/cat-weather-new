@@ -149,9 +149,10 @@ class OpenAIClient:
 
     def _build_image_part(self, image_bytes: bytes) -> dict[str, Any]:
         image_kind = imghdr.what(None, image_bytes)
-        if not image_kind:
-            raise ValueError("Unable to determine image MIME type")
-        mime_type = f"image/{image_kind}"
+        if image_kind:
+            mime_type = f"image/{image_kind}"
+        else:
+            mime_type = "image/jpeg"
         base64_data = base64.b64encode(image_bytes).decode("ascii")
         return {
             "type": "input_image",

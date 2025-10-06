@@ -132,11 +132,12 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     assert captured["url"].endswith("/responses")
     payload = captured["payload"]
     assert payload["model"] == "gpt-vision"
-    text_config = payload["text"]["format"]
-    assert text_config["type"] == "json_schema"
-    assert text_config["name"] == "asset_vision_v1"
-    assert text_config["schema"] is schema
-    assert text_config["strict"] is True
+    response_format = payload["response_format"]
+    assert response_format["type"] == "json_schema"
+    json_schema_config = response_format["json_schema"]
+    assert json_schema_config["name"] == "asset_vision_v1"
+    assert json_schema_config["schema"] is schema
+    assert json_schema_config["strict"] is True
     system_content = payload["input"][0]["content"][0]
     assert system_content == {
         "type": "input_text",
@@ -203,11 +204,12 @@ async def test_generate_json_uses_text_response_payload(monkeypatch):
 
     payload = captured["payload"]
     assert payload["model"] == "gpt-json"
-    text_config = payload["text"]["format"]
-    assert text_config["type"] == "json_schema"
-    assert text_config["name"] == "post_text_v1"
-    assert text_config["schema"] is schema
-    assert text_config["strict"] is True
+    response_format = payload["response_format"]
+    assert response_format["type"] == "json_schema"
+    json_schema_config = response_format["json_schema"]
+    assert json_schema_config["name"] == "post_text_v1"
+    assert json_schema_config["schema"] is schema
+    assert json_schema_config["strict"] is True
     system_content = payload["input"][0]["content"][0]
     assert system_content == {
         "type": "input_text",

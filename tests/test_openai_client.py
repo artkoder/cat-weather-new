@@ -454,3 +454,98 @@ async def test_submit_request_requires_json_schema_section():
         await client._submit_request(payload)
 
     assert "text.format.name (json_schema)" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_schema_summary_logging_handles_embedded_format(monkeypatch, caplog):
+    captured: dict[str, Any] = {}
+
+    def _capture(url: str, payload: dict[str, Any], headers: dict[str, str]) -> None:
+        captured["payload"] = payload
+
+    response_payload = {
+        "output": [
+            {
+                "content": [
+                    {"type": "output_text", "text": json.dumps({"ok": True})}
+                ]
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        "id": "resp_embedded",
+    }
+
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda timeout=120: DummyAsyncClient(_capture, response_payload),
+    )
+
+    client = OpenAIClient("test-key")
+    payload = {
+        "model": "gpt-json",
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "embedded_schema",
+                "schema": {"type": "object", "properties": {"field": {"type": "string"}}},
+                "strict": True,
+            }
+        },
+        "input": [],
+    }
+
+    with caplog.at_level(logging.DEBUG):
+        await client._submit_request(payload)
+
+    debug_messages = [record.getMessage() for record in caplog.records]
+    summary_logs = [m for m in debug_messages if "OpenAI payload schema summary" in m]
+    assert summary_logs, "Expected schema summary log for embedded format"
+    assert any("name=embedded_schema" in m for m in summary_logs)
+    assert captured["payload"]["text"]["format"]["name"] == "embedded_schema"
+
+
+@pytest.mark.asyncio
+async def test_schema_summary_logging_handles_legacy_format(monkeypatch, caplog):
+    response_payload = {
+        "output": [
+            {
+                "content": [
+                    {"type": "output_text", "text": json.dumps({"ok": True})}
+                ]
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        "id": "resp_legacy",
+    }
+
+    monkeypatch.setattr(
+        "httpx.AsyncClient",
+        lambda timeout=120: DummyAsyncClient(lambda *_: None, response_payload),
+    )
+
+    client = OpenAIClient("test-key")
+    payload = {
+        "model": "gpt-json",
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "legacy_schema",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"legacy": {"type": "integer"}},
+                    },
+                    "strict": False,
+                },
+            }
+        },
+        "input": [],
+    }
+
+    with caplog.at_level(logging.DEBUG):
+        await client._submit_request(payload)
+
+    debug_messages = [record.getMessage() for record in caplog.records]
+    summary_logs = [m for m in debug_messages if "OpenAI payload schema summary" in m]
+    assert summary_logs, "Expected schema summary log for legacy format"
+    assert any("name=legacy_schema" in m for m in summary_logs)

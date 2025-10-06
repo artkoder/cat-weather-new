@@ -178,14 +178,14 @@ class OpenAIClient:
                 if isinstance(format_section, dict):
                     format_type = format_section.get("type")
                     if format_type == "json_schema":
-                        if any(
-                            key in format_section for key in ("name", "schema", "strict")
-                        ):
-                            json_schema_section = format_section
-                    if json_schema_section is None:
-                        schema_candidate = format_section.get("json_schema")
-                        if isinstance(schema_candidate, dict):
-                            json_schema_section = schema_candidate
+                        json_schema_section = format_section
+                        legacy_container = format_section.get("json_schema")
+                        if isinstance(legacy_container, dict):
+                            json_schema_section = legacy_container
+                    elif json_schema_section is None:
+                        legacy_container = format_section.get("json_schema")
+                        if isinstance(legacy_container, dict):
+                            json_schema_section = legacy_container
         if json_schema_section is None:
             json_schema_section = {}
         schema_name = json_schema_section.get("name")

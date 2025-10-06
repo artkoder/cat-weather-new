@@ -143,9 +143,10 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     assert captured["url"].endswith("/responses")
     payload = captured["payload"]
     assert payload["model"] == "gpt-vision"
-    response_format = payload["response_format"]
-    assert response_format["type"] == "json_schema"
-    json_schema_config = response_format["json_schema"]
+    text_config = payload["text"]
+    format_config = text_config["format"]
+    assert format_config["type"] == "json_schema"
+    json_schema_config = format_config["json_schema"]
     assert json_schema_config["name"] == "asset_vision_v1"
     assert json_schema_config["schema"] is schema
     assert json_schema_config["strict"] is True
@@ -235,9 +236,10 @@ async def test_generate_json_uses_text_response_payload(monkeypatch):
 
     payload = captured["payload"]
     assert payload["model"] == "gpt-json"
-    response_format = payload["response_format"]
-    assert response_format["type"] == "json_schema"
-    json_schema_config = response_format["json_schema"]
+    text_config = payload["text"]
+    format_config = text_config["format"]
+    assert format_config["type"] == "json_schema"
+    json_schema_config = format_config["json_schema"]
     assert json_schema_config["name"] == "post_text_v1"
     assert json_schema_config["schema"] is schema
     assert json_schema_config["strict"] is True
@@ -305,13 +307,15 @@ async def test_submit_request_requires_json_schema_name():
     client = OpenAIClient("test-key")
     payload = {
         "model": "gpt-json",
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"schema": {"type": "object"}},
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "json_schema": {"schema": {"type": "object"}},
+            }
         },
     }
 
     with pytest.raises(ValueError) as exc_info:
         await client._submit_request(payload)
 
-    assert "response_format.json_schema.name" in str(exc_info.value)
+    assert "text.format.json_schema.name" in str(exc_info.value)

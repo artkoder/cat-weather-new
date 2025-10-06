@@ -63,12 +63,14 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": self.ensure_json_format(
-                    name=schema_name,
-                    schema=schema,
-                ),
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "json_schema": self.ensure_json_format(
+                        name=schema_name,
+                        schema=schema,
+                    ),
+                }
             },
             "input": [
                 {
@@ -106,12 +108,14 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": self.ensure_json_format(
-                    name=schema_name or "post_text_v1",
-                    schema=schema,
-                ),
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "json_schema": self.ensure_json_format(
+                        name=schema_name or "post_text_v1",
+                        schema=schema,
+                    ),
+                }
             },
             "input": [
                 {
@@ -160,20 +164,16 @@ class OpenAIClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        response_format_raw = (
-            payload.get("response_format") if isinstance(payload, dict) else None
-        )
-        response_format = (
-            response_format_raw if isinstance(response_format_raw, dict) else {}
-        )
-        json_schema_raw = response_format.get("json_schema")
-        json_schema_section = (
-            json_schema_raw if isinstance(json_schema_raw, dict) else {}
-        )
+        text_raw = payload.get("text") if isinstance(payload, dict) else None
+        text_section = text_raw if isinstance(text_raw, dict) else {}
+        format_raw = text_section.get("format")
+        format_section = format_raw if isinstance(format_raw, dict) else {}
+        json_schema_raw = format_section.get("json_schema")
+        json_schema_section = json_schema_raw if isinstance(json_schema_raw, dict) else {}
         schema_name = json_schema_section.get("name")
         if not schema_name or not str(schema_name).strip():
             raise ValueError(
-                "OpenAI payload must include response_format.json_schema.name"
+                "OpenAI payload must include text.format.json_schema.name"
             )
         schema_body = json_schema_section.get("schema")
         schema_keys: list[str] | None = None

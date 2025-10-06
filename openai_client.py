@@ -180,12 +180,18 @@ class OpenAIClient:
         schema_body = (
             json_schema.get("schema") if isinstance(json_schema, dict) else None
         )
-        schema_keys = list(schema_body.keys()) if isinstance(schema_body, dict) else None
+        schema_keys: list[str] | None = None
+        schema_key_count: int | None = None
+        if isinstance(schema_body, dict):
+            schema_key_count = len(schema_body)
+            schema_keys = sorted(schema_body.keys())[:5]
         strict_flag = format_section.get("strict") if isinstance(format_section, dict) else None
         logging.debug(
-            "OpenAI payload schema summary: name=%s strict=%s keys=%s",
+            "OpenAI payload schema summary: name=%s strict=%s key_count=%s sample_keys=%s",
             schema_name,
             strict_flag,
+            schema_key_count,
+
             schema_keys,
         )
 

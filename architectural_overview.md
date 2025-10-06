@@ -16,7 +16,7 @@ The aiohttp bot handles Telegram webhooks, user commands and inline callbacks. I
 Incoming photos from the assets channel trigger an ingest job. The job downloads the original media, validates EXIF GPS coordinates, stores the file locally, reverse-geocodes coordinates via Nominatim, and updates the asset record with derived metadata.
 
 ### 3.3 Recognition
-A follow-up `vision` job classifies each asset with OpenAI (`4o-mini`) to extract a primary category, architecture view, flower varieties and weather description. The job respects model quotas and logs token usage for auditing.
+A follow-up `vision` job classifies each asset with OpenAI (`gpt-4o-mini`) to extract a primary category, architecture view, flower varieties and weather description. The job respects model quotas and logs token usage for auditing.
 
 ### 3.4 Rubric engine
 Configured rubrics (`flowers`, `guess_arch`) pull classified assets, render text using OpenAI where required, overlay numbers on quiz photos, and publish carousels back to Telegram channels. Number badges respect a fixed safe zone: 24 px padding from the top-left corner on standard frames, or 12 px when the shorter photo side falls below 480 px, so designers should keep critical details outside that area. After a successful run the consumed assets and temporary overlays are removed.

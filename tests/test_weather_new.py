@@ -241,20 +241,17 @@ async def test_recognized_message_skips_reingest(tmp_path):
         async def classify_image(self, **kwargs):
             return OpenAIResponse(
                 {
-                    'primary_scene': 'кот',
+                    'arch_view': False,
+                    'caption': 'кот',
+                    'objects': ['кот'],
+                    'is_outdoor': False,
                     'guess_country': None,
                     'guess_city': None,
-                    'arch_view': False,
-                    'weather': {'label': 'indoor', 'description': 'в помещении'},
-                    'objects': ['кот'],
+                    'location_confidence': None,
+                    'landmarks': [],
                     'tags': ['animals'],
-                    'safety': {
-                        'nsfw': False,
-                        'violence': False,
-                        'self_harm': False,
-                        'hate': False,
-                    },
-                    'notes': '',
+                    'weather': {'label': 'indoor', 'description': 'в помещении'},
+                    'safety': {'nsfw': False, 'reason': 'безопасно'},
                 },
                 prompt_tokens=10,
                 completion_tokens=5,
@@ -347,7 +344,7 @@ async def test_recognized_message_skips_reingest(tmp_path):
         'message_id': recognized_mid,
         'date': int(datetime.utcnow().timestamp()),
         'chat': {'id': -100123},
-        'caption': 'Распознано: кот',
+        'caption': 'Распознано: кот\nПогода: в помещении\nНа улице: нет\nАрхитектура: нет\nОбъекты: кот\nТеги: animals\nБезопасность: безопасно',
         'photo': [
             {
                 'file_id': 'vision_small',
@@ -407,25 +404,22 @@ async def test_recognized_edit_skips_reingest(tmp_path):
         async def classify_image(self, **kwargs):
             return OpenAIResponse(
                 {
-                    'primary_scene': 'кот',
+                    'arch_view': False,
+                    'caption': 'кот',
+                    'objects': ['кот'],
+                    'is_outdoor': False,
                     'guess_country': None,
                     'guess_city': None,
-                    'arch_view': False,
-                    'weather': {'label': 'indoor', 'description': 'в помещении'},
-                    'objects': ['кот'],
+                    'location_confidence': None,
+                    'landmarks': [],
                     'tags': ['animals'],
-                    'safety': {
-                        'nsfw': False,
-                        'violence': False,
-                        'self_harm': False,
-                        'hate': False,
-                    },
-                    'notes': '',
+                    'weather': {'label': 'indoor', 'description': 'в помещении'},
+                    'safety': {'nsfw': False, 'reason': 'безопасно'},
                 },
                 prompt_tokens=10,
                 completion_tokens=5,
                 total_tokens=15,
-                request_id='req-1',
+                request_id='req-2',
             )
 
     bot._download_file = fake_download  # type: ignore[assignment]

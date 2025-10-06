@@ -43,19 +43,20 @@ def test_update_asset_persists_vision_results(db_connection):
     payload = {
         "status": "ok",
         "provider": "test-model",
-        "primary_scene": "architecture",
+        "arch_view": True,
+        "caption": "Архитектурный фасад",
+        "objects": ["роза"],
+        "is_outdoor": True,
         "guess_country": "Россия",
         "guess_city": "Калининград",
-        "arch_view": True,
-        "weather": {"label": "cloudy", "description": "пасмурно"},
-        "objects": ["роза"],
+        "location_confidence": "high",
+        "landmarks": ["Кафедральный собор"],
         "tags": ["architecture", "flowers"],
-        "safety": {"nsfw": False, "violence": False, "self_harm": False, "hate": False},
-        "notes": "",
+        "weather": {"label": "cloudy", "description": "пасмурно"},
+        "safety": {"nsfw": False, "reason": "безопасно"},
         "category": "architecture",
         "photo_weather": "cloudy",
         "flower_varieties": ["роза"],
-        "confidence": 0.87,
     }
 
     data.update_asset(
@@ -65,7 +66,6 @@ def test_update_asset_persists_vision_results(db_connection):
         vision_arch_view="yes",
         vision_photo_weather=payload["photo_weather"],
         vision_flower_varieties=payload["flower_varieties"],
-        vision_confidence=payload["confidence"],
     )
 
     row = db_connection.execute(
@@ -81,9 +81,9 @@ def test_update_asset_persists_vision_results(db_connection):
     assert row["arch_view"] == "yes"
     assert row["photo_weather"] == "пасмурно"
     assert json.loads(row["flower_varieties"]) == ["роза"]
-    assert pytest.approx(row["confidence"], rel=1e-6) == 0.87
+    assert row["confidence"] is None
     stored_payload = json.loads(row["result_json"])
-    assert stored_payload["primary_scene"] == "architecture"
+    assert stored_payload["caption"] == "Архитектурный фасад"
 
     asset = data.get_asset(asset_id)
     assert asset is not None
@@ -113,10 +113,26 @@ def test_asset_vision_schema_definition():
         ),
         "additionalProperties": False,
         "properties": {
-            "primary_scene": {
+            "arch_view": {
+                "type": "boolean",
+                "description": "Присутствует ли в кадре архитектурный ракурс (здания, фасады, панорамы).",
+            },
+            "caption": {
                 "type": "string",
                 "description": "Короткое описание основного сюжета (на русском языке).",
                 "minLength": 1,
+            },
+            "objects": {
+                "type": "array",
+                "description": (
+                    "Список заметных объектов или деталей. Если присутствуют цветы, укажи их вид."
+                ),
+                "items": {"type": "string", "minLength": 1},
+                "default": [],
+            },
+            "is_outdoor": {
+                "type": "boolean",
+                "description": "True, если сцена снята на улице (иначе — в помещении).",
             },
             "guess_country": {
                 "type": ["string", "null"],
@@ -126,9 +142,23 @@ def test_asset_vision_schema_definition():
                 "type": ["string", "null"],
                 "description": "Предполагаемый город, если распознаётся.",
             },
-            "arch_view": {
-                "type": "boolean",
-                "description": "Присутствует ли в кадре архитектурный ракурс (здания, фасады, панорамы).",
+            "location_confidence": {
+                "type": ["string", "null"],
+                "description": "Степень уверенности в указанной локации (например: low, medium, high, certain).",
+            },
+            "landmarks": {
+                "type": "array",
+                "description": "Имена распознанных достопримечательностей или ориентиров.",
+                "items": {"type": "string", "minLength": 1},
+                "default": [],
+            },
+            "tags": {
+                "type": "array",
+                "description": (
+                    "Набор тегов (на английском в нижнем регистре) для downstream-логики: architecture, flowers, people, animals и т.п."
+                ),
+                "items": {"type": "string", "minLength": 1},
+                "default": [],
             },
             "weather": {
                 "type": "object",
@@ -150,48 +180,31 @@ def test_asset_vision_schema_definition():
                 },
                 "required": ["label", "description"],
             },
-            "objects": {
-                "type": "array",
-                "description": (
-                    "Список заметных объектов или деталей. Если присутствуют цветы, укажи их вид."
-                ),
-                "items": {"type": "string", "minLength": 1},
-                "default": [],
-            },
-            "tags": {
-                "type": "array",
-                "description": (
-                    "Набор тегов (на английском в нижнем регистре) для downstream-логики: architecture, flowers, people, animals и т.п."
-                ),
-                "items": {"type": "string", "minLength": 1},
-                "default": [],
-            },
             "safety": {
                 "type": "object",
-                "description": "Флаги чувствительного контента (True если категория потенциально нарушает правила).",
+                "description": "Информация о чувствительном контенте: nsfw и краткая причина.",
                 "additionalProperties": False,
                 "properties": {
                     "nsfw": {"type": "boolean"},
-                    "violence": {"type": "boolean"},
-                    "self_harm": {"type": "boolean"},
-                    "hate": {"type": "boolean"},
+                    "reason": {
+                        "type": ["string", "null"],
+                        "description": "Краткое пояснение статуса безопасности (на русском).",
+                    },
                 },
-                "required": ["nsfw", "violence", "self_harm", "hate"],
-            },
-            "notes": {
-                "type": "string",
-                "description": "Дополнительные наблюдения, если они нужны редакции.",
-                "default": "",
+                "required": ["nsfw", "reason"],
             },
         },
         "required": [
-            "primary_scene",
+            "arch_view",
+            "caption",
+            "objects",
+            "is_outdoor",
             "guess_country",
             "guess_city",
-            "arch_view",
-            "weather",
-            "objects",
+            "location_confidence",
+            "landmarks",
             "tags",
+            "weather",
             "safety",
         ],
     }

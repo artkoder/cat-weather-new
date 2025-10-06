@@ -83,10 +83,29 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
     ),
     "additionalProperties": False,
     "properties": {
-        "primary_scene": {
+        "arch_view": {
+            "type": "boolean",
+            "description": "Присутствует ли в кадре архитектурный ракурс (здания, фасады, панорамы).",
+        },
+        "caption": {
             "type": "string",
             "description": "Короткое описание основного сюжета (на русском языке).",
             "minLength": 1,
+        },
+        "objects": {
+            "type": "array",
+            "description": (
+                "Список заметных объектов или деталей. Если присутствуют цветы, укажи их вид."
+            ),
+            "items": {
+                "type": "string",
+                "minLength": 1,
+            },
+            "default": [],
+        },
+        "is_outdoor": {
+            "type": "boolean",
+            "description": "True, если сцена снята на улице (иначе — в помещении).",
         },
         "guess_country": {
             "type": ["string", "null"],
@@ -96,9 +115,31 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
             "type": ["string", "null"],
             "description": "Предполагаемый город, если распознаётся.",
         },
-        "arch_view": {
-            "type": "boolean",
-            "description": "Присутствует ли в кадре архитектурный ракурс (здания, фасады, панорамы).",
+        "location_confidence": {
+            "type": ["string", "null"],
+            "description": (
+                "Степень уверенности в указанной локации (например: low, medium, high, certain)."
+            ),
+        },
+        "landmarks": {
+            "type": "array",
+            "description": "Имена распознанных достопримечательностей или ориентиров.",
+            "items": {
+                "type": "string",
+                "minLength": 1,
+            },
+            "default": [],
+        },
+        "tags": {
+            "type": "array",
+            "description": (
+                "Набор тегов (на английском в нижнем регистре) для downstream-логики: architecture, flowers, people, animals и т.п."
+            ),
+            "items": {
+                "type": "string",
+                "minLength": 1,
+            },
+            "default": [],
         },
         "weather": {
             "type": "object",
@@ -120,54 +161,33 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
             },
             "required": ["label", "description"],
         },
-        "objects": {
-            "type": "array",
-            "description": (
-                "Список заметных объектов или деталей. Если присутствуют цветы, укажи их вид."
-            ),
-            "items": {
-                "type": "string",
-                "minLength": 1,
-            },
-            "default": [],
-        },
-        "tags": {
-            "type": "array",
-            "description": (
-                "Набор тегов (на английском в нижнем регистре) для downstream-логики: architecture, flowers, people, animals и т.п."
-            ),
-            "items": {
-                "type": "string",
-                "minLength": 1,
-            },
-            "default": [],
-        },
         "safety": {
             "type": "object",
-            "description": "Флаги чувствительного контента (True если категория потенциально нарушает правила).",
+            "description": (
+                "Информация о чувствительном контенте: nsfw и краткая причина."
+            ),
             "additionalProperties": False,
             "properties": {
                 "nsfw": {"type": "boolean"},
-                "violence": {"type": "boolean"},
-                "self_harm": {"type": "boolean"},
-                "hate": {"type": "boolean"},
+                "reason": {
+                    "type": ["string", "null"],
+                    "description": "Краткое пояснение статуса безопасности (на русском).",
+                },
             },
-            "required": ["nsfw", "violence", "self_harm", "hate"],
-        },
-        "notes": {
-            "type": "string",
-            "description": "Дополнительные наблюдения, если они нужны редакции.",
-            "default": "",
+            "required": ["nsfw", "reason"],
         },
     },
     "required": [
-        "primary_scene",
+        "arch_view",
+        "caption",
+        "objects",
+        "is_outdoor",
         "guess_country",
         "guess_city",
-        "arch_view",
-        "weather",
-        "objects",
+        "location_confidence",
+        "landmarks",
         "tags",
+        "weather",
         "safety",
     ],
 }
@@ -2179,13 +2199,13 @@ class Bot:
 
             system_prompt = (
                 "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме asset_vision_v1. "
-                "primary_scene — короткое описание сюжета. guess_country/guess_city — предположение о локации (null, если нельзя определить). "
-                "arch_view — true, если в кадре есть архитектурный ракурс. weather включает label (indoor/sunny/cloudy/rainy/snowy/foggy/stormy/twilight/night) и подробное описание на русском. "
-                "objects — перечень заметных объектов (если есть цветы, укажи их виды). tags — набор ключевых тегов в нижнем регистре (например, architecture, flowers, people). "
-                "safety — булевы флаги nsfw, violence, self_harm, hate. notes — опционально важные детали."
+                "caption — краткое описание сцены на русском. guess_country/guess_city — строка или null, если нельзя определить. "
+                "arch_view — true, если в кадре есть архитектурный ракурс; is_outdoor — true для съёмки на улице. weather содержит label (indoor/sunny/cloudy/rainy/snowy/foggy/stormy/twilight/night) и описание на русском. "
+                "objects — список заметных объектов (если есть цветы, укажи их виды). landmarks — распознанные достопримечательности. tags — ключевые теги в нижнем регистре. location_confidence — степень уверенности (low/medium/high/certain или null). "
+                "safety включает булево поле nsfw и reason (краткое пояснение на русском, даже если всё безопасно)."
             )
             user_prompt = (
-                "Опиши основную сцену, погоду, объекты, теги и безопасность фото. Если сомневаешься в городе или стране, верни null."
+                "Опиши сцену, погоду, объекты, теги, достопримечательности и безопасность фото. Если локация неочевидна, возвращай null и укажи уровень уверенности."
             )
             self._enforce_openai_limit(job, "gpt-4o-mini")
             logging.info(
@@ -2212,15 +2232,19 @@ class Bot:
             result = response.content
             if not isinstance(result, dict):
                 raise RuntimeError("Invalid response from vision model")
-            primary_scene = str(result.get("primary_scene", "")).strip()
-            weather_info = result.get("weather") if isinstance(result, dict) else None
+            caption = str(result.get("caption", "")).strip()
+            weather_info = result.get("weather")
             weather_label = ""
             weather_description = ""
             if isinstance(weather_info, dict):
-                weather_label = str(weather_info.get("label", "")).strip()
-                weather_description = str(weather_info.get("description", "")).strip()
-            guess_country_raw = result.get("guess_country") if isinstance(result, dict) else None
-            guess_city_raw = result.get("guess_city") if isinstance(result, dict) else None
+                label = weather_info.get("label")
+                description = weather_info.get("description")
+                if isinstance(label, str):
+                    weather_label = label.strip()
+                if isinstance(description, str):
+                    weather_description = description.strip()
+            guess_country_raw = result.get("guess_country")
+            guess_city_raw = result.get("guess_city")
             if isinstance(guess_country_raw, str):
                 guess_country = guess_country_raw.strip() or None
             elif guess_country_raw is None:
@@ -2233,21 +2257,40 @@ class Bot:
                 guess_city = None
             else:
                 guess_city = str(guess_city_raw).strip() or None
-            arch_view_raw = result.get("arch_view") if isinstance(result, dict) else None
-            arch_view = bool(arch_view_raw) if isinstance(arch_view_raw, bool) else str(arch_view_raw).strip().lower() in {"1", "true", "yes", "да"}
-            raw_objects = result.get("objects") if isinstance(result, dict) else None
+            arch_view_raw = result.get("arch_view")
+            arch_view = (
+                bool(arch_view_raw)
+                if isinstance(arch_view_raw, bool)
+                else str(arch_view_raw).strip().lower() in {"1", "true", "yes", "да"}
+            )
+            is_outdoor_raw = result.get("is_outdoor")
+            is_outdoor = (
+                bool(is_outdoor_raw)
+                if isinstance(is_outdoor_raw, bool)
+                else str(is_outdoor_raw).strip().lower() in {"1", "true", "yes", "да"}
+            )
+            raw_objects = result.get("objects")
             objects: list[str] = []
             if isinstance(raw_objects, list):
                 seen_objects: set[str] = set()
                 for item in raw_objects:
                     text = str(item).strip()
-                    if not text:
-                        continue
-                    if text in seen_objects:
+                    if not text or text in seen_objects:
                         continue
                     seen_objects.add(text)
                     objects.append(text)
-            raw_tags = result.get("tags") if isinstance(result, dict) else None
+            raw_landmarks = result.get("landmarks")
+            landmarks: list[str] = []
+            if isinstance(raw_landmarks, list):
+                seen_landmarks: set[str] = set()
+                for item in raw_landmarks:
+                    text = str(item).strip()
+                    normalized = text.lower()
+                    if not text or normalized in seen_landmarks:
+                        continue
+                    seen_landmarks.add(normalized)
+                    landmarks.append(text)
+            raw_tags = result.get("tags")
             tags: list[str] = []
             if isinstance(raw_tags, list):
                 seen_tags: set[str] = set()
@@ -2257,85 +2300,116 @@ class Bot:
                         continue
                     seen_tags.add(text)
                     tags.append(text)
-            safety_raw = result.get("safety") if isinstance(result, dict) else None
-            safety_flags: dict[str, bool] = {}
+            safety_raw = result.get("safety")
+            nsfw_flag = False
+            safety_reason: str | None = None
             if isinstance(safety_raw, dict):
-                for key in ("nsfw", "violence", "self_harm", "hate"):
-                    value = safety_raw.get(key)
-                    safety_flags[key] = bool(value) if isinstance(value, bool) else str(value).strip().lower() in {"1", "true", "yes", "да"}
-            if isinstance(result, dict):
-                notes_raw = result.get("notes", "")
-                if isinstance(notes_raw, str):
-                    notes = notes_raw.strip()
-                else:
-                    notes = ""
+                nsfw_value = safety_raw.get("nsfw")
+                if isinstance(nsfw_value, bool):
+                    nsfw_flag = nsfw_value
+                elif nsfw_value is not None:
+                    nsfw_flag = str(nsfw_value).strip().lower() in {"1", "true", "yes", "да"}
+                reason_raw = safety_raw.get("reason")
+                if isinstance(reason_raw, str):
+                    safety_reason = reason_raw.strip() or None
+                elif reason_raw is not None:
+                    safety_reason = str(reason_raw).strip() or None
+            location_confidence_raw = result.get("location_confidence")
+            if isinstance(location_confidence_raw, str):
+                location_confidence = location_confidence_raw.strip().lower() or None
+            elif location_confidence_raw is None:
+                location_confidence = None
             else:
-                notes = ""
-            if not primary_scene or not weather_label:
+                location_confidence = str(location_confidence_raw).strip().lower() or None
+            if not caption or not weather_label:
                 raise RuntimeError("Invalid response from vision model")
             weather_summary = weather_description or weather_label
-            category = self._derive_primary_scene(primary_scene, tags)
+            category = self._derive_primary_scene(caption, tags)
             photo_weather = weather_label
             flower_varieties: list[str] = []
             if "flowers" in tags:
                 flower_varieties = [obj for obj in objects if obj]
-            confidence = None
             location_parts: list[str] = []
+            existing_lower: set[str] = set()
             if asset.city:
                 location_parts.append(asset.city)
-            if asset.country and asset.country not in location_parts:
+                existing_lower.add(asset.city.lower())
+            if asset.country and asset.country.lower() not in existing_lower:
                 location_parts.append(asset.country)
-            if guess_city and guess_city.lower() not in {part.lower() for part in location_parts}:
+                existing_lower.add(asset.country.lower())
+            if guess_city and guess_city.lower() not in existing_lower:
                 location_parts.insert(0, guess_city)
-            if guess_country and (not location_parts or guess_country.lower() not in {part.lower() for part in location_parts}):
+                existing_lower.add(guess_city.lower())
+            if guess_country and guess_country.lower() not in existing_lower:
                 location_parts.append(guess_country)
-            summary_parts: list[str] = [primary_scene]
+                existing_lower.add(guess_country.lower())
+            confidence_map = {
+                "low": "низкая",
+                "medium": "средняя",
+                "high": "высокая",
+                "certain": "точная",
+            }
+            confidence_display = (
+                confidence_map.get(location_confidence, location_confidence)
+                if location_confidence
+                else None
+            )
+            caption_lines = [f"Распознано: {caption}"]
             if location_parts:
-                summary_parts.append(", ".join(location_parts))
+                location_line = ", ".join(location_parts)
+                if confidence_display:
+                    location_line += f" (уверенность: {confidence_display})"
+                caption_lines.append("Локация: " + location_line)
+            elif confidence_display:
+                caption_lines.append(f"Уверенность в локации: {confidence_display}")
             if weather_summary:
-                summary_parts.append(f"Погода: {weather_summary}")
-            caption_lines = ["Распознано: " + " • ".join(summary_parts)]
+                caption_lines.append(f"Погода: {weather_summary}")
+            caption_lines.append(f"На улице: {'да' if is_outdoor else 'нет'}")
             caption_lines.append(f"Архитектура: {'да' if arch_view else 'нет'}")
+            if landmarks:
+                caption_lines.append("Ориентиры: " + ", ".join(landmarks))
             if flower_varieties:
                 caption_lines.append("Цветы: " + ", ".join(flower_varieties))
-            if objects and (not flower_varieties or len(objects) > len(flower_varieties)):
-                caption_lines.append("Объекты: " + ", ".join(objects))
+            flower_set = set(flower_varieties)
+            remaining_objects = [obj for obj in objects if obj not in flower_set]
+            if remaining_objects:
+                caption_lines.append("Объекты: " + ", ".join(remaining_objects))
             if tags:
                 caption_lines.append("Теги: " + ", ".join(tags))
-            flagged = [name for name, flagged in safety_flags.items() if flagged]
-            if flagged:
-                caption_lines.append("⚠️ Флаги безопасности: " + ", ".join(flagged))
-            if notes:
-                caption_lines.append(notes)
-            if confidence is not None:
-                display_confidence = confidence * 100 if 0 <= confidence <= 1 else confidence
-                caption_lines.append(f"Уверенность модели: {display_confidence:.0f}%")
+            if nsfw_flag:
+                caption_lines.append(
+                    "⚠️ Чувствительный контент: "
+                    + (safety_reason or "потенциально NSFW")
+                )
+            elif safety_reason:
+                caption_lines.append("Безопасность: " + safety_reason)
             caption_text = "\n".join(line for line in caption_lines if line)
             result_payload = {
                 "status": "ok",
                 "provider": "gpt-4o-mini",
-                "primary_scene": primary_scene,
+                "arch_view": arch_view,
+                "caption": caption,
+                "objects": objects,
+                "is_outdoor": is_outdoor,
                 "guess_country": guess_country,
                 "guess_city": guess_city,
-                "arch_view": arch_view,
+                "location_confidence": location_confidence,
+                "landmarks": landmarks,
+                "tags": tags,
                 "weather": {
                     "label": weather_label,
                     "description": weather_description or weather_label,
                 },
-                "objects": objects,
-                "tags": tags,
-                "safety": safety_flags,
-                "notes": notes,
+                "safety": {"nsfw": nsfw_flag, "reason": safety_reason},
                 "category": category,
                 "photo_weather": photo_weather,
                 "flower_varieties": flower_varieties,
-                "confidence": confidence,
             }
             logging.info(
                 "Vision job %s classified asset %s: scene=%s, weather=%s, arch=%s, tags=%s",
                 job.id,
                 asset_id,
-                primary_scene,
+                caption,
                 weather_label,
                 arch_view,
                 ", ".join(tags) if tags else "-",
@@ -2371,7 +2445,6 @@ class Bot:
                 vision_arch_view="yes" if arch_view else "",
                 vision_photo_weather=photo_weather,
                 vision_flower_varieties=flower_varieties,
-                vision_confidence=confidence,
                 vision_caption=caption_text,
                 local_path=None,
             )

@@ -51,16 +51,16 @@ def test_update_asset_persists_vision_results(db_connection):
         "guess_city": "Калининград",
         "location_confidence": 0.82,
         "landmarks": ["Кафедральный собор"],
-        "tags": ["architecture", "flowers", "cloudy"],
-        "framing": "wide shot",
+        "tags": ["architecture", "flowers", "overcast"],
+        "framing": "wide",
         "architecture_close_up": False,
         "architecture_wide": True,
-        "weather_image": "cloudy",
+        "weather_image": "overcast",
         "season_guess": "spring",
         "arch_style": {"label": "gothic", "confidence": 0.9},
         "safety": {"nsfw": False, "reason": "безопасно"},
         "category": "architecture",
-        "photo_weather": "cloudy",
+        "photo_weather": "overcast",
         "photo_weather_display": "пасмурно",
         "flower_varieties": ["роза"],
     }
@@ -95,7 +95,7 @@ def test_update_asset_persists_vision_results(db_connection):
     asset = data.get_asset(asset_id)
     assert asset is not None
     assert asset.vision_category == "architecture"
-    assert asset.vision_photo_weather == "cloudy"
+    assert asset.vision_photo_weather == "overcast"
     assert asset.vision_confidence == pytest.approx(0.82)
     assert asset.vision_results == payload
 
@@ -175,16 +175,13 @@ def test_asset_vision_schema_definition():
             "framing": {
                 "type": "string",
                 "description": (
-                    "Кадровка/ракурс снимка. Используй один из вариантов: close-up, medium shot, wide shot, detail, panorama, aerial shot."
-                ),
-                "enum": [
-                    "close-up",
-                    "medium shot",
-                    "wide shot",
-                    "detail",
-                    "panorama",
-                    "aerial shot",
-                ],
+                "Кадровка/ракурс снимка. Используй один из вариантов: close_up, medium, wide."
+            ),
+            "enum": [
+                "close_up",
+                "medium",
+                "wide",
+            ],
             },
             "architecture_close_up": {
                 "type": "boolean",
@@ -197,19 +194,17 @@ def test_asset_vision_schema_definition():
             "weather_image": {
                 "type": "string",
                 "description": (
-                    "Краткое описание погодных условий на фото (на английском). Выбирай из категорий: indoor, sunny, cloudy, rainy, snowy, foggy, stormy, twilight, night."
-                ),
-                "enum": [
-                    "indoor",
-                    "sunny",
-                    "cloudy",
-                    "rainy",
-                    "snowy",
-                    "foggy",
-                    "stormy",
-                    "twilight",
-                    "night",
-                ],
+                "Краткое описание погодных условий на фото (на английском). Выбирай из категорий: sunny, partly_cloudy, overcast, rain, snow, fog, night."
+            ),
+            "enum": [
+                "sunny",
+                "partly_cloudy",
+                "overcast",
+                "rain",
+                "snow",
+                "fog",
+                "night",
+            ],
             },
             "season_guess": {
                 "type": ["string", "null"],

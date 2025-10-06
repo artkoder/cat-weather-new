@@ -84,15 +84,15 @@ async def _run_vision_job_collect_calls(
                 'caption': 'кот',
                 'objects': ['кот'],
                 'is_outdoor': False,
-                'framing': 'close-up',
+                'framing': 'close_up',
                 'guess_country': None,
                 'guess_city': None,
                 'location_confidence': 0.0,
                 'landmarks': [],
-                'tags': ['animals', 'indoor', 'pet'],
+                'tags': ['animals', 'sunny', 'pet'],
                 'architecture_close_up': False,
                 'architecture_wide': False,
-                'weather_image': 'indoor',
+                'weather_image': 'sunny',
                 'season_guess': None,
                 'arch_style': None,
                 'safety': {'nsfw': False, 'reason': 'безопасно'},
@@ -248,21 +248,21 @@ async def test_job_vision_enriches_weather_season_and_style(tmp_path, monkeypatc
 
     assert asset.vision_results is not None
     vision = asset.vision_results
-    assert vision['weather_final'] == 'rainy'
-    assert vision['weather_final_display'] == 'дождливо'
+    assert vision['weather_final'] == 'rain'
+    assert vision['weather_final_display'] == 'дождь'
     assert vision['season_final'] == 'autumn'
     assert vision['season_final_display'] == 'осень'
     assert vision['arch_style'] == {'label': 'Gothic', 'confidence': 0.65}
-    assert 'rainy' in vision['tags']
+    assert 'rain' in vision['tags']
 
     assert asset.vision_caption is not None
-    assert 'Погода: дождливо' in asset.vision_caption
+    assert 'Погода: дождь' in asset.vision_caption
     assert 'Сезон: осень' in asset.vision_caption
     assert 'Стиль: Gothic (≈65%)' in asset.vision_caption
 
     assert supabase_calls, 'supabase logging should be attempted'
     meta = supabase_calls[0]['meta']
-    assert meta['weather_final'] == 'rainy'
+    assert meta['weather_final'] == 'rain'
     assert meta['season_final'] == 'autumn'
     assert meta['arch_style'] == {'label': 'Gothic', 'confidence': 0.65}
 
@@ -499,15 +499,15 @@ async def test_recognized_message_skips_reingest(tmp_path):
                     'caption': 'кот',
                     'objects': ['кот'],
                     'is_outdoor': False,
-                    'framing': 'close-up',
+                    'framing': 'close_up',
                     'guess_country': None,
                     'guess_city': None,
                     'location_confidence': 0.0,
                     'landmarks': [],
-                    'tags': ['animals', 'indoor', 'pet'],
+                    'tags': ['animals', 'sunny', 'pet'],
                     'architecture_close_up': False,
                     'architecture_wide': False,
-                    'weather_image': 'indoor',
+                    'weather_image': 'sunny',
                     'season_guess': None,
                     'arch_style': None,
                     'safety': {'nsfw': False, 'reason': 'безопасно'},
@@ -606,7 +606,7 @@ async def test_recognized_message_skips_reingest(tmp_path):
         'message_id': recognized_mid,
         'date': int(datetime.utcnow().timestamp()),
         'chat': {'id': -100123},
-        'caption': 'Распознано: кот\nУверенность в локации: 0%\nОбстановка: в помещении\nНа улице: нет\nАрхитектура: нет\nОбъекты: кот\nТеги: animals, indoor, pet\nБезопасность: безопасно',
+        'caption': 'Распознано: кот\nУверенность в локации: 0%\nОбстановка: солнечно\nНа улице: нет\nАрхитектура: нет\nОбъекты: кот\nТеги: animals, sunny, pet\nБезопасность: безопасно',
         'photo': [
             {
                 'file_id': 'vision_small',
@@ -672,15 +672,15 @@ async def test_recognized_edit_skips_reingest(tmp_path):
                     'caption': 'кот',
                     'objects': ['кот'],
                     'is_outdoor': False,
-                    'framing': 'close-up',
+                    'framing': 'close_up',
                     'guess_country': None,
                     'guess_city': None,
                     'location_confidence': 0.0,
                     'landmarks': [],
-                    'tags': ['animals', 'indoor', 'pet'],
+                    'tags': ['animals', 'sunny', 'pet'],
                     'architecture_close_up': False,
                     'architecture_wide': False,
-                    'weather_image': 'indoor',
+                    'weather_image': 'sunny',
                     'season_guess': None,
                     'arch_style': None,
                     'safety': {'nsfw': False, 'reason': 'безопасно'},

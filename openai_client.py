@@ -60,13 +60,8 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "modalities": ["text"],
             "text": {
-                "format": {
-                    "type": "json_schema",
-                    "json_schema": schema,
-                    "strict": True,
-                }
+                "format": self._build_text_format(schema),
             },
             "input": [
                 {
@@ -82,10 +77,7 @@ class OpenAIClient:
                     "role": "user",
                     "content": [
                         {"type": "input_text", "text": user_prompt},
-                        {
-                            "type": "input_image",
-                            "image_url": self._encode_image_as_data_uri(image_bytes),
-                        },
+                        self._build_image_part(image_bytes),
                     ],
                 },
             ],
@@ -106,13 +98,8 @@ class OpenAIClient:
             return None
         payload = {
             "model": model,
-            "modalities": ["text"],
             "text": {
-                "format": {
-                    "type": "json_schema",
-                    "json_schema": schema,
-                    "strict": True,
-                }
+                "format": self._build_text_format(schema),
             },
             "input": [
                 {
@@ -131,10 +118,29 @@ class OpenAIClient:
             payload["top_p"] = top_p
         return await self._submit_request(payload)
 
-    def _encode_image_as_data_uri(self, image_bytes: bytes) -> str:
+    def _build_text_format(self, schema: dict[str, Any]) -> dict[str, Any]:
+        if "name" in schema and "schema" in schema:
+            schema_name = schema["name"]
+            schema_body = schema["schema"]
+        else:
+            schema_name = "response"
+            schema_body = schema
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "schema": schema_body,
+            },
+            "strict": True,
+        }
+
+    def _build_image_part(self, image_bytes: bytes) -> dict[str, Any]:
         mime_type = self._detect_mime_type(image_bytes)
         base64_data = base64.b64encode(image_bytes).decode("ascii")
-        return f"data:{mime_type};base64,{base64_data}"
+        return {
+            "type": "input_image",
+            "image_url": f"data:{mime_type};base64,{base64_data}",
+        }
 
     def _detect_mime_type(self, image_bytes: bytes) -> str:
         header = image_bytes[:12]
@@ -173,12 +179,8 @@ class OpenAIClient:
             raise RuntimeError(f"OpenAI API error {response.status_code}")
         data = response.json()
         usage = data.get("usage") or {}
-        prompt_tokens = usage.get("input_tokens")
-        if prompt_tokens is None:
-            prompt_tokens = usage.get("prompt_tokens")
-        completion_tokens = usage.get("output_tokens")
-        if completion_tokens is None:
-            completion_tokens = usage.get("completion_tokens")
+        prompt_tokens = usage.get("input_tokens") or usage.get("prompt_tokens")
+        completion_tokens = usage.get("output_tokens") or usage.get("completion_tokens")
         total_tokens = usage.get("total_tokens")
         if total_tokens is None:
             tokens_sum = 0

@@ -185,7 +185,10 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     assert result.prompt_tokens == 10
     assert result.completion_tokens == 5
     assert result.total_tokens == 15
-    assert result.request_id == "resp_vision"
+    assert result.request_id == "req_123"
+    assert result.endpoint == "/v1/responses"
+    assert result.usage["response_id"] == "resp_vision"
+    assert result.usage["request_id"] == "req_123"
 
 
 def test_build_image_part_png_data_uri():
@@ -281,7 +284,10 @@ async def test_generate_json_uses_text_response_payload(monkeypatch):
     assert result is not None
     assert result.content == expected_result
     assert result.total_tokens == 10
-    assert result.request_id == "resp_json"
+    assert result.request_id == "req_123"
+    assert result.endpoint == "/v1/responses"
+    assert result.usage["response_id"] == "resp_json"
+    assert result.usage["request_id"] == "req_123"
 
 
 @pytest.mark.asyncio

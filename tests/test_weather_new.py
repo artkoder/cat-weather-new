@@ -254,10 +254,13 @@ async def test_recognized_message_skips_reingest(tmp_path):
                     'tags': ['animals', 'indoor', 'pet'],
                     'safety': {'nsfw': False, 'reason': 'безопасно'},
                 },
-                prompt_tokens=10,
-                completion_tokens=5,
-                total_tokens=15,
-                request_id='req-1',
+                {
+                    'prompt_tokens': 10,
+                    'completion_tokens': 5,
+                    'total_tokens': 15,
+                    'request_id': 'req-1',
+                    'endpoint': '/v1/responses',
+                },
             )
 
     bot._download_file = fake_download  # type: ignore[assignment]
@@ -418,10 +421,13 @@ async def test_recognized_edit_skips_reingest(tmp_path):
                     'tags': ['animals', 'indoor', 'pet'],
                     'safety': {'nsfw': False, 'reason': 'безопасно'},
                 },
-                prompt_tokens=10,
-                completion_tokens=5,
-                total_tokens=15,
-                request_id='req-2',
+                {
+                    'prompt_tokens': 10,
+                    'completion_tokens': 5,
+                    'total_tokens': 15,
+                    'request_id': 'req-2',
+                    'endpoint': '/v1/responses',
+                },
             )
 
     bot._download_file = fake_download  # type: ignore[assignment]

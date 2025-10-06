@@ -725,6 +725,7 @@ class Bot:
             meta.update(supabase_meta)
         if not record_supabase:
             return
+        usage = response.usage if isinstance(response.usage, dict) else {}
         success, payload, error = await self.supabase.insert_token_usage(
             bot=supabase_bot or "kotopogoda",
             model=model,
@@ -732,7 +733,7 @@ class Bot:
             completion_tokens=response.completion_tokens,
             total_tokens=response.total_tokens,
             request_id=response.request_id,
-            endpoint=supabase_endpoint or "/v1/responses",
+            endpoint=supabase_endpoint or usage.get("endpoint") or "/v1/responses",
             meta=meta or None,
         )
         log_context = {"log_token_usage": payload}
@@ -2239,6 +2240,7 @@ class Bot:
             if not isinstance(result, dict):
                 raise RuntimeError("Invalid response from vision model")
             supabase_meta = {"asset_id": asset_id, "channel_id": asset.channel_id}
+            usage = response.usage if isinstance(response.usage, dict) else {}
             success, payload, error = await self.supabase.insert_token_usage(
                 bot="kotopogoda",
                 model="gpt-4o-mini",
@@ -2246,7 +2248,7 @@ class Bot:
                 completion_tokens=response.completion_tokens,
                 total_tokens=response.total_tokens,
                 request_id=response.request_id,
-                endpoint="/v1/responses",
+                endpoint=usage.get("endpoint") or "/v1/responses",
                 meta=supabase_meta,
             )
             log_context = {"log_token_usage": payload}

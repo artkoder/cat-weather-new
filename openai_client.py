@@ -16,11 +16,41 @@ import httpx
 @dataclass
 class OpenAIResponse:
     content: Dict[str, Any]
-    prompt_tokens: int | None
-    completion_tokens: int | None
-    total_tokens: int | None
-    request_id: str | None = None
+    usage: Dict[str, Any]
     meta: Dict[str, Any] | None = None
+
+    def _usage_int(self, key: str) -> int | None:
+        value = self.usage.get(key)
+        return value if isinstance(value, int) else None
+
+    @property
+    def prompt_tokens(self) -> int | None:
+        return self._usage_int("prompt_tokens")
+
+    @property
+    def completion_tokens(self) -> int | None:
+        return self._usage_int("completion_tokens")
+
+    @property
+    def total_tokens(self) -> int | None:
+        return self._usage_int("total_tokens")
+
+    @property
+    def request_id(self) -> str | None:
+        request_id = self.usage.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            return request_id
+        response_id = self.usage.get("response_id")
+        if isinstance(response_id, str) and response_id:
+            return response_id
+        return None
+
+    @property
+    def endpoint(self) -> str | None:
+        endpoint = self.usage.get("endpoint")
+        if isinstance(endpoint, str) and endpoint:
+            return endpoint
+        return None
 
 
 class OpenAIClient:
@@ -165,6 +195,7 @@ class OpenAIClient:
         return value[: limit - 3] + "..."
 
     async def _submit_request(self, payload: Dict[str, Any]) -> OpenAIResponse:
+        endpoint_path = "/v1/responses"
         url = f"{self.base_url}/responses"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -276,15 +307,18 @@ class OpenAIClient:
             if 400 <= response.status_code < 500 and error_type == "invalid_request_error":
                 should_retry = False
 
-            request_id = response.headers.get("x-request-id")
+            request_id_header = response.headers.get("x-request-id")
             response_text_for_log = self._truncate_for_log(response.text)
-            log_extra = {"status_code": response.status_code, "request_id": request_id}
+            log_extra = {
+                "status_code": response.status_code,
+                "request_id": request_id_header,
+            }
 
             if should_retry and attempt < max_attempts:
                 logging.warning(
                     "OpenAI API error status=%s request_id=%s (attempt %s/%s): %s",
                     response.status_code,
-                    request_id,
+                    request_id_header,
                     attempt,
                     max_attempts,
                     response_text_for_log,
@@ -297,7 +331,7 @@ class OpenAIClient:
             logging.error(
                 "OpenAI API error status=%s request_id=%s: %s",
                 response.status_code,
-                request_id,
+                request_id_header,
                 response_text_for_log,
                 extra=log_extra,
             )
@@ -320,7 +354,8 @@ class OpenAIClient:
                 has_value = True
             if has_value:
                 total_tokens = tokens_sum
-        request_id = data.get("id") or response.headers.get("x-request-id")
+        request_id_header = response.headers.get("x-request-id")
+        response_id = data.get("id") if isinstance(data, dict) else None
         content = data.get("output") or data.get("response") or {}
         if isinstance(content, list) and content:
             content_item = content[0]
@@ -344,16 +379,26 @@ class OpenAIClient:
                 parsed = {"raw": message_text}
         else:
             parsed = {}
+        usage_payload: Dict[str, Any] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "endpoint": endpoint_path,
+            "request_id": request_id_header,
+        }
+        if response_id:
+            usage_payload["response_id"] = response_id
+        if not usage_payload.get("request_id") and response_id:
+            usage_payload["request_id"] = response_id
         meta: Dict[str, Any] | None = {
             "model": payload.get("model"),
             "duration_ms": round(duration * 1000, 2),
             "status_code": response.status_code,
         }
+        if response_id:
+            meta["response_id"] = response_id
         return OpenAIResponse(
             parsed,
-            prompt_tokens,
-            completion_tokens,
-            total_tokens,
-            request_id,
+            usage_payload,
             meta,
         )

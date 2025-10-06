@@ -439,10 +439,13 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
             calls.append(kwargs)
             return OpenAIResponse(
                 {"greeting": "Доброе утро", "hashtags": ["котопогода", "цветы"]},
-                10,
-                15,
-                25,
-                "req-1",
+                {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 15,
+                    "total_tokens": 25,
+                    "request_id": "req-1",
+                    "endpoint": "/v1/responses",
+                },
             )
 
     bot.openai = DummyOpenAI()
@@ -483,17 +486,23 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
             if len(calls) == 1:
                 return OpenAIResponse(
                     {"greeting": "Доброе утро", "hashtags": ["#котопогода"]},
-                    5,
-                    5,
-                    10,
-                    "req-first",
+                    {
+                        "prompt_tokens": 5,
+                        "completion_tokens": 5,
+                        "total_tokens": 10,
+                        "request_id": "req-first",
+                        "endpoint": "/v1/responses",
+                    },
                 )
             return OpenAIResponse(
                 {"greeting": "Привет, друзья", "hashtags": ["#котопогода", "#цветы"]},
-                6,
-                7,
-                13,
-                "req-second",
+                {
+                    "prompt_tokens": 6,
+                    "completion_tokens": 7,
+                    "total_tokens": 13,
+                    "request_id": "req-second",
+                    "endpoint": "/v1/responses",
+                },
             )
 
     bot.openai = DummyOpenAI()
@@ -524,10 +533,13 @@ async def test_generate_guess_arch_uses_gpt_4o(tmp_path):
             calls.append(kwargs)
             return OpenAIResponse(
                 {"caption": "Тест", "hashtags": ["угадай", "архитектура"]},
-                8,
-                9,
-                17,
-                "req-3",
+                {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 9,
+                    "total_tokens": 17,
+                    "request_id": "req-3",
+                    "endpoint": "/v1/responses",
+                },
             )
 
     bot.openai = DummyOpenAI()

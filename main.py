@@ -2657,6 +2657,7 @@ class Bot:
                             if exif_json
                             else "EXIF (raw)"
                         )
+                        exif_bytes = exif_json.encode("utf-8") if exif_json else b""
                         if len(message_text) <= 3500:
                             await self.api_request(
                                 "sendMessage",
@@ -2667,7 +2668,7 @@ class Bot:
                                 },
                             )
                         else:
-                            buffer = io.BytesIO(message_text.encode("utf-8"))
+                            buffer = io.BytesIO(exif_bytes)
                             await self.api_request(
                                 "sendDocument",
                                 {

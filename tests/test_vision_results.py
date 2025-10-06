@@ -52,6 +52,12 @@ def test_update_asset_persists_vision_results(db_connection):
         "location_confidence": 0.82,
         "landmarks": ["Кафедральный собор"],
         "tags": ["architecture", "flowers", "cloudy"],
+        "framing": "wide shot",
+        "architecture_close_up": False,
+        "architecture_wide": True,
+        "weather_image": "cloudy",
+        "season_guess": "spring",
+        "arch_style": "gothic",
         "safety": {"nsfw": False, "reason": "безопасно"},
         "category": "architecture",
         "photo_weather": "cloudy",
@@ -166,6 +172,32 @@ def test_asset_vision_schema_definition():
                 "maxItems": 12,
                 "default": [],
             },
+            "framing": {
+                "type": "string",
+                "description": "Кадровка/ракурс снимка (например, close-up, medium shot, wide shot).",
+                "minLength": 1,
+            },
+            "architecture_close_up": {
+                "type": "boolean",
+                "description": "Есть ли крупный план архитектурных деталей.",
+            },
+            "architecture_wide": {
+                "type": "boolean",
+                "description": "Есть ли широкий архитектурный план или панорама.",
+            },
+            "weather_image": {
+                "type": "string",
+                "description": "Краткое описание погодных условий на фото (на английском).",
+                "minLength": 1,
+            },
+            "season_guess": {
+                "type": ["string", "null"],
+                "description": "Предполагаемый сезон (spring, summer, autumn, winter) или null, если неясно.",
+            },
+            "arch_style": {
+                "type": ["string", "null"],
+                "description": "Предполагаемый архитектурный стиль, если распознан.",
+            },
             "safety": {
                 "type": "object",
                 "description": "Информация о чувствительном контенте: nsfw и краткая причина.",
@@ -191,6 +223,11 @@ def test_asset_vision_schema_definition():
             "location_confidence",
             "landmarks",
             "tags",
+            "framing",
+            "architecture_close_up",
+            "architecture_wide",
+            "weather_image",
+            "season_guess",
             "safety",
         ],
     }

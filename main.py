@@ -88,13 +88,50 @@ WEATHER_HEADER_PATTERN = re.compile(
 WEATHER_TAG_TRANSLATIONS: dict[str, str] = {
     "indoor": "в помещении",
     "sunny": "солнечно",
+    "clear": "ясно",
+    "partly_cloudy": "переменная облачность",
+    "mostly_cloudy": "пасмурно",
+    "overcast": "пасмурно",
     "cloudy": "пасмурно",
+    "rain": "дождь",
     "rainy": "дождливо",
+    "drizzle": "морось",
+    "snow": "снег",
     "snowy": "снежно",
+    "sleet": "снег с дождём",
+    "hail": "град",
+    "fog": "туман",
     "foggy": "туманно",
+    "haze": "дымка",
+    "storm": "шторм",
     "stormy": "шторм",
+    "thunderstorm": "гроза",
+    "windy": "ветрено",
     "twilight": "сумеречно",
     "night": "ночь",
+}
+
+SEASON_BY_MONTH: dict[int, str] = {
+    12: "winter",
+    1: "winter",
+    2: "winter",
+    3: "spring",
+    4: "spring",
+    5: "spring",
+    6: "summer",
+    7: "summer",
+    8: "summer",
+    9: "autumn",
+    10: "autumn",
+    11: "autumn",
+}
+
+SEASON_TRANSLATIONS: dict[str, str] = {
+    "spring": "весна",
+    "summer": "лето",
+    "autumn": "осень",
+    "fall": "осень",
+    "winter": "зима",
 }
 
 
@@ -2231,6 +2268,201 @@ class Bot:
             readable[ifd] = formatted
         return readable
 
+    @staticmethod
+    def _parse_exif_datetime_month(value: str | bytes | None) -> int | None:
+        if isinstance(value, bytes):
+            try:
+                value = value.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    value = value.decode("latin-1")
+                except UnicodeDecodeError:
+                    return None
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        cleaned = text.replace("-", ":").replace(".", ":")
+        date_part = cleaned.split()[0]
+        bits = date_part.split(":")
+        if len(bits) >= 2 and bits[1].isdigit():
+            month = int(bits[1])
+            if 1 <= month <= 12:
+                return month
+        # fallback: try to parse integer month from entire string
+        match = re.search(r"(?:^|\D)([0-1]?\d)(?:\D|$)", text)
+        if match:
+            month = int(match.group(1))
+            if 1 <= month <= 12:
+                return month
+        return None
+
+    @staticmethod
+    def _normalize_month_value(value: Any) -> int | None:
+        if isinstance(value, int):
+            if 1 <= value <= 12:
+                return value
+            return None
+        if isinstance(value, float):
+            month = int(value)
+            if 1 <= month <= 12:
+                return month
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            month = Bot._parse_exif_datetime_month(text)
+            if month:
+                return month
+            try:
+                month = int(text)
+            except ValueError:
+                return None
+            return month if 1 <= month <= 12 else None
+        return None
+
+    @classmethod
+    def _extract_month_from_metadata(cls, metadata: dict[str, Any] | None) -> int | None:
+        if not isinstance(metadata, dict):
+            return None
+        stack: list[Any] = [metadata]
+        seen: set[int] = set()
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                obj_id = id(item)
+                if obj_id in seen:
+                    continue
+                seen.add(obj_id)
+                for key, value in item.items():
+                    if isinstance(key, str):
+                        lowered = key.lower()
+                        if "month" in lowered or lowered in {"month"}:
+                            month = cls._normalize_month_value(value)
+                            if month:
+                                return month
+                        if "date" in lowered:
+                            month = cls._normalize_month_value(value)
+                            if month:
+                                return month
+                    if isinstance(value, (dict, list, tuple)):
+                        stack.append(value)
+            elif isinstance(item, (list, tuple)):
+                for value in item:
+                    if isinstance(value, (dict, list, tuple)):
+                        stack.append(value)
+        return None
+
+    def _extract_exif_month(
+        self, image_source: str | Path | BinaryIO
+    ) -> int | None:
+        try:
+            with Image.open(image_source, mode="r") as img:
+                exif_bytes = img.info.get("exif")
+            if exif_bytes:
+                exif_dict = piexif.load(exif_bytes)
+            else:
+                if isinstance(image_source, (str, Path)):
+                    exif_dict = piexif.load(str(image_source))
+                else:
+                    return None
+        except Exception:
+            logging.exception("Failed to parse EXIF metadata")
+            return None
+        exif_ifd = exif_dict.get("Exif") or {}
+        for tag in (
+            piexif.ExifIFD.DateTimeOriginal,
+            piexif.ExifIFD.DateTimeDigitized,
+        ):
+            if tag in exif_ifd:
+                month = self._parse_exif_datetime_month(exif_ifd.get(tag))
+                if month:
+                    return month
+        zeroth_ifd = exif_dict.get("0th") or {}
+        if piexif.ImageIFD.DateTime in zeroth_ifd:
+            month = self._parse_exif_datetime_month(zeroth_ifd.get(piexif.ImageIFD.DateTime))
+            if month:
+                return month
+        return None
+
+    @staticmethod
+    def _normalize_weather_enum(value: Any) -> str | None:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized or None
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                normalized = Bot._normalize_weather_enum(item)
+                if normalized:
+                    return normalized
+            return None
+        if isinstance(value, dict):
+            for key in ("enum", "code", "value", "tag", "name", "weather"):
+                if key in value:
+                    normalized = Bot._normalize_weather_enum(value.get(key))
+                    if normalized:
+                        return normalized
+            return None
+        return None
+
+    @classmethod
+    def _extract_weather_enum_from_metadata(
+        cls, metadata: dict[str, Any] | None
+    ) -> str | None:
+        if not isinstance(metadata, dict):
+            return None
+        stack: list[Any] = [metadata]
+        seen: set[int] = set()
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                obj_id = id(item)
+                if obj_id in seen:
+                    continue
+                seen.add(obj_id)
+                for key, value in item.items():
+                    if isinstance(key, str) and "weather" in key.lower():
+                        normalized = cls._normalize_weather_enum(value)
+                        if normalized:
+                            return normalized
+                    if isinstance(value, (dict, list, tuple)):
+                        stack.append(value)
+            elif isinstance(item, (list, tuple)):
+                for value in item:
+                    if isinstance(value, (dict, list, tuple)):
+                        stack.append(value)
+        return None
+
+    @staticmethod
+    def _weather_display(value: str | None) -> str | None:
+        if not value:
+            return None
+        normalized = value.strip().lower()
+        if not normalized:
+            return None
+        return WEATHER_TAG_TRANSLATIONS.get(normalized)
+
+    @staticmethod
+    def _normalize_season(value: str | None) -> str | None:
+        if not value:
+            return None
+        season = value.strip().lower()
+        if not season:
+            return None
+        if season == "fall":
+            return "autumn"
+        if season in {"spring", "summer", "autumn", "winter"}:
+            return season
+        return None
+
+    @staticmethod
+    def _season_from_month(value: int | None) -> str | None:
+        if value is None:
+            return None
+        return SEASON_BY_MONTH.get(value)
+
     async def reverse_geocode_osm(self, lat: float, lon: float) -> dict[str, Any]:
         if self.dry_run or not self.session:
             return {}
@@ -2742,11 +2974,11 @@ class Bot:
                 raise RuntimeError("Invalid response from vision model: missing weather_image")
             season_guess_raw = result.get("season_guess")
             if isinstance(season_guess_raw, str):
-                season_guess = season_guess_raw.strip().lower() or None
+                season_guess = self._normalize_season(season_guess_raw)
             elif season_guess_raw is None:
                 season_guess = None
             else:
-                season_guess = str(season_guess_raw).strip().lower() or None
+                season_guess = self._normalize_season(str(season_guess_raw))
             arch_style_raw = result.get("arch_style")
             arch_style: dict[str, Any] | None
             if isinstance(arch_style_raw, dict):
@@ -2779,39 +3011,7 @@ class Bot:
                 arch_style = {"label": label} if label else None
             else:
                 arch_style = None
-            supabase_meta = {
-                "asset_id": asset_id,
-                "channel_id": asset.channel_id,
-                "architecture_close_up": architecture_close_up,
-                "architecture_wide": architecture_wide,
-            }
             usage = response.usage if isinstance(response.usage, dict) else {}
-            success, payload, error = await self.supabase.insert_token_usage(
-                bot="kotopogoda",
-                model="gpt-4o-mini",
-                prompt_tokens=response.prompt_tokens,
-                completion_tokens=response.completion_tokens,
-                total_tokens=response.total_tokens,
-                request_id=response.request_id,
-                endpoint=usage.get("endpoint") or "/v1/responses",
-                meta=supabase_meta,
-            )
-            log_context = {"log_token_usage": payload}
-            if success:
-                logging.info("Supabase token usage insert succeeded", extra=log_context)
-            else:
-                if error == "disabled":
-                    logging.debug(
-                        "Supabase client disabled; token usage skipped", extra=log_context
-                    )
-                elif error:
-                    logging.error(
-                        "Supabase token usage insert failed: %s", error, extra=log_context
-                    )
-                else:
-                    logging.error(
-                        "Supabase token usage insert failed", extra=log_context
-                    )
             caption = str(result.get("caption", "")).strip()
             guess_country_raw = result.get("guess_country")
             guess_city_raw = result.get("guess_city")
@@ -2876,6 +3076,94 @@ class Bot:
                 tags.append("architecture_close_up")
             if architecture_wide and "architecture_wide" not in tags:
                 tags.append("architecture_wide")
+            metadata_dict = asset.metadata if isinstance(asset.metadata, dict) else {}
+            exif_month = self._extract_month_from_metadata(metadata_dict)
+            if (
+                exif_month is None
+                and local_path
+                and os.path.exists(local_path)
+            ):
+                exif_month = self._extract_exif_month(local_path)
+            season_from_exif = self._season_from_month(exif_month)
+            season_final = self._normalize_season(season_from_exif or season_guess)
+            season_final_display = (
+                SEASON_TRANSLATIONS.get(season_final)
+                if season_final
+                else None
+            )
+            fallback_weather = self._normalize_weather_enum(weather_image)
+            model_weather: str | None = None
+            model_weather_display: str | None = None
+            for tag_value in tags:
+                normalized_tag = self._normalize_weather_enum(tag_value)
+                if not normalized_tag:
+                    continue
+                translated = WEATHER_TAG_TRANSLATIONS.get(normalized_tag)
+                if translated:
+                    model_weather = normalized_tag
+                    model_weather_display = translated
+                    break
+            if not model_weather and fallback_weather:
+                model_weather = fallback_weather
+                model_weather_display = WEATHER_TAG_TRANSLATIONS.get(fallback_weather)
+            metadata_weather = self._extract_weather_enum_from_metadata(metadata_dict)
+            weather_final = metadata_weather or model_weather or fallback_weather
+            weather_final = self._normalize_weather_enum(weather_final)
+            weather_final_display = self._weather_display(weather_final)
+            if not weather_final_display and weather_final:
+                weather_final_display = weather_final
+            if weather_final and weather_final not in tags:
+                tags.append(weather_final)
+            photo_weather = weather_final or model_weather
+            photo_weather_display: str | None = weather_final_display
+            if not photo_weather_display and model_weather_display:
+                photo_weather_display = model_weather_display
+            if not photo_weather_display and photo_weather:
+                photo_weather_display = photo_weather
+            supabase_meta = {
+                "asset_id": asset_id,
+                "channel_id": asset.channel_id,
+                "architecture_close_up": architecture_close_up,
+                "architecture_wide": architecture_wide,
+                "weather_final": photo_weather,
+                "weather_final_display": photo_weather_display,
+                "season_final": season_final,
+                "season_final_display": season_final_display,
+            }
+            if arch_style:
+                supabase_meta["arch_style"] = arch_style
+            success, payload, error = await self.supabase.insert_token_usage(
+                bot="kotopogoda",
+                model="gpt-4o-mini",
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                total_tokens=response.total_tokens,
+                request_id=response.request_id,
+                endpoint=usage.get("endpoint") or "/v1/responses",
+                meta=supabase_meta,
+            )
+            log_context = {
+                "log_token_usage": payload,
+                "weather_final": photo_weather,
+                "season_final": season_final,
+            }
+            if arch_style:
+                log_context["arch_style"] = arch_style
+            if success:
+                logging.info("Supabase token usage insert succeeded", extra=log_context)
+            else:
+                if error == "disabled":
+                    logging.debug(
+                        "Supabase client disabled; token usage skipped", extra=log_context
+                    )
+                elif error:
+                    logging.error(
+                        "Supabase token usage insert failed: %s", error, extra=log_context
+                    )
+                else:
+                    logging.error(
+                        "Supabase token usage insert failed", extra=log_context
+                    )
             safety_raw = result.get("safety")
             nsfw_flag = False
             safety_reason: str | None = None
@@ -2910,17 +3198,6 @@ class Bot:
             if not caption:
                 raise RuntimeError("Invalid response from vision model")
             category = self._derive_primary_scene(caption, tags)
-            photo_weather = None
-            photo_weather_display: str | None = None
-            for tag_value in tags:
-                translated = WEATHER_TAG_TRANSLATIONS.get(tag_value)
-                if translated:
-                    photo_weather = tag_value
-                    photo_weather_display = translated
-                    break
-            if not photo_weather and weather_image:
-                photo_weather = weather_image
-                photo_weather_display = WEATHER_TAG_TRANSLATIONS.get(weather_image)
             flower_varieties: list[str] = []
             if "flowers" in tags:
                 flower_varieties = [obj for obj in objects if obj]
@@ -3007,6 +3284,18 @@ class Bot:
                 caption_lines.append(f"Обстановка: {photo_weather_display}")
             caption_lines.append(f"На улице: {'да' if is_outdoor else 'нет'}")
             caption_lines.append(f"Архитектура: {'да' if arch_view else 'нет'}")
+            season_caption_display = season_final_display or "неизвестно"
+            weather_caption_display = photo_weather_display or "неизвестно"
+            caption_lines.append(f"Погода: {weather_caption_display}")
+            caption_lines.append(f"Сезон: {season_caption_display}")
+            if arch_style and arch_style.get("label"):
+                confidence_value = arch_style.get("confidence")
+                if isinstance(confidence_value, (int, float)) and confidence_value >= 0.4:
+                    confidence_pct = int(round(float(confidence_value) * 100))
+                    confidence_pct = max(0, min(100, confidence_pct))
+                    caption_lines.append(
+                        f"Стиль: {arch_style['label']} (≈{confidence_pct}%)"
+                    )
             if landmarks:
                 caption_lines.append("Ориентиры: " + ", ".join(landmarks))
             if flower_varieties:
@@ -3045,7 +3334,7 @@ class Bot:
             )
             request_id = response.request_id if response else None
             logging.info(
-                "VISION_RESULT asset=%s model=%s request_id=%s description=%s location=%s confidence=%s caption_len=%s",
+                "VISION_RESULT asset=%s model=%s request_id=%s description=%s location=%s confidence=%s caption_len=%s weather=%s season=%s style=%s",
                 asset_id,
                 "gpt-4o-mini",
                 request_id or "-",
@@ -3053,6 +3342,9 @@ class Bot:
                 location_log,
                 confidence_log,
                 len(caption_text),
+                photo_weather or "-",
+                season_final or "-",
+                arch_style["label"] if arch_style and arch_style.get("label") else "-",
             )
             result_payload = {
                 "status": "ok",
@@ -3071,11 +3363,15 @@ class Bot:
                 "architecture_wide": architecture_wide,
                 "weather_image": weather_image,
                 "season_guess": season_guess,
+                "season_final": season_final,
+                "season_final_display": season_final_display,
                 "arch_style": arch_style,
                 "safety": {"nsfw": nsfw_flag, "reason": safety_reason},
                 "category": category,
                 "photo_weather": photo_weather,
                 "photo_weather_display": photo_weather_display,
+                "weather_final": photo_weather,
+                "weather_final_display": photo_weather_display,
                 "flower_varieties": flower_varieties,
             }
             logging.info(

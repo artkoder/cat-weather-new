@@ -85,29 +85,88 @@ WEATHER_HEADER_PATTERN = re.compile(
 )
 
 
+WEATHER_ALLOWED_VALUES: set[str] = {
+    "sunny",
+    "partly_cloudy",
+    "overcast",
+    "rain",
+    "snow",
+    "fog",
+    "night",
+}
+
+FRAMING_ALLOWED_VALUES: set[str] = {"close_up", "medium", "wide"}
+
+FRAMING_ALIAS_MAP: dict[str, str] = {
+    "closeup": "close_up",
+    "close": "close_up",
+    "medium_shot": "medium",
+    "mediumshot": "medium",
+    "wide_shot": "wide",
+    "wideshot": "wide",
+    "panorama": "wide",
+    "aerial_shot": "wide",
+    "detail": "close_up",
+}
+
+WEATHER_ALIAS_MAP: dict[str, str | None] = {
+    "sunny": "sunny",
+    "clear": "sunny",
+    "ясно": "sunny",
+    "солнечно": "sunny",
+    "bright": "sunny",
+    "indoor": "sunny",
+    "inside": "sunny",
+    "room": "sunny",
+    "partly_cloudy": "partly_cloudy",
+    "partlycloudy": "partly_cloudy",
+    "переменная_облачность": "partly_cloudy",
+    "облачно": "partly_cloudy",
+    "cloudy": "overcast",
+    "overcast": "overcast",
+    "пасмурно": "overcast",
+    "mostly_cloudy": "overcast",
+    "rain": "rain",
+    "rainy": "rain",
+    "дождь": "rain",
+    "дождливо": "rain",
+    "drizzle": "rain",
+    "shower": "rain",
+    "sleet": "rain",
+    "hail": "rain",
+    "storm": "rain",
+    "stormy": "rain",
+    "thunderstorm": "rain",
+    "гроза": "rain",
+    "snow": "snow",
+    "snowy": "snow",
+    "snowfall": "snow",
+    "снег": "snow",
+    "снежно": "snow",
+    "blizzard": "snow",
+    "fog": "fog",
+    "foggy": "fog",
+    "mist": "fog",
+    "дымка": "fog",
+    "туман": "fog",
+    "haze": "fog",
+    "smog": "fog",
+    "night": "night",
+    "clear_night": "night",
+    "ночь": "night",
+    "twilight": "night",
+    "dusk": "night",
+    "evening": "night",
+    "sunset": "night",
+}
+
 WEATHER_TAG_TRANSLATIONS: dict[str, str] = {
-    "indoor": "в помещении",
     "sunny": "солнечно",
-    "clear": "ясно",
     "partly_cloudy": "переменная облачность",
-    "mostly_cloudy": "пасмурно",
     "overcast": "пасмурно",
-    "cloudy": "пасмурно",
     "rain": "дождь",
-    "rainy": "дождливо",
-    "drizzle": "морось",
     "snow": "снег",
-    "snowy": "снежно",
-    "sleet": "снег с дождём",
-    "hail": "град",
     "fog": "туман",
-    "foggy": "туманно",
-    "haze": "дымка",
-    "storm": "шторм",
-    "stormy": "шторм",
-    "thunderstorm": "гроза",
-    "windy": "ветрено",
-    "twilight": "сумеречно",
     "night": "ночь",
 }
 
@@ -275,16 +334,13 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
         "framing": {
             "type": "string",
             "description": (
-                "Кадровка/ракурс снимка. Используй один из вариантов: close-up, medium shot, "
-                "wide shot, detail, panorama, aerial shot."
+                "Кадровка/ракурс снимка. Используй один из вариантов: close_up, medium, "
+                "wide."
             ),
             "enum": [
-                "close-up",
-                "medium shot",
-                "wide shot",
-                "detail",
-                "panorama",
-                "aerial shot",
+                "close_up",
+                "medium",
+                "wide",
             ],
         },
         "architecture_close_up": {
@@ -299,17 +355,15 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Краткое описание погодных условий на фото (на английском). Выбирай из категорий: "
-                "indoor, sunny, cloudy, rainy, snowy, foggy, stormy, twilight, night."
+                "sunny, partly_cloudy, overcast, rain, snow, fog, night."
             ),
             "enum": [
-                "indoor",
                 "sunny",
-                "cloudy",
-                "rainy",
-                "snowy",
-                "foggy",
-                "stormy",
-                "twilight",
+                "partly_cloudy",
+                "overcast",
+                "rain",
+                "snow",
+                "fog",
                 "night",
             ],
         },
@@ -2409,7 +2463,15 @@ class Bot:
     def _normalize_weather_enum(value: Any) -> str | None:
         if isinstance(value, str):
             normalized = value.strip().lower()
-            return normalized or None
+            if not normalized:
+                return None
+            normalized = re.sub(r"[\s\-]+", "_", normalized)
+            if normalized in WEATHER_ALLOWED_VALUES:
+                return normalized
+            alias = WEATHER_ALIAS_MAP.get(normalized)
+            if isinstance(alias, str) and alias in WEATHER_ALLOWED_VALUES:
+                return alias
+            return None
         if isinstance(value, (list, tuple)):
             for item in value:
                 normalized = Bot._normalize_weather_enum(item)
@@ -2457,10 +2519,13 @@ class Bot:
     def _weather_display(value: str | None) -> str | None:
         if not value:
             return None
-        normalized = value.strip().lower()
+        normalized = Bot._normalize_weather_enum(value)
         if not normalized:
             return None
-        return WEATHER_TAG_TRANSLATIONS.get(normalized)
+        translation = WEATHER_TAG_TRANSLATIONS.get(normalized)
+        if translation:
+            return translation
+        return normalized
 
     @staticmethod
     def _normalize_season(value: str | None) -> str | None:
@@ -2920,8 +2985,8 @@ class Bot:
                 "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме asset_vision_v1. "
                 "Структура включает arch_view (boolean), caption (строка на русском), objects (массив строк), is_outdoor (boolean), guess_country/guess_city (строка или null), "
                 "location_confidence (число 0..1), landmarks (массив строк), tags (3-12 элементов в нижнем регистре), framing, архитектурные признаки, погодное описание, сезон и безопасность. "
-                "Поле framing обязательно и принимает только close-up, medium shot, wide shot, detail, panorama, aerial shot. "
-                "weather_image описывает нюансы погоды и выбирается из indoor, sunny, cloudy, rainy, snowy, foggy, stormy, twilight, night. "
+                "Поле framing обязательно и принимает только close_up, medium, wide. "
+                "weather_image описывает нюансы погоды и выбирается из sunny, partly_cloudy, overcast, rain, snow, fog, night. "
                 "season_guess — spring, summer, autumn, winter или null. arch_style либо null, либо объект с label (название стиля на английском) и confidence (0..1). "
                 "В objects перечисляй заметные элементы, цветы называй видами. В tags используй английские слова в нижнем регистре и обязательно включай погодный тег. "
                 "Поле safety содержит nsfw:boolean и reason:string, где reason всегда непустая строка на русском."
@@ -2959,11 +3024,23 @@ class Bot:
             framing_raw = result.get("framing")
             framing: str | None = None
             if isinstance(framing_raw, str):
-                framing = framing_raw.strip().lower() or None
+                framing = re.sub(r"[\s\-]+", "_", framing_raw.strip().lower()) or None
             elif framing_raw is not None:
-                framing = str(framing_raw).strip().lower() or None
+                framing = re.sub(
+                    r"[\s\-]+",
+                    "_",
+                    str(framing_raw).strip().lower(),
+                ) or None
             if not framing:
                 raise RuntimeError("Invalid response from vision model: missing framing")
+            if framing not in FRAMING_ALLOWED_VALUES:
+                alias = FRAMING_ALIAS_MAP.get(framing)
+                if alias in FRAMING_ALLOWED_VALUES:
+                    framing = alias
+                else:
+                    raise RuntimeError(
+                        "Invalid response from vision model: unknown framing"
+                    )
             architecture_close_up_raw = result.get("architecture_close_up")
             architecture_close_up = (
                 bool(architecture_close_up_raw)
@@ -2985,11 +3062,25 @@ class Bot:
             weather_image_raw = result.get("weather_image")
             weather_image: str | None = None
             if isinstance(weather_image_raw, str):
-                weather_image = weather_image_raw.strip().lower() or None
+                weather_image = re.sub(
+                    r"[\s\-]+",
+                    "_",
+                    weather_image_raw.strip().lower(),
+                ) or None
             elif weather_image_raw is not None:
-                weather_image = str(weather_image_raw).strip().lower() or None
+                weather_image = re.sub(
+                    r"[\s\-]+",
+                    "_",
+                    str(weather_image_raw).strip().lower(),
+                ) or None
             if not weather_image:
                 raise RuntimeError("Invalid response from vision model: missing weather_image")
+            normalized_weather = self._normalize_weather_enum(weather_image)
+            if not normalized_weather:
+                raise RuntimeError(
+                    "Invalid response from vision model: unknown weather_image"
+                )
+            weather_image = normalized_weather
             season_guess_raw = result.get("season_guess")
             if isinstance(season_guess_raw, str):
                 season_guess = self._normalize_season(season_guess_raw)
@@ -7021,50 +7112,60 @@ class Bot:
     ) -> set[str] | None:
         if actual_class is None:
             return None
+        normalized_actual = Bot._normalize_weather_enum(actual_class)
+        if normalized_actual:
+            actual_class = normalized_actual
         mapping = {
-            "clear": {"clear", "partly_cloudy"},
-            "partly_cloudy": {"clear", "partly_cloudy", "cloudy"},
-            "cloudy": {"partly_cloudy", "cloudy", "overcast"},
-            "overcast": {"cloudy", "overcast"},
-            "rain": {"rain", "storm"},
-            "storm": {"storm", "rain"},
+            "sunny": {"sunny", "partly_cloudy"},
+            "partly_cloudy": {"sunny", "partly_cloudy", "overcast"},
+            "overcast": {"partly_cloudy", "overcast", "fog"},
+            "rain": {"rain"},
             "snow": {"snow"},
-            "fog": {"fog", "overcast", "cloudy"},
-            "night": {"night", "clear", "partly_cloudy"},
-            "indoor": {"indoor"},
+            "fog": {"fog", "overcast"},
+            "night": {"night", "partly_cloudy"},
         }
-        allowed = mapping.get(actual_class, {actual_class})
+        allowed = mapping.get(actual_class)
+        if not allowed and normalized_actual and normalized_actual in mapping:
+            allowed = mapping[normalized_actual]
+        if not allowed:
+            allowed = {actual_class}
         return set(allowed)
 
     def _normalize_weather_label(self, label: str | None) -> str | None:
+        normalized = Bot._normalize_weather_enum(label)
+        if normalized:
+            return normalized
         if not label:
             return None
         text = str(label).strip().lower()
         if not text:
             return None
         keyword_map: list[tuple[tuple[str, ...], str]] = [
-            (("indoor", "помещ", "inside", "room"), "indoor"),
             (("ноч", "night"), "night"),
-            (("гроза", "storm", "thunder", "молн"), "storm"),
+            (("гроза", "storm", "thunder", "молн"), "rain"),
             (("снег", "snow", "снеж", "метел", "blizzard"), "snow"),
             (("дожд", "rain", "ливн", "drizzle", "wet"), "rain"),
             (("туман", "fog", "mist", "дымк", "haze", "смог"), "fog"),
             (("пасмур", "overcast", "сплошн", "тучн", "серое небо"), "overcast"),
-            (("облач", "cloud"), "cloudy"),
-            (("закат", "sunset", "рассвет", "sunrise", "golden hour"), "partly_cloudy"),
-            (("солне", "ясн", "clear", "sunny", "bright sun"), "clear"),
+            (("облач", "cloud"), "partly_cloudy"),
+            (("закат", "sunset", "рассвет", "sunrise", "golden hour"), "night"),
+            (("солне", "ясн", "clear", "sunny", "bright sun"), "sunny"),
         ]
         for needles, token in keyword_map:
             for needle in needles:
                 if needle in text:
+                    normalized_token = Bot._normalize_weather_enum(token)
+                    if normalized_token:
+                        return normalized_token
                     return token
-        return text.split()[0]
+        fallback = text.split()[0]
+        return Bot._normalize_weather_enum(fallback)
 
     def _classify_weather_code(self, code: int | None) -> str | None:
         if code is None:
             return None
         mapping = {
-            0: "clear",
+            0: "sunny",
             1: "partly_cloudy",
             2: "partly_cloudy",
             3: "overcast",
@@ -7089,9 +7190,9 @@ class Bot:
             82: "rain",
             85: "snow",
             86: "snow",
-            95: "storm",
-            96: "storm",
-            99: "storm",
+            95: "rain",
+            96: "rain",
+            99: "rain",
         }
         return mapping.get(code)
 

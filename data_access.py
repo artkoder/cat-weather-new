@@ -692,6 +692,7 @@ class DataAccess:
                         continue
                     seen.add(text)
                     normalized_tags.append(text)
+            normalized_tag_set = set(normalized_tags)
             category = (
                 result.get("category")
                 or result.get("caption")
@@ -721,7 +722,7 @@ class DataAccess:
                 photo_weather = str(result.get("photo_weather")).strip() or None
             flowers_raw = result.get("flower_varieties")
             if flowers_raw is None:
-                if "flowers" in normalized_tags:
+                if normalized_tag_set.intersection({"flowers", "flower"}):
                     objects = result.get("objects")
                     if isinstance(objects, list):
                         extracted: list[str] = []

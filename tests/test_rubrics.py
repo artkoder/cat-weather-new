@@ -225,6 +225,100 @@ async def test_vision_job_assigns_rubric_id(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_vision_job_handles_singular_flower_tag(tmp_path):
+    bot = Bot("test-token", str(tmp_path / "db.sqlite"))
+    bot.openai.api_key = "test"  # type: ignore[assignment]
+
+    flowers_rubric = bot.data.get_rubric_by_code("flowers")
+    assert flowers_rubric is not None
+
+    image_path = tmp_path / "flower.jpg"
+    Image.new("RGB", (32, 32), color="red").save(image_path)
+
+    file_meta = {
+        "file_id": "file-singular",
+        "file_unique_id": "uniq-singular",
+        "mime_type": "image/jpeg",
+    }
+    asset_id = bot.data.save_asset(
+        -1600,
+        20,
+        None,
+        "",
+        tg_chat_id=-1600,
+        caption="",
+        kind="photo",
+        file_meta=file_meta,
+        metadata={},
+    )
+    bot.data.update_asset(asset_id, local_path=str(image_path))
+
+    async def fake_api_request(method, data=None, *, files=None):
+        if method == "copyMessage":
+            return {"ok": True, "result": {"message_id": 601}}
+        return {"ok": True}
+
+    async def fake_record_usage(*args, **kwargs):
+        return None
+
+    async def fake_classify_image(*, model, system_prompt, user_prompt, image_path, schema):
+        return OpenAIResponse(
+            content={
+                "framing": "medium",
+                "architecture_close_up": False,
+                "architecture_wide": False,
+                "weather_image": "sunny",
+                "season_guess": "summer",
+                "arch_style": None,
+                "caption": "A single rose",
+                "objects": ["rose"],
+                "landmarks": [],
+                "tags": ["flower"],
+                "arch_view": False,
+                "is_outdoor": True,
+                "guess_country": None,
+                "guess_city": None,
+                "location_confidence": 0.6,
+                "safety": {"nsfw": False, "reason": "безопасно"},
+                "category": "flower",
+            },
+            usage={
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "request_id": "req-flower",
+            },
+        )
+
+    bot.api_request = fake_api_request  # type: ignore[assignment]
+    bot._record_openai_usage = fake_record_usage  # type: ignore[assignment]
+    bot.openai.classify_image = fake_classify_image  # type: ignore[assignment]
+
+    now = datetime.utcnow()
+    job = Job(
+        id=2,
+        name="vision",
+        payload={"asset_id": asset_id, "tz_offset": "+00:00"},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    await bot._job_vision_locked(job)
+
+    updated_asset = bot.data.get_asset(asset_id)
+    assert updated_asset is not None
+    assert updated_asset.vision_category == "flowers"
+    assert updated_asset.rubric_id == flowers_rubric.id
+    assert updated_asset.vision_flower_varieties == ["rose"]
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_publish_flowers_removes_assets(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {

@@ -22,7 +22,7 @@ A follow-up `vision` job classifies each asset with OpenAI (`gpt-4o-mini`) to ex
 Configured rubrics (`flowers`, `guess_arch`) pull classified assets, render text using OpenAI where required, overlay numbers on quiz photos, and publish carousels back to Telegram channels. Number badges respect a fixed safe zone: 24 px padding from the top-left corner on standard frames, or 12 px when the shorter photo side falls below 480 px, so designers should keep critical details outside that area. After a successful run the consumed assets and temporary overlays are removed.
 
 ### 3.5 Admin interface
-Superadmins manage onboarding, asset channel binding, rubric schedules and manual triggers directly from Telegram commands and inline buttons. The interface exposes quick actions such as «Run now» and displays remaining OpenAI quota.
+Superadmins manage onboarding, asset channel binding, rubric schedules and manual triggers directly from Telegram commands and inline buttons. Flowers manual runs now arrive as preview messages in the operator chat, where inline controls let staff regenerate photos or captions, add custom instructions and choose between test or production delivery. The interface continues to expose quick actions such as «Run now» and displays remaining OpenAI quota.
 
 ## 4. Job Queue
 `jobs.py` implements a persistent queue with exponential backoff, deduplication and concurrency control. It loads due jobs every second, dispatches handlers (`ingest`, `vision`, `publish_rubric`) and records failure history for support investigations.

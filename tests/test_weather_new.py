@@ -457,13 +457,32 @@ async def test_job_vision_enriches_weather_season_and_style(tmp_path, monkeypatc
     assert asset.vision_caption is not None
     assert 'Погода: дождь' in asset.vision_caption
     assert 'Сезон: осень' in asset.vision_caption
-    assert 'Стиль: Gothic (≈65%)' in asset.vision_caption
+    assert 'Стиль: Gothic (уверенность: средняя)' in asset.vision_caption
 
     assert supabase_calls, 'supabase logging should be attempted'
     meta = supabase_calls[0]['meta']
     assert meta['weather_final'] == 'rain'
     assert meta['season_final'] == 'autumn'
     assert meta['arch_style'] == {'label': 'Gothic', 'confidence': 0.65}
+
+
+@pytest.mark.asyncio
+async def test_job_vision_includes_arch_style_with_low_confidence(
+    tmp_path, monkeypatch
+):
+    overrides = {
+        'arch_style': {'label': 'Art Deco', 'confidence': 0.2},
+    }
+
+    _, asset, _ = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        vision_overrides=overrides,
+    )
+
+    assert asset.vision_caption is not None
+    assert 'Стиль: Art Deco (уверенность: низкая)' in asset.vision_caption
 
 
 @pytest.mark.asyncio

@@ -3543,13 +3543,21 @@ class Bot:
             caption_lines.append(f"Погода: {weather_caption_display}")
             caption_lines.append(f"Сезон: {season_caption_display}")
             if arch_style and arch_style.get("label"):
+                style_line = f"Стиль: {arch_style['label']}"
                 confidence_value = arch_style.get("confidence")
-                if isinstance(confidence_value, (int, float)) and confidence_value >= 0.4:
-                    confidence_pct = int(round(float(confidence_value) * 100))
-                    confidence_pct = max(0, min(100, confidence_pct))
-                    caption_lines.append(
-                        f"Стиль: {arch_style['label']} (≈{confidence_pct}%)"
-                    )
+                confidence_note: str | None = None
+                if isinstance(confidence_value, (int, float)):
+                    confidence_float = float(confidence_value)
+                    if math.isfinite(confidence_float):
+                        if confidence_float < 0.4:
+                            confidence_note = "низкая"
+                        elif confidence_float < 0.7:
+                            confidence_note = "средняя"
+                        else:
+                            confidence_note = "высокая"
+                if confidence_note:
+                    style_line += f" (уверенность: {confidence_note})"
+                caption_lines.append(style_line)
             if landmarks:
                 caption_lines.append("Ориентиры: " + ", ".join(landmarks))
             if flower_varieties:

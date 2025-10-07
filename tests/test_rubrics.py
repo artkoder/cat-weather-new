@@ -294,6 +294,102 @@ async def test_publish_flowers_uses_distinct_assets(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_flowers_preview_regenerate_and_finalize(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "channel_id": -500,
+        "test_channel_id": -600,
+        "assets": {"min": 4, "max": 4},
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+
+    now = datetime.utcnow().isoformat()
+    for idx in range(4):
+        file_meta = {"file_id": f"pv{idx}"}
+        asset_id = bot.data.save_asset(
+            -2100,
+            900 + idx,
+            None,
+            "",
+            tg_chat_id=-2100,
+            caption="",
+            kind="photo",
+            file_meta=file_meta,
+            metadata={"date": now},
+            categories=["flowers"],
+            rubric_id=1,
+        )
+        bot.data.update_asset(
+            asset_id,
+            vision_category="flowers",
+            vision_photo_weather="солнечно",
+            city=f"Город {idx}",
+        )
+
+    bot.db.execute(
+        "INSERT OR REPLACE INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, '+00:00')",
+        (1234, "tester"),
+    )
+    bot.db.commit()
+
+    api_calls: list[tuple[str, dict[str, Any] | None]] = []
+    message_counter = {"value": 200}
+
+    async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
+        api_calls.append((method, data))
+        if method == "sendMediaGroup":
+            if data and data.get("chat_id") == 1234:
+                return {"ok": True, "result": [{"message_id": 10}, {"message_id": 11}]}
+            return {"ok": True, "result": [{"message_id": 210}]}
+        if method == "sendMessage":
+            message_counter["value"] += 1
+            return {"ok": True, "result": {"message_id": message_counter["value"]}}
+        if method in {"editMessageText", "deleteMessage", "answerCallbackQuery"}:
+            return {"ok": True}
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+
+    await bot.publish_rubric("flowers", channel_id=-500, initiator_id=1234)
+
+    state = bot.pending_flowers_previews.get(1234)
+    assert state is not None
+    assert state.get("caption_message_id")
+
+    await bot._handle_flowers_preview_callback(1234, "regen_caption", {"id": "cb1"})
+    assert any(call[0] == "editMessageText" for call in api_calls)
+
+    await bot._handle_flowers_preview_callback(1234, "instruction", {"id": "cb2"})
+    prompt_id = state.get("instruction_prompt_id")
+    assert isinstance(prompt_id, int)
+    instruction_message = {
+        "message_id": 999,
+        "from": {"id": 1234, "username": "tester"},
+        "chat": {"id": 1234},
+        "text": "Добавь смайлы",
+        "reply_to_message": {"message_id": prompt_id},
+    }
+    await bot.handle_message(instruction_message)
+    state = bot.pending_flowers_previews.get(1234)
+    assert state is not None
+    assert state.get("instructions") == "Добавь смайлы"
+    assert not state.get("awaiting_instruction")
+
+    await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb3"})
+    assert bot.pending_flowers_previews.get(1234) is None
+    remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+    assert remaining == 0
+    history = bot.db.execute("SELECT metadata FROM posts_history").fetchone()
+    assert history is not None
+    meta = json.loads(history["metadata"])
+    assert meta["asset_ids"]
+    assert meta["test"] is False
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_publish_guess_arch_with_overlays(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     storage = tmp_path / "storage"
@@ -888,10 +984,19 @@ async def test_rubric_publish_callback_success(tmp_path):
 
     recorded: dict[str, Any] = {}
 
-    def fake_enqueue(code: str, *, test: bool = False, channel_id: int | None = None) -> int:
+    def fake_enqueue(
+        code: str,
+        *,
+        test: bool = False,
+        channel_id: int | None = None,
+        initiator_id: int | None = None,
+        instructions: str | None = None,
+    ) -> int:
         recorded["code"] = code
         recorded["test"] = test
         recorded["channel_id"] = channel_id
+        recorded["initiator_id"] = initiator_id
+        recorded["instructions"] = instructions
         return 314
 
     bot.enqueue_rubric = fake_enqueue  # type: ignore[assignment]
@@ -957,7 +1062,14 @@ async def test_rubric_publish_callback_error(tmp_path):
 
     bot.api_request = fake_api  # type: ignore[assignment]
 
-    def failing_enqueue(code: str, *, test: bool = False, channel_id: int | None = None) -> int:
+    def failing_enqueue(
+        code: str,
+        *,
+        test: bool = False,
+        channel_id: int | None = None,
+        initiator_id: int | None = None,
+        instructions: str | None = None,
+    ) -> int:
         raise ValueError("нет подходящих ассетов")
 
     bot.enqueue_rubric = failing_enqueue  # type: ignore[assignment]

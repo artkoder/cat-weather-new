@@ -749,6 +749,7 @@ class Bot:
         self.running = False
         self.manual_buttons: dict[tuple[int, int], dict[str, list[list[dict]]]] = {}
         self.rubric_pending_runs: dict[tuple[int, str], str] = {}
+        self.pending_flowers_previews: dict[int, dict[str, Any]] = {}
 
     def _ensure_default_rubrics(self) -> None:
         created: list[str] = []
@@ -4035,6 +4036,59 @@ class Bot:
         user_id = message['from']['id']
         username = message['from'].get('username')
 
+        preview_state = self.pending_flowers_previews.get(user_id)
+        if preview_state and preview_state.get('awaiting_instruction'):
+            reply_to = message.get('reply_to_message') or {}
+            prompt_id = preview_state.get('instruction_prompt_id')
+            if prompt_id and reply_to.get('message_id') == prompt_id:
+                instructions_text = text.strip()
+                preview_state['instructions'] = instructions_text
+                preview_state['awaiting_instruction'] = False
+                preview_state['instruction_prompt_id'] = None
+                rubric_code = preview_state.get('rubric_code')
+                rubric = (
+                    self.data.get_rubric_by_code(rubric_code)
+                    if rubric_code
+                    else None
+                )
+                if rubric:
+                    cities = list(preview_state.get('cities') or [])
+                    asset_count = len(preview_state.get('assets') or [])
+                    greeting, hashtags = await self._generate_flowers_copy(
+                        rubric,
+                        cities,
+                        asset_count,
+                        instructions=instructions_text,
+                    )
+                    caption, prepared_hashtags = self._build_flowers_caption(
+                        greeting,
+                        cities,
+                        hashtags,
+                    )
+                    await self._update_flowers_preview_caption_state(
+                        preview_state,
+                        caption=caption,
+                        greeting=greeting,
+                        hashtags=hashtags,
+                        prepared_hashtags=prepared_hashtags,
+                    )
+                    await self.api_request(
+                        'sendMessage',
+                        {
+                            'chat_id': user_id,
+                            'text': 'Инструкция сохранена, подпись обновлена.',
+                        },
+                    )
+                else:
+                    await self.api_request(
+                        'sendMessage',
+                        {
+                            'chat_id': user_id,
+                            'text': 'Не удалось обновить подпись: рубрика недоступна.',
+                        },
+                    )
+                return
+
         if user_id in self.pending and self.pending[user_id].get('rubric_input'):
             if not self.is_superadmin(user_id):
                 del self.pending[user_id]
@@ -5072,6 +5126,20 @@ class Bot:
             self.add_weather_channel(self.pending[user_id]['channel'], time_str)
             del self.pending[user_id]
             await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather channel registered'})
+        elif data.startswith('flowers_preview:'):
+            if not self.is_superadmin(user_id):
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Недостаточно прав',
+                        'show_alert': True,
+                    },
+                )
+                return
+            action = data.split(':', 1)[1] if ':' in data else ''
+            await self._handle_flowers_preview_callback(user_id, action, query)
+            return
         elif data.startswith('asset_ch:') and user_id in self.pending and self.pending[user_id].get('set_assets'):
             cid = int(data.split(':')[1])
             self.set_asset_channel(cid)
@@ -5299,7 +5367,11 @@ class Bot:
             is_test = mode == 'test'
             run_label = 'Тестовая' if is_test else 'Рабочая'
             try:
-                job_id = self.enqueue_rubric(code, test=is_test)
+                job_id = self.enqueue_rubric(
+                    code,
+                    test=is_test,
+                    initiator_id=user_id,
+                )
             except Exception as exc:  # noqa: PERF203 - feedback path
                 logging.exception('Failed to enqueue rubric %s (test=%s)', code, is_test)
                 self._clear_rubric_pending_run(user_id, code)
@@ -6554,6 +6626,8 @@ class Bot:
         *,
         channel_id: int | None = None,
         test: bool = False,
+        initiator_id: int | None = None,
+        instructions: str | None = None,
     ) -> int:
         rubric = self.data.get_rubric_by_code(code)
         if not rubric:
@@ -6572,6 +6646,10 @@ class Bot:
             "test": test,
             "tz_offset": config.get("tz") or TZ_OFFSET,
         }
+        if initiator_id is not None:
+            payload["initiator_id"] = initiator_id
+        if instructions:
+            payload["instructions"] = instructions
         return self.jobs.enqueue("publish_rubric", payload)
 
     async def _job_publish_rubric(self, job: Job) -> None:
@@ -6589,6 +6667,8 @@ class Bot:
             channel_id=channel_id,
             test=test_mode,
             job=job,
+            initiator_id=payload.get("initiator_id"),
+            instructions=payload.get("instructions"),
         )
         if success and schedule_key and scheduled_at:
             try:
@@ -6606,6 +6686,8 @@ class Bot:
         *,
         test: bool = False,
         job: Job | None = None,
+        initiator_id: int | None = None,
+        instructions: str | None = None,
     ) -> bool:
         rubric = self.data.get_rubric_by_code(code)
         if not rubric:
@@ -6622,7 +6704,14 @@ class Bot:
         if not handler:
             logging.warning("No handler defined for rubric %s", code)
             return False
-        return await handler(rubric, int(target), test=test, job=job)
+        return await handler(
+            rubric,
+            int(target),
+            test=test,
+            job=job,
+            initiator_id=initiator_id,
+            instructions=instructions,
+        )
 
     def _parse_tz_offset(self, value: str | None) -> timezone:
         offset = (value or "+00:00").strip()
@@ -6729,14 +6818,13 @@ class Bot:
             candidate = candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
         return candidate.astimezone(timezone.utc).replace(tzinfo=None)
 
-    async def _publish_flowers(
+    async def _prepare_flowers_drop(
         self,
         rubric: Rubric,
-        channel_id: int,
         *,
-        test: bool = False,
         job: Job | None = None,
-    ) -> bool:
+        instructions: str | None = None,
+    ) -> tuple[list[Asset], list[int], list[str], list[str], str, list[str]] | None:
         config = rubric.config or {}
         asset_cfg = config.get("assets") or {}
         min_config = int(asset_cfg.get("min") or 4)
@@ -6758,11 +6846,31 @@ class Bot:
                 len(assets),
                 min_count,
             )
-            return False
+            return None
+        file_ids: list[str] = []
+        for asset in assets:
+            file_id = asset.file_id
+            if not file_id:
+                logging.warning("Asset %s missing file_id", asset.id)
+                return None
+            file_ids.append(file_id)
         cities = sorted({asset.city for asset in assets if asset.city})
         greeting, hashtags = await self._generate_flowers_copy(
-            rubric, cities, len(assets), job=job
+            rubric,
+            cities,
+            len(assets),
+            job=job,
+            instructions=instructions,
         )
+        asset_ids = [asset.id for asset in assets]
+        return assets, asset_ids, file_ids, cities, greeting, hashtags
+
+    def _build_flowers_caption(
+        self,
+        greeting: str,
+        cities: Sequence[str],
+        hashtags: Sequence[str],
+    ) -> tuple[str, list[str]]:
         hashtag_list = self._prepare_hashtags(hashtags)
         caption_parts = [greeting.strip()] if greeting else []
         if cities:
@@ -6770,12 +6878,46 @@ class Bot:
         if hashtag_list:
             caption_parts.append(" ".join(hashtag_list))
         caption = "\n\n".join(part for part in caption_parts if part)
+        return caption, hashtag_list
+
+    async def _publish_flowers(
+        self,
+        rubric: Rubric,
+        channel_id: int,
+        *,
+        test: bool = False,
+        job: Job | None = None,
+        initiator_id: int | None = None,
+        instructions: str | None = None,
+    ) -> bool:
+        prepared = await self._prepare_flowers_drop(
+            rubric,
+            job=job,
+            instructions=instructions,
+        )
+        if not prepared:
+            return False
+        assets, asset_ids, file_ids, cities, greeting, hashtags = prepared
+        caption, hashtag_list = self._build_flowers_caption(greeting, cities, hashtags)
+        if initiator_id is not None:
+            await self._send_flowers_preview(
+                rubric,
+                initiator_id,
+                default_channel=channel_id,
+                test_requested=test,
+                assets=assets,
+                asset_ids=asset_ids,
+                file_ids=file_ids,
+                cities=cities,
+                greeting=greeting,
+                hashtags=hashtags,
+                caption=caption,
+                prepared_hashtags=hashtag_list,
+                instructions=instructions,
+            )
+            return True
         media: list[dict[str, Any]] = []
-        for idx, asset in enumerate(assets):
-            file_id = asset.file_id
-            if not file_id:
-                logging.warning("Asset %s missing file_id", asset.id)
-                return False
+        for idx, file_id in enumerate(file_ids):
             item = {"type": "photo", "media": file_id}
             if idx == 0 and caption:
                 item["caption"] = caption
@@ -6795,10 +6937,10 @@ class Bot:
             message_id = int(result_payload.get("message_id") or 0)
         else:
             message_id = 0
-        self.data.mark_assets_used(asset.id for asset in assets)
+        self.data.mark_assets_used(asset_ids)
         metadata = {
             "rubric_code": rubric.code,
-            "asset_ids": [asset.id for asset in assets],
+            "asset_ids": asset_ids,
             "test": test,
             "cities": cities,
             "greeting": greeting,
@@ -6814,6 +6956,586 @@ class Bot:
         await self._cleanup_assets(assets)
         return True
 
+    def _resolve_flowers_target(
+        self, state: dict[str, Any], *, to_test: bool
+    ) -> int | None:
+        key = "test_channel_id" if to_test else "channel_id"
+        value = state.get(key)
+        if isinstance(value, int):
+            return value
+        default_type = state.get("default_channel_type")
+        default_value = state.get("default_channel_id")
+        if isinstance(default_value, int) and (
+            (to_test and default_type == "test")
+            or (not to_test and default_type == "main")
+        ):
+            return default_value
+        return None
+
+    def _flowers_preview_keyboard(self, state: dict[str, Any]) -> dict[str, Any]:
+        rows: list[list[dict[str, Any]]] = [
+            [
+                {
+                    "text": "♻️ Перегенерировать фото",
+                    "callback_data": "flowers_preview:regen_photos",
+                }
+            ],
+            [
+                {
+                    "text": "✍️ Перегенерировать подпись",
+                    "callback_data": "flowers_preview:regen_caption",
+                },
+                {
+                    "text": "✍️➕ Инструкция",
+                    "callback_data": "flowers_preview:instruction",
+                },
+            ],
+        ]
+        send_row: list[dict[str, Any]] = []
+        if self._resolve_flowers_target(state, to_test=True) is not None:
+            send_row.append(
+                {"text": "🧪 В тест", "callback_data": "flowers_preview:send_test"}
+            )
+        if self._resolve_flowers_target(state, to_test=False) is not None:
+            send_row.append(
+                {"text": "📣 В канал", "callback_data": "flowers_preview:send_main"}
+            )
+        if send_row:
+            rows.append(send_row)
+        rows.append([
+            {"text": "✖️ Отмена", "callback_data": "flowers_preview:cancel"}
+        ])
+        return {"inline_keyboard": rows}
+
+    def _render_flowers_preview_text(self, state: dict[str, Any]) -> str:
+        parts: list[str] = []
+        caption = str(state.get("caption") or "").strip()
+        if caption:
+            parts.append(caption)
+        else:
+            parts.append("Подпись пока не сгенерирована.")
+        instructions = str(state.get("instructions") or "").strip()
+        if instructions:
+            parts.append(f"Инструкции оператора:\n{instructions}")
+        channels: list[str] = []
+        main_target = self._resolve_flowers_target(state, to_test=False)
+        if main_target is not None:
+            channels.append(f"📣 {main_target}")
+        test_target = self._resolve_flowers_target(state, to_test=True)
+        if test_target is not None:
+            channels.append(f"🧪 {test_target}")
+        if channels:
+            parts.append("Доступные каналы: " + ", ".join(channels))
+        parts.append("Выберите действие на клавиатуре ниже.")
+        return "\n\n".join(parts)
+
+    async def _delete_flowers_preview_messages(
+        self, state: dict[str, Any], *, keep_prompt: bool = False
+    ) -> None:
+        chat_id = state.get("preview_chat_id")
+        if chat_id is None:
+            return
+        for message_id in list(state.get("media_message_ids") or []):
+            try:
+                await self.api_request(
+                    "deleteMessage",
+                    {"chat_id": chat_id, "message_id": message_id},
+                )
+            except Exception:
+                logging.exception(
+                    "Failed to delete flowers preview media message %s for chat %s",
+                    message_id,
+                    chat_id,
+                )
+        caption_id = state.get("caption_message_id")
+        if caption_id:
+            try:
+                await self.api_request(
+                    "deleteMessage",
+                    {"chat_id": chat_id, "message_id": caption_id},
+                )
+            except Exception:
+                logging.exception(
+                    "Failed to delete flowers preview caption message %s for chat %s",
+                    caption_id,
+                    chat_id,
+                )
+        state["media_message_ids"] = []
+        state["caption_message_id"] = None
+        if not keep_prompt:
+            prompt_id = state.get("instruction_prompt_id")
+            if prompt_id:
+                try:
+                    await self.api_request(
+                        "deleteMessage",
+                        {"chat_id": chat_id, "message_id": prompt_id},
+                    )
+                except Exception:
+                    logging.exception(
+                        "Failed to delete flowers instruction prompt %s for chat %s",
+                        prompt_id,
+                        chat_id,
+                    )
+            state["instruction_prompt_id"] = None
+            state["awaiting_instruction"] = False
+
+    async def _send_flowers_preview(
+        self,
+        rubric: Rubric,
+        initiator_id: int,
+        *,
+        default_channel: int,
+        test_requested: bool,
+        assets: list[Asset],
+        asset_ids: list[int],
+        file_ids: list[str],
+        cities: list[str],
+        greeting: str,
+        hashtags: list[str],
+        caption: str,
+        prepared_hashtags: list[str],
+        instructions: str | None,
+    ) -> None:
+        previous_state = self.pending_flowers_previews.get(initiator_id)
+        if previous_state:
+            await self._delete_flowers_preview_messages(previous_state, keep_prompt=True)
+        config = rubric.config or {}
+        main_channel_raw = config.get("channel_id")
+        test_channel_raw = config.get("test_channel_id")
+
+        def _to_int(value: Any) -> int | None:
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                try:
+                    return int(value)
+                except ValueError:
+                    return None
+            return None
+        state: dict[str, Any] = {
+            "rubric_code": rubric.code,
+            "rubric_id": rubric.id,
+            "assets": assets,
+            "asset_ids": asset_ids,
+            "file_ids": file_ids,
+            "cities": cities,
+            "greeting": greeting,
+            "hashtags": hashtags,
+            "prepared_hashtags": prepared_hashtags,
+            "caption": caption,
+            "instructions": (instructions or "").strip(),
+            "preview_chat_id": initiator_id,
+            "media_message_ids": [],
+            "caption_message_id": None,
+            "instruction_prompt_id": previous_state.get("instruction_prompt_id") if previous_state else None,
+            "awaiting_instruction": previous_state.get("awaiting_instruction") if previous_state else False,
+            "channel_id": _to_int(main_channel_raw),
+            "test_channel_id": _to_int(test_channel_raw),
+            "default_channel_id": int(default_channel),
+            "default_channel_type": "test" if test_requested else "main",
+        }
+        media_payload = [{"type": "photo", "media": file_id} for file_id in file_ids]
+        response = await self.api_request(
+            "sendMediaGroup",
+            {"chat_id": initiator_id, "media": media_payload},
+        )
+        if not response.get("ok"):
+            logging.error("Failed to send flowers preview media: %s", response)
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": initiator_id,
+                    "text": "Не удалось отправить предпросмотр медиагруппы.",
+                },
+            )
+            if previous_state:
+                self.pending_flowers_previews[initiator_id] = previous_state
+            return
+        result_payload = response.get("result")
+        media_ids: list[int] = []
+        if isinstance(result_payload, list):
+            for item in result_payload:
+                message_id = item.get("message_id")
+                if isinstance(message_id, int):
+                    media_ids.append(message_id)
+        elif isinstance(result_payload, dict):
+            message_id = result_payload.get("message_id")
+            if isinstance(message_id, int):
+                media_ids.append(message_id)
+        state["media_message_ids"] = media_ids
+        text = self._render_flowers_preview_text(state)
+        caption_response = await self.api_request(
+            "sendMessage",
+            {
+                "chat_id": initiator_id,
+                "text": text,
+                "reply_markup": self._flowers_preview_keyboard(state),
+            },
+        )
+        if not caption_response.get("ok"):
+            logging.error("Failed to send flowers preview caption: %s", caption_response)
+            await self._delete_flowers_preview_messages(state)
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": initiator_id,
+                    "text": "Не удалось отправить подпись предпросмотра.",
+                },
+            )
+            if previous_state:
+                self.pending_flowers_previews[initiator_id] = previous_state
+            return
+        caption_result = caption_response.get("result")
+        if isinstance(caption_result, dict):
+            message_id = caption_result.get("message_id")
+            if isinstance(message_id, int):
+                state["caption_message_id"] = message_id
+        state["instruction_prompt_id"] = None
+        state["awaiting_instruction"] = False
+        self.pending_flowers_previews[initiator_id] = state
+
+    async def _update_flowers_preview_caption_state(
+        self,
+        state: dict[str, Any],
+        *,
+        caption: str,
+        greeting: str,
+        hashtags: list[str],
+        prepared_hashtags: list[str],
+    ) -> None:
+        state["caption"] = caption
+        state["greeting"] = greeting
+        state["hashtags"] = hashtags
+        state["prepared_hashtags"] = prepared_hashtags
+        chat_id = state.get("preview_chat_id")
+        message_id = state.get("caption_message_id")
+        if chat_id is None or message_id is None:
+            return
+        text = self._render_flowers_preview_text(state)
+        await self.api_request(
+            "editMessageText",
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "text": text,
+                "reply_markup": self._flowers_preview_keyboard(state),
+            },
+        )
+
+    async def _finalize_flowers_preview(
+        self,
+        user_id: int,
+        *,
+        to_test: bool,
+    ) -> bool:
+        state = self.pending_flowers_previews.get(user_id)
+        if not state:
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": user_id,
+                    "text": "Предпросмотр не найден.",
+                },
+            )
+            return False
+        channel_id = self._resolve_flowers_target(state, to_test=to_test)
+        if channel_id is None:
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": user_id,
+                    "text": "Не настроен канал для отправки.",
+                },
+            )
+            return False
+        media: list[dict[str, Any]] = []
+        caption = str(state.get("caption") or "")
+        for idx, file_id in enumerate(state.get("file_ids") or []):
+            item = {"type": "photo", "media": file_id}
+            if idx == 0 and caption:
+                item["caption"] = caption
+            media.append(item)
+        response = await self.api_request(
+            "sendMediaGroup",
+            {"chat_id": channel_id, "media": media},
+        )
+        if not response.get("ok"):
+            logging.error("Failed to finalize flowers preview: %s", response)
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": user_id,
+                    "text": "Не удалось отправить публикацию.",
+                },
+            )
+            return False
+        result_payload = response.get("result")
+        message_id: int
+        if isinstance(result_payload, list) and result_payload:
+            message_id = int(result_payload[0].get("message_id") or 0)
+        elif isinstance(result_payload, dict):
+            message_id = int(result_payload.get("message_id") or 0)
+        else:
+            message_id = 0
+        rubric_code = state.get("rubric_code")
+        rubric_id = state.get("rubric_id")
+        asset_ids = list(state.get("asset_ids") or [])
+        if isinstance(rubric_id, int) and rubric_code:
+            metadata = {
+                "rubric_code": rubric_code,
+                "asset_ids": asset_ids,
+                "test": to_test,
+                "cities": list(state.get("cities") or []),
+                "greeting": state.get("greeting"),
+                "hashtags": list(state.get("prepared_hashtags") or []),
+            }
+            self.data.mark_assets_used(asset_ids)
+            first_asset = asset_ids[0] if asset_ids else None
+            self.data.record_post_history(
+                channel_id,
+                message_id,
+                first_asset,
+                rubric_id,
+                metadata,
+            )
+        assets = list(state.get("assets") or [])
+        if assets:
+            await self._cleanup_assets(assets)
+        await self._delete_flowers_preview_messages(state)
+        self.pending_flowers_previews.pop(user_id, None)
+        await self.api_request(
+            "sendMessage",
+            {
+                "chat_id": user_id,
+                "text": "Публикация отправлена.",
+            },
+        )
+        return True
+
+    async def _handle_flowers_preview_callback(
+        self,
+        user_id: int,
+        action: str,
+        query: dict[str, Any],
+    ) -> None:
+        state = self.pending_flowers_previews.get(user_id)
+        if action in {
+            "regen_photos",
+            "regen_caption",
+            "instruction",
+            "send_test",
+            "send_main",
+            "cancel",
+        } and not state:
+            await self.api_request(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": query["id"],
+                    "text": "Предпросмотр не найден.",
+                    "show_alert": True,
+                },
+            )
+            return
+        if action == "regen_photos":
+            rubric_code = state.get("rubric_code") if state else None
+            rubric = (
+                self.data.get_rubric_by_code(rubric_code) if rubric_code else None
+            )
+            if not rubric:
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Рубрика недоступна.",
+                        "show_alert": True,
+                    },
+                )
+                return
+            prepared = await self._prepare_flowers_drop(
+                rubric,
+                instructions=state.get("instructions"),
+            )
+            if not prepared:
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Не удалось подобрать фото.",
+                        "show_alert": True,
+                    },
+                )
+                return
+            assets, asset_ids, file_ids, cities, greeting, hashtags = prepared
+            caption, prepared_hashtags = self._build_flowers_caption(
+                greeting,
+                cities,
+                hashtags,
+            )
+            default_channel = state.get("default_channel_id")
+            if not isinstance(default_channel, int):
+                fallback_channel = state.get("channel_id") or state.get("test_channel_id")
+                if isinstance(fallback_channel, int):
+                    default_channel = fallback_channel
+            if not isinstance(default_channel, int):
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Нет доступного канала для предпросмотра.",
+                        "show_alert": True,
+                    },
+                )
+                return
+            test_requested = state.get("default_channel_type") == "test"
+            await self._send_flowers_preview(
+                rubric,
+                user_id,
+                default_channel=default_channel,
+                test_requested=bool(test_requested),
+                assets=assets,
+                asset_ids=asset_ids,
+                file_ids=file_ids,
+                cities=cities,
+                greeting=greeting,
+                hashtags=hashtags,
+                caption=caption,
+                prepared_hashtags=prepared_hashtags,
+                instructions=state.get("instructions"),
+            )
+            await self.api_request(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": query["id"],
+                    "text": "Фото обновлены.",
+                },
+            )
+            return
+        if action == "regen_caption":
+            rubric_code = state.get("rubric_code") if state else None
+            rubric = (
+                self.data.get_rubric_by_code(rubric_code) if rubric_code else None
+            )
+            if not rubric:
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Рубрика недоступна.",
+                        "show_alert": True,
+                    },
+                )
+                return
+            cities = list(state.get("cities") or [])
+            asset_count = len(state.get("assets") or [])
+            greeting, hashtags = await self._generate_flowers_copy(
+                rubric,
+                cities,
+                asset_count,
+                instructions=state.get("instructions"),
+            )
+            caption, prepared_hashtags = self._build_flowers_caption(
+                greeting,
+                cities,
+                hashtags,
+            )
+            await self._update_flowers_preview_caption_state(
+                state,
+                caption=caption,
+                greeting=greeting,
+                hashtags=hashtags,
+                prepared_hashtags=prepared_hashtags,
+            )
+            await self.api_request(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": query["id"],
+                    "text": "Подпись обновлена.",
+                },
+            )
+            return
+        if action == "instruction":
+            if state.get("awaiting_instruction"):
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Уже ожидаю инструкцию.",
+                    },
+                )
+                return
+            prompt_response = await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": user_id,
+                    "text": "Напишите инструкцию для подписи в ответ на это сообщение.",
+                    "reply_markup": {
+                        "force_reply": True,
+                        "input_field_placeholder": "Например: добавь упоминание тюльпанов",
+                    },
+                },
+            )
+            if prompt_response.get("ok"):
+                result = prompt_response.get("result")
+                if isinstance(result, dict):
+                    prompt_id = result.get("message_id")
+                    if isinstance(prompt_id, int):
+                        state["instruction_prompt_id"] = prompt_id
+                        state["awaiting_instruction"] = True
+            await self.api_request(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": query["id"],
+                    "text": "Жду инструкцию в ответном сообщении.",
+                },
+            )
+            return
+        if action == "send_test":
+            success = await self._finalize_flowers_preview(user_id, to_test=True)
+            await self.api_request(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": query["id"],
+                    "text": "Отправлено." if success else "Ошибка отправки.",
+                },
+            )
+            return
+        if action == "send_main":
+            success = await self._finalize_flowers_preview(user_id, to_test=False)
+            await self.api_request(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": query["id"],
+                    "text": "Отправлено." if success else "Ошибка отправки.",
+                },
+            )
+            return
+        if action == "cancel":
+            await self._delete_flowers_preview_messages(state)
+            self.pending_flowers_previews.pop(user_id, None)
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": user_id,
+                    "text": "Предпросмотр отменён.",
+                },
+            )
+            await self.api_request(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": query["id"],
+                    "text": "Отменено.",
+                },
+            )
+            return
+        await self.api_request(
+            "answerCallbackQuery",
+            {
+                "callback_query_id": query["id"],
+                "text": "Неизвестное действие.",
+                "show_alert": True,
+            },
+        )
+
     async def _generate_flowers_copy(
         self,
         rubric: Rubric,
@@ -6821,6 +7543,7 @@ class Bot:
         asset_count: int,
         *,
         job: Job | None = None,
+        instructions: str | None = None,
     ) -> tuple[str, list[str]]:
         if not self.openai or not self.openai.api_key:
             return self._default_flowers_greeting(cities), self._default_hashtags("flowers")
@@ -6833,6 +7556,8 @@ class Bot:
             prompt_parts.append(
                 "Упомяни города: " + ", ".join(cities)
             )
+        if instructions:
+            prompt_parts.append(f"Дополнительные пожелания: {instructions}")
         prompt = " ".join(prompt_parts)
         schema = {
             "type": "object",
@@ -6958,6 +7683,8 @@ class Bot:
         *,
         test: bool = False,
         job: Job | None = None,
+        initiator_id: int | None = None,
+        instructions: str | None = None,
     ) -> bool:
         config = rubric.config or {}
         asset_cfg = config.get("assets") or {}

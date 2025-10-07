@@ -566,6 +566,67 @@ async def test_publish_weather_uses_migrated_legacy_assets(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_publish_weather_retries_when_source_missing(tmp_path):
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+
+    first_id = bot.data.save_asset(
+        channel_id=-100001,
+        message_id=101,
+        template='first template',
+        hashtags='#first',
+        tg_chat_id=-100001,
+        caption='first caption',
+        kind='photo',
+        file_meta={'file_id': 'f1', 'file_unique_id': 'u1'},
+        origin='weather',
+    )
+
+    second_id = bot.data.save_asset(
+        channel_id=-100002,
+        message_id=102,
+        template='second template',
+        hashtags='#second',
+        tg_chat_id=-100002,
+        caption='second caption',
+        kind='photo',
+        file_meta={'file_id': 'f2', 'file_unique_id': 'u2'},
+        origin='weather',
+    )
+
+    copy_calls: list[dict[str, Any]] = []
+    responses = [
+        {
+            'ok': False,
+            'error_code': 400,
+            'description': 'Bad Request: message to copy not found',
+        },
+        {'ok': True, 'result': {'message_id': 999}},
+    ]
+
+    async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
+        if method == 'copyMessage':
+            copy_calls.append(data)
+            if responses:
+                return responses.pop(0)
+            return {'ok': True, 'result': {'message_id': 1000}}
+        return {'ok': True, 'result': {}}
+
+    bot.api_request = fake_api_request  # type: ignore[assignment]
+
+    ok = await bot.publish_weather(-400001, None, record=False)
+    assert ok
+
+    assert len(copy_calls) == 2
+    assert copy_calls[0]['message_id'] == 101
+    assert copy_calls[1]['message_id'] == 102
+
+    assert bot.data.get_asset(first_id) is None
+    assert bot.data.get_asset(second_id) is not None
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 
 async def test_handle_asset_message(tmp_path):
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))

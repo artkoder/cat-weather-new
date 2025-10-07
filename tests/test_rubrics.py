@@ -319,6 +319,36 @@ async def test_vision_job_handles_singular_flower_tag(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fetch_assets_includes_singular_flower_category(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    asset_id = bot.data.save_asset(
+        -2000,
+        50,
+        None,
+        None,
+        tg_chat_id=-2000,
+        caption="",
+        kind="photo",
+        categories=["flowers"],
+    )
+
+    bot.db.execute(
+        "UPDATE assets SET vision_category=?, vision_flower_varieties=?, updated_at=? WHERE id=?",
+        ("flower", json.dumps(["rose"]), datetime.utcnow().isoformat(), asset_id),
+    )
+    bot.db.commit()
+
+    assets = bot.data.fetch_assets_by_vision_category("flowers")
+    assert any(asset.id == asset_id for asset in assets)
+    matched = next(asset for asset in assets if asset.id == asset_id)
+    assert matched.vision_category == "flowers"
+    assert matched.vision_flower_varieties == ["rose"]
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_publish_flowers_removes_assets(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {

@@ -3662,7 +3662,9 @@ class Bot:
                         "caption": caption_text or None,
                     },
                 )
-                if not resp.get("ok"):
+                if resp.get("ok"):
+                    delete_original_after_post = True
+                else:
                     logging.error(
                         "Vision job %s failed to copy message for asset %s: %s",
                         job.id,
@@ -3680,7 +3682,9 @@ class Bot:
                         },
                     )
                     method_used = fallback_method
-                    if not resp.get("ok"):
+                    if resp.get("ok"):
+                        delete_original_after_post = fallback_method == "sendPhoto"
+                    else:
                         logging.error(
                             "Vision job %s failed to publish result for asset %s via %s: %s",
                             job.id,

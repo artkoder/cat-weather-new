@@ -3055,6 +3055,9 @@ class Bot:
             await self._job_vision_locked(job)
 
     async def _job_vision_locked(self, job: Job):
+        def _utf16_length(text: str) -> int:
+            return len(text.encode("utf-16-le")) // 2
+
         start_time = datetime.utcnow()
         asset_id = job.payload.get("asset_id") if job.payload else None
         cleanup_paths: list[str] = []
@@ -3590,7 +3593,7 @@ class Bot:
                     {
                         "type": "spoiler",
                         "offset": 0,
-                        "length": len(caption_text),
+                        "length": _utf16_length(caption_text),
                     }
                 ]
             location_log_parts: list[str] = []

@@ -469,6 +469,36 @@ async def test_job_vision_enriches_weather_season_and_style(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_job_vision_caption_entities_utf16_length(tmp_path, monkeypatch):
+    overrides = {
+        'caption': '⚠️ тест',
+        'tags': ['animals', 'sunny'],
+    }
+
+    calls, _, _ = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        vision_overrides=overrides,
+    )
+
+    publish_calls = [
+        call
+        for call in calls
+        if call['method'] in {'copyMessage', 'sendPhoto', 'sendDocument'}
+    ]
+    assert publish_calls, 'vision job should publish recognition results'
+    payload = publish_calls[0]['data']
+    assert payload is not None
+    caption_text = payload.get('caption')
+    assert isinstance(caption_text, str) and caption_text
+    caption_entities = payload.get('caption_entities')
+    assert isinstance(caption_entities, list) and caption_entities
+    expected_length = len(caption_text.encode('utf-16-le')) // 2
+    assert caption_entities[0]['length'] == expected_length
+
+
+@pytest.mark.asyncio
 async def test_asset_selection(tmp_path):
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
     bot.add_asset(1, '#дождь', 'cap')

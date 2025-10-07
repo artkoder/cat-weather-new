@@ -2,12 +2,50 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from data_access import DataAccess
+from main import Bot
+
+
+class DummyResponse:
+    def __init__(self, status: int, payload: dict[str, Any]):
+        self.status = status
+        self._payload = payload
+
+    async def __aenter__(self) -> "DummyResponse":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    async def json(self) -> dict[str, Any]:
+        return self._payload
+
+    async def text(self) -> str:
+        return json.dumps(self._payload)
+
+
+class DummySession:
+    def __init__(self, payload: dict[str, Any]):
+        self.payload = payload
+        self.requests: list[tuple[str, dict[str, str], dict[str, str]]] = []
+
+    def post(
+        self,
+        url: str,
+        *,
+        data: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> DummyResponse:
+        stored_data = data or {}
+        stored_headers = headers or {}
+        self.requests.append((url, stored_data, stored_headers))
+        return DummyResponse(200, self.payload)
 
 
 def _load_schema(conn: sqlite3.Connection) -> None:
@@ -26,6 +64,16 @@ def db_connection():
     _load_schema(conn)
     yield conn
     conn.close()
+
+
+@pytest.fixture
+def bot_instance(tmp_path):
+    db_path = tmp_path / "bot.db"
+    bot = Bot("test-token", str(db_path))
+    try:
+        yield bot
+    finally:
+        bot.db.close()
 
 
 def test_update_asset_persists_vision_results(db_connection):
@@ -307,3 +355,69 @@ def test_asset_vision_schema_definition():
     }
 
     assert ASSET_VISION_V1_SCHEMA == expected
+
+
+@pytest.mark.asyncio
+async def test_marine_synonym_appends_sea_tag(bot_instance):
+    asset_id = bot_instance.data.save_asset(
+        channel_id=99,
+        message_id=1,
+        template=None,
+        hashtags=None,
+        tg_chat_id=1,
+        caption=None,
+        kind="photo",
+    )
+
+    asset = bot_instance.data.get_asset(asset_id)
+    assert asset is not None
+    tags = ["ocean", "overcast"]
+
+    await bot_instance._maybe_append_marine_tag(asset, tags)
+
+    assert "sea" in tags
+
+    payload = {"tags": tags}
+    bot_instance.data.update_asset(asset_id, vision_results=payload)
+
+    stored_asset = bot_instance.data.get_asset(asset_id)
+    assert stored_asset is not None
+    assert stored_asset.vision_results is not None
+    assert "sea" in stored_asset.vision_results.get("tags", [])
+
+
+@pytest.mark.asyncio
+async def test_marine_lookup_appends_sea_tag(bot_instance):
+    bot_instance.session = DummySession({"elements": [{"type": "way", "id": 1}]})
+
+    asset_id = bot_instance.data.save_asset(
+        channel_id=42,
+        message_id=2,
+        template=None,
+        hashtags=None,
+        tg_chat_id=1,
+        caption=None,
+        kind="photo",
+    )
+    bot_instance.data.update_asset(asset_id, latitude=54.1234, longitude=20.1234)
+
+    asset = bot_instance.data.get_asset(asset_id)
+    assert asset is not None
+    tags = ["architecture"]
+
+    await bot_instance._maybe_append_marine_tag(asset, tags)
+
+    assert "sea" in tags
+
+    payload = {"tags": tags}
+    bot_instance.data.update_asset(asset_id, vision_results=payload)
+
+    stored_asset = bot_instance.data.get_asset(asset_id)
+    assert stored_asset is not None
+    assert stored_asset.vision_results is not None
+    assert "sea" in stored_asset.vision_results.get("tags", [])
+
+    assert bot_instance.session.requests
+    url, data, _headers = bot_instance.session.requests[0]
+    assert "overpass" in url
+    assert "around:250" in data.get("data", "")

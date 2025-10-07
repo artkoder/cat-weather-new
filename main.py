@@ -2999,7 +2999,8 @@ class Bot:
         cleanup_path = str(downloaded_path)
         try:
             gps = None
-            if asset.kind == "photo":
+            should_extract_gps = asset.kind == "photo" or self._is_convertible_image_document(asset)
+            if should_extract_gps:
                 gps = self._extract_gps(downloaded_path)
                 if not gps:
                     author_id = asset.author_user_id

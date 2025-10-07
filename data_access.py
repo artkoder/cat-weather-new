@@ -101,6 +101,10 @@ class JobRecord:
 class DataAccess:
     """High level helpers for working with the SQLite database."""
 
+    _VISION_CATEGORY_GROUPS: dict[str, set[str]] = {
+        "flowers": {"flowers", "flower"},
+    }
+
     def __init__(self, connection: sqlite3.Connection):
         self.conn = connection
         self.conn.row_factory = sqlite3.Row
@@ -137,6 +141,28 @@ class DataAccess:
         }
         cleaned = {k: v for k, v in metadata.items() if k not in removable}
         return cleaned or None
+
+    @classmethod
+    def _normalize_vision_category(cls, category: str | None) -> str | None:
+        if category is None:
+            return None
+        normalized = category.strip().lower()
+        if not normalized:
+            return normalized
+        for canonical, variants in cls._VISION_CATEGORY_GROUPS.items():
+            if normalized in variants:
+                return canonical
+        return normalized
+
+    @classmethod
+    def _vision_category_variants(cls, category: str) -> set[str]:
+        canonical = cls._normalize_vision_category(category)
+        if canonical is None:
+            return set()
+        variants = cls._VISION_CATEGORY_GROUPS.get(canonical)
+        if variants:
+            return set(variants)
+        return {canonical}
 
     def save_asset(
         self,
@@ -368,7 +394,7 @@ class DataAccess:
         if local_path is not _UNSET:
             values["local_path"] = local_path
         if vision_category is not None:
-            values["vision_category"] = vision_category
+            values["vision_category"] = self._normalize_vision_category(vision_category)
         if vision_arch_view is not None:
             values["vision_arch_view"] = vision_arch_view
         if vision_photo_weather is not None:
@@ -445,7 +471,8 @@ class DataAccess:
         else:
             raw_vision = self._load_latest_vision_json(int(row["id"]))
         vision = json.loads(raw_vision) if raw_vision else None
-        vision_category = row["vision_category"] if "vision_category" in row.keys() else None
+        vision_category_raw = row["vision_category"] if "vision_category" in row.keys() else None
+        vision_category = self._normalize_vision_category(vision_category_raw)
         vision_arch_view = row["vision_arch_view"] if "vision_arch_view" in row.keys() else None
         vision_photo_weather = (
             row["vision_photo_weather"] if "vision_photo_weather" in row.keys() else None
@@ -597,8 +624,15 @@ class DataAccess:
     ) -> list[Asset]:
         if not category:
             return []
-        where = ["LOWER(COALESCE(a.vision_category, '')) = ?"]
-        params: list[Any] = [category.lower()]
+        variants = sorted(self._vision_category_variants(category))
+        if not variants:
+            normalized = self._normalize_vision_category(category)
+            if not normalized:
+                return []
+            variants = [normalized]
+        placeholders = ",".join("?" for _ in variants)
+        where = [f"LOWER(COALESCE(a.vision_category, '')) IN ({placeholders})"]
+        params: list[Any] = [variant.lower() for variant in variants]
         if require_arch_view:
             where.append("TRIM(COALESCE(a.vision_arch_view, '')) != ''")
         return self._fetch_assets(
@@ -700,6 +734,7 @@ class DataAccess:
             )
             if not category and normalized_tags:
                 category = normalized_tags[0]
+            category = self._normalize_vision_category(category)
             arch_view_value = result.get("arch_view")
             if isinstance(arch_view_value, bool):
                 arch_view = "yes" if arch_view_value else ""

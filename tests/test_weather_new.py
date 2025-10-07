@@ -495,7 +495,10 @@ async def test_job_vision_caption_entities_utf16_length(tmp_path, monkeypatch):
     caption_entities = payload.get('caption_entities')
     assert isinstance(caption_entities, list) and caption_entities
     expected_length = len(caption_text.encode('utf-16-le')) // 2
-    assert caption_entities[0]['length'] == expected_length
+    first_entity = caption_entities[0]
+    assert first_entity['type'] == 'blockquote'
+    assert first_entity['length'] == expected_length
+    assert first_entity.get('is_expandable') is True
 
 
 @pytest.mark.asyncio

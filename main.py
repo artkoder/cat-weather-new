@@ -7061,13 +7061,36 @@ class Bot:
             max_count = max(min_count, min(max_value, 6))
         return min_count, max_count
 
+    def _asset_media_kind(self, asset: Asset) -> str:
+        """Return the Telegram media type for the given asset."""
+
+        kind = (asset.kind or "").strip().lower()
+        if kind == "photo":
+            return "photo"
+        if kind == "document":
+            return "document"
+        if is_photo_mime(asset.mime_type):
+            return "photo"
+        return "document"
+
     async def _prepare_flowers_drop(
         self,
         rubric: Rubric,
         *,
         job: Job | None = None,
         instructions: str | None = None,
-    ) -> tuple[list[Asset], list[int], list[str], list[str], str, list[str]] | None:
+    ) -> (
+        tuple[
+            list[Asset],
+            list[int],
+            list[str],
+            list[str],
+            list[str],
+            str,
+            list[str],
+        ]
+        | None
+    ):
         min_count, max_count = self._resolve_flowers_asset_limits(rubric)
         assets = self.data.fetch_assets_by_vision_category(
             "flowers",
@@ -7083,12 +7106,14 @@ class Bot:
             )
             return None
         file_ids: list[str] = []
+        asset_kinds: list[str] = []
         for asset in assets:
             file_id = asset.file_id
             if not file_id:
                 logging.warning("Asset %s missing file_id", asset.id)
                 return None
             file_ids.append(file_id)
+            asset_kinds.append(self._asset_media_kind(asset))
         cities = sorted({asset.city for asset in assets if asset.city})
         greeting, hashtags = await self._generate_flowers_copy(
             rubric,
@@ -7098,7 +7123,7 @@ class Bot:
             instructions=instructions,
         )
         asset_ids = [asset.id for asset in assets]
-        return assets, asset_ids, file_ids, cities, greeting, hashtags
+        return assets, asset_ids, file_ids, asset_kinds, cities, greeting, hashtags
 
     def _build_flowers_caption(
         self,
@@ -7146,7 +7171,15 @@ class Bot:
                 )
                 return True
             return False
-        assets, asset_ids, file_ids, cities, greeting, hashtags = prepared
+        (
+            assets,
+            asset_ids,
+            file_ids,
+            asset_kinds,
+            cities,
+            greeting,
+            hashtags,
+        ) = prepared
         caption, hashtag_list = self._build_flowers_caption(greeting, cities, hashtags)
         if initiator_id is not None:
             await self._send_flowers_preview(
@@ -7157,6 +7190,7 @@ class Bot:
                 assets=assets,
                 asset_ids=asset_ids,
                 file_ids=file_ids,
+                asset_kinds=asset_kinds,
                 cities=cities,
                 greeting=greeting,
                 hashtags=hashtags,
@@ -7166,14 +7200,22 @@ class Bot:
             )
             return True
         if len(file_ids) == 1:
-            payload: dict[str, Any] = {"chat_id": channel_id, "photo": file_ids[0]}
+            media_kind = asset_kinds[0] if asset_kinds else "photo"
+            if media_kind == "photo":
+                payload: dict[str, Any] = {"chat_id": channel_id, "photo": file_ids[0]}
+                method = "sendPhoto"
+            else:
+                payload = {"chat_id": channel_id, "document": file_ids[0]}
+                method = "sendDocument"
             if caption:
                 payload["caption"] = caption
-            response = await self.api_request("sendPhoto", payload)
+            response = await self.api_request(method, payload)
         else:
             media: list[dict[str, Any]] = []
             for idx, file_id in enumerate(file_ids):
-                item = {"type": "photo", "media": file_id}
+                kind = asset_kinds[idx] if idx < len(asset_kinds) else "photo"
+                media_type = "photo" if kind == "photo" else "document"
+                item = {"type": media_type, "media": file_id}
                 if idx == 0 and caption:
                     item["caption"] = caption
                 media.append(item)
@@ -7344,6 +7386,7 @@ class Bot:
         assets: list[Asset],
         asset_ids: list[int],
         file_ids: list[str],
+        asset_kinds: list[str],
         cities: list[str],
         greeting: str,
         hashtags: list[str],
@@ -7373,6 +7416,7 @@ class Bot:
             "assets": assets,
             "asset_ids": asset_ids,
             "file_ids": file_ids,
+            "asset_kinds": asset_kinds,
             "cities": cities,
             "greeting": greeting,
             "hashtags": hashtags,
@@ -7391,17 +7435,28 @@ class Bot:
         }
         normalized_caption = str(caption or "")
         if len(file_ids) == 1:
-            payload: dict[str, Any] = {
-                "chat_id": initiator_id,
-                "photo": file_ids[0],
-            }
+            media_kind = asset_kinds[0] if asset_kinds else "photo"
+            if media_kind == "photo":
+                payload: dict[str, Any] = {
+                    "chat_id": initiator_id,
+                    "photo": file_ids[0],
+                }
+                method = "sendPhoto"
+            else:
+                payload = {
+                    "chat_id": initiator_id,
+                    "document": file_ids[0],
+                }
+                method = "sendDocument"
             if normalized_caption:
                 payload["caption"] = normalized_caption
-            response = await self.api_request("sendPhoto", payload)
+            response = await self.api_request(method, payload)
         else:
             media_payload: list[dict[str, Any]] = []
             for idx, file_id in enumerate(file_ids):
-                item = {"type": "photo", "media": file_id}
+                kind = asset_kinds[idx] if idx < len(asset_kinds) else "photo"
+                media_type = "photo" if kind == "photo" else "document"
+                item = {"type": media_type, "media": file_id}
                 if idx == 0 and normalized_caption:
                     item["caption"] = normalized_caption
                 media_payload.append(item)
@@ -7519,16 +7574,25 @@ class Bot:
             )
             return False
         file_ids = list(state.get("file_ids") or [])
+        asset_kinds = list(state.get("asset_kinds") or [])
         caption = str(state.get("caption") or "")
         if len(file_ids) == 1:
-            payload: dict[str, Any] = {"chat_id": channel_id, "photo": file_ids[0]}
+            media_kind = asset_kinds[0] if asset_kinds else "photo"
+            if media_kind == "photo":
+                payload: dict[str, Any] = {"chat_id": channel_id, "photo": file_ids[0]}
+                method = "sendPhoto"
+            else:
+                payload = {"chat_id": channel_id, "document": file_ids[0]}
+                method = "sendDocument"
             if caption:
                 payload["caption"] = caption
-            response = await self.api_request("sendPhoto", payload)
+            response = await self.api_request(method, payload)
         else:
             media: list[dict[str, Any]] = []
             for idx, file_id in enumerate(file_ids):
-                item = {"type": "photo", "media": file_id}
+                kind = asset_kinds[idx] if idx < len(asset_kinds) else "photo"
+                media_type = "photo" if kind == "photo" else "document"
+                item = {"type": media_type, "media": file_id}
                 if idx == 0 and caption:
                     item["caption"] = caption
                 media.append(item)
@@ -7642,7 +7706,15 @@ class Bot:
                     },
                 )
                 return
-            assets, asset_ids, file_ids, cities, greeting, hashtags = prepared
+            (
+                assets,
+                asset_ids,
+                file_ids,
+                asset_kinds,
+                cities,
+                greeting,
+                hashtags,
+            ) = prepared
             caption, prepared_hashtags = self._build_flowers_caption(
                 greeting,
                 cities,
@@ -7672,6 +7744,7 @@ class Bot:
                 assets=assets,
                 asset_ids=asset_ids,
                 file_ids=file_ids,
+                asset_kinds=asset_kinds,
                 cities=cities,
                 greeting=greeting,
                 hashtags=hashtags,

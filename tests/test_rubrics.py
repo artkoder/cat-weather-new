@@ -558,6 +558,87 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flowers_preview_document_media_paths(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "channel_id": -500,
+        "test_channel_id": -600,
+        "assets": {"min": 1, "max": 1},
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+
+    now = datetime.utcnow().isoformat()
+    file_meta = {"file_id": "doc-file"}
+    asset_id = bot.data.save_asset(
+        -2100,
+        916,
+        None,
+        "",
+        tg_chat_id=-2100,
+        caption="",
+        kind="document",
+        file_meta=file_meta,
+        metadata={"date": now},
+        categories=["flowers"],
+        rubric_id=1,
+    )
+    bot.data.update_asset(
+        asset_id,
+        vision_category="flowers",
+        vision_photo_weather="солнечно",
+        city="Москва",
+    )
+
+    bot.db.execute(
+        "INSERT OR REPLACE INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, '+00:00')",
+        (1234, "tester"),
+    )
+    bot.db.commit()
+
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
+        calls.append((method, data))
+        if method == "sendDocument":
+            if data and data.get("chat_id") == 1234:
+                return {"ok": True, "result": {"message_id": 60}}
+            if data and data.get("chat_id") == -500:
+                return {"ok": True, "result": {"message_id": 85}}
+        if method == "sendMessage":
+            return {"ok": True, "result": {"message_id": 210}}
+        if method in {"deleteMessage", "editMessageText", "answerCallbackQuery"}:
+            return {"ok": True}
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+
+    await bot.publish_rubric("flowers", channel_id=-500, initiator_id=1234)
+
+    state = bot.pending_flowers_previews.get(1234)
+    assert state is not None
+    assert state.get("media_message_ids") == [60]
+    assert state.get("asset_kinds") == ["document"]
+
+    preview_send = [
+        call for call in calls if call[0] == "sendDocument" and call[1] and call[1].get("chat_id") == 1234
+    ]
+    assert preview_send, "Expected preview to use sendDocument"
+
+    await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb-doc"})
+
+    final_send = [
+        call for call in calls if call[0] == "sendDocument" and call[1] and call[1].get("chat_id") == -500
+    ]
+    assert final_send, "Expected finalize to use sendDocument"
+    assert bot.pending_flowers_previews.get(1234) is None
+    remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+    assert remaining == 0
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_flowers_asset_selection_random(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {

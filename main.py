@@ -5859,28 +5859,6 @@ class Bot:
                         'chat_id': user_id,
                         'text': 'Не удалось удалить расписание',
                     })
-        elif data.startswith('rubric_delete:') and self.is_superadmin(user_id):
-            code = data.split(':', 1)[1]
-            self._clear_rubric_pending_run(user_id, code)
-            if self.data.delete_rubric(code):
-                message_obj = query.get('message')
-                if message_obj:
-                    await self.api_request('editMessageText', {
-                        'chat_id': message_obj['chat']['id'],
-                        'message_id': message_obj['message_id'],
-                        'text': f'Рубрика {code} удалена',
-                    })
-                else:
-                    await self.api_request('sendMessage', {
-                        'chat_id': user_id,
-                        'text': f'Рубрика {code} удалена',
-                    })
-                await self._send_rubric_dashboard(user_id)
-            else:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'Рубрика {code} не найдена',
-                })
         await self.api_request('answerCallbackQuery', {'callback_query_id': query['id']})
 
 
@@ -6597,14 +6575,6 @@ class Bot:
                 {
                     "text": "↩️ Управление рубриками",
                     "callback_data": "rubric_dashboard",
-                }
-            ]
-        )
-        keyboard_rows.append(
-            [
-                {
-                    "text": "Удалить рубрику",
-                    "callback_data": f"rubric_delete:{rubric.code}",
                 }
             ]
         )

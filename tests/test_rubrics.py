@@ -23,6 +23,16 @@ def _insert_rubric(bot: Bot, code: str, config: dict, rubric_id: int = 1) -> Non
 
 
 @pytest.mark.asyncio
+async def test_rubric_deletion_disabled(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    with pytest.raises(NotImplementedError):
+        bot.data.delete_rubric("flowers")
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_default_rubrics_created_on_boot(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     rubrics = {rubric.code: rubric for rubric in bot.data.list_rubrics()}

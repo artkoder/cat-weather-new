@@ -7561,7 +7561,7 @@ class Bot:
         parts: list[str] = []
         caption = str(state.get("caption") or "").strip()
         if caption:
-            parts.append(caption)
+            parts.append("Подпись на медиа показана выше.")
         else:
             parts.append("Подпись пока не сгенерирована.")
         instructions = str(state.get("instructions") or "").strip()

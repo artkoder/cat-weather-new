@@ -150,6 +150,23 @@ WEATHER_ALLOWED_VALUES: set[str] = {
     "night",
 }
 
+MARINE_TAG_SYNONYMS: set[str] = {
+    "sea",
+    "seaside",
+    "seashore",
+    "seafront",
+    "coast",
+    "coastal",
+    "coastline",
+    "shore",
+    "shoreline",
+    "ocean",
+    "oceanic",
+    "marine",
+    "maritime",
+    "beach",
+}
+
 FRAMING_ALLOWED_VALUES: set[str] = {"close_up", "medium", "wide"}
 
 FRAMING_ALIAS_MAP: dict[str, str] = {
@@ -710,6 +727,10 @@ class Bot:
         self._vision_semaphore = asyncio.Semaphore(VISION_CONCURRENCY)
         self._twogis_api_key = os.getenv("TWOGIS_API_KEY")
         self._twogis_backoff_seconds = 1.0
+        self._shoreline_cache: dict[
+            tuple[float, float], tuple[bool, datetime]
+        ] = {}
+        self._shoreline_fail_cache: dict[tuple[float, float], datetime] = {}
         # ensure new columns exist when upgrading
         for table, column in (
             ("users", "username"),
@@ -2885,6 +2906,94 @@ class Bot:
             return None
         return best.get("full_name") or best.get("address_name") or best.get("name")
 
+    async def _is_near_sea(self, lat: float, lon: float) -> bool:
+        if self.dry_run or not self.session:
+            return False
+
+        key = (round(lat, 5), round(lon, 5))
+        now = datetime.utcnow()
+
+        cached = self._shoreline_cache.get(key)
+        if cached:
+            value, ts = cached
+            if now - ts < self._revgeo_ttl:
+                return value
+
+        fail_cached = self._shoreline_fail_cache.get(key)
+        if fail_cached and now - fail_cached < self._revgeo_fail_ttl:
+            return False
+
+        query = (
+            "[out:json][timeout:25];("  # noqa: E501
+            f"way(around:250,{lat:.6f},{lon:.6f})[\"natural\"=\"coastline\"];"
+            f"relation(around:250,{lat:.6f},{lon:.6f})[\"natural\"=\"coastline\"];"
+            f"way(around:250,{lat:.6f},{lon:.6f})[\"natural\"=\"water\"][\"water\"~\"sea|ocean\"];"
+            f"relation(around:250,{lat:.6f},{lon:.6f})[\"natural\"=\"water\"][\"water\"~\"sea|ocean\"];"
+            f"way(around:250,{lat:.6f},{lon:.6f})[\"place\"=\"sea\"];"
+            f"relation(around:250,{lat:.6f},{lon:.6f})[\"place\"=\"sea\"];"
+            ");out ids;"
+        )
+        url = "https://overpass-api.de/api/interpreter"
+        headers = {"User-Agent": "kotopogoda-bot/1.0 (+контакт)"}
+
+        try:
+            async with self.session.post(url, data={"data": query}, headers=headers) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(f"HTTP {resp.status}: {text[:200]}")
+                payload = await resp.json()
+        except Exception as exc:
+            logging.warning(
+                "Marine proximity lookup failed lat=%.5f lon=%.5f error=%s",
+                lat,
+                lon,
+                exc,
+            )
+            self._shoreline_fail_cache[key] = now
+            return False
+
+        elements = []
+        if isinstance(payload, dict):
+            raw_elements = payload.get("elements")
+            if isinstance(raw_elements, list):
+                elements = raw_elements
+
+        is_marine = bool(elements)
+        self._shoreline_cache[key] = (is_marine, now)
+        if is_marine:
+            self._shoreline_fail_cache.pop(key, None)
+        else:
+            self._shoreline_fail_cache[key] = now
+        return is_marine
+
+    async def _maybe_append_marine_tag(self, asset: Asset, tags: list[str]) -> None:
+        normalized = {tag.strip().lower() for tag in tags if isinstance(tag, str) and tag.strip()}
+        if "sea" in normalized:
+            return
+
+        if normalized.intersection(MARINE_TAG_SYNONYMS):
+            tags.append("sea")
+            return
+
+        lat_raw = getattr(asset, "latitude", None)
+        lon_raw = getattr(asset, "longitude", None)
+        if lat_raw is None or lon_raw is None:
+            return
+
+        try:
+            lat = float(lat_raw)
+            lon = float(lon_raw)
+        except (TypeError, ValueError):
+            return
+
+        try:
+            if await self._is_near_sea(lat, lon):
+                tags.append("sea")
+        except Exception:
+            logging.exception(
+                "Marine proximity enrichment failed for asset %s", getattr(asset, "id", "unknown")
+            )
+
     def _format_exif_address_caption(
         self, address: dict[str, Any] | None, lat: float, lon: float
     ) -> tuple[str, set[str], bool]:
@@ -3343,6 +3452,7 @@ class Bot:
                 tags.append("architecture_close_up")
             if architecture_wide and "architecture_wide" not in tags:
                 tags.append("architecture_wide")
+            await self._maybe_append_marine_tag(asset, tags)
             metadata_dict = asset.metadata if isinstance(asset.metadata, dict) else {}
             exif_month = self._extract_month_from_metadata(metadata_dict)
             if (

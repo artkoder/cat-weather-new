@@ -6969,6 +6969,26 @@ class Bot:
             instructions=instructions,
         )
         if not prepared:
+            if initiator_id is not None:
+                assets_config = (rubric.config or {}).get("assets") or {}
+                min_config = assets_config.get("min")
+                try:
+                    min_config_int = int(min_config) if min_config is not None else 4
+                except (TypeError, ValueError):
+                    min_config_int = 4
+                required = max(4, min_config_int)
+                title = rubric.title or rubric.code
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": initiator_id,
+                        "text": (
+                            f"Для рубрики «{title}» не набралось минимальное количество "
+                            f"фото (нужно {required}). Добавьте новые и повторите попытку."
+                        ),
+                    },
+                )
+                return True
             return False
         assets, asset_ids, file_ids, cities, greeting, hashtags = prepared
         caption, hashtag_list = self._build_flowers_caption(greeting, cities, hashtags)

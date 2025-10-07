@@ -3,6 +3,7 @@ import os
 import sys
 import types
 from datetime import datetime, timedelta
+from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -192,6 +193,30 @@ async def _run_vision_job_collect_calls(
     await bot.close()
 
     return calls, asset, supabase_calls
+
+
+def _gps_component(value: float) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+    abs_value = abs(value)
+    degrees = int(abs_value)
+    minutes_float = (abs_value - degrees) * 60
+    minutes = int(minutes_float)
+    seconds_float = (minutes_float - minutes) * 60
+    seconds_fraction = Fraction(seconds_float).limit_denominator(1_000_000)
+    return (degrees, 1), (minutes, 1), (seconds_fraction.numerator, seconds_fraction.denominator)
+
+
+def _image_bytes_with_gps(lat: float, lon: float) -> bytes:
+    img = Image.new('RGB', (16, 16), color='white')
+    gps_ifd = {
+        piexif.GPSIFD.GPSLatitudeRef: b'N' if lat >= 0 else b'S',
+        piexif.GPSIFD.GPSLatitude: _gps_component(lat),
+        piexif.GPSIFD.GPSLongitudeRef: b'E' if lon >= 0 else b'W',
+        piexif.GPSIFD.GPSLongitude: _gps_component(lon),
+    }
+    exif_dict = {'GPS': gps_ifd}
+    buffer = BytesIO()
+    img.save(buffer, format='JPEG', exif=piexif.dump(exif_dict))
+    return buffer.getvalue()
 
 
 @pytest.mark.asyncio
@@ -477,6 +502,191 @@ async def test_photo_triggers_ingest_and_vision(tmp_path, caplog):
     vision_log = any('queued for vision job' in rec.message for rec in caplog.records)
     assert ingest_log and vision_log
     assert any('reason=new_message' in msg for msg in ingest_messages)
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_ingest_extracts_gps_for_convertible_document(tmp_path):
+    bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
+    bot.asset_storage = tmp_path
+
+    lat, lon = 59.9386, 30.3141
+    image_bytes = _image_bytes_with_gps(lat, lon)
+
+    async def fake_download(file_id, dest_path=None):  # type: ignore[override]
+        assert dest_path is not None
+        path = Path(dest_path)
+        path.write_bytes(image_bytes)
+        return path
+
+    bot._download_file = fake_download  # type: ignore[assignment]
+
+    reverse_calls: list[tuple[float, float]] = []
+
+    async def fake_reverse(self, lat_val, lon_val):  # type: ignore[override]
+        reverse_calls.append((lat_val, lon_val))
+        return {'city': 'Санкт-Петербург', 'country': 'Россия'}
+
+    bot._reverse_geocode = types.MethodType(fake_reverse, bot)  # type: ignore[assignment]
+
+    api_calls: list[dict[str, Any]] = []
+
+    async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
+        api_calls.append({'method': method, 'data': data, 'files': files})
+        return {'ok': True, 'result': {'message_id': 900}}
+
+    async def fake_api_request_multipart(method, data=None, *, files=None):  # type: ignore[override]
+        normalized_files = None
+        if files:
+            normalized_files = {}
+            for key, (filename, fh, content_type) in files.items():
+                payload = fh.read()
+                try:
+                    fh.seek(0)
+                except Exception:
+                    pass
+                normalized_files[key] = (filename, payload, content_type)
+        api_calls.append({'method': method, 'data': data, 'files': normalized_files})
+        return {'ok': True, 'result': {'message_id': 901}}
+
+    bot.api_request = fake_api_request  # type: ignore[assignment]
+    bot.api_request_multipart = fake_api_request_multipart  # type: ignore[assignment]
+
+    async def fake_record(self, *args, **kwargs):  # type: ignore[override]
+        return None
+
+    def fake_enforce(self, *args, **kwargs):  # type: ignore[override]
+        return None
+
+    async def fake_insert(self, **kwargs):  # type: ignore[override]
+        return False, {'mock': True}, 'disabled'
+
+    bot._record_openai_usage = types.MethodType(fake_record, bot)  # type: ignore[assignment]
+    bot._enforce_openai_limit = types.MethodType(fake_enforce, bot)  # type: ignore[assignment]
+    bot.supabase.insert_token_usage = types.MethodType(  # type: ignore[assignment]
+        fake_insert, bot.supabase
+    )
+
+    file_meta = {
+        'file_id': 'doc_large',
+        'file_unique_id': 'doc_unique',
+        'file_name': 'convertible.png',
+        'mime_type': 'image/png',
+        'file_size': len(image_bytes),
+        'width': 1280,
+        'height': 720,
+    }
+
+    asset_id = bot.data.save_asset(
+        channel_id=-100123,
+        message_id=222,
+        template=None,
+        hashtags='#кот',
+        tg_chat_id=-100123,
+        caption='Документ с котом',
+        kind='document',
+        file_meta=file_meta,
+        author_user_id=4242,
+        origin='recognition',
+    )
+
+    ingest_job = Job(
+        id=10,
+        name='ingest',
+        payload={'asset_id': asset_id},
+        status='queued',
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_ingest(ingest_job)
+
+    asset_after_ingest = bot.data.get_asset(asset_id)
+    assert asset_after_ingest is not None
+    assert asset_after_ingest.exif_present is True
+    assert asset_after_ingest.latitude == pytest.approx(lat, rel=1e-4)
+    assert asset_after_ingest.longitude == pytest.approx(lon, rel=1e-4)
+    assert asset_after_ingest.city == 'Санкт-Петербург'
+    assert asset_after_ingest.country == 'Россия'
+    assert not any(call['method'] == 'sendMessage' for call in api_calls)
+    assert reverse_calls
+    first_call_lat, first_call_lon = reverse_calls[0]
+    assert first_call_lat == pytest.approx(lat, rel=1e-4)
+    assert first_call_lon == pytest.approx(lon, rel=1e-4)
+
+    vision_job_row = bot.db.execute(
+        "SELECT id, payload FROM jobs_queue WHERE name='vision' ORDER BY id"
+    ).fetchone()
+    assert vision_job_row is not None
+    vision_payload = json.loads(vision_job_row['payload'])
+    assert vision_payload['asset_id'] == asset_id
+
+    class DummyOpenAI:
+        def __init__(self):
+            self.api_key = 'test-key'
+
+        async def classify_image(self, **kwargs):
+            payload = {
+                'arch_view': False,
+                'caption': 'кот',
+                'objects': ['кот'],
+                'is_outdoor': True,
+                'framing': 'close_up',
+                'guess_country': None,
+                'guess_city': None,
+                'location_confidence': 0.85,
+                'landmarks': [],
+                'tags': ['animals', 'sunny'],
+                'architecture_close_up': False,
+                'architecture_wide': False,
+                'weather_image': 'sunny',
+                'season_guess': None,
+                'arch_style': None,
+                'safety': {'nsfw': False, 'reason': 'безопасно'},
+                'photo_weather': 'sunny',
+                'photo_weather_display': 'солнечно',
+                'season_final': 'summer',
+                'season_final_display': 'лето',
+                'flower_varieties': [],
+            }
+            return OpenAIResponse(
+                payload,
+                {
+                    'prompt_tokens': 5,
+                    'completion_tokens': 5,
+                    'total_tokens': 10,
+                    'request_id': 'req-doc',
+                    'endpoint': '/v1/responses',
+                },
+            )
+
+    bot.openai = DummyOpenAI()
+
+    vision_job = Job(
+        id=vision_job_row['id'],
+        name='vision',
+        payload=vision_payload,
+        status='queued',
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_vision(vision_job)
+
+    asset_after_vision = bot.data.get_asset(asset_id)
+    assert asset_after_vision is not None
+    assert asset_after_vision.vision_caption is not None
+    assert 'Локация: Санкт-Петербург' in asset_after_vision.vision_caption
+
+    send_photo_calls = [call for call in api_calls if call['method'] == 'sendPhoto']
+    assert send_photo_calls, 'converted document should be published as photo'
+
     await bot.close()
 
 

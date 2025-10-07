@@ -7,10 +7,12 @@ import contextlib
 import json
 import logging
 import math
+import mimetypes
 import os
 import random
 import re
 import sqlite3
+import tempfile
 from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone, time as dtime
 from pathlib import Path
@@ -20,8 +22,6 @@ from typing import Any, BinaryIO, Iterable, Sequence, TYPE_CHECKING
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import psutil
-
-import imgio
 
 try:  # pragma: no cover - optional dependency
     from PIL import ImageCms  # type: ignore
@@ -95,6 +95,49 @@ WEATHER_HEADER_PATTERN = re.compile(
     r"(°\s*[cf]?|шторм|м/с|ветер|давлен|влажн|осадки|old)",
     re.IGNORECASE,
 )
+
+
+PHOTO_MIME_TYPES: set[str] = {
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/webp",
+}
+
+
+def is_photo_mime(mime: str | None) -> bool:
+    if not mime:
+        return False
+    return mime.lower() in PHOTO_MIME_TYPES
+
+
+def bytes_10mb() -> int:
+    return 10 * 1024 * 1024
+
+
+def detect_mime_and_size(
+    path: str | os.PathLike[str] | Path,
+) -> tuple[str | None, int]:
+    file_path = Path(path)
+    try:
+        size = file_path.stat().st_size
+    except FileNotFoundError:
+        logging.warning("Unable to stat file for MIME detection: %s", path)
+        return None, 0
+    mime: str | None = None
+    try:
+        with Image.open(file_path) as image:
+            format_name = image.format
+            if format_name:
+                mime = Image.MIME.get(format_name.upper()) or Image.MIME.get(
+                    format_name
+                )
+    except Exception:
+        logging.debug("Failed to detect MIME via Pillow for %s", path, exc_info=True)
+    if not mime:
+        guessed, _ = mimetypes.guess_type(str(file_path))
+        mime = guessed
+    return mime.lower() if mime else None, size
 
 
 WEATHER_ALLOWED_VALUES: set[str] = {
@@ -737,6 +780,93 @@ class Bot:
                 return True
 
         return False
+
+    def _reencode_to_jpeg_under_10mb(
+        self, local_path: str | os.PathLike[str] | Path
+    ) -> Path:
+        source_path = Path(local_path)
+        fd, temp_name = tempfile.mkstemp(prefix="tg-photo-", suffix=".jpg")
+        os.close(fd)
+        temp_path = Path(temp_name)
+        image: Image.Image | None = None
+        try:
+            with Image.open(source_path) as original:
+                transposed = ImageOps.exif_transpose(original)
+                if transposed is not original:
+                    working = transposed
+                else:
+                    working = original.copy()
+            if working.mode not in {"RGB", "L"}:
+                image = working.convert("RGB")
+                working.close()
+            elif working.mode == "L":
+                image = working.convert("RGB")
+                working.close()
+            else:
+                image = working
+            qualities = [95, 92, 88, 84, 80, 76, 72, 68, 64, 60, 56, 52, 48, 44, 40, 36, 32]
+            for quality in qualities:
+                image.save(
+                    temp_path,
+                    format="JPEG",
+                    quality=quality,
+                    progressive=True,
+                    optimize=True,
+                    exif=b"",
+                )
+                if temp_path.stat().st_size <= bytes_10mb():
+                    break
+            else:
+                logging.warning(
+                    "Unable to reduce %s below 10MB at lowest quality", source_path
+                )
+            return temp_path
+        except Exception:
+            self._remove_file(str(temp_path))
+            raise
+        finally:
+            if image is not None:
+                image.close()
+            gc.collect()
+
+    async def _publish_as_photo(
+        self, chat_id: int, local_path: str, caption: str | None
+    ) -> tuple[dict[str, Any] | None, str]:
+        mime, size = detect_mime_and_size(local_path)
+        send_path = Path(local_path)
+        mode = "original"
+        cleanup_path: Path | None = None
+        content_type = mime or "image/jpeg"
+        if not (mime and is_photo_mime(mime) and size <= bytes_10mb()):
+            cleanup_path = self._reencode_to_jpeg_under_10mb(local_path)
+            send_path = cleanup_path
+            content_type = "image/jpeg"
+            mode = "reencoded"
+        filename = Path(local_path).name or "photo.jpg"
+        if mode != "original":
+            filename = f"{Path(filename).stem or 'photo'}.jpg"
+        logging.info(
+            "Publishing photo for chat %s via %s file (mime=%s size=%s)",
+            chat_id,
+            mode,
+            mime or "?",
+            size,
+        )
+        try:
+            with open(send_path, "rb") as fh:
+                response = await self.api_request_multipart(
+                    "sendPhoto",
+                    {
+                        "chat_id": chat_id,
+                        "caption": caption or None,
+                    },
+                    files={"photo": (filename, fh, content_type)},
+                )
+        finally:
+            if cleanup_path is not None:
+                self._remove_file(str(cleanup_path))
+            gc.collect()
+        return response, mode
 
     def _get_rubric_overview_target(
         self, user_id: int, code: str
@@ -3557,31 +3687,26 @@ class Bot:
                 if not local_path or not os.path.exists(local_path):
                     raise RuntimeError("Unable to load asset for conversion")
 
-                converted_photo_path = imgio.ensure_photo_file_for_telegram(local_path)
-                converted_photo = Path(converted_photo_path)
-                temp_photo_created = converted_photo != Path(local_path)
-                filename = asset.file_name or "photo.jpg"
-                if not filename.lower().endswith((".jpg", ".jpeg")):
-                    filename = f"{Path(filename).stem or 'photo'}.jpg"
                 resp: dict[str, Any] | None = None
+                publish_mode = "original"
                 log_rss("before_sendPhoto")
                 try:
-                    with open(converted_photo, "rb") as fh:
-                        resp = await self.api_request_multipart(
-                            "sendPhoto",
-                            {
-                                "chat_id": asset.channel_id,
-                                "caption": caption_text or None,
-                            },
-                            files={"photo": (filename, fh, "image/jpeg")},
-                        )
+                    resp, publish_mode = await self._publish_as_photo(
+                        asset.channel_id,
+                        local_path,
+                        caption_text or None,
+                    )
                 finally:
                     log_rss("after_sendPhoto")
-                    if temp_photo_created:
-                        self._remove_file(str(converted_photo))
                     gc.collect()
                 method_used = "sendPhoto"
                 delete_original_after_post = True
+                logging.info(
+                    "Vision job %s published document asset %s via sendPhoto (%s)",
+                    job.id,
+                    asset_id,
+                    publish_mode,
+                )
                 if not resp or not resp.get("ok"):
                     logging.error(
                         "Vision job %s failed to publish converted photo for asset %s: %s",

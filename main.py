@@ -3985,6 +3985,8 @@ class Bot:
         record: bool = True,
     ) -> bool:
 
+        full_asset: Asset | None = None
+
         while True:
             asset = self.next_asset(tags)
             caption = asset["template"] if asset and asset.get("template") else ""
@@ -4008,6 +4010,13 @@ class Bot:
                 )
 
                 ok = resp.get("ok", False)
+                if ok and asset and asset.get("id") is not None:
+                    asset_id = asset["id"]
+                    try:
+                        full_asset = self.data.get_asset(asset_id)
+                    except Exception:
+                        logging.exception("Failed to load asset %s for cleanup", asset_id)
+                        full_asset = None
                 if not ok and self._is_missing_source_message_error(resp) and asset:
                     self._cleanup_missing_source_asset(asset)
                     continue
@@ -4033,14 +4042,18 @@ class Bot:
                         channel_id,
                         mid,
                         asset["id"] if asset else None,
-                        None,
+                        full_asset.rubric_id if full_asset else None,
                         {
                             "caption": caption,
                             "categories": asset["categories"] if asset else [],
                         },
                     )
-        else:
+        elif not ok:
             logging.error("Failed to publish weather: %s", resp)
+
+        if ok and asset:
+            await self._finalize_published_asset(asset, full_asset)
+
         return ok
 
 
@@ -8036,6 +8049,53 @@ class Bot:
             for path in extra_paths:
                 self._remove_file(path)
         self.data.delete_assets(ids)
+
+    async def _finalize_published_asset(
+        self, asset: dict[str, Any], full_asset: Asset | None
+    ) -> None:
+        asset_id = asset.get("id")
+        if asset_id is None:
+            return
+        if full_asset and full_asset.id == asset_id:
+            try:
+                await self._cleanup_assets([full_asset])
+                return
+            except Exception:
+                logging.exception(
+                    "Failed to cleanup asset %s after publishing", asset_id
+                )
+        await self._fallback_cleanup_asset(asset)
+
+    async def _fallback_cleanup_asset(self, asset: dict[str, Any]) -> None:
+        asset_id = asset.get("id")
+        channel_id = asset.get("channel_id")
+        message_id = asset.get("message_id")
+        if channel_id and message_id:
+            try:
+                response = await self.api_request(
+                    "deleteMessage",
+                    {"chat_id": channel_id, "message_id": message_id},
+                )
+                if not response or not response.get("ok"):
+                    logging.warning(
+                        "Fallback message deletion failed for asset %s: %s",
+                        asset_id,
+                        response,
+                    )
+            except Exception:
+                logging.exception(
+                    "Failed to delete message %s from chat %s during cleanup",
+                    message_id,
+                    channel_id,
+                )
+        if asset_id is not None:
+            try:
+                self.data.delete_assets([asset_id])
+            except Exception:
+                logging.exception(
+                    "Failed to delete asset %s from database during cleanup",
+                    asset_id,
+                )
 
     async def _delete_asset_message(self, asset: Asset) -> None:
         chat_id = asset.tg_chat_id or asset.channel_id

@@ -568,6 +568,16 @@ async def test_publish_weather_uses_migrated_legacy_assets(tmp_path):
 
     bot.api_request = fake_api_request  # type: ignore[assignment]
 
+    pre_row = bot.db.execute(
+        "SELECT hashtags, categories, channel_id, tg_chat_id FROM assets WHERE message_id=?",
+        (101,),
+    ).fetchone()
+    assert pre_row is not None
+    pre_categories = json.loads(pre_row['categories'])
+    assert '#дождь' in pre_categories and '#котопогода' in pre_categories
+    assert pre_row['channel_id'] == -100123
+    assert pre_row['tg_chat_id'] == -100123
+
     ok = await bot.publish_weather(-100500, {'#дождь'}, record=False)
     assert ok
 
@@ -577,8 +587,11 @@ async def test_publish_weather_uses_migrated_legacy_assets(tmp_path):
     assert copy_payload['message_id'] == 101
     assert copy_payload['from_chat_id'] == -100123
 
+    delete_calls = [payload for method, payload in calls if method == 'deleteMessage']
+    assert delete_calls and delete_calls[0]['message_id'] == 101
+
     legacy_table = bot.db.execute(
-        "SELECT name FROM sqlite_master WHERE name='asset_images'"
+        "SELECT name FROM sqlite_master WHERE name='asset_images'",
     ).fetchone()
     assert legacy_table is None
 
@@ -586,11 +599,7 @@ async def test_publish_weather_uses_migrated_legacy_assets(tmp_path):
         "SELECT hashtags, categories, channel_id, tg_chat_id FROM assets WHERE message_id=?",
         (101,),
     ).fetchone()
-    assert row is not None
-    categories = json.loads(row['categories'])
-    assert '#дождь' in categories and '#котопогода' in categories
-    assert row['channel_id'] == -100123
-    assert row['tg_chat_id'] == -100123
+    assert row is None
 
     await bot.close()
 
@@ -624,6 +633,7 @@ async def test_publish_weather_retries_when_source_missing(tmp_path):
     )
 
     copy_calls: list[dict[str, Any]] = []
+    delete_calls: list[dict[str, Any]] = []
     responses = [
         {
             'ok': False,
@@ -639,6 +649,9 @@ async def test_publish_weather_retries_when_source_missing(tmp_path):
             if responses:
                 return responses.pop(0)
             return {'ok': True, 'result': {'message_id': 1000}}
+        if method == 'deleteMessage':
+            delete_calls.append(data)
+            return {'ok': True, 'result': True}
         return {'ok': True, 'result': {}}
 
     bot.api_request = fake_api_request  # type: ignore[assignment]
@@ -651,7 +664,8 @@ async def test_publish_weather_retries_when_source_missing(tmp_path):
     assert copy_calls[1]['message_id'] == 102
 
     assert bot.data.get_asset(first_id) is None
-    assert bot.data.get_asset(second_id) is not None
+    assert bot.data.get_asset(second_id) is None
+    assert delete_calls and delete_calls[0]['message_id'] == 102
 
     await bot.close()
 
@@ -1152,14 +1166,23 @@ async def test_weather_and_recognition_channels_do_not_mix(tmp_path):
     ).fetchone()
     assert row is not None and row['origin'] == 'recognition'
 
+    weather_asset_row = bot.db.execute(
+        "SELECT id FROM assets WHERE tg_chat_id=? AND message_id=?",
+        (-200001, 22),
+    ).fetchone()
+    assert weather_asset_row is not None
+    weather_asset_id = weather_asset_row['id']
+
     ok = await bot.publish_weather(-400001, None, record=False)
     assert ok
 
     copy_calls = [payload for method, payload in calls if method == 'copyMessage']
     assert copy_calls and copy_calls[0]['message_id'] == 22
     assert copy_calls[0]['from_chat_id'] == -200001
-    delete_calls = [method for method, _ in calls if method == 'deleteMessage']
-    assert not delete_calls
+    delete_calls = [payload for method, payload in calls if method == 'deleteMessage']
+    assert delete_calls and delete_calls[0]['message_id'] == 22
+
+    assert bot.data.get_asset(weather_asset_id) is None
 
     await bot.close()
 
@@ -1187,10 +1210,11 @@ async def test_weather_publish_survives_shared_channel_then_splits(tmp_path):
     await bot.handle_message(weather_message)
 
     weather_row = bot.db.execute(
-        "SELECT origin FROM assets WHERE tg_chat_id=? AND message_id=?",
+        "SELECT origin, id FROM assets WHERE tg_chat_id=? AND message_id=?",
         (-200001, 33),
     ).fetchone()
     assert weather_row is not None and weather_row['origin'] == 'weather'
+    weather_asset_id = weather_row['id']
 
     ok = await bot.publish_weather(-400001, None, record=False)
     assert ok
@@ -1199,8 +1223,10 @@ async def test_weather_publish_survives_shared_channel_then_splits(tmp_path):
     assert copy_calls and copy_calls[0]['message_id'] == 33
     assert copy_calls[0]['from_chat_id'] == -200001
 
-    delete_calls = [method for method, _ in calls if method == 'deleteMessage']
-    assert not delete_calls
+    delete_calls = [payload for method, payload in calls if method == 'deleteMessage']
+    assert delete_calls and delete_calls[0]['message_id'] == 33
+
+    assert bot.data.get_asset(weather_asset_id) is None
 
     pre_ingest_jobs = bot.db.execute(
         "SELECT COUNT(*) FROM jobs_queue WHERE name='ingest'",

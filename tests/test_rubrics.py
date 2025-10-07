@@ -550,6 +550,7 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     bot.db.commit()
 
     calls: list[tuple[str, dict[str, Any] | None]] = []
+    posted_link: dict[str, str] = {}
 
     async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
         calls.append((method, data))
@@ -557,6 +558,7 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
             if data and data.get("chat_id") == 1234:
                 return {"ok": True, "result": {"message_id": 50}}
             if data and data.get("chat_id") == -500:
+                posted_link["url"] = bot.post_url(-500, 75)
                 return {"ok": True, "result": {"message_id": 75}}
         if method == "sendMessage":
             return {"ok": True, "result": {"message_id": 200}}
@@ -596,6 +598,15 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     assert final_payload is not None
     assert final_payload.get("caption") == publish_caption
     assert final_payload.get("parse_mode") == "HTML"
+    confirmations = [
+        data
+        for method, data in calls
+        if method == "sendMessage" and data and data.get("chat_id") == 1234
+    ]
+    assert confirmations, "Expected confirmation messages to be sent to operator"
+    expected_link = posted_link.get("url")
+    assert expected_link is not None
+    assert any(expected_link in str(msg.get("text") or "") for msg in confirmations)
     assert bot.pending_flowers_previews.get(1234) is None
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0
@@ -643,6 +654,7 @@ async def test_flowers_preview_document_media_paths(tmp_path):
     bot.db.commit()
 
     calls: list[tuple[str, dict[str, Any] | None]] = []
+    posted_link: dict[str, str] = {}
 
     async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
         calls.append((method, data))
@@ -650,6 +662,7 @@ async def test_flowers_preview_document_media_paths(tmp_path):
             if data and data.get("chat_id") == 1234:
                 return {"ok": True, "result": {"message_id": 60}}
             if data and data.get("chat_id") == -500:
+                posted_link["url"] = bot.post_url(-500, 85)
                 return {"ok": True, "result": {"message_id": 85}}
         if method == "sendMessage":
             return {"ok": True, "result": {"message_id": 210}}
@@ -695,6 +708,15 @@ async def test_flowers_preview_document_media_paths(tmp_path):
     assert final_payload is not None
     assert final_payload.get("caption") == publish_caption
     assert final_payload.get("parse_mode") == "HTML"
+    confirmations = [
+        data
+        for method, data in calls
+        if method == "sendMessage" and data and data.get("chat_id") == 1234
+    ]
+    assert confirmations, "Expected confirmation messages to be sent to operator"
+    expected_link = posted_link.get("url")
+    assert expected_link is not None
+    assert any(expected_link in str(msg.get("text") or "") for msg in confirmations)
     assert bot.pending_flowers_previews.get(1234) is None
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0
@@ -743,13 +765,18 @@ async def test_flowers_preview_document_with_image_filename(tmp_path):
 
     call_log: list[dict[str, Any]] = []
     multipart_calls: list[dict[str, Any]] = []
+    posted_link: dict[str, str] = {}
 
     async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
         call_log.append({"method": method, "data": data, "files": files})
         if method == "getFile":
             return {"ok": True, "result": {"file_path": "downloads/flower.jpg"}}
         if method == "sendPhoto":
-            return {"ok": True, "result": {"message_id": 915}}
+            chat_id = data.get("chat_id") if isinstance(data, dict) else None
+            message_id = 905 if chat_id == 1234 else 915
+            if chat_id == -500:
+                posted_link["url"] = bot.post_url(-500, message_id)
+            return {"ok": True, "result": {"message_id": message_id}}
         if method == "sendMessage":
             return {
                 "ok": True,
@@ -837,6 +864,17 @@ async def test_flowers_preview_document_with_image_filename(tmp_path):
     assert final_payload["photo"] == "photo-new"
     assert final_payload.get("caption") == publish_caption
     assert final_payload.get("parse_mode") == "HTML"
+    confirmations = [
+        call["data"]
+        for call in call_log
+        if call["method"] == "sendMessage"
+        and call["data"]
+        and call["data"].get("chat_id") == 1234
+    ]
+    assert confirmations, "Expected confirmation messages to be sent to operator"
+    expected_link = posted_link.get("url")
+    assert expected_link is not None
+    assert any(expected_link in str(msg.get("text") or "") for msg in confirmations)
 
     assert bot.pending_flowers_previews.get(1234) is None
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
@@ -889,12 +927,15 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
 
     calls: list[dict[str, Any]] = []
     multipart_calls: list[dict[str, Any]] = []
+    posted_link: dict[str, str] = {}
 
     async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
         calls.append({"method": method, "data": data, "files": files})
         if method == "sendPhoto":
             chat_id = data.get("chat_id") if isinstance(data, dict) else None
             message_id = 70 if chat_id == 1234 else 95
+            if chat_id == -500:
+                posted_link["url"] = bot.post_url(-500, message_id)
             return {"ok": True, "result": {"message_id": message_id}}
         if method == "sendMessage":
             return {"ok": True, "result": {"message_id": 205}}
@@ -948,6 +989,17 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
     final_payload = final_photos[0]["data"]
     assert final_payload.get("caption") == publish_caption
     assert final_payload.get("parse_mode") == "HTML"
+    confirmations = [
+        call["data"]
+        for call in calls
+        if call["method"] == "sendMessage"
+        and call["data"]
+        and call["data"].get("chat_id") == 1234
+    ]
+    assert confirmations, "Expected confirmation messages to be sent to operator"
+    expected_link = posted_link.get("url")
+    assert expected_link is not None
+    assert any(expected_link in str(msg.get("text") or "") for msg in confirmations)
     assert bot.pending_flowers_previews.get(1234) is None
     assert not multipart_calls
 
@@ -1110,6 +1162,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     bot.db.commit()
 
     api_calls: list[tuple[str, dict[str, Any] | None]] = []
+    posted_link: dict[str, str] = {}
     message_counter = {"value": 200}
 
     async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
@@ -1117,6 +1170,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
         if method == "sendMediaGroup":
             if data and data.get("chat_id") == 1234:
                 return {"ok": True, "result": [{"message_id": 10}, {"message_id": 11}]}
+            posted_link["url"] = bot.post_url(-500, 210)
             return {"ok": True, "result": [{"message_id": 210}]}
         if method == "sendMessage":
             message_counter["value"] += 1
@@ -1172,6 +1226,15 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert "🧪 -600" in summary_text
 
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb3"})
+    confirmations = [
+        data
+        for method, data in api_calls
+        if method == "sendMessage" and data and data.get("chat_id") == 1234
+    ]
+    assert confirmations, "Expected confirmation messages to be sent to operator"
+    expected_link = posted_link.get("url")
+    assert expected_link is not None
+    assert any(expected_link in str(msg.get("text") or "") for msg in confirmations)
     assert bot.pending_flowers_previews.get(1234) is None
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0

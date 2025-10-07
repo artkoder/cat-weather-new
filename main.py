@@ -7958,11 +7958,16 @@ class Bot:
             await self._cleanup_assets(assets)
         await self._delete_flowers_preview_messages(state)
         self.pending_flowers_previews.pop(user_id, None)
+        confirmation_text = "Публикация отправлена."
+        if message_id:
+            confirmation_text = (
+                f"{confirmation_text}\n{self.post_url(channel_id, message_id)}"
+            )
         await self.api_request(
             "sendMessage",
             {
                 "chat_id": user_id,
-                "text": "Публикация отправлена.",
+                "text": confirmation_text,
             },
         )
         return True

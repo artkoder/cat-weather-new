@@ -349,17 +349,28 @@ async def test_fetch_assets_includes_singular_flower_category(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_publish_flowers_removes_assets(tmp_path):
+@pytest.mark.parametrize(
+    ("asset_count", "expected_method"),
+    [
+        (1, "sendPhoto"),
+        (2, "sendMediaGroup"),
+        (3, "sendMediaGroup"),
+    ],
+)
+async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expected_method):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {
         "enabled": True,
-        "assets": {"min": 4, "max": 6},
+        "assets": {"min": asset_count, "max": asset_count},
     }
     _insert_rubric(bot, "flowers", config, rubric_id=1)
     now = datetime.utcnow().isoformat()
-    for idx in range(4):
+    file_ids: list[str] = []
+    for idx in range(asset_count):
         metadata = {"date": now}
-        file_meta = {"file_id": f"file{idx}"}
+        file_id = f"file{idx}"
+        file_ids.append(file_id)
+        file_meta = {"file_id": file_id}
         asset_id = bot.data.save_asset(
             -2000,
             100 + idx,
@@ -380,20 +391,33 @@ async def test_publish_flowers_removes_assets(tmp_path):
             city=f"Город {idx}",
         )
 
-    calls = []
+    calls: list[dict[str, Any]] = []
 
     async def fake_api(method, data=None, *, files=None):
         calls.append({"method": method, "data": data, "files": files})
+        if method == "sendPhoto":
+            return {"ok": True, "result": {"message_id": 42}}
         if method == "sendMediaGroup":
             return {"ok": True, "result": [{"message_id": 42}]}
         return {"ok": True}
 
-    bot.api_request = fake_api  # type: ignore
+    bot.api_request = fake_api  # type: ignore[assignment]
     ok = await bot.publish_rubric("flowers", channel_id=-500)
     assert ok
-    assert calls and calls[0]["method"] == "sendMediaGroup"
+    send_call = next(
+        call for call in calls if call["method"] in {"sendPhoto", "sendMediaGroup"}
+    )
+    assert send_call["method"] == expected_method
+    data = send_call["data"]
+    assert data is not None
+    if expected_method == "sendPhoto":
+        assert data["photo"] == file_ids[0]
+    else:
+        media_payload = data["media"]
+        assert isinstance(media_payload, list)
+        assert len(media_payload) == asset_count
     delete_calls = [call for call in calls if call["method"] == "deleteMessage"]
-    assert len(delete_calls) == 4
+    assert len(delete_calls) == asset_count
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0
     history = bot.db.execute("SELECT metadata FROM posts_history").fetchone()
@@ -450,9 +474,85 @@ async def test_flowers_preview_notifies_when_not_enough_assets(tmp_path):
     assert message is not None
     assert message["chat_id"] == 777
     assert "минимальн" in message["text"].lower()
+    assert "5" in message["text"]
 
     ok = await bot.publish_rubric("flowers", channel_id=-500)
     assert not ok
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_preview_single_photo_paths(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "channel_id": -500,
+        "test_channel_id": -600,
+        "assets": {"min": 1, "max": 1},
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+
+    now = datetime.utcnow().isoformat()
+    file_meta = {"file_id": "single-file"}
+    asset_id = bot.data.save_asset(
+        -2100,
+        915,
+        None,
+        "",
+        tg_chat_id=-2100,
+        caption="",
+        kind="photo",
+        file_meta=file_meta,
+        metadata={"date": now},
+        categories=["flowers"],
+        rubric_id=1,
+    )
+    bot.data.update_asset(
+        asset_id,
+        vision_category="flowers",
+        vision_photo_weather="солнечно",
+        city="Москва",
+    )
+
+    bot.db.execute(
+        "INSERT OR REPLACE INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, '+00:00')",
+        (1234, "tester"),
+    )
+    bot.db.commit()
+
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
+        calls.append((method, data))
+        if method == "sendPhoto":
+            if data and data.get("chat_id") == 1234:
+                return {"ok": True, "result": {"message_id": 50}}
+            if data and data.get("chat_id") == -500:
+                return {"ok": True, "result": {"message_id": 75}}
+        if method == "sendMessage":
+            return {"ok": True, "result": {"message_id": 200}}
+        if method in {"deleteMessage", "editMessageText", "answerCallbackQuery"}:
+            return {"ok": True}
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+
+    await bot.publish_rubric("flowers", channel_id=-500, initiator_id=1234)
+
+    state = bot.pending_flowers_previews.get(1234)
+    assert state is not None
+    assert state.get("media_message_ids") == [50]
+    preview_send = [call for call in calls if call[0] == "sendPhoto" and call[1] and call[1].get("chat_id") == 1234]
+    assert preview_send, "Expected preview to use sendPhoto"
+
+    await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb-photo"})
+
+    final_send = [call for call in calls if call[0] == "sendPhoto" and call[1] and call[1].get("chat_id") == -500]
+    assert final_send, "Expected finalize to use sendPhoto"
+    assert bot.pending_flowers_previews.get(1234) is None
+    remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+    assert remaining == 0
 
     await bot.close()
 

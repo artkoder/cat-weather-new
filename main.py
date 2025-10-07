@@ -451,7 +451,7 @@ DEFAULT_RUBRIC_PRESETS: dict[str, dict[str, Any]] = {
         "config": {
             "enabled": False,
             "schedules": [],
-            "assets": {"min": 4, "max": 6, "categories": ["flowers"]},
+            "assets": {"min": 1, "max": 6, "categories": ["flowers"]},
         },
     },
     "guess_arch": {
@@ -6919,6 +6919,39 @@ class Bot:
             candidate = candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
         return candidate.astimezone(timezone.utc).replace(tzinfo=None)
 
+    @staticmethod
+    def _parse_positive_int(value: Any) -> int | None:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return None
+        if number < 1:
+            return None
+        return number
+
+    def _resolve_flowers_asset_limits(self, rubric: Rubric) -> tuple[int, int]:
+        config = rubric.config or {}
+        asset_cfg = config.get("assets") or {}
+        min_raw = asset_cfg.get("min")
+        min_value = self._parse_positive_int(min_raw)
+        if min_value is None:
+            if min_raw not in (None, "", 0):
+                logging.warning(
+                    "Invalid flowers min asset config for rubric %s: %r",
+                    rubric.code,
+                    min_raw,
+                )
+            min_count = 1
+        else:
+            min_count = min_value
+        max_raw = asset_cfg.get("max")
+        max_value = self._parse_positive_int(max_raw)
+        if max_value is None:
+            max_count = max(min_count, 6)
+        else:
+            max_count = max(min_count, min(max_value, 6))
+        return min_count, max_count
+
     async def _prepare_flowers_drop(
         self,
         rubric: Rubric,
@@ -6926,15 +6959,7 @@ class Bot:
         job: Job | None = None,
         instructions: str | None = None,
     ) -> tuple[list[Asset], list[int], list[str], list[str], str, list[str]] | None:
-        config = rubric.config or {}
-        asset_cfg = config.get("assets") or {}
-        min_config = int(asset_cfg.get("min") or 4)
-        max_config_raw = asset_cfg.get("max")
-        min_count = max(4, min_config)
-        if max_config_raw is None:
-            max_count = max(min_count, 6)
-        else:
-            max_count = max(min_count, min(int(max_config_raw), 6))
+        min_count, max_count = self._resolve_flowers_asset_limits(rubric)
         assets = self.data.fetch_assets_by_vision_category(
             "flowers",
             rubric_id=rubric.id,
@@ -6991,6 +7016,7 @@ class Bot:
         initiator_id: int | None = None,
         instructions: str | None = None,
     ) -> bool:
+        min_count, _ = self._resolve_flowers_asset_limits(rubric)
         prepared = await self._prepare_flowers_drop(
             rubric,
             job=job,
@@ -6998,13 +7024,6 @@ class Bot:
         )
         if not prepared:
             if initiator_id is not None:
-                assets_config = (rubric.config or {}).get("assets") or {}
-                min_config = assets_config.get("min")
-                try:
-                    min_config_int = int(min_config) if min_config is not None else 4
-                except (TypeError, ValueError):
-                    min_config_int = 4
-                required = max(4, min_config_int)
                 title = rubric.title or rubric.code
                 await self.api_request(
                     "sendMessage",
@@ -7012,7 +7031,7 @@ class Bot:
                         "chat_id": initiator_id,
                         "text": (
                             f"Для рубрики «{title}» не набралось минимальное количество "
-                            f"фото (нужно {required}). Добавьте новые и повторите попытку."
+                            f"фото (нужно {min_count}). Добавьте новые и повторите попытку."
                         ),
                     },
                 )
@@ -7037,16 +7056,22 @@ class Bot:
                 instructions=instructions,
             )
             return True
-        media: list[dict[str, Any]] = []
-        for idx, file_id in enumerate(file_ids):
-            item = {"type": "photo", "media": file_id}
-            if idx == 0 and caption:
-                item["caption"] = caption
-            media.append(item)
-        response = await self.api_request(
-            "sendMediaGroup",
-            {"chat_id": channel_id, "media": media},
-        )
+        if len(file_ids) == 1:
+            payload: dict[str, Any] = {"chat_id": channel_id, "photo": file_ids[0]}
+            if caption:
+                payload["caption"] = caption
+            response = await self.api_request("sendPhoto", payload)
+        else:
+            media: list[dict[str, Any]] = []
+            for idx, file_id in enumerate(file_ids):
+                item = {"type": "photo", "media": file_id}
+                if idx == 0 and caption:
+                    item["caption"] = caption
+                media.append(item)
+            response = await self.api_request(
+                "sendMediaGroup",
+                {"chat_id": channel_id, "media": media},
+            )
         if not response.get("ok"):
             logging.error("Failed to publish flowers rubric: %s", response)
             return False
@@ -7255,11 +7280,26 @@ class Bot:
             "default_channel_id": int(default_channel),
             "default_channel_type": "test" if test_requested else "main",
         }
-        media_payload = [{"type": "photo", "media": file_id} for file_id in file_ids]
-        response = await self.api_request(
-            "sendMediaGroup",
-            {"chat_id": initiator_id, "media": media_payload},
-        )
+        normalized_caption = str(caption or "")
+        if len(file_ids) == 1:
+            payload: dict[str, Any] = {
+                "chat_id": initiator_id,
+                "photo": file_ids[0],
+            }
+            if normalized_caption:
+                payload["caption"] = normalized_caption
+            response = await self.api_request("sendPhoto", payload)
+        else:
+            media_payload: list[dict[str, Any]] = []
+            for idx, file_id in enumerate(file_ids):
+                item = {"type": "photo", "media": file_id}
+                if idx == 0 and normalized_caption:
+                    item["caption"] = normalized_caption
+                media_payload.append(item)
+            response = await self.api_request(
+                "sendMediaGroup",
+                {"chat_id": initiator_id, "media": media_payload},
+            )
         if not response.get("ok"):
             logging.error("Failed to send flowers preview media: %s", response)
             await self.api_request(
@@ -7369,17 +7409,24 @@ class Bot:
                 },
             )
             return False
-        media: list[dict[str, Any]] = []
+        file_ids = list(state.get("file_ids") or [])
         caption = str(state.get("caption") or "")
-        for idx, file_id in enumerate(state.get("file_ids") or []):
-            item = {"type": "photo", "media": file_id}
-            if idx == 0 and caption:
-                item["caption"] = caption
-            media.append(item)
-        response = await self.api_request(
-            "sendMediaGroup",
-            {"chat_id": channel_id, "media": media},
-        )
+        if len(file_ids) == 1:
+            payload: dict[str, Any] = {"chat_id": channel_id, "photo": file_ids[0]}
+            if caption:
+                payload["caption"] = caption
+            response = await self.api_request("sendPhoto", payload)
+        else:
+            media: list[dict[str, Any]] = []
+            for idx, file_id in enumerate(file_ids):
+                item = {"type": "photo", "media": file_id}
+                if idx == 0 and caption:
+                    item["caption"] = caption
+                media.append(item)
+            response = await self.api_request(
+                "sendMediaGroup",
+                {"chat_id": channel_id, "media": media},
+            )
         if not response.get("ok"):
             logging.error("Failed to finalize flowers preview: %s", response)
             await self.api_request(

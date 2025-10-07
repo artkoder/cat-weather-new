@@ -8,7 +8,7 @@ DEFAULT_RUBRICS = {
         "config": {
             "enabled": False,
             "schedules": [],
-            "assets": {"min": 4, "max": 6, "categories": ["flowers"]},
+            "assets": {"min": 1, "max": 6, "categories": ["flowers"]},
         },
     },
     "guess_arch": {

@@ -7136,6 +7136,8 @@ class Bot:
         if kind == "photo":
             return "photo", missing_file
         if kind == "document":
+            if self._is_convertible_image_document(asset):
+                return "photo", True
             if is_photo_mime(asset.mime_type):
                 return "photo", True
             return "document", missing_file

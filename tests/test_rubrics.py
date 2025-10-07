@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from typing import Any
 
@@ -569,7 +570,7 @@ async def test_flowers_preview_document_media_paths(tmp_path):
     _insert_rubric(bot, "flowers", config, rubric_id=1)
 
     now = datetime.utcnow().isoformat()
-    file_meta = {"file_id": "doc-file"}
+    file_meta = {"file_id": "doc-file", "file_name": "flower.pdf"}
     asset_id = bot.data.save_asset(
         -2100,
         916,
@@ -631,6 +632,132 @@ async def test_flowers_preview_document_media_paths(tmp_path):
         call for call in calls if call[0] == "sendDocument" and call[1] and call[1].get("chat_id") == -500
     ]
     assert final_send, "Expected finalize to use sendDocument"
+    assert bot.pending_flowers_previews.get(1234) is None
+    remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+    assert remaining == 0
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_preview_document_with_image_filename(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "channel_id": -500,
+        "test_channel_id": -600,
+        "assets": {"min": 1, "max": 1},
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+
+    now = datetime.utcnow().isoformat()
+    file_meta = {"file_id": "doc-photo", "file_name": "flower.jpg"}
+    asset_id = bot.data.save_asset(
+        -2100,
+        917,
+        None,
+        "",
+        tg_chat_id=-2100,
+        caption="",
+        kind="document",
+        file_meta=file_meta,
+        metadata={"date": now},
+        categories=["flowers"],
+        rubric_id=1,
+    )
+    bot.data.update_asset(
+        asset_id,
+        vision_category="flowers",
+        vision_photo_weather="солнечно",
+        city="Москва",
+    )
+
+    bot.db.execute(
+        "INSERT OR REPLACE INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, '+00:00')",
+        (1234, "tester"),
+    )
+    bot.db.commit()
+
+    call_log: list[dict[str, Any]] = []
+    multipart_calls: list[dict[str, Any]] = []
+
+    async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
+        call_log.append({"method": method, "data": data, "files": files})
+        if method == "getFile":
+            return {"ok": True, "result": {"file_path": "downloads/flower.jpg"}}
+        if method == "sendPhoto":
+            return {"ok": True, "result": {"message_id": 915}}
+        if method == "sendMessage":
+            return {
+                "ok": True,
+                "result": {"message_id": 320 if data and data.get("chat_id") == -500 else 310},
+            }
+        if method in {"deleteMessage", "editMessageText", "answerCallbackQuery"}:
+            return {"ok": True}
+        return {"ok": True}
+
+    async def fake_api_multipart(method, data=None, *, files=None):  # type: ignore[override]
+        multipart_calls.append({"method": method, "data": data, "files": files})
+        photo_payload = {
+            "file_id": "photo-new",
+            "file_unique_id": "uniq-photo-new",
+            "width": 800,
+            "height": 600,
+            "file_size": 2048,
+        }
+        message_id = 610 if data and data.get("chat_id") == 1234 else 960
+        return {
+            "ok": True,
+            "result": {"message_id": message_id, "photo": [photo_payload]},
+        }
+
+    async def fake_download(file_id, dest_path):  # type: ignore[override]
+        dest = Path(dest_path)
+        dest.write_bytes(b"stub")
+        return dest
+
+    def fake_prepare(local_path):  # type: ignore[override]
+        path = Path(local_path)
+        if not path.exists():
+            path.write_bytes(b"stub")
+        return path, None, "flower.jpg", "image/jpeg", "original", "image/jpeg", 4
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+    bot.api_request_multipart = fake_api_multipart  # type: ignore[assignment]
+    bot._download_file = fake_download  # type: ignore[assignment]
+    bot._prepare_photo_for_upload = fake_prepare  # type: ignore[assignment]
+
+    await bot.publish_rubric("flowers", channel_id=-500, initiator_id=1234)
+
+    state = bot.pending_flowers_previews.get(1234)
+    assert state is not None
+    assert state.get("media_message_ids") == [610]
+    assert state.get("asset_kinds") == ["photo"]
+    assert state.get("file_ids") == ["photo-new"]
+
+    preview_photos = [
+        call
+        for call in multipart_calls
+        if call["method"] == "sendPhoto" and call["data"] and call["data"].get("chat_id") == 1234
+    ]
+    assert preview_photos, "Expected preview to upload via sendPhoto"
+
+    updated_asset = bot.data.get_asset(asset_id)
+    assert updated_asset is not None
+    assert updated_asset.kind == "photo"
+    assert updated_asset.file_id == "photo-new"
+    assert updated_asset.metadata.get("original_document_file_id") == "doc-photo"
+
+    await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb-photo"})
+
+    final_photos = [
+        call
+        for call in call_log
+        if call["method"] == "sendPhoto" and call["data"] and call["data"].get("chat_id") == -500
+    ]
+    assert final_photos, "Expected finalize to use sendPhoto"
+    assert final_photos[0]["data"]["photo"] == "photo-new"
+
     assert bot.pending_flowers_previews.get(1234) is None
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0

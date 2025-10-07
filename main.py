@@ -853,19 +853,14 @@ class Bot:
                 image.close()
             gc.collect()
 
-    async def _publish_as_photo(
-        self,
-        chat_id: int,
-        local_path: str,
-        caption: str | None,
-        *,
-        caption_entities: Sequence[dict[str, Any]] | None = None,
-    ) -> tuple[dict[str, Any] | None, str]:
+    def _prepare_photo_for_upload(
+        self, local_path: str
+    ) -> tuple[Path, Path | None, str, str, str, str | None, int | None]:
         mime, size = detect_mime_and_size(local_path)
         send_path = Path(local_path)
-        mode = "original"
         cleanup_path: Path | None = None
         content_type = mime or "image/jpeg"
+        mode = "original"
         if not (mime and is_photo_mime(mime) and size <= bytes_10mb()):
             cleanup_path = self._reencode_to_jpeg_under_10mb(local_path)
             send_path = cleanup_path
@@ -885,6 +880,19 @@ class Bot:
             desired_suffix = normalized.get(content_type.lower()) if content_type else None
             if desired_suffix and not filename.lower().endswith(desired_suffix):
                 filename = f"{path_obj.stem or 'photo'}{desired_suffix}"
+        return send_path, cleanup_path, filename, content_type, mode, mime, size
+
+    async def _publish_as_photo(
+        self,
+        chat_id: int,
+        local_path: str,
+        caption: str | None,
+        *,
+        caption_entities: Sequence[dict[str, Any]] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        send_path, cleanup_path, filename, content_type, mode, mime, size = (
+            self._prepare_photo_for_upload(local_path)
+        )
         logging.info(
             "Publishing photo for chat %s via %s file (mime=%s size=%s)",
             chat_id,
@@ -910,6 +918,37 @@ class Bot:
                 self._remove_file(str(cleanup_path))
             gc.collect()
         return response, mode
+
+    @staticmethod
+    def _extract_photo_file_meta(
+        photo_sizes: Sequence[dict[str, Any]] | None,
+    ) -> dict[str, Any] | None:
+        if not photo_sizes:
+            return None
+        best: dict[str, Any] | None = None
+        best_score = -1
+        for entry in photo_sizes:
+            if not isinstance(entry, dict):
+                continue
+            width = int(entry.get("width") or 0)
+            height = int(entry.get("height") or 0)
+            file_size = int(entry.get("file_size") or 0)
+            score = width * height
+            if score <= 0 and file_size <= 0:
+                continue
+            if score > best_score or (score == best_score and file_size > int(best.get("file_size") or 0) if best else True):
+                best = entry
+                best_score = score
+        if not best:
+            return None
+        return {
+            "file_id": best.get("file_id"),
+            "file_unique_id": best.get("file_unique_id"),
+            "width": best.get("width"),
+            "height": best.get("height"),
+            "file_size": best.get("file_size"),
+            "mime_type": "image/jpeg",
+        }
 
     def _get_rubric_overview_target(
         self, user_id: int, code: str
@@ -3870,6 +3909,34 @@ class Bot:
                     asset_id,
                     publish_mode,
                 )
+                if resp and resp.get("ok"):
+                    result_payload = resp.get("result")
+                    photo_sizes = None
+                    if isinstance(result_payload, dict):
+                        photo_sizes = result_payload.get("photo")
+                    photo_meta = self._extract_photo_file_meta(photo_sizes)
+                    if photo_meta and photo_meta.get("file_id"):
+                        self.data.update_asset(
+                            asset_id,
+                            kind="photo",
+                            file_meta=photo_meta,
+                            metadata={"original_document_file_id": file_id},
+                        )
+                        new_file_id = photo_meta.get("file_id")
+                        asset.kind = "photo"
+                        asset.file_id = new_file_id
+                        asset.file_unique_id = photo_meta.get("file_unique_id")
+                        asset.mime_type = photo_meta.get("mime_type")
+                        asset.file_size = photo_meta.get("file_size")
+                        asset.width = photo_meta.get("width")
+                        asset.height = photo_meta.get("height")
+                    else:
+                        logging.warning(
+                            "Vision job %s missing photo metadata in response for asset %s: %s",
+                            job.id,
+                            asset_id,
+                            resp,
+                        )
                 if not resp or not resp.get("ok"):
                     logging.error(
                         "Vision job %s failed to publish converted photo for asset %s: %s",
@@ -7061,17 +7128,20 @@ class Bot:
             max_count = max(min_count, min(max_value, 6))
         return min_count, max_count
 
-    def _asset_media_kind(self, asset: Asset) -> str:
-        """Return the Telegram media type for the given asset."""
+    def _asset_media_kind(self, asset: Asset) -> tuple[str, bool]:
+        """Return media kind and whether a fresh upload is required."""
 
         kind = (asset.kind or "").strip().lower()
+        missing_file = not asset.file_id
         if kind == "photo":
-            return "photo"
+            return "photo", missing_file
         if kind == "document":
-            return "document"
+            if is_photo_mime(asset.mime_type):
+                return "photo", True
+            return "document", missing_file
         if is_photo_mime(asset.mime_type):
-            return "photo"
-        return "document"
+            return "photo", missing_file
+        return "document", missing_file
 
     async def _prepare_flowers_drop(
         self,
@@ -7088,6 +7158,7 @@ class Bot:
             list[str],
             str,
             list[str],
+            dict[int, dict[str, Any]],
         ]
         | None
     ):
@@ -7107,13 +7178,25 @@ class Bot:
             return None
         file_ids: list[str] = []
         asset_kinds: list[str] = []
+        conversion_map: dict[int, dict[str, Any]] = {}
         for asset in assets:
             file_id = asset.file_id
             if not file_id:
                 logging.warning("Asset %s missing file_id", asset.id)
                 return None
+            media_kind, needs_upload = self._asset_media_kind(asset)
+            if needs_upload:
+                conversion_map[asset.id] = {
+                    "file_id": file_id,
+                    "file_unique_id": asset.file_unique_id,
+                    "file_name": asset.file_name,
+                    "mime_type": asset.mime_type,
+                    "file_size": asset.file_size,
+                    "width": asset.width,
+                    "height": asset.height,
+                }
             file_ids.append(file_id)
-            asset_kinds.append(self._asset_media_kind(asset))
+            asset_kinds.append(media_kind)
         cities = sorted({asset.city for asset in assets if asset.city})
         greeting, hashtags = await self._generate_flowers_copy(
             rubric,
@@ -7123,7 +7206,189 @@ class Bot:
             instructions=instructions,
         )
         asset_ids = [asset.id for asset in assets]
-        return assets, asset_ids, file_ids, asset_kinds, cities, greeting, hashtags
+        return (
+            assets,
+            asset_ids,
+            file_ids,
+            asset_kinds,
+            cities,
+            greeting,
+            hashtags,
+            conversion_map,
+        )
+
+    async def _send_flowers_media_bundle(
+        self,
+        *,
+        chat_id: int,
+        assets: list[Asset],
+        file_ids: list[str],
+        asset_kinds: list[str],
+        caption: str | None,
+        conversion_map: dict[int, dict[str, Any]] | None = None,
+    ) -> tuple[dict[str, Any], dict[int, dict[str, Any]]]:
+        conversion_map = dict(conversion_map or {})
+        cleanup_paths: list[str] = []
+        file_handles: dict[str, Any] = {}
+        response: dict[str, Any] | None = None
+
+        def _update_asset_after_conversion(
+            asset: Asset,
+            original_file_id: str,
+            result_payload: dict[str, Any] | None,
+        ) -> str | None:
+            if not isinstance(result_payload, dict):
+                return None
+            photo_meta = self._extract_photo_file_meta(result_payload.get("photo"))
+            if not photo_meta or not photo_meta.get("file_id"):
+                return None
+            new_file_id_raw = photo_meta.get("file_id")
+            if not new_file_id_raw:
+                return None
+            new_file_id = str(new_file_id_raw)
+            self.data.update_asset(
+                asset.id,
+                kind="photo",
+                file_meta=photo_meta,
+                metadata={"original_document_file_id": original_file_id},
+            )
+            asset.kind = "photo"
+            asset.file_id = new_file_id
+            asset.file_unique_id = photo_meta.get("file_unique_id")
+            asset.mime_type = photo_meta.get("mime_type")
+            asset.file_size = photo_meta.get("file_size")
+            asset.width = photo_meta.get("width")
+            asset.height = photo_meta.get("height")
+            return new_file_id
+
+        try:
+            if not assets:
+                return {"ok": True, "result": []}, conversion_map
+            asset_count = len(assets)
+            if asset_count == 1:
+                asset = assets[0]
+                file_id = file_ids[0] if file_ids else asset.file_id or ""
+                media_kind = asset_kinds[0] if asset_kinds else "photo"
+                needs_conversion = asset.id in conversion_map
+                payload: dict[str, Any] = {"chat_id": chat_id}
+                if caption:
+                    payload["caption"] = caption
+                if media_kind == "photo" and needs_conversion:
+                    source_meta = conversion_map.get(asset.id) or {}
+                    source_file_id = source_meta.get("file_id") or file_id
+                    file_meta = {
+                        "file_id": source_file_id,
+                        "file_unique_id": asset.file_unique_id,
+                        "file_name": asset.file_name,
+                        "mime_type": asset.mime_type,
+                    }
+                    target_path = self._build_local_file_path(asset.id, file_meta)
+                    downloaded_path = await self._download_file(source_file_id, target_path)
+                    if not downloaded_path:
+                        raise RuntimeError("Failed to download asset for conversion")
+                    send_path, cleanup_path, filename, content_type, _, _, _ = (
+                        self._prepare_photo_for_upload(str(downloaded_path))
+                    )
+                    cleanup_paths.append(str(downloaded_path))
+                    if cleanup_path is not None and str(cleanup_path) != str(downloaded_path):
+                        cleanup_paths.append(str(cleanup_path))
+                    with open(send_path, "rb") as fh:
+                        files = {"photo": (filename, fh, content_type)}
+                        response = await self.api_request_multipart(
+                            "sendPhoto",
+                            payload,
+                            files=files,
+                        )
+                    if response.get("ok"):
+                        new_file_id = _update_asset_after_conversion(
+                            asset,
+                            source_file_id,
+                            response.get("result"),
+                        )
+                        if new_file_id:
+                            file_ids[0] = new_file_id
+                        asset_kinds[0] = "photo"
+                        conversion_map.pop(asset.id, None)
+                    return response, conversion_map
+                if media_kind == "photo":
+                    payload["photo"] = file_id
+                    response = await self.api_request("sendPhoto", payload)
+                    return response, conversion_map
+                payload["document"] = file_id
+                response = await self.api_request("sendDocument", payload)
+                return response, conversion_map
+
+            media_payload: list[dict[str, Any]] = []
+            attachments: dict[str, tuple[str, Any, str]] = {}
+            for idx, asset in enumerate(assets):
+                file_id = file_ids[idx] if idx < len(file_ids) else asset.file_id or ""
+                media_kind = asset_kinds[idx] if idx < len(asset_kinds) else "photo"
+                needs_conversion = asset.id in conversion_map and media_kind == "photo"
+                item: dict[str, Any] = {"type": "photo" if media_kind == "photo" else "document"}
+                if idx == 0 and caption:
+                    item["caption"] = caption
+                if needs_conversion:
+                    source_meta = conversion_map.get(asset.id) or {}
+                    source_file_id = source_meta.get("file_id") or file_id
+                    file_meta = {
+                        "file_id": source_file_id,
+                        "file_unique_id": asset.file_unique_id,
+                        "file_name": asset.file_name,
+                        "mime_type": asset.mime_type,
+                    }
+                    target_path = self._build_local_file_path(asset.id, file_meta)
+                    downloaded_path = await self._download_file(source_file_id, target_path)
+                    if not downloaded_path:
+                        raise RuntimeError("Failed to download asset for conversion")
+                    send_path, cleanup_path, filename, content_type, _, _, _ = (
+                        self._prepare_photo_for_upload(str(downloaded_path))
+                    )
+                    cleanup_paths.append(str(downloaded_path))
+                    if cleanup_path is not None and str(cleanup_path) != str(downloaded_path):
+                        cleanup_paths.append(str(cleanup_path))
+                    attach_name = f"photo{idx}"
+                    fh = open(send_path, "rb")
+                    attachments[attach_name] = (filename, fh, content_type)
+                    file_handles[attach_name] = fh
+                    item["media"] = f"attach://{attach_name}"
+                else:
+                    item["media"] = file_id
+                media_payload.append(item)
+
+            if attachments:
+                response = await self.api_request_multipart(
+                    "sendMediaGroup",
+                    {"chat_id": chat_id, "media": media_payload},
+                    files=attachments,
+                )
+            else:
+                response = await self.api_request(
+                    "sendMediaGroup",
+                    {"chat_id": chat_id, "media": media_payload},
+                )
+            if response and response.get("ok") and isinstance(response.get("result"), list):
+                results_list = response.get("result")
+                for idx, asset in enumerate(assets):
+                    if asset.id not in conversion_map:
+                        continue
+                    if idx >= len(results_list):
+                        continue
+                    new_file_id = _update_asset_after_conversion(
+                        asset,
+                        conversion_map[asset.id].get("file_id") or file_ids[idx],
+                        results_list[idx] if isinstance(results_list[idx], dict) else None,
+                    )
+                    if new_file_id:
+                        file_ids[idx] = new_file_id
+                for asset in assets:
+                    conversion_map.pop(asset.id, None)
+            return response or {"ok": False}, conversion_map
+        finally:
+            for fh in file_handles.values():
+                with contextlib.suppress(Exception):
+                    fh.close()
+            for path in cleanup_paths:
+                self._remove_file(path)
 
     def _build_flowers_caption(
         self,
@@ -7179,6 +7444,7 @@ class Bot:
             cities,
             greeting,
             hashtags,
+            conversion_map,
         ) = prepared
         caption, hashtag_list = self._build_flowers_caption(greeting, cities, hashtags)
         if initiator_id is not None:
@@ -7191,6 +7457,7 @@ class Bot:
                 asset_ids=asset_ids,
                 file_ids=file_ids,
                 asset_kinds=asset_kinds,
+                conversion_map=conversion_map,
                 cities=cities,
                 greeting=greeting,
                 hashtags=hashtags,
@@ -7199,30 +7466,14 @@ class Bot:
                 instructions=instructions,
             )
             return True
-        if len(file_ids) == 1:
-            media_kind = asset_kinds[0] if asset_kinds else "photo"
-            if media_kind == "photo":
-                payload: dict[str, Any] = {"chat_id": channel_id, "photo": file_ids[0]}
-                method = "sendPhoto"
-            else:
-                payload = {"chat_id": channel_id, "document": file_ids[0]}
-                method = "sendDocument"
-            if caption:
-                payload["caption"] = caption
-            response = await self.api_request(method, payload)
-        else:
-            media: list[dict[str, Any]] = []
-            for idx, file_id in enumerate(file_ids):
-                kind = asset_kinds[idx] if idx < len(asset_kinds) else "photo"
-                media_type = "photo" if kind == "photo" else "document"
-                item = {"type": media_type, "media": file_id}
-                if idx == 0 and caption:
-                    item["caption"] = caption
-                media.append(item)
-            response = await self.api_request(
-                "sendMediaGroup",
-                {"chat_id": channel_id, "media": media},
-            )
+        response, _ = await self._send_flowers_media_bundle(
+            chat_id=channel_id,
+            assets=assets,
+            file_ids=file_ids,
+            asset_kinds=asset_kinds,
+            caption=caption,
+            conversion_map=conversion_map,
+        )
         if not response.get("ok"):
             logging.error("Failed to publish flowers rubric: %s", response)
             return False
@@ -7387,6 +7638,7 @@ class Bot:
         asset_ids: list[int],
         file_ids: list[str],
         asset_kinds: list[str],
+        conversion_map: dict[int, dict[str, Any]],
         cities: list[str],
         greeting: str,
         hashtags: list[str],
@@ -7417,6 +7669,7 @@ class Bot:
             "asset_ids": asset_ids,
             "file_ids": file_ids,
             "asset_kinds": asset_kinds,
+            "conversion_map": conversion_map,
             "cities": cities,
             "greeting": greeting,
             "hashtags": hashtags,
@@ -7434,36 +7687,14 @@ class Bot:
             "default_channel_type": "test" if test_requested else "main",
         }
         normalized_caption = str(caption or "")
-        if len(file_ids) == 1:
-            media_kind = asset_kinds[0] if asset_kinds else "photo"
-            if media_kind == "photo":
-                payload: dict[str, Any] = {
-                    "chat_id": initiator_id,
-                    "photo": file_ids[0],
-                }
-                method = "sendPhoto"
-            else:
-                payload = {
-                    "chat_id": initiator_id,
-                    "document": file_ids[0],
-                }
-                method = "sendDocument"
-            if normalized_caption:
-                payload["caption"] = normalized_caption
-            response = await self.api_request(method, payload)
-        else:
-            media_payload: list[dict[str, Any]] = []
-            for idx, file_id in enumerate(file_ids):
-                kind = asset_kinds[idx] if idx < len(asset_kinds) else "photo"
-                media_type = "photo" if kind == "photo" else "document"
-                item = {"type": media_type, "media": file_id}
-                if idx == 0 and normalized_caption:
-                    item["caption"] = normalized_caption
-                media_payload.append(item)
-            response = await self.api_request(
-                "sendMediaGroup",
-                {"chat_id": initiator_id, "media": media_payload},
-            )
+        response, remaining_conversion = await self._send_flowers_media_bundle(
+            chat_id=initiator_id,
+            assets=assets,
+            file_ids=file_ids,
+            asset_kinds=asset_kinds,
+            caption=normalized_caption,
+            conversion_map=conversion_map,
+        )
         if not response.get("ok"):
             logging.error("Failed to send flowers preview media: %s", response)
             await self.api_request(
@@ -7488,6 +7719,9 @@ class Bot:
             if isinstance(message_id, int):
                 media_ids.append(message_id)
         state["media_message_ids"] = media_ids
+        state["file_ids"] = list(file_ids)
+        state["asset_kinds"] = list(asset_kinds)
+        state["conversion_map"] = remaining_conversion
         text = self._render_flowers_preview_text(state)
         caption_response = await self.api_request(
             "sendMessage",
@@ -7576,30 +7810,16 @@ class Bot:
         file_ids = list(state.get("file_ids") or [])
         asset_kinds = list(state.get("asset_kinds") or [])
         caption = str(state.get("caption") or "")
-        if len(file_ids) == 1:
-            media_kind = asset_kinds[0] if asset_kinds else "photo"
-            if media_kind == "photo":
-                payload: dict[str, Any] = {"chat_id": channel_id, "photo": file_ids[0]}
-                method = "sendPhoto"
-            else:
-                payload = {"chat_id": channel_id, "document": file_ids[0]}
-                method = "sendDocument"
-            if caption:
-                payload["caption"] = caption
-            response = await self.api_request(method, payload)
-        else:
-            media: list[dict[str, Any]] = []
-            for idx, file_id in enumerate(file_ids):
-                kind = asset_kinds[idx] if idx < len(asset_kinds) else "photo"
-                media_type = "photo" if kind == "photo" else "document"
-                item = {"type": media_type, "media": file_id}
-                if idx == 0 and caption:
-                    item["caption"] = caption
-                media.append(item)
-            response = await self.api_request(
-                "sendMediaGroup",
-                {"chat_id": channel_id, "media": media},
-            )
+        conversion_map = dict(state.get("conversion_map") or {})
+        assets_list = list(state.get("assets") or [])
+        response, _ = await self._send_flowers_media_bundle(
+            chat_id=channel_id,
+            assets=assets_list,
+            file_ids=file_ids,
+            asset_kinds=asset_kinds,
+            caption=caption,
+            conversion_map=conversion_map,
+        )
         if not response.get("ok"):
             logging.error("Failed to finalize flowers preview: %s", response)
             await self.api_request(
@@ -7714,6 +7934,7 @@ class Bot:
                 cities,
                 greeting,
                 hashtags,
+                conversion_map,
             ) = prepared
             caption, prepared_hashtags = self._build_flowers_caption(
                 greeting,
@@ -7745,6 +7966,7 @@ class Bot:
                 asset_ids=asset_ids,
                 file_ids=file_ids,
                 asset_kinds=asset_kinds,
+                conversion_map=conversion_map,
                 cities=cities,
                 greeting=greeting,
                 hashtags=hashtags,

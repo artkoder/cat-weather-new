@@ -639,6 +639,99 @@ async def test_flowers_preview_document_media_paths(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "channel_id": -500,
+        "test_channel_id": -600,
+        "assets": {"min": 1, "max": 1},
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+
+    file_meta = {
+        "file_id": "photo_cached",
+        "file_unique_id": "uniq_photo",
+        "mime_type": "image/jpeg",
+    }
+    asset_id = bot.data.save_asset(
+        -2100,
+        999,
+        None,
+        "",
+        tg_chat_id=-2100,
+        caption="",
+        kind="photo",
+        file_meta=file_meta,
+        metadata={"original_document_file_id": "doc_cached"},
+        categories=["flowers"],
+        rubric_id=1,
+    )
+    bot.data.update_asset(
+        asset_id,
+        vision_category="flowers",
+        vision_photo_weather="солнечно",
+        city="Калининград",
+    )
+
+    bot.db.execute(
+        "INSERT OR REPLACE INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, '+00:00')",
+        (1234, "tester"),
+    )
+    bot.db.commit()
+
+    calls: list[dict[str, Any]] = []
+    multipart_calls: list[dict[str, Any]] = []
+
+    async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
+        calls.append({"method": method, "data": data, "files": files})
+        if method == "sendPhoto":
+            chat_id = data.get("chat_id") if isinstance(data, dict) else None
+            message_id = 70 if chat_id == 1234 else 95
+            return {"ok": True, "result": {"message_id": message_id}}
+        if method == "sendMessage":
+            return {"ok": True, "result": {"message_id": 205}}
+        if method in {"deleteMessage", "editMessageText", "answerCallbackQuery"}:
+            return {"ok": True}
+        return {"ok": True}
+
+    async def fake_api_multipart(method, data=None, *, files=None):  # type: ignore[override]
+        multipart_calls.append({"method": method, "data": data, "files": files})
+        return {"ok": True, "result": {"message_id": 880}}
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+    bot.api_request_multipart = fake_api_multipart  # type: ignore[assignment]
+
+    await bot.publish_rubric("flowers", channel_id=-500, initiator_id=1234)
+
+    state = bot.pending_flowers_previews.get(1234)
+    assert state is not None
+
+    preview_photos = [
+        call
+        for call in calls
+        if call["method"] == "sendPhoto" and call["data"] and call["data"].get("chat_id") == 1234
+    ]
+    assert preview_photos, "Preview should be sent with cached photo file_id"
+    assert preview_photos[0]["files"] is None, "Preview must reuse Telegram file id"
+    assert not multipart_calls, "Cached photo should not trigger multipart uploads"
+
+    await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb-reuse"})
+
+    final_photos = [
+        call
+        for call in calls
+        if call["method"] == "sendPhoto" and call["data"] and call["data"].get("chat_id") == -500
+    ]
+    assert final_photos, "Final publication should reuse cached photo file_id"
+    assert final_photos[0]["files"] is None
+    assert bot.pending_flowers_previews.get(1234) is None
+    assert not multipart_calls
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_flowers_asset_selection_random(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {

@@ -115,7 +115,7 @@ class ErrorAsyncClient:
 
 
 @pytest.mark.asyncio
-async def test_classify_image_uses_text_response_payload(monkeypatch):
+async def test_classify_image_uses_text_response_payload(monkeypatch, tmp_path):
     captured: dict[str, Any] = {}
     schema = {"type": "object"}
     expected_result = {"label": "cat", "confidence": 0.9}
@@ -149,11 +149,14 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     )
 
     client = OpenAIClient("test-key")
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(PNG_BYTES)
+
     result = await client.classify_image(
         model="gpt-vision",
         system_prompt="classify image",
         user_prompt="What do you see?",
-        image_bytes=PNG_BYTES,
+        image_path=image_path,
         schema=schema,
     )
 
@@ -174,9 +177,10 @@ async def test_classify_image_uses_text_response_payload(monkeypatch):
     image_part = payload["input"][1]["content"][0]
     assert image_part["type"] == "input_image"
     image_url = image_part["image_url"]
-    assert image_url.startswith("data:image/png;base64,")
+    assert image_url.startswith("data:image/jpeg;base64,")
     encoded = image_url.split(",", 1)[1]
-    assert base64.b64decode(encoded) == PNG_BYTES
+    decoded = base64.b64decode(encoded)
+    assert decoded.startswith(b"\xff\xd8")
     user_text = payload["input"][1]["content"][1]
     assert user_text == {"type": "input_text", "text": "What do you see?"}
 

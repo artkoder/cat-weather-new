@@ -68,6 +68,22 @@ async def _run_vision_job_collect_calls(
             return {'ok': True, 'result': True}
         return {'ok': True, 'result': {}}
 
+    async def fake_api_request_multipart(method, data=None, *, files=None):  # type: ignore[override]
+        normalized_files = None
+        if files:
+            normalized_files = {}
+            for name, (filename, fh, _content_type) in files.items():
+                payload = fh.read()
+                try:
+                    fh.seek(0)
+                except Exception:
+                    pass
+                normalized_files[name] = (filename, payload)
+        calls.append({'method': method, 'data': data, 'files': normalized_files})
+        if method == 'sendPhoto':
+            return {'ok': True, 'result': {'message_id': recognized_mid}}
+        return {'ok': True, 'result': {}}
+
     async def fake_download(file_id, dest_path=None):  # type: ignore[override]
         assert dest_path is not None
         path = Path(dest_path)
@@ -123,6 +139,7 @@ async def _run_vision_job_collect_calls(
         return False, {'mock': True}, 'disabled'
 
     bot.api_request = fake_api_request  # type: ignore[assignment]
+    bot.api_request_multipart = fake_api_request_multipart  # type: ignore[assignment]
     bot._download_file = fake_download  # type: ignore[assignment]
     bot.openai = DummyOpenAI()
     bot._record_openai_usage = types.MethodType(fake_record, bot)  # type: ignore[assignment]
@@ -212,12 +229,12 @@ async def test_job_vision_converts_document_to_photo_and_deletes_original(
     assert send_photo_calls, 'converted photo should be uploaded'
     send_photo = send_photo_calls[0]
     assert send_photo['data'] is not None
-    assert send_photo['data'].get('photo', '').startswith('attach://')
+    assert 'photo' not in send_photo['data']
     assert send_photo['files'] is not None and 'photo' in send_photo['files']
     filename, blob = send_photo['files']['photo']
     assert filename.endswith('.jpg')
     assert blob.startswith(b'\xff\xd8')
-    assert len(blob) <= 10 * 1024 * 1024
+    assert len(blob) <= int(10 * 1024 * 1024)
 
     delete_calls = [call for call in calls if call['method'] == 'deleteMessage']
     assert delete_calls, 'original document message should be deleted'
@@ -488,6 +505,9 @@ async def test_recognized_message_skips_reingest(tmp_path):
             return {'ok': True, 'result': {'message_id': recognized_mid}}
         return {'ok': True, 'result': {}}
 
+    async def fake_api_request_multipart(method, data=None, *, files=None):  # type: ignore[override]
+        return await fake_api_request(method, data=data, files=files)
+
     class DummyOpenAI:
         def __init__(self):
             self.api_key = 'test-key'
@@ -523,6 +543,7 @@ async def test_recognized_message_skips_reingest(tmp_path):
 
     bot._download_file = fake_download  # type: ignore[assignment]
     bot.api_request = fake_api_request  # type: ignore[assignment]
+    bot.api_request_multipart = fake_api_request_multipart  # type: ignore[assignment]
     bot.openai = DummyOpenAI()
 
     message = {

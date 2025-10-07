@@ -12,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import data_access
 from data_access import Asset
+from jobs import Job
 from main import Bot
 from openai_client import OpenAIResponse
 
@@ -128,6 +129,98 @@ async def test_enqueue_rubric_manual_and_test_channels(tmp_path):
     assert test_payload["test"] is True
     assert test_payload["tz_offset"] == "+00:00"
     assert test_row["status"] == "queued"
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_vision_job_assigns_rubric_id(tmp_path):
+    bot = Bot("test-token", str(tmp_path / "db.sqlite"))
+    bot.openai.api_key = "test"  # type: ignore[assignment]
+
+    flowers_rubric = bot.data.get_rubric_by_code("flowers")
+    assert flowers_rubric is not None
+
+    image_path = tmp_path / "flower.jpg"
+    Image.new("RGB", (32, 32), color="red").save(image_path)
+
+    file_meta = {"file_id": "file123", "file_unique_id": "uniq123", "mime_type": "image/jpeg"}
+    asset_id = bot.data.save_asset(
+        -1500,
+        10,
+        None,
+        "",
+        tg_chat_id=-1500,
+        caption="",
+        kind="photo",
+        file_meta=file_meta,
+        metadata={},
+    )
+    bot.data.update_asset(asset_id, local_path=str(image_path))
+
+    async def fake_api_request(method, data=None, *, files=None):
+        if method == "copyMessage":
+            return {"ok": True, "result": {"message_id": 600}}
+        return {"ok": True}
+
+    async def fake_record_usage(*args, **kwargs):
+        return None
+
+    async def fake_classify_image(*, model, system_prompt, user_prompt, image_path, schema):
+        return OpenAIResponse(
+            content={
+                "framing": "wide",
+                "architecture_close_up": False,
+                "architecture_wide": False,
+                "weather_image": "sunny",
+                "season_guess": "summer",
+                "arch_style": None,
+                "caption": "Field of tulips",
+                "objects": ["tulips"],
+                "landmarks": [],
+                "tags": ["flowers"],
+                "arch_view": False,
+                "is_outdoor": True,
+                "guess_country": None,
+                "guess_city": None,
+                "location_confidence": 0.5,
+                "safety": {"nsfw": False, "reason": "безопасно"},
+                "category": "flowers",
+            },
+            usage={
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+                "request_id": "req-flowers",
+            },
+        )
+
+    bot.api_request = fake_api_request  # type: ignore[assignment]
+    bot._record_openai_usage = fake_record_usage  # type: ignore[assignment]
+    bot.openai.classify_image = fake_classify_image  # type: ignore[assignment]
+
+    now = datetime.utcnow()
+    job = Job(
+        id=1,
+        name="vision",
+        payload={"asset_id": asset_id, "tz_offset": "+00:00"},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    await bot._job_vision_locked(job)
+
+    updated_asset = bot.data.get_asset(asset_id)
+    assert updated_asset is not None
+    assert updated_asset.vision_category == "flowers"
+    assert updated_asset.rubric_id == flowers_rubric.id
+
+    assets = bot.data.fetch_assets_by_vision_category("flowers", rubric_id=flowers_rubric.id)
+    assert any(asset.id == asset_id for asset in assets)
+
     await bot.close()
 
 

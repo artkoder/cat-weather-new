@@ -4,6 +4,7 @@ import asyncio
 import gc
 import io
 import contextlib
+import html
 import json
 import logging
 import math
@@ -13,6 +14,7 @@ import random
 import re
 import sqlite3
 import tempfile
+import unicodedata
 from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone, time as dtime
 from pathlib import Path
@@ -4327,14 +4329,21 @@ class Bot:
                         asset_count,
                         instructions=instructions_text,
                     )
-                    caption, prepared_hashtags = self._build_flowers_caption(
+                    (
+                        preview_caption,
+                        publish_caption,
+                        publish_parse_mode,
+                        prepared_hashtags,
+                    ) = self._build_flowers_caption(
                         greeting,
                         cities,
                         hashtags,
                     )
                     await self._update_flowers_preview_caption_state(
                         preview_state,
-                        caption=caption,
+                        preview_caption=preview_caption,
+                        publish_caption=publish_caption,
+                        publish_parse_mode=publish_parse_mode,
                         greeting=greeting,
                         hashtags=hashtags,
                         prepared_hashtags=prepared_hashtags,
@@ -7227,6 +7236,7 @@ class Bot:
         file_ids: list[str],
         asset_kinds: list[str],
         caption: str | None,
+        parse_mode: str | None = None,
         conversion_map: dict[int, dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any], dict[int, dict[str, Any]]]:
         conversion_map = dict(conversion_map or {})
@@ -7275,6 +7285,8 @@ class Bot:
                 payload: dict[str, Any] = {"chat_id": chat_id}
                 if caption:
                     payload["caption"] = caption
+                if parse_mode and caption:
+                    payload["parse_mode"] = parse_mode
                 if media_kind == "photo" and needs_conversion:
                     source_meta = conversion_map.get(asset.id) or {}
                     source_file_id = source_meta.get("file_id") or file_id
@@ -7329,6 +7341,8 @@ class Bot:
                 item: dict[str, Any] = {"type": "photo" if media_kind == "photo" else "document"}
                 if idx == 0 and caption:
                     item["caption"] = caption
+                    if parse_mode:
+                        item["parse_mode"] = parse_mode
                 if needs_conversion:
                     source_meta = conversion_map.get(asset.id) or {}
                     source_file_id = source_meta.get("file_id") or file_id
@@ -7397,15 +7411,74 @@ class Bot:
         greeting: str,
         cities: Sequence[str],
         hashtags: Sequence[str],
-    ) -> tuple[str, list[str]]:
-        hashtag_list = self._prepare_hashtags(hashtags)
-        caption_parts = [greeting.strip()] if greeting else []
-        if cities:
-            caption_parts.append("Города съёмки: " + ", ".join(cities))
-        if hashtag_list:
-            caption_parts.append(" ".join(hashtag_list))
-        caption = "\n\n".join(part for part in caption_parts if part)
-        return caption, hashtag_list
+    ) -> tuple[str, str, str | None, list[str]]:
+        greeting_text = str(greeting or "").strip()
+        city_hashtags, trailing_hashtags = self._prepare_flowers_hashtag_sections(
+            cities,
+            hashtags,
+        )
+        caption_parts: list[str] = []
+        if greeting_text:
+            caption_parts.append(greeting_text)
+        if city_hashtags:
+            caption_parts.append(" ".join(city_hashtags))
+        if trailing_hashtags:
+            caption_parts.append(" ".join(trailing_hashtags))
+        preview_caption = "\n\n".join(caption_parts)
+        publish_caption, parse_mode = self._build_flowers_publish_caption(
+            preview_caption
+        )
+        combined_hashtags = city_hashtags + trailing_hashtags
+        return preview_caption, publish_caption, parse_mode, combined_hashtags
+
+    def _prepare_flowers_hashtag_sections(
+        self,
+        cities: Sequence[str],
+        hashtags: Sequence[str],
+    ) -> tuple[list[str], list[str]]:
+        city_hashtags: list[str] = []
+        seen_city: set[str] = set()
+        for city in cities:
+            normalized = self._normalize_city_hashtag(city)
+            if not normalized:
+                continue
+            key = normalized.casefold()
+            if key in seen_city:
+                continue
+            seen_city.add(key)
+            city_hashtags.append(normalized)
+        prepared_hashtags = self._prepare_hashtags(hashtags)
+        trailing_hashtags: list[str] = []
+        seen_other: set[str] = set()
+        for tag in prepared_hashtags:
+            key = tag.casefold()
+            if key in seen_city or key in seen_other:
+                continue
+            seen_other.add(key)
+            trailing_hashtags.append(tag)
+        return city_hashtags, trailing_hashtags
+
+    def _normalize_city_hashtag(self, city: str | None) -> str | None:
+        text = unicodedata.normalize("NFKC", str(city or "")).strip()
+        if not text:
+            return None
+        text = text.replace("ё", "е").replace("Ё", "Е")
+        lowered = text.casefold()
+        cleaned = re.sub(r"[^\w]+", "", lowered, flags=re.UNICODE)
+        if not cleaned:
+            return None
+        return f"#{cleaned}"
+
+    def _build_flowers_publish_caption(
+        self, preview_caption: str
+    ) -> tuple[str, str | None]:
+        preview_text = str(preview_caption or "").strip()
+        link = "<a href=\"https://t.me/addlist/sW-rkrslxqo1NTVi\">📂 Полюбить 39</a>"
+        parse_mode = "HTML"
+        if not preview_text:
+            return link, parse_mode
+        escaped = html.escape(preview_text)
+        return f"{escaped}\n\n{link}", parse_mode
 
     async def _publish_flowers(
         self,
@@ -7448,7 +7521,12 @@ class Bot:
             hashtags,
             conversion_map,
         ) = prepared
-        caption, hashtag_list = self._build_flowers_caption(greeting, cities, hashtags)
+        (
+            preview_caption,
+            publish_caption,
+            publish_parse_mode,
+            hashtag_list,
+        ) = self._build_flowers_caption(greeting, cities, hashtags)
         if initiator_id is not None:
             await self._send_flowers_preview(
                 rubric,
@@ -7463,7 +7541,9 @@ class Bot:
                 cities=cities,
                 greeting=greeting,
                 hashtags=hashtags,
-                caption=caption,
+                preview_caption=preview_caption,
+                publish_caption=publish_caption,
+                publish_parse_mode=publish_parse_mode,
                 prepared_hashtags=hashtag_list,
                 instructions=instructions,
             )
@@ -7473,7 +7553,8 @@ class Bot:
             assets=assets,
             file_ids=file_ids,
             asset_kinds=asset_kinds,
-            caption=caption,
+            caption=publish_caption,
+            parse_mode=publish_parse_mode,
             conversion_map=conversion_map,
         )
         if not response.get("ok"):
@@ -7559,7 +7640,7 @@ class Bot:
 
     def _render_flowers_preview_text(self, state: dict[str, Any]) -> str:
         parts: list[str] = []
-        caption = str(state.get("caption") or "").strip()
+        caption = str(state.get("preview_caption") or "").strip()
         if caption:
             parts.append("Подпись на медиа показана выше.")
         else:
@@ -7644,7 +7725,9 @@ class Bot:
         cities: list[str],
         greeting: str,
         hashtags: list[str],
-        caption: str,
+        preview_caption: str,
+        publish_caption: str,
+        publish_parse_mode: str | None,
         prepared_hashtags: list[str],
         instructions: str | None,
     ) -> None:
@@ -7676,7 +7759,9 @@ class Bot:
             "greeting": greeting,
             "hashtags": hashtags,
             "prepared_hashtags": prepared_hashtags,
-            "caption": caption,
+            "preview_caption": preview_caption,
+            "publish_caption": publish_caption,
+            "publish_parse_mode": publish_parse_mode,
             "instructions": (instructions or "").strip(),
             "preview_chat_id": initiator_id,
             "media_message_ids": [],
@@ -7688,13 +7773,14 @@ class Bot:
             "default_channel_id": int(default_channel),
             "default_channel_type": "test" if test_requested else "main",
         }
-        normalized_caption = str(caption or "")
+        normalized_caption = str(preview_caption or "")
         response, remaining_conversion = await self._send_flowers_media_bundle(
             chat_id=initiator_id,
             assets=assets,
             file_ids=file_ids,
             asset_kinds=asset_kinds,
             caption=normalized_caption,
+            parse_mode=None,
             conversion_map=conversion_map,
         )
         if not response.get("ok"):
@@ -7759,12 +7845,16 @@ class Bot:
         self,
         state: dict[str, Any],
         *,
-        caption: str,
+        preview_caption: str,
+        publish_caption: str,
+        publish_parse_mode: str | None,
         greeting: str,
         hashtags: list[str],
         prepared_hashtags: list[str],
     ) -> None:
-        state["caption"] = caption
+        state["preview_caption"] = preview_caption
+        state["publish_caption"] = publish_caption
+        state["publish_parse_mode"] = publish_parse_mode
         state["greeting"] = greeting
         state["hashtags"] = hashtags
         state["prepared_hashtags"] = prepared_hashtags
@@ -7811,7 +7901,8 @@ class Bot:
             return False
         file_ids = list(state.get("file_ids") or [])
         asset_kinds = list(state.get("asset_kinds") or [])
-        caption = str(state.get("caption") or "")
+        caption = str(state.get("publish_caption") or "")
+        parse_mode = state.get("publish_parse_mode")
         conversion_map = dict(state.get("conversion_map") or {})
         assets_list = list(state.get("assets") or [])
         response, _ = await self._send_flowers_media_bundle(
@@ -7820,6 +7911,7 @@ class Bot:
             file_ids=file_ids,
             asset_kinds=asset_kinds,
             caption=caption,
+            parse_mode=str(parse_mode) if parse_mode else None,
             conversion_map=conversion_map,
         )
         if not response.get("ok"):
@@ -7938,7 +8030,12 @@ class Bot:
                 hashtags,
                 conversion_map,
             ) = prepared
-            caption, prepared_hashtags = self._build_flowers_caption(
+            (
+                preview_caption,
+                publish_caption,
+                publish_parse_mode,
+                prepared_hashtags,
+            ) = self._build_flowers_caption(
                 greeting,
                 cities,
                 hashtags,
@@ -7972,7 +8069,9 @@ class Bot:
                 cities=cities,
                 greeting=greeting,
                 hashtags=hashtags,
-                caption=caption,
+                preview_caption=preview_caption,
+                publish_caption=publish_caption,
+                publish_parse_mode=publish_parse_mode,
                 prepared_hashtags=prepared_hashtags,
                 instructions=state.get("instructions"),
             )
@@ -8007,14 +8106,21 @@ class Bot:
                 asset_count,
                 instructions=state.get("instructions"),
             )
-            caption, prepared_hashtags = self._build_flowers_caption(
+            (
+                preview_caption,
+                publish_caption,
+                publish_parse_mode,
+                prepared_hashtags,
+            ) = self._build_flowers_caption(
                 greeting,
                 cities,
                 hashtags,
             )
             await self._update_flowers_preview_caption_state(
                 state,
-                caption=caption,
+                preview_caption=preview_caption,
+                publish_caption=publish_caption,
+                publish_parse_mode=publish_parse_mode,
                 greeting=greeting,
                 hashtags=hashtags,
                 prepared_hashtags=prepared_hashtags,

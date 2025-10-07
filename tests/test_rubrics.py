@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import sys
@@ -18,6 +19,9 @@ from main import Bot
 from openai_client import OpenAIResponse
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
+
+
+FLOWERS_FOOTER_LINK = '<a href="https://t.me/addlist/sW-rkrslxqo1NTVi">📂 Полюбить 39</a>'
 
 
 def _insert_rubric(bot: Bot, code: str, config: dict, rubric_id: int = 1) -> None:
@@ -413,10 +417,14 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
     assert data is not None
     if expected_method == "sendPhoto":
         assert data["photo"] == file_ids[0]
+        caption = data.get("caption", "")
+        assert data.get("parse_mode") == "HTML"
     else:
         media_payload = data["media"]
         assert isinstance(media_payload, list)
         assert len(media_payload) == asset_count
+        caption = media_payload[0].get("caption", "")
+        assert media_payload[0].get("parse_mode") == "HTML"
     delete_calls = [call for call in calls if call["method"] == "deleteMessage"]
     assert len(delete_calls) == asset_count
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
@@ -426,7 +434,26 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
     meta = json.loads(history["metadata"])
     assert meta["rubric_code"] == "flowers"
     assert meta["asset_ids"]
-    assert meta["greeting"]
+    greeting = str(meta.get("greeting") or "").strip()
+    assert greeting
+    cities_meta = list(meta.get("cities") or [])
+    city_hashtags: list[str] = []
+    for city in cities_meta:
+        tag = bot._normalize_city_hashtag(city)
+        assert tag
+        city_hashtags.append(tag)
+    hashtags_combined = list(meta.get("hashtags") or [])
+    assert hashtags_combined[: len(city_hashtags)] == city_hashtags
+    trailing_only = hashtags_combined[len(city_hashtags) :]
+    preview_parts = [greeting]
+    if city_hashtags:
+        preview_parts.append(" ".join(city_hashtags))
+    if trailing_only:
+        preview_parts.append(" ".join(trailing_only))
+    expected_preview = "\n\n".join(preview_parts)
+    expected_publish = html.escape(expected_preview) + "\n\n" + FLOWERS_FOOTER_LINK
+    assert caption == expected_publish
+    assert FLOWERS_FOOTER_LINK in caption
     await bot.close()
 
 
@@ -546,11 +573,29 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     assert state.get("media_message_ids") == [50]
     preview_send = [call for call in calls if call[0] == "sendPhoto" and call[1] and call[1].get("chat_id") == 1234]
     assert preview_send, "Expected preview to use sendPhoto"
+    preview_payload = preview_send[0][1]
+    assert preview_payload is not None
+    assert preview_payload.get("parse_mode") is None
+
+    preview_caption = str(state.get("preview_caption") or "")
+    publish_caption = str(state.get("publish_caption") or "")
+    publish_mode = state.get("publish_parse_mode")
+    assert preview_payload.get("caption") == preview_caption
+    assert FLOWERS_FOOTER_LINK not in preview_caption
+    assert FLOWERS_FOOTER_LINK in publish_caption
+    assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
+    assert publish_mode == "HTML"
+    if preview_caption:
+        assert publish_caption.startswith(html.escape(preview_caption.strip()))
 
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb-photo"})
 
     final_send = [call for call in calls if call[0] == "sendPhoto" and call[1] and call[1].get("chat_id") == -500]
     assert final_send, "Expected finalize to use sendPhoto"
+    final_payload = final_send[0][1]
+    assert final_payload is not None
+    assert final_payload.get("caption") == publish_caption
+    assert final_payload.get("parse_mode") == "HTML"
     assert bot.pending_flowers_previews.get(1234) is None
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0
@@ -625,6 +670,20 @@ async def test_flowers_preview_document_media_paths(tmp_path):
         call for call in calls if call[0] == "sendDocument" and call[1] and call[1].get("chat_id") == 1234
     ]
     assert preview_send, "Expected preview to use sendDocument"
+    preview_payload = preview_send[0][1]
+    assert preview_payload is not None
+    assert preview_payload.get("parse_mode") is None
+
+    preview_caption = str(state.get("preview_caption") or "")
+    publish_caption = str(state.get("publish_caption") or "")
+    publish_mode = state.get("publish_parse_mode")
+    assert preview_payload.get("caption") == preview_caption
+    assert FLOWERS_FOOTER_LINK not in preview_caption
+    assert FLOWERS_FOOTER_LINK in publish_caption
+    assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
+    assert publish_mode == "HTML"
+    if preview_caption:
+        assert publish_caption.startswith(html.escape(preview_caption.strip()))
 
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb-doc"})
 
@@ -632,6 +691,10 @@ async def test_flowers_preview_document_media_paths(tmp_path):
         call for call in calls if call[0] == "sendDocument" and call[1] and call[1].get("chat_id") == -500
     ]
     assert final_send, "Expected finalize to use sendDocument"
+    final_payload = final_send[0][1]
+    assert final_payload is not None
+    assert final_payload.get("caption") == publish_caption
+    assert final_payload.get("parse_mode") == "HTML"
     assert bot.pending_flowers_previews.get(1234) is None
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0
@@ -735,12 +798,26 @@ async def test_flowers_preview_document_with_image_filename(tmp_path):
     assert state.get("asset_kinds") == ["photo"]
     assert state.get("file_ids") == ["photo-new"]
 
+    preview_caption = str(state.get("preview_caption") or "")
+    publish_caption = str(state.get("publish_caption") or "")
+    publish_mode = state.get("publish_parse_mode")
+    assert FLOWERS_FOOTER_LINK not in preview_caption
+    assert FLOWERS_FOOTER_LINK in publish_caption
+    assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
+    assert publish_mode == "HTML"
+    if preview_caption:
+        assert publish_caption.startswith(html.escape(preview_caption.strip()))
+
     preview_photos = [
         call
         for call in multipart_calls
         if call["method"] == "sendPhoto" and call["data"] and call["data"].get("chat_id") == 1234
     ]
     assert preview_photos, "Expected preview to upload via sendPhoto"
+    preview_payload = preview_photos[0]["data"]
+    assert preview_payload is not None
+    assert preview_payload.get("parse_mode") is None
+    assert preview_payload.get("caption") == preview_caption
 
     updated_asset = bot.data.get_asset(asset_id)
     assert updated_asset is not None
@@ -756,7 +833,10 @@ async def test_flowers_preview_document_with_image_filename(tmp_path):
         if call["method"] == "sendPhoto" and call["data"] and call["data"].get("chat_id") == -500
     ]
     assert final_photos, "Expected finalize to use sendPhoto"
-    assert final_photos[0]["data"]["photo"] == "photo-new"
+    final_payload = final_photos[0]["data"]
+    assert final_payload["photo"] == "photo-new"
+    assert final_payload.get("caption") == publish_caption
+    assert final_payload.get("parse_mode") == "HTML"
 
     assert bot.pending_flowers_previews.get(1234) is None
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
@@ -834,6 +914,16 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
     state = bot.pending_flowers_previews.get(1234)
     assert state is not None
 
+    preview_caption = str(state.get("preview_caption") or "")
+    publish_caption = str(state.get("publish_caption") or "")
+    publish_mode = state.get("publish_parse_mode")
+    assert FLOWERS_FOOTER_LINK not in preview_caption
+    assert FLOWERS_FOOTER_LINK in publish_caption
+    assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
+    assert publish_mode == "HTML"
+    if preview_caption:
+        assert publish_caption.startswith(html.escape(preview_caption.strip()))
+
     preview_photos = [
         call
         for call in calls
@@ -841,6 +931,9 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
     ]
     assert preview_photos, "Preview should be sent with cached photo file_id"
     assert preview_photos[0]["files"] is None, "Preview must reuse Telegram file id"
+    preview_payload = preview_photos[0]["data"]
+    assert preview_payload.get("parse_mode") is None
+    assert preview_payload.get("caption") == preview_caption
     assert not multipart_calls, "Cached photo should not trigger multipart uploads"
 
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb-reuse"})
@@ -852,6 +945,9 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
     ]
     assert final_photos, "Final publication should reuse cached photo file_id"
     assert final_photos[0]["files"] is None
+    final_payload = final_photos[0]["data"]
+    assert final_payload.get("caption") == publish_caption
+    assert final_payload.get("parse_mode") == "HTML"
     assert bot.pending_flowers_previews.get(1234) is None
     assert not multipart_calls
 
@@ -1056,14 +1152,18 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert state.get("instructions") == "Добавь смайлы"
     assert not state.get("awaiting_instruction")
 
-    caption_text = str(state.get("caption") or "").strip()
+    preview_caption = str(state.get("preview_caption") or "").strip()
+    publish_caption = str(state.get("publish_caption") or "")
+    assert FLOWERS_FOOTER_LINK not in preview_caption
+    assert FLOWERS_FOOTER_LINK in publish_caption
+    assert state.get("publish_parse_mode") == "HTML"
     summary_updates = [
         data for method, data in api_calls if method == "editMessageText" and data
     ]
     assert summary_updates, "Ожидалось обновление текста предпросмотра"
     summary_text = str(summary_updates[-1].get("text") or "")
-    if caption_text:
-        assert caption_text not in summary_text
+    if preview_caption:
+        assert preview_caption not in summary_text
     assert "Подпись на медиа показана выше" in summary_text
     assert "Инструкции оператора" in summary_text
     assert "Добавь смайлы" in summary_text

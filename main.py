@@ -833,7 +833,12 @@ class Bot:
             gc.collect()
 
     async def _publish_as_photo(
-        self, chat_id: int, local_path: str, caption: str | None
+        self,
+        chat_id: int,
+        local_path: str,
+        caption: str | None,
+        *,
+        caption_entities: Sequence[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, Any] | None, str]:
         mime, size = detect_mime_and_size(local_path)
         send_path = Path(local_path)
@@ -868,12 +873,15 @@ class Bot:
         )
         try:
             with open(send_path, "rb") as fh:
+                payload: dict[str, Any] = {
+                    "chat_id": chat_id,
+                    "caption": caption or None,
+                }
+                if caption_entities:
+                    payload["caption_entities"] = caption_entities
                 response = await self.api_request_multipart(
                     "sendPhoto",
-                    {
-                        "chat_id": chat_id,
-                        "caption": caption or None,
-                    },
+                    payload,
                     files={"photo": (filename, fh, content_type)},
                 )
         finally:
@@ -3576,6 +3584,15 @@ class Bot:
                 caption_lines.append(attribution_line)
 
             caption_text = "\n".join(line for line in caption_lines if line)
+            caption_entities: list[dict[str, Any]] | None = None
+            if caption_text:
+                caption_entities = [
+                    {
+                        "type": "spoiler",
+                        "offset": 0,
+                        "length": len(caption_text),
+                    }
+                ]
             location_log_parts: list[str] = []
             if guess_city:
                 location_log_parts.append(guess_city)
@@ -3658,15 +3675,15 @@ class Bot:
             delete_original_after_post = False
             if asset.kind == "photo":
                 method_used = "copyMessage"
-                resp = await self.api_request(
-                    "copyMessage",
-                    {
-                        "chat_id": asset.channel_id,
-                        "from_chat_id": asset.channel_id,
-                        "message_id": asset.message_id,
-                        "caption": caption_text or None,
-                    },
-                )
+                copy_payload: dict[str, Any] = {
+                    "chat_id": asset.channel_id,
+                    "from_chat_id": asset.channel_id,
+                    "message_id": asset.message_id,
+                    "caption": caption_text or None,
+                }
+                if caption_entities:
+                    copy_payload["caption_entities"] = caption_entities
+                resp = await self.api_request("copyMessage", copy_payload)
                 if resp.get("ok"):
                     delete_original_after_post = True
                 else:
@@ -3678,14 +3695,14 @@ class Bot:
                     )
                     fallback_method = "sendPhoto" if asset.kind == "photo" else "sendDocument"
                     file_field = "photo" if fallback_method == "sendPhoto" else "document"
-                    resp = await self.api_request(
-                        fallback_method,
-                        {
-                            "chat_id": asset.channel_id,
-                            file_field: file_id,
-                            "caption": caption_text,
-                        },
-                    )
+                    fallback_payload: dict[str, Any] = {
+                        "chat_id": asset.channel_id,
+                        file_field: file_id,
+                        "caption": caption_text or None,
+                    }
+                    if caption_entities:
+                        fallback_payload["caption_entities"] = caption_entities
+                    resp = await self.api_request(fallback_method, fallback_payload)
                     method_used = fallback_method
                     if resp.get("ok"):
                         delete_original_after_post = fallback_method == "sendPhoto"
@@ -3717,6 +3734,7 @@ class Bot:
                         asset.channel_id,
                         local_path,
                         caption_text or None,
+                        caption_entities=caption_entities,
                     )
                 finally:
                     log_rss("after_sendPhoto")
@@ -3736,14 +3754,14 @@ class Bot:
                         asset_id,
                         resp,
                     )
-                    resp = await self.api_request(
-                        "sendDocument",
-                        {
-                            "chat_id": asset.channel_id,
-                            "document": file_id,
-                            "caption": caption_text,
-                        },
-                    )
+                    fallback_doc_payload: dict[str, Any] = {
+                        "chat_id": asset.channel_id,
+                        "document": file_id,
+                        "caption": caption_text or None,
+                    }
+                    if caption_entities:
+                        fallback_doc_payload["caption_entities"] = caption_entities
+                    resp = await self.api_request("sendDocument", fallback_doc_payload)
                     method_used = "sendDocument"
                     delete_original_after_post = False
                     if not resp.get("ok"):
@@ -3755,14 +3773,14 @@ class Bot:
                         )
                         raise RuntimeError(f"Failed to publish vision result: {resp}")
             else:
-                resp = await self.api_request(
-                    "sendDocument",
-                    {
-                        "chat_id": asset.channel_id,
-                        "document": file_id,
-                        "caption": caption_text,
-                    },
-                )
+                document_payload: dict[str, Any] = {
+                    "chat_id": asset.channel_id,
+                    "document": file_id,
+                    "caption": caption_text or None,
+                }
+                if caption_entities:
+                    document_payload["caption_entities"] = caption_entities
+                resp = await self.api_request("sendDocument", document_payload)
                 method_used = "sendDocument"
                 if not resp.get("ok"):
                     logging.error(

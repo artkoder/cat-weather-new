@@ -37,7 +37,7 @@ jobs:
       - name: Deploy to Fly
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: flyctl deploy --image "${IMAGE}" --config cat-weather-new/fly.toml cat-weather-new
+        run: flyctl deploy --image "${IMAGE}" --config cat-weather-new/fly.toml --app cat-weather-new
 
       # Временная отладка — можно удалить после первого успешного запуска
       - name: Debug Fly account

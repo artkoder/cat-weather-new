@@ -201,6 +201,8 @@ async def test_job_vision_skips_exif_debug_by_default(tmp_path, monkeypatch):
     )
     assert any(call['method'] == 'copyMessage' for call in calls)
     assert not any(call['method'] == 'sendMessage' for call in calls)
+    delete_calls = [call for call in calls if call['method'] == 'deleteMessage']
+    assert delete_calls, 'original photo message should be deleted after publishing'
 
 
 @pytest.mark.asyncio

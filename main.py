@@ -3711,10 +3711,9 @@ class Bot:
             if caption_text:
                 caption_entities = [
                     {
-                        "type": "blockquote",
+                        "type": "expandable_blockquote",
                         "offset": 0,
                         "length": _utf16_length(caption_text),
-                        "is_expandable": True,
                     }
                 ]
             location_log_parts: list[str] = []

@@ -469,6 +469,36 @@ async def test_job_vision_enriches_weather_season_and_style(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_job_vision_includes_low_conf_arch_style(tmp_path, monkeypatch):
+    overrides = {
+        'arch_style': {'label': 'Gothic', 'confidence': 0.1},
+        'season_guess': 'winter',
+        'weather_image': 'snowy',
+    }
+
+    calls, asset, supabase_calls = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        vision_overrides=overrides,
+        metadata=None,
+    )
+
+    assert any(call['method'] == 'copyMessage' for call in calls)
+
+    assert asset.vision_results is not None
+    vision = asset.vision_results
+    assert vision['arch_style'] == {'label': 'Gothic', 'confidence': 0.1}
+
+    assert asset.vision_caption is not None
+    assert 'Стиль: Gothic (низкая уверенность ≈10%)' in asset.vision_caption
+
+    assert supabase_calls, 'supabase logging should be attempted'
+    meta = supabase_calls[0]['meta']
+    assert meta['arch_style'] == {'label': 'Gothic', 'confidence': 0.1}
+
+
+@pytest.mark.asyncio
 async def test_job_vision_caption_entities_utf16_length(tmp_path, monkeypatch):
     overrides = {
         'caption': '⚠️ тест',

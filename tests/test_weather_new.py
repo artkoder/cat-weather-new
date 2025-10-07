@@ -244,6 +244,188 @@ async def test_job_vision_converts_document_to_photo_and_deletes_original(
 
 
 @pytest.mark.asyncio
+async def test_ingest_extracts_gps_for_convertible_document(tmp_path, monkeypatch):
+    bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
+    bot.asset_storage = tmp_path
+
+    img = Image.new('RGB', (20, 20), color='white')
+    gps_ifd = {
+        piexif.GPSIFD.GPSLatitudeRef: b'N',
+        piexif.GPSIFD.GPSLatitude: [(55, 1), (45, 1), (30, 1)],
+        piexif.GPSIFD.GPSLongitudeRef: b'E',
+        piexif.GPSIFD.GPSLongitude: [(37, 1), (36, 1), (56, 1)],
+    }
+    exif_bytes = piexif.dump({'GPS': gps_ifd})
+    buffer = BytesIO()
+    img.save(buffer, format='JPEG', exif=exif_bytes)
+    image_bytes = buffer.getvalue()
+
+    calls: list[dict[str, Any]] = []
+    recognized_mid = 999
+
+    async def fake_api_request(method, data=None, *, files=None):  # type: ignore[override]
+        calls.append({'method': method, 'data': data, 'files': files})
+        if method in {'copyMessage', 'sendPhoto', 'sendDocument'}:
+            return {'ok': True, 'result': {'message_id': recognized_mid}}
+        if method == 'sendMessage':
+            return {'ok': True, 'result': {'message_id': recognized_mid + 1}}
+        if method == 'deleteMessage':
+            return {'ok': True, 'result': True}
+        return {'ok': True, 'result': {}}
+
+    async def fake_api_request_multipart(method, data=None, *, files=None):  # type: ignore[override]
+        normalized_files = None
+        if files:
+            normalized_files = {}
+            for name, (filename, fh, _content_type) in files.items():
+                payload = fh.read()
+                try:
+                    fh.seek(0)
+                except Exception:
+                    pass
+                normalized_files[name] = (filename, payload)
+        calls.append({'method': method, 'data': data, 'files': normalized_files})
+        if method == 'sendPhoto':
+            return {'ok': True, 'result': {'message_id': recognized_mid}}
+        return {'ok': True, 'result': {}}
+
+    async def fake_download(self, file_id, dest_path=None):  # type: ignore[override]
+        assert dest_path is not None
+        path = Path(dest_path)
+        path.write_bytes(image_bytes)
+        return path
+
+    async def fake_reverse_geocode(self, lat, lon):  # type: ignore[override]
+        return {'city': 'Москва', 'country': 'Россия'}
+
+    class DummyOpenAI:
+        def __init__(self):
+            self.api_key = 'test-key'
+
+        async def classify_image(self, **kwargs):
+            return OpenAIResponse(
+                {
+                    'arch_view': False,
+                    'caption': 'кот',
+                    'objects': ['кот'],
+                    'is_outdoor': False,
+                    'framing': 'close_up',
+                    'guess_country': None,
+                    'guess_city': None,
+                    'location_confidence': 0.0,
+                    'landmarks': [],
+                    'tags': ['animals', 'sunny', 'pet'],
+                    'architecture_close_up': False,
+                    'architecture_wide': False,
+                    'weather_image': 'sunny',
+                    'season_guess': None,
+                    'arch_style': None,
+                    'safety': {'nsfw': False, 'reason': 'безопасно'},
+                },
+                {
+                    'prompt_tokens': 10,
+                    'completion_tokens': 5,
+                    'total_tokens': 15,
+                    'request_id': 'req-vision',
+                    'endpoint': '/v1/responses',
+                },
+            )
+
+    async def fake_record(self, *args, **kwargs):  # type: ignore[override]
+        return None
+
+    def fake_enforce(self, *args, **kwargs):  # type: ignore[override]
+        return None
+
+    async def fake_insert(self, **kwargs):  # type: ignore[override]
+        return False, {'mock': True}, 'disabled'
+
+    bot.api_request = fake_api_request  # type: ignore[assignment]
+    bot.api_request_multipart = fake_api_request_multipart  # type: ignore[assignment]
+    bot._download_file = types.MethodType(fake_download, bot)  # type: ignore[assignment]
+    bot._reverse_geocode = types.MethodType(fake_reverse_geocode, bot)  # type: ignore[assignment]
+    bot.openai = DummyOpenAI()
+    bot._record_openai_usage = types.MethodType(fake_record, bot)  # type: ignore[assignment]
+    bot._enforce_openai_limit = types.MethodType(fake_enforce, bot)  # type: ignore[assignment]
+    bot.supabase.insert_token_usage = types.MethodType(  # type: ignore[assignment]
+        fake_insert, bot.supabase
+    )
+
+    file_meta = {
+        'file_id': 'doc_large',
+        'file_unique_id': 'uniq_doc',
+        'file_name': 'convertible.jpg',
+        'mime_type': 'image/jpeg',
+        'file_size': len(image_bytes),
+        'width': 1920,
+        'height': 1080,
+    }
+
+    asset_id = bot.data.save_asset(
+        channel_id=-100123,
+        message_id=123,
+        template=None,
+        hashtags='#test',
+        tg_chat_id=-100123,
+        caption='Исходный документ',
+        kind='document',
+        file_meta=file_meta,
+        author_user_id=4242,
+        origin='recognition',
+    )
+
+    ingest_job = Job(
+        id=1,
+        name='ingest',
+        payload={'asset_id': asset_id},
+        status='queued',
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_ingest(ingest_job)
+
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.exif_present is True
+    assert asset.latitude == pytest.approx(55.7583, rel=1e-4)
+    assert asset.longitude == pytest.approx(37.6156, rel=1e-4)
+    assert asset.city == 'Москва'
+    assert asset.country == 'Россия'
+
+    vision_job = Job(
+        id=2,
+        name='vision',
+        payload={'asset_id': asset_id},
+        status='queued',
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_vision(vision_job)
+
+    send_photo_calls = [call for call in calls if call['method'] == 'sendPhoto']
+    assert send_photo_calls, 'converted document should be published as photo'
+    caption_payload = send_photo_calls[0]['data']
+    assert caption_payload is not None and 'caption' in caption_payload
+    caption_text = caption_payload['caption']
+    assert caption_text and 'Москва' in caption_text
+    assert 'Адрес (EXIF)' in caption_text
+
+    assert not any(
+        call['method'] == 'sendMessage'
+        and call.get('data', {}).get('text') == 'В изображении отсутствуют EXIF-данные с координатами.'
+        for call in calls
+    )
+
+    await bot.close()
+
 async def test_job_vision_enriches_weather_season_and_style(tmp_path, monkeypatch):
     overrides = {
         'weather_image': 'cloudy',

@@ -1187,15 +1187,11 @@ class DataAccess:
         return True
 
     def delete_rubric(self, code: str) -> bool:
-        cur = self.conn.execute("DELETE FROM rubrics WHERE code=?", (code,))
-        removed = cur.rowcount > 0
-        if removed:
-            self.conn.execute(
-                "DELETE FROM rubric_schedule_state WHERE rubric_code=?",
-                (code,),
-            )
-            self.conn.commit()
-        return removed
+        """Rubrics are immutable in production deployments."""
+
+        raise NotImplementedError(
+            "Deleting rubrics is disabled to protect fixed configurations"
+        )
 
     def get_rubric_schedule_state(
         self, rubric_code: str, schedule_key: str

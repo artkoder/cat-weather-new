@@ -3467,7 +3467,8 @@ class Bot:
             category = self._derive_primary_scene(caption, tags)
             rubric_id = self._resolve_rubric_id_for_category(category)
             flower_varieties: list[str] = []
-            if "flowers" in tags:
+            normalized_tag_set = {tag.lower() for tag in tags if tag}
+            if normalized_tag_set.intersection({"flowers", "flower"}):
                 flower_varieties = [obj for obj in objects if obj]
             location_parts: list[str] = []
             existing_lower: set[str] = set()
@@ -6883,9 +6884,10 @@ class Bot:
 
     def _derive_primary_scene(self, primary_scene: str, tags: Sequence[str]) -> str:
         normalized_tags = [tag.lower() for tag in tags if tag]
-        if "architecture" in normalized_tags:
+        normalized_set = set(normalized_tags)
+        if "architecture" in normalized_set:
             return "architecture"
-        if "flowers" in normalized_tags:
+        if normalized_set.intersection({"flowers", "flower"}):
             return "flowers"
         if normalized_tags:
             return normalized_tags[0]

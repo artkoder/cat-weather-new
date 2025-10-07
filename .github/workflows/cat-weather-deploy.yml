@@ -1,0 +1,49 @@
+name: Deploy cat-weather-new via GHCR
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'cat-weather-new/**'
+      - 'Dockerfile'
+      - '.github/workflows/cat-weather-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build & push image (cat-weather-new)
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}/cat-weather-new:${{ github.sha }}
+          # если Dockerfile в корне и контекст общий:
+          docker build -t $IMAGE .
+          # если у приложения свой Dockerfile/контекст — замени на:
+          # docker build -f cat-weather-new/Dockerfile -t $IMAGE cat-weather-new
+          docker push $IMAGE
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Setup flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --image "${IMAGE}" --config cat-weather-new/fly.toml
+
+      # Временная отладка — можно удалить после первого успешного запуска
+      - name: Debug Fly account
+        if: failure()
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          flyctl auth whoami || true
+          flyctl apps list || true

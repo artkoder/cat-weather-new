@@ -4326,11 +4326,13 @@ class Bot:
                         cities,
                         asset_count,
                         instructions=instructions_text,
+                        weather=preview_state.get('weather'),
                     )
                     caption, prepared_hashtags = self._build_flowers_caption(
                         greeting,
                         cities,
                         hashtags,
+                        preview_state.get('weather'),
                     )
                     await self._update_flowers_preview_caption_state(
                         preview_state,
@@ -7200,12 +7202,14 @@ class Bot:
             file_ids.append(file_id)
             asset_kinds.append(media_kind)
         cities = sorted({asset.city for asset in assets if asset.city})
+        weather = self._build_flowers_weather_block()
         greeting, hashtags = await self._generate_flowers_copy(
             rubric,
             cities,
             len(assets),
             job=job,
             instructions=instructions,
+            weather=weather,
         )
         asset_ids = [asset.id for asset in assets]
         return (
@@ -7216,6 +7220,7 @@ class Bot:
             cities,
             greeting,
             hashtags,
+            weather,
             conversion_map,
         )
 
@@ -7397,9 +7402,35 @@ class Bot:
         greeting: str,
         cities: Sequence[str],
         hashtags: Sequence[str],
+        weather: dict[str, Any] | None = None,
     ) -> tuple[str, list[str]]:
         hashtag_list = self._prepare_hashtags(hashtags)
-        caption_parts = [greeting.strip()] if greeting else []
+        caption_parts: list[str] = []
+        weather_line: str | None = None
+        if weather:
+            raw_line = weather.get("caption_line")
+            if isinstance(raw_line, str) and raw_line.strip():
+                weather_line = raw_line.strip()
+            else:
+                positive_summary = str(weather.get("positive_summary") or "").strip()
+                locations = weather.get("locations") or []
+                location_text = ", ".join(str(loc) for loc in locations if str(loc).strip())
+                if not location_text and cities:
+                    location_text = ", ".join(cities)
+                if not location_text:
+                    location_text = "Калининград, побережье"
+                if not positive_summary:
+                    positive_summary = "Погода дарит приятное настроение."
+                positive_summary = positive_summary.rstrip(".")
+                weather_line = f"{positive_summary} • {location_text}"
+        elif cities:
+            weather_line = "Погода дарит приятное настроение • " + ", ".join(cities)
+        else:
+            weather_line = "Погода дарит приятное настроение • Калининград, побережье"
+        if weather_line:
+            caption_parts.append(weather_line)
+        if greeting:
+            caption_parts.append(greeting.strip())
         if cities:
             caption_parts.append("Города съёмки: " + ", ".join(cities))
         if hashtag_list:
@@ -7446,9 +7477,15 @@ class Bot:
             cities,
             greeting,
             hashtags,
+            weather,
             conversion_map,
         ) = prepared
-        caption, hashtag_list = self._build_flowers_caption(greeting, cities, hashtags)
+        caption, hashtag_list = self._build_flowers_caption(
+            greeting,
+            cities,
+            hashtags,
+            weather,
+        )
         if initiator_id is not None:
             await self._send_flowers_preview(
                 rubric,
@@ -7463,6 +7500,7 @@ class Bot:
                 cities=cities,
                 greeting=greeting,
                 hashtags=hashtags,
+                weather=weather,
                 caption=caption,
                 prepared_hashtags=hashtag_list,
                 instructions=instructions,
@@ -7495,6 +7533,7 @@ class Bot:
             "cities": cities,
             "greeting": greeting,
             "hashtags": hashtag_list,
+            "weather": weather,
         }
         self.data.record_post_history(
             channel_id,
@@ -7644,6 +7683,7 @@ class Bot:
         cities: list[str],
         greeting: str,
         hashtags: list[str],
+        weather: dict[str, Any] | None,
         caption: str,
         prepared_hashtags: list[str],
         instructions: str | None,
@@ -7675,6 +7715,7 @@ class Bot:
             "cities": cities,
             "greeting": greeting,
             "hashtags": hashtags,
+            "weather": weather,
             "prepared_hashtags": prepared_hashtags,
             "caption": caption,
             "instructions": (instructions or "").strip(),
@@ -7851,6 +7892,7 @@ class Bot:
                 "cities": list(state.get("cities") or []),
                 "greeting": state.get("greeting"),
                 "hashtags": list(state.get("prepared_hashtags") or []),
+                "weather": state.get("weather"),
             }
             self.data.mark_assets_used(asset_ids)
             first_asset = asset_ids[0] if asset_ids else None
@@ -7936,12 +7978,14 @@ class Bot:
                 cities,
                 greeting,
                 hashtags,
+                weather,
                 conversion_map,
             ) = prepared
             caption, prepared_hashtags = self._build_flowers_caption(
                 greeting,
                 cities,
                 hashtags,
+                weather,
             )
             default_channel = state.get("default_channel_id")
             if not isinstance(default_channel, int):
@@ -7972,6 +8016,7 @@ class Bot:
                 cities=cities,
                 greeting=greeting,
                 hashtags=hashtags,
+                weather=weather,
                 caption=caption,
                 prepared_hashtags=prepared_hashtags,
                 instructions=state.get("instructions"),
@@ -8006,11 +8051,13 @@ class Bot:
                 cities,
                 asset_count,
                 instructions=state.get("instructions"),
+                weather=state.get("weather"),
             )
             caption, prepared_hashtags = self._build_flowers_caption(
                 greeting,
                 cities,
                 hashtags,
+                state.get("weather"),
             )
             await self._update_flowers_preview_caption_state(
                 state,
@@ -8118,6 +8165,7 @@ class Bot:
         *,
         job: Job | None = None,
         instructions: str | None = None,
+        weather: dict[str, Any] | None = None,
     ) -> tuple[str, list[str]]:
         if not self.openai or not self.openai.api_key:
             return self._default_flowers_greeting(cities), self._default_hashtags("flowers")
@@ -8132,6 +8180,49 @@ class Bot:
             )
         if instructions:
             prompt_parts.append(f"Дополнительные пожелания: {instructions}")
+        weather_positive = "Погода дарит приятное настроение."
+        plan_lines: list[str]
+        if weather:
+            positive_summary_raw = weather.get("positive_summary")
+            if isinstance(positive_summary_raw, str) and positive_summary_raw.strip():
+                weather_positive = positive_summary_raw.strip()
+            plan_lines = [
+                str(line).strip()
+                for line in weather.get("plan_lines", [])
+                if str(line).strip()
+            ]
+            if not plan_lines:
+                plan_lines = [
+                    "Текущая погода в Калининграде: утро приятное.",
+                    "Море у побережья: атмосфера дружелюбная.",
+                    "Вывод о переменах относительно вчера: погода остаётся приятной.",
+                    "Позитивные формулировки: Погода дарит приятное настроение.",
+                ]
+            examples = weather.get("positive_phrases") or []
+            positive_examples = " ".join(
+                str(example).strip()
+                for example in examples
+                if str(example).strip()
+            )
+            if positive_examples:
+                prompt_parts.append(
+                    "Позитивные формулировки для вдохновения: " + positive_examples
+                )
+        else:
+            plan_lines = [
+                "Текущая погода в Калининграде: утро приятное.",
+                "Море у побережья: атмосфера дружелюбная.",
+                "Вывод о переменах относительно вчера: погода остаётся приятной.",
+                "Позитивные формулировки: Погода дарит приятное настроение.",
+            ]
+        prompt_parts.append(f"Главный вывод о погоде: {weather_positive}")
+        plan_text = "\n".join(
+            f"{idx}. {line}" for idx, line in enumerate(plan_lines, start=1)
+        )
+        prompt_parts.append(
+            "Структурированный план (не перечисляй номера в ответе, но следуй логике):\n"
+            + plan_text
+        )
         prompt = " ".join(prompt_parts)
         schema = {
             "type": "object",
@@ -8687,6 +8778,331 @@ class Bot:
             99: "rain",
         }
         return mapping.get(code)
+
+    def _format_temperature(self, value: Any, *, decimals: int = 0) -> str | None:
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if decimals:
+            return f"{number:.{decimals}f}\u00B0C"
+        return f"{int(round(number))}\u00B0C"
+
+    def _format_wind(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return f"{int(round(number))} м/с"
+
+    def _positive_temperature_phrase(
+        self,
+        city_name: str,
+        current: Any,
+        previous: Any,
+    ) -> str:
+        try:
+            current_val = float(current)
+        except (TypeError, ValueError):
+            current_val = None
+        try:
+            previous_val = float(previous)
+        except (TypeError, ValueError):
+            previous_val = None
+        if current_val is None:
+            return f"Температура в {city_name} остаётся комфортной."
+        if previous_val is None:
+            return (
+                f"Температура в {city_name} около {int(round(current_val))}\u00B0 — хорошее утро."
+            )
+        diff = current_val - previous_val
+        amount = max(1, abs(int(round(diff))))
+        if diff > 1:
+            return f"В {city_name} теплее на {amount}\u00B0 — отличный повод прогуляться."
+        if diff < -1:
+            return (
+                f"Свежий воздух в {city_name} бодрит (на {amount}\u00B0 прохладнее)."
+            )
+        return f"Температура в {city_name} держится комфортной."
+
+    def _positive_wind_phrase(self, current: Any, previous: Any) -> str:
+        try:
+            current_val = float(current)
+        except (TypeError, ValueError):
+            current_val = None
+        try:
+            previous_val = float(previous)
+        except (TypeError, ValueError):
+            previous_val = None
+        if current_val is None:
+            return "Ветер остаётся спокойным."
+        if previous_val is None:
+            return "Ветер мягкий и не мешает прогулкам."
+        diff = current_val - previous_val
+        if diff < -1:
+            return "Ветер стал мягче и уютнее."
+        if diff > 1:
+            return "Лёгкий ветерок добавляет энергии."
+        return "Ветер остаётся спокойным."
+
+    def _flowers_change_summary(
+        self,
+        city_name: str,
+        current_temp: Any,
+        previous_temp: Any,
+        current_wind: Any,
+        previous_wind: Any,
+    ) -> str:
+        try:
+            temp_now = float(current_temp)
+        except (TypeError, ValueError):
+            temp_now = None
+        try:
+            temp_prev = float(previous_temp)
+        except (TypeError, ValueError):
+            temp_prev = None
+        try:
+            wind_now = float(current_wind)
+        except (TypeError, ValueError):
+            wind_now = None
+        try:
+            wind_prev = float(previous_wind)
+        except (TypeError, ValueError):
+            wind_prev = None
+
+        parts: list[str] = []
+        if temp_now is not None and temp_prev is not None:
+            diff_temp = temp_now - temp_prev
+            amount = max(1, abs(int(round(diff_temp))))
+            if diff_temp > 1:
+                parts.append(f"теплее на {amount}\u00B0")
+            elif diff_temp < -1:
+                parts.append(f"свежее на {amount}\u00B0 — бодрит")
+            else:
+                parts.append("температура осталась комфортной")
+        else:
+            parts.append("температура ощущается комфортной")
+
+        if wind_now is not None and wind_prev is not None:
+            diff_wind = wind_now - wind_prev
+            if diff_wind < -1:
+                parts.append("ветер заметно спокойнее")
+            elif diff_wind > 1:
+                parts.append("ветер чуть бодрее и освежает")
+            else:
+                parts.append("ветер почти не изменился")
+        else:
+            parts.append("ветер мягкий")
+
+        joined = ", ".join(parts)
+        return f"В {city_name} {joined}."
+
+    def _describe_wave_height(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        try:
+            wave = float(value)
+        except (TypeError, ValueError):
+            return None
+        if wave < 0.5:
+            return "волны тихие"
+        if wave < 1.5:
+            return "волны мягкие"
+        return "волны мощные"
+
+    def _sea_positive_phrase(self, name: str, wave: Any) -> str:
+        try:
+            wave_val = float(wave)
+        except (TypeError, ValueError):
+            wave_val = None
+        if wave_val is None:
+            return f"Побережье {name} радует спокойствием."
+        if wave_val < 0.5:
+            return f"Побережье {name} встречает спокойными волнами."
+        if wave_val < 1.5:
+            return f"У {name} лёгкие волны — приятно прогуляться вдоль берега."
+        return f"Море у {name} мощное и завораживающее."
+
+    def _get_flowers_kaliningrad_weather(self) -> dict[str, Any]:
+        default_name = "Калининград"
+        row = self.db.execute(
+            "SELECT id, name FROM cities WHERE lower(name)=lower(?)",
+            ("Kaliningrad",),
+        ).fetchone()
+        city_id = row["id"] if row else None
+        city_name = row["name"] if row and row["name"] else default_name
+        info: dict[str, Any] = {
+            "name": city_name,
+            "location": city_name,
+        }
+        if not city_id:
+            info["summary"] = None
+            info["display"] = f"{city_name}: данные уточняются"
+            info["positive_phrases"] = [
+                f"Погода в {city_name} остаётся уютной."
+            ]
+            info["change_summary"] = f"В {city_name} погода остаётся приятной."
+            info["plan_line"] = (
+                f"Текущая погода в {city_name}: данных нет, но утро обещает быть приятным."
+            )
+            return info
+        weather_row = self.db.execute(
+            """
+            SELECT temperature, weather_code, wind_speed, is_day
+            FROM weather_cache_hour
+            WHERE city_id=?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (city_id,),
+        ).fetchone()
+        if not weather_row:
+            info["summary"] = None
+            info["display"] = f"{city_name}: данные уточняются"
+            info["positive_phrases"] = [
+                f"Погода в {city_name} остаётся уютной."
+            ]
+            info["change_summary"] = f"В {city_name} погода остаётся приятной."
+            info["plan_line"] = (
+                f"Текущая погода в {city_name}: данных нет, но утро обещает быть приятным."
+            )
+            return info
+        temp = weather_row["temperature"]
+        wind = weather_row["wind_speed"]
+        code = weather_row["weather_code"]
+        is_day = weather_row["is_day"]
+        temp_str = self._format_temperature(temp)
+        wind_str = self._format_wind(wind)
+        parts: list[str] = []
+        if temp_str:
+            parts.append(temp_str)
+        if wind_str:
+            parts.append(f"ветер {wind_str}")
+        summary = ", ".join(parts) if parts else None
+        emoji = weather_emoji(int(code), is_day) if code is not None else ""
+        display_parts: list[str] = []
+        if emoji:
+            display_parts.append(emoji)
+        if summary:
+            display_parts.append(f"{city_name}: {summary}")
+        else:
+            display_parts.append(city_name)
+        info["summary"] = summary
+        info["display"] = " ".join(display_parts).strip()
+        yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+        previous_row = self.db.execute(
+            """
+            SELECT temperature, wind_speed
+            FROM weather_cache_day
+            WHERE city_id=? AND day=?
+            """,
+            (city_id, yesterday.isoformat()),
+        ).fetchone()
+        prev_temp = previous_row["temperature"] if previous_row else None
+        prev_wind = previous_row["wind_speed"] if previous_row else None
+        temp_phrase = self._positive_temperature_phrase(city_name, temp, prev_temp)
+        wind_phrase = self._positive_wind_phrase(wind, prev_wind)
+        info["positive_phrases"] = [temp_phrase, wind_phrase]
+        info["change_summary"] = self._flowers_change_summary(
+            city_name, temp, prev_temp, wind, prev_wind
+        )
+        if summary:
+            info["plan_line"] = f"Текущая погода в {city_name}: {summary}."
+        else:
+            info["plan_line"] = (
+                f"Текущая погода в {city_name}: данные появятся позже, но утро всё равно приятное."
+            )
+        return info
+
+    def _get_flowers_coast_weather(self) -> dict[str, Any]:
+        default_name = "Балтийское побережье"
+        row = self.db.execute(
+            """
+            SELECT s.id, s.name, c.current, c.wave
+            FROM seas AS s
+            LEFT JOIN sea_cache AS c ON c.sea_id = s.id
+            ORDER BY COALESCE(c.updated, '') DESC, s.id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        name = row["name"] if row and row["name"] else default_name
+        temp = row["current"] if row else None
+        wave = row["wave"] if row else None
+        temp_str = self._format_temperature(temp, decimals=1)
+        wave_desc = self._describe_wave_height(wave)
+        parts: list[str] = []
+        if temp_str:
+            parts.append(f"вода {temp_str}")
+        if wave_desc:
+            parts.append(wave_desc)
+        summary = ", ".join(parts) if parts else None
+        info: dict[str, Any] = {
+            "name": name,
+            "location": name,
+            "summary": summary,
+            "display": f"{name}: {summary}" if summary else f"{name}: данные уточняются",
+            "positive_phrases": [self._sea_positive_phrase(name, wave)],
+        }
+        if summary:
+            info["plan_line"] = f"Море у {name}: {summary}."
+        else:
+            info["plan_line"] = (
+                f"Море у {name}: данные появятся позже, но берег остаётся уютным."
+            )
+        return info
+
+    def _build_flowers_weather_block(self) -> dict[str, Any]:
+        city_info = self._get_flowers_kaliningrad_weather()
+        sea_info = self._get_flowers_coast_weather()
+        plan_lines: list[str] = []
+        city_plan = city_info.get("plan_line")
+        if city_plan:
+            plan_lines.append(city_plan)
+        sea_plan = sea_info.get("plan_line")
+        if sea_plan:
+            plan_lines.append(sea_plan)
+        change_summary = city_info.get("change_summary") or "Погода остаётся приятной."
+        plan_lines.append(f"Вывод о переменах относительно вчера: {change_summary}")
+        positive_phrases: list[str] = []
+        for phrases in (
+            city_info.get("positive_phrases"),
+            sea_info.get("positive_phrases"),
+        ):
+            if not phrases:
+                continue
+            for phrase in phrases:
+                text = str(phrase or "").strip()
+                if text:
+                    positive_phrases.append(text if text.endswith(".") else f"{text}.")
+        if not positive_phrases:
+            positive_phrases = ["Погода дарит приятное настроение."]
+        plan_lines.append(
+            "Позитивные формулировки: " + " ".join(positive_phrases)
+        )
+        positive_summary = positive_phrases[0].rstrip(".") + "."
+        locations = [
+            city_info.get("location") or city_info.get("name"),
+            sea_info.get("location") or sea_info.get("name"),
+        ]
+        clean_locations = [str(loc) for loc in locations if loc]
+        if clean_locations:
+            caption_line = f"{positive_summary.rstrip('.')} • {', '.join(clean_locations)}"
+        else:
+            caption_line = positive_summary
+        return {
+            "city": city_info,
+            "sea": sea_info,
+            "change_summary": change_summary,
+            "positive_phrases": positive_phrases,
+            "positive_summary": positive_summary,
+            "plan_lines": plan_lines,
+            "caption_line": caption_line,
+            "locations": clean_locations,
+        }
 
     def _get_city_weather_info(self, city_name: str) -> tuple[str | None, str | None]:
         row = self.db.execute(

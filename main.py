@@ -669,6 +669,7 @@ class Bot:
             self.db.execute(stmt)
         self.db.commit()
         self.data = DataAccess(self.db)
+        self._rubric_category_cache: dict[str, int] = {}
         self._ensure_default_rubrics()
         if migrate_weather_publish_channels(self.db, tz_offset=TZ_OFFSET):
             self.db.commit()
@@ -763,6 +764,7 @@ class Bot:
             created.append(code)
         if created:
             logging.info("Initialized default rubrics: %s", ", ".join(created))
+            self._rubric_category_cache.clear()
 
     @staticmethod
     def _is_convertible_image_document(asset: Asset) -> bool:
@@ -3452,6 +3454,7 @@ class Bot:
             if not caption:
                 raise RuntimeError("Invalid response from vision model")
             category = self._derive_primary_scene(caption, tags)
+            rubric_id = self._resolve_rubric_id_for_category(category)
             flower_varieties: list[str] = []
             if "flowers" in tags:
                 flower_varieties = [obj for obj in objects if obj]
@@ -3628,6 +3631,8 @@ class Bot:
                 "weather_final_display": photo_weather_display,
                 "flower_varieties": flower_varieties,
             }
+            if rubric_id is not None:
+                result_payload["rubric_id"] = rubric_id
             logging.info(
                 "Vision job %s classified asset %s: scene=%s, arch=%s, tags=%s, weather_tag=%s",
                 job.id,
@@ -3812,18 +3817,20 @@ class Bot:
                 arch_style_label or "-",
                 arch_confidence_log,
             )
-            self.data.update_asset(
-                asset_id,
-                recognized_message_id=new_mid,
-                vision_results=result_payload,
-                vision_category=category,
-                vision_arch_view="yes" if arch_view else "",
-                vision_photo_weather=photo_weather,
-                vision_confidence=location_confidence,
-                vision_flower_varieties=flower_varieties,
-                vision_caption=caption_text,
-                local_path=None,
-            )
+            asset_update_kwargs = {
+                "recognized_message_id": new_mid,
+                "vision_results": result_payload,
+                "vision_category": category,
+                "vision_arch_view": "yes" if arch_view else "",
+                "vision_photo_weather": photo_weather,
+                "vision_confidence": location_confidence,
+                "vision_flower_varieties": flower_varieties,
+                "vision_caption": caption_text,
+                "local_path": None,
+            }
+            if rubric_id is not None:
+                asset_update_kwargs["rubric_id"] = rubric_id
+            self.data.update_asset(asset_id, **asset_update_kwargs)
             if ASSETS_DEBUG_EXIF and not self.dry_run and new_mid:
                 try:
                     debug_path: str | None = (
@@ -6007,6 +6014,46 @@ class Bot:
         if "enabled" not in data:
             data["enabled"] = False
         return data
+
+    @staticmethod
+    def _normalize_rubric_category(category: str | None) -> str | None:
+        if not category:
+            return None
+        normalized = re.sub(r"[\s\-]+", "_", str(category).strip().lower())
+        return normalized or None
+
+    def _build_rubric_category_cache(self) -> dict[str, int]:
+        mapping: dict[str, int] = {}
+        for rubric in self.data.list_rubrics():
+            config = rubric.config or {}
+            assets_cfg = config.get("assets")
+            if not isinstance(assets_cfg, dict):
+                continue
+            raw_categories = assets_cfg.get("categories")
+            if isinstance(raw_categories, (list, tuple, set)):
+                categories_iter = raw_categories
+            elif isinstance(raw_categories, str):
+                categories_iter = [raw_categories]
+            else:
+                continue
+            for raw_category in categories_iter:
+                if not isinstance(raw_category, str):
+                    continue
+                normalized = self._normalize_rubric_category(raw_category)
+                if not normalized or normalized in mapping:
+                    continue
+                mapping[normalized] = rubric.id
+        return mapping
+
+    def _resolve_rubric_id_for_category(self, category: str | None) -> int | None:
+        normalized = self._normalize_rubric_category(category)
+        if not normalized:
+            return None
+        cached = self._rubric_category_cache.get(normalized)
+        if cached is not None:
+            return cached
+        self._rubric_category_cache = self._build_rubric_category_cache()
+        return self._rubric_category_cache.get(normalized)
 
     def _format_rubric_schedule_line(
         self,

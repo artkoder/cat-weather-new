@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import imghdr
+import gc
 import json
 import logging
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict
+
+from imgio import b64_data_url_from_file, make_ai_derivative_to_temp
 
 
 def _ensure_list_with_null(type_value: Any) -> Any:
@@ -167,44 +169,64 @@ class OpenAIClient:
         model: str,
         system_prompt: str,
         user_prompt: str,
-        image_bytes: bytes,
+        image_path: str | os.PathLike[str] | Path,
         schema: dict[str, Any],
         schema_name: str = "asset_vision_v1",
     ) -> OpenAIResponse | None:
         if not self.api_key:
             return None
         strict_schema = strictify_schema(schema)
-        payload = {
-            "model": model,
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    **self.ensure_json_format(
-                        name=schema_name,
-                        schema=strict_schema,
-                    ),
-                }
-            },
-            "input": [
-                {
-                    "role": "system",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": system_prompt,
-                        }
-                    ],
+        payload: dict[str, Any] | None = None
+        derivative_path: Path | None = None
+        image_part: dict[str, Any] | None = None
+        response_obj: OpenAIResponse | None = None
+        try:
+            derivative_path = make_ai_derivative_to_temp(Path(image_path))
+            image_part = self._build_image_part(derivative_path)
+            payload = {
+                "model": model,
+                "text": {
+                    "format": {
+                        "type": "json_schema",
+                        **self.ensure_json_format(
+                            name=schema_name,
+                            schema=strict_schema,
+                        ),
+                    }
                 },
-                {
-                    "role": "user",
-                    "content": [
-                        self._build_image_part(image_bytes),
-                        {"type": "input_text", "text": user_prompt},
-                    ],
-                },
-            ],
-        }
-        return await self._submit_request(payload)
+                "input": [
+                    {
+                        "role": "system",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": system_prompt,
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            image_part,
+                            {"type": "input_text", "text": user_prompt},
+                        ],
+                    },
+                ],
+            }
+            response_obj = await self._submit_request(payload)
+            return response_obj
+        finally:
+            if derivative_path and derivative_path.exists():
+                try:
+                    derivative_path.unlink()
+                except OSError:
+                    logging.debug(
+                        "Failed to remove temporary derivative %s", derivative_path
+                    )
+            payload = None
+            image_part = None
+            response_obj = None
+            gc.collect()
 
     async def generate_json(
         self,
@@ -261,16 +283,10 @@ class OpenAIClient:
             "strict": strict,
         }
 
-    def _build_image_part(self, image_bytes: bytes) -> dict[str, Any]:
-        image_kind = imghdr.what(None, image_bytes)
-        if image_kind:
-            mime_type = f"image/{image_kind}"
-        else:
-            mime_type = "image/jpeg"
-        base64_data = base64.b64encode(image_bytes).decode("ascii")
+    def _build_image_part(self, image_path: Path) -> dict[str, Any]:
         return {
             "type": "input_image",
-            "image_url": f"data:{mime_type};base64,{base64_data}",
+            "image_url": b64_data_url_from_file(image_path),
         }
 
     def _truncate_for_log(self, value: str, limit: int = 600) -> str:

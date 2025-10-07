@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import io
 import contextlib
 import json
@@ -18,6 +19,9 @@ from typing import Any, BinaryIO, Iterable, Sequence, TYPE_CHECKING
 
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+import psutil
+
+import imgio
 
 try:  # pragma: no cover - optional dependency
     from PIL import ImageCms  # type: ignore
@@ -47,6 +51,14 @@ DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 TZ_OFFSET = os.getenv("TZ_OFFSET", "+00:00")
 SCHED_INTERVAL_SEC = int(os.getenv("SCHED_INTERVAL_SEC", "30"))
 ASSETS_DEBUG_EXIF = _env_flag(os.getenv("ASSETS_DEBUG_EXIF", "0"))
+VISION_CONCURRENCY_RAW = os.getenv("VISION_CONCURRENCY", "1")
+try:
+    VISION_CONCURRENCY = max(1, int(VISION_CONCURRENCY_RAW))
+except ValueError:
+    logging.warning(
+        "Invalid VISION_CONCURRENCY=%s, defaulting to 1", VISION_CONCURRENCY_RAW
+    )
+    VISION_CONCURRENCY = 1
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 WMO_EMOJI = {
     0: "\u2600\ufe0f",
@@ -194,73 +206,7 @@ SEASON_TRANSLATIONS: dict[str, str] = {
 }
 
 
-def ensure_photo_bytes(source: bytes | str | os.PathLike[str]) -> bytes:
-    """Convert an image to an sRGB JPEG under Telegram limits.
 
-    Args:
-        source: Either raw bytes or a path-like object pointing to the image.
-
-    Returns:
-        JPEG bytes with EXIF orientation applied and the longer side capped at
-        2560 pixels.
-    """
-
-    if isinstance(source, (bytes, bytearray)):
-        payload = bytes(source)
-    elif isinstance(source, (str, os.PathLike)):
-        with open(source, "rb") as fh:
-            payload = fh.read()
-    else:  # pragma: no cover - defensive
-        raise TypeError("Unsupported image source type")
-
-    with Image.open(io.BytesIO(payload)) as img:
-        img = ImageOps.exif_transpose(img)
-        converted = img
-
-        icc_profile = converted.info.get("icc_profile") if hasattr(converted, "info") else None
-        if icc_profile and ImageCms is not None:
-            try:
-                src_profile = ImageCms.ImageCmsProfile(io.BytesIO(icc_profile))
-                dst_profile = ImageCms.createProfile("sRGB")
-                converted = ImageCms.profileToProfile(
-                    converted, src_profile, dst_profile, outputMode="RGB"
-                )
-            except Exception:  # pragma: no cover - fallback when conversion fails
-                logging.exception("Failed to convert ICC profile to sRGB")
-                converted = converted.convert("RGB")
-        elif converted.mode != "RGB":
-            converted = converted.convert("RGB")
-        else:
-            converted = converted.copy()
-
-        width, height = converted.size
-        max_side = max(width, height)
-        if max_side > 2560:
-            scale = 2560 / float(max_side)
-            new_width = max(1, int(round(width * scale)))
-            new_height = max(1, int(round(height * scale)))
-            if hasattr(Image, "Resampling"):
-                resample = Image.Resampling.LANCZOS
-            else:  # pragma: no cover - Pillow < 9 compatibility
-                resample = Image.LANCZOS  # type: ignore[attr-defined]
-            converted = converted.resize((new_width, new_height), resample)
-
-        max_bytes = 10 * 1024 * 1024
-        quality = 85
-        min_quality = 40
-        step = 5
-
-        while True:
-            buffer = io.BytesIO()
-            converted.save(buffer, format="JPEG", quality=quality, optimize=True)
-            data = buffer.getvalue()
-            if len(data) <= max_bytes or quality <= min_quality:
-                if len(data) > max_bytes and quality <= min_quality:
-                    logging.warning(
-                        "Compressed photo exceeds %s bytes even at quality %s", max_bytes, quality
-                    )
-                return data
-            quality = max(min_quality, quality - step)
 
 ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -717,6 +663,7 @@ class Bot:
         self._revgeo_fallback_cache: dict[tuple[float, float], tuple[str, datetime]] = {}
         self._revgeo_fail_cache: dict[tuple[float, float], datetime] = {}
         self._revgeo_semaphore = asyncio.Semaphore(1)
+        self._vision_semaphore = asyncio.Semaphore(VISION_CONCURRENCY)
         self._twogis_api_key = os.getenv("TWOGIS_API_KEY")
         self._twogis_backoff_seconds = 1.0
         # ensure new columns exist when upgrading
@@ -1145,6 +1092,50 @@ class Bot:
         else:
             async with self.session.post(url, json=data) as resp:
                 text = await resp.text()
+        if resp.status != 200:
+            logging.error("API HTTP %s for %s: %s", resp.status, method, text)
+        try:
+            result = json.loads(text)
+        except Exception:
+            logging.exception("Invalid response for %s: %s", method, text)
+            return {}
+        if not result.get("ok"):
+            logging.error("API call %s failed: %s", method, result)
+        else:
+            logging.info("API call %s succeeded", method)
+        return result
+
+    async def api_request_multipart(
+        self,
+        method: str,
+        data: dict | None = None,
+        *,
+        files: dict[str, tuple[str, BinaryIO, str]] | None = None,
+    ) -> dict:
+        if self.dry_run:
+            logging.debug("Simulated multipart API call %s with %s", method, data)
+            return {"ok": True, "result": {}}
+        url = f"{self.api_url}/{method}"
+        form = FormData()
+        for key, value in (data or {}).items():
+            if isinstance(value, (dict, list)):
+                form.add_field(key, json.dumps(value))
+            else:
+                form.add_field(key, str(value))
+        for name, (filename, fh, content_type) in (files or {}).items():
+            if hasattr(fh, "seek"):
+                try:
+                    fh.seek(0)
+                except Exception:
+                    pass
+            form.add_field(
+                name,
+                fh,
+                filename=filename,
+                content_type=content_type,
+            )
+        async with self.session.post(url, data=form) as resp:
+            text = await resp.text()
         if resp.status != 200:
             logging.error("API HTTP %s for %s: %s", resp.status, method, text)
         try:
@@ -2907,6 +2898,10 @@ class Bot:
 
 
     async def _job_vision(self, job: Job):
+        async with self._vision_semaphore:
+            await self._job_vision_locked(job)
+
+    async def _job_vision_locked(self, job: Job):
         start_time = datetime.utcnow()
         asset_id = job.payload.get("asset_id") if job.payload else None
         cleanup_paths: list[str] = []
@@ -2976,10 +2971,16 @@ class Bot:
                     asset_id, vision_results={"status": "skipped"}, local_path=None
                 )
                 return
+            process = psutil.Process(os.getpid())
+
+            def log_rss(stage: str) -> None:
+                try:
+                    rss = process.memory_info().rss // (1024 * 1024)
+                    logging.info("MEM rss=%sMB stage=%s", rss, stage)
+                except Exception:
+                    logging.debug("Failed to capture RSS at stage=%s", stage)
             if not local_path or not os.path.exists(local_path):
                 raise RuntimeError(f"Local file for asset {asset_id} not found")
-            with open(local_path, "rb") as fh:
-                image_bytes = fh.read()
 
             system_prompt = (
                 "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, строго соответствующий схеме asset_vision_v1. "
@@ -3007,9 +3008,11 @@ class Bot:
                 model="gpt-4o-mini",
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                image_bytes=image_bytes,
+                image_path=Path(local_path),
                 schema=ASSET_VISION_V1_SCHEMA,
             )
+            log_rss("after_openai")
+            gc.collect()
             if response is None:
                 logging.warning(
                     "Vision job %s for asset %s returned no response",
@@ -3017,6 +3020,7 @@ class Bot:
                     asset_id,
                 )
                 self.data.update_asset(asset_id, vision_results={"status": "skipped"})
+                gc.collect()
                 return
             result = response.content
             if not isinstance(result, dict):
@@ -3543,36 +3547,42 @@ class Bot:
                         )
                         raise RuntimeError(f"Failed to publish vision result: {resp}")
             elif self._is_convertible_image_document(asset):
-                photo_source: bytes | str | os.PathLike[str] | None = None
-                if local_path and os.path.exists(local_path):
-                    photo_source = local_path
-                elif not self.dry_run:
-                    target_path = self._build_local_file_path(asset_id, file_meta)
-                    downloaded_path = await self._download_file(file_id, target_path)
-                    if downloaded_path:
-                        local_path = str(downloaded_path)
-                        cleanup_paths.append(local_path)
-                        photo_source = local_path
-                if not photo_source:
+                if not local_path or not os.path.exists(local_path):
+                    if not self.dry_run:
+                        target_path = self._build_local_file_path(asset_id, file_meta)
+                        downloaded_path = await self._download_file(file_id, target_path)
+                        if downloaded_path:
+                            local_path = str(downloaded_path)
+                            cleanup_paths.append(local_path)
+                if not local_path or not os.path.exists(local_path):
                     raise RuntimeError("Unable to load asset for conversion")
 
-                photo_bytes = ensure_photo_bytes(photo_source)
-                attach_name = "photo"
+                converted_photo_path = imgio.ensure_photo_file_for_telegram(local_path)
+                converted_photo = Path(converted_photo_path)
+                temp_photo_created = converted_photo != Path(local_path)
                 filename = asset.file_name or "photo.jpg"
                 if not filename.lower().endswith((".jpg", ".jpeg")):
                     filename = f"{Path(filename).stem or 'photo'}.jpg"
-                resp = await self.api_request(
-                    "sendPhoto",
-                    {
-                        "chat_id": asset.channel_id,
-                        "caption": caption_text or None,
-                        "photo": f"attach://{attach_name}",
-                    },
-                    files={attach_name: (filename, photo_bytes)},
-                )
+                resp: dict[str, Any] | None = None
+                log_rss("before_sendPhoto")
+                try:
+                    with open(converted_photo, "rb") as fh:
+                        resp = await self.api_request_multipart(
+                            "sendPhoto",
+                            {
+                                "chat_id": asset.channel_id,
+                                "caption": caption_text or None,
+                            },
+                            files={"photo": (filename, fh, "image/jpeg")},
+                        )
+                finally:
+                    log_rss("after_sendPhoto")
+                    if temp_photo_created:
+                        self._remove_file(str(converted_photo))
+                    gc.collect()
                 method_used = "sendPhoto"
                 delete_original_after_post = True
-                if not resp.get("ok"):
+                if not resp or not resp.get("ok"):
                     logging.error(
                         "Vision job %s failed to publish converted photo for asset %s: %s",
                         job.id,

@@ -282,6 +282,58 @@ async def test_publish_flowers_removes_assets(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flowers_preview_notifies_when_not_enough_assets(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "channel_id": -500,
+        "assets": {"min": 5, "max": 6},
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
+        calls.append((method, data))
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+
+    payload = {
+        "rubric_code": "flowers",
+        "channel_id": -500,
+        "initiator_id": 777,
+        "test": False,
+    }
+    now = datetime.utcnow()
+    job = Job(
+        id=1,
+        name="publish_rubric",
+        payload=payload,
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    await bot._job_publish_rubric(job)
+
+    send_calls = [call for call in calls if call[0] == "sendMessage"]
+    assert send_calls, "Expected operator notification"
+    message = send_calls[0][1]
+    assert message is not None
+    assert message["chat_id"] == 777
+    assert "минимальн" in message["text"].lower()
+
+    ok = await bot.publish_rubric("flowers", channel_id=-500)
+    assert not ok
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_flowers_asset_selection_random(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {

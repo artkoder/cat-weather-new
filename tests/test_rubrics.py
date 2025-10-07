@@ -1056,6 +1056,21 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert state.get("instructions") == "Добавь смайлы"
     assert not state.get("awaiting_instruction")
 
+    caption_text = str(state.get("caption") or "").strip()
+    summary_updates = [
+        data for method, data in api_calls if method == "editMessageText" and data
+    ]
+    assert summary_updates, "Ожидалось обновление текста предпросмотра"
+    summary_text = str(summary_updates[-1].get("text") or "")
+    if caption_text:
+        assert caption_text not in summary_text
+    assert "Подпись на медиа показана выше" in summary_text
+    assert "Инструкции оператора" in summary_text
+    assert "Добавь смайлы" in summary_text
+    assert "Доступные каналы:" in summary_text
+    assert "📣 -500" in summary_text
+    assert "🧪 -600" in summary_text
+
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb3"})
     assert bot.pending_flowers_previews.get(1234) is None
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]

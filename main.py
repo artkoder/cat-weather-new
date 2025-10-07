@@ -3921,6 +3921,34 @@ class Bot:
         }
 
 
+    @staticmethod
+    def _is_missing_source_message_error(resp: dict[str, Any]) -> bool:
+        if resp.get("ok", False):
+            return False
+        if resp.get("error_code") != 400:
+            return False
+        description = (resp.get("description") or "").lower()
+        if not description:
+            return False
+        indicators = (
+            "message to copy",
+            "message to forward",
+        )
+        return any(indicator in description and "not found" in description for indicator in indicators)
+
+    def _cleanup_missing_source_asset(self, asset: dict[str, Any]) -> None:
+        asset_id = asset.get("id")
+        channel_id = asset.get("channel_id")
+        message_id = asset.get("message_id")
+        logging.info(
+            "Cleaning up missing source asset id=%s channel=%s message=%s",
+            asset_id,
+            channel_id,
+            message_id,
+        )
+        if asset_id is not None:
+            self.data.delete_assets([asset_id])
+
 
     async def publish_weather(
         self,
@@ -3929,37 +3957,43 @@ class Bot:
         record: bool = True,
     ) -> bool:
 
-        asset = self.next_asset(tags)
-        caption = asset["template"] if asset and asset.get("template") else ""
-        if caption:
-            caption = self._render_template(caption) or caption
-        from_chat = None
-        if asset:
-            from_chat = asset.get("channel_id") or self.weather_assets_channel_id
-        if asset and from_chat:
+        while True:
+            asset = self.next_asset(tags)
+            caption = asset["template"] if asset and asset.get("template") else ""
+            if caption:
+                caption = self._render_template(caption) or caption
+            from_chat = None
+            if asset:
+                from_chat = asset.get("channel_id") or self.weather_assets_channel_id
 
-            logging.info("Copying asset %s to %s", asset["message_id"], channel_id)
-            resp = await self.api_request(
-                "copyMessage",
-                {
-                    "chat_id": channel_id,
-                    "from_chat_id": from_chat,
-                    "message_id": asset["message_id"],
-                    "caption": caption or None,
-                },
-            )
+            if asset and from_chat:
 
-            ok = resp.get("ok", False)
-        elif caption:
-            logging.info("Sending text weather to %s", channel_id)
-            resp = await self.api_request(
-                "sendMessage",
-                {"chat_id": channel_id, "text": caption},
-            )
-            ok = resp.get("ok", False)
-        else:
-            logging.info("No asset and no caption; nothing to publish")
-            return False
+                logging.info("Copying asset %s to %s", asset["message_id"], channel_id)
+                resp = await self.api_request(
+                    "copyMessage",
+                    {
+                        "chat_id": channel_id,
+                        "from_chat_id": from_chat,
+                        "message_id": asset["message_id"],
+                        "caption": caption or None,
+                    },
+                )
+
+                ok = resp.get("ok", False)
+                if not ok and self._is_missing_source_message_error(resp) and asset:
+                    self._cleanup_missing_source_asset(asset)
+                    continue
+            elif caption:
+                logging.info("Sending text weather to %s", channel_id)
+                resp = await self.api_request(
+                    "sendMessage",
+                    {"chat_id": channel_id, "text": caption},
+                )
+                ok = resp.get("ok", False)
+            else:
+                logging.info("No asset and no caption; nothing to publish")
+                return False
+            break
 
         if ok and record:
             if resp.get("result"):

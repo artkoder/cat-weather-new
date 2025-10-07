@@ -177,10 +177,10 @@ async def test_classify_image_uses_text_response_payload(monkeypatch, tmp_path):
     image_part = payload["input"][1]["content"][0]
     assert image_part["type"] == "input_image"
     image_url = image_part["image_url"]
-    assert image_url.startswith("data:image/jpeg;base64,")
+    assert image_url.startswith("data:image/png;base64,")
     encoded = image_url.split(",", 1)[1]
     decoded = base64.b64decode(encoded)
-    assert decoded.startswith(b"\xff\xd8")
+    assert decoded == PNG_BYTES
     user_text = payload["input"][1]["content"][1]
     assert user_text == {"type": "input_text", "text": "What do you see?"}
 
@@ -222,32 +222,33 @@ def test_strictify_schema_root_type_remains_object():
     assert set(grandchild_schema["type"]) == {"string", "null"}
 
 
-def test_build_image_part_png_data_uri():
+def test_build_image_part_uses_data_url():
     client = OpenAIClient("test-key")
-    part = client._build_image_part(PNG_BYTES)
-    assert part["type"] == "input_image"
-    assert part["image_url"].startswith("data:image/png;base64,")
-    encoded = part["image_url"].split(",", 1)[1]
-    assert base64.b64decode(encoded) == PNG_BYTES
+    data_url = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("ascii")
+    part = client._build_image_part(data_url)
+    assert part == {"type": "input_image", "image_url": data_url}
 
 
-def test_build_image_part_jpeg_data_uri():
+def test_infer_image_mime_type_for_png(tmp_path):
     client = OpenAIClient("test-key")
-    part = client._build_image_part(JPEG_BYTES)
-    assert part["type"] == "input_image"
-    assert part["image_url"].startswith("data:image/jpeg;base64,")
-    encoded = part["image_url"].split(",", 1)[1]
-    assert base64.b64decode(encoded) == JPEG_BYTES
+    source = tmp_path / "sample.png"
+    source.write_bytes(PNG_BYTES)
+    assert client._infer_image_mime_type(source, PNG_BYTES) == "image/png"
 
 
-def test_build_image_part_falls_back_to_jpeg(monkeypatch):
+def test_infer_image_mime_type_for_jpeg(tmp_path):
+    client = OpenAIClient("test-key")
+    source = tmp_path / "sample.jpg"
+    source.write_bytes(JPEG_BYTES)
+    assert client._infer_image_mime_type(source, JPEG_BYTES) == "image/jpeg"
+
+
+def test_infer_image_mime_type_falls_back_to_jpeg(monkeypatch, tmp_path):
     client = OpenAIClient("test-key")
     monkeypatch.setattr("openai_client.imghdr.what", lambda *args, **kwargs: None)
-    part = client._build_image_part(PNG_BYTES)
-    assert part["type"] == "input_image"
-    assert part["image_url"].startswith("data:image/jpeg;base64,")
-    encoded = part["image_url"].split(",", 1)[1]
-    assert base64.b64decode(encoded) == PNG_BYTES
+    source = tmp_path / "sample"
+    source.write_bytes(PNG_BYTES)
+    assert client._infer_image_mime_type(source, PNG_BYTES) == "image/jpeg"
 
 
 @pytest.mark.asyncio

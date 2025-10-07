@@ -842,9 +842,20 @@ class Bot:
             send_path = cleanup_path
             content_type = "image/jpeg"
             mode = "reencoded"
-        filename = Path(local_path).name or "photo.jpg"
+        path_obj = Path(local_path)
+        filename = path_obj.name or "photo.jpg"
         if mode != "original":
-            filename = f"{Path(filename).stem or 'photo'}.jpg"
+            filename = f"{path_obj.stem or 'photo'}.jpg"
+        else:
+            normalized = {
+                "image/jpeg": ".jpg",
+                "image/jpg": ".jpg",
+                "image/png": ".png",
+                "image/webp": ".webp",
+            }
+            desired_suffix = normalized.get(content_type.lower()) if content_type else None
+            if desired_suffix and not filename.lower().endswith(desired_suffix):
+                filename = f"{path_obj.stem or 'photo'}{desired_suffix}"
         logging.info(
             "Publishing photo for chat %s via %s file (mime=%s size=%s)",
             chat_id,

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import gc
+import imghdr
 import json
 import logging
+import mimetypes
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
 
-from imgio import b64_data_url_from_file, make_ai_derivative_to_temp
 
 
 def _ensure_list_with_null(type_value: Any) -> Any:
@@ -177,12 +179,18 @@ class OpenAIClient:
             return None
         strict_schema = strictify_schema(schema)
         payload: dict[str, Any] | None = None
-        derivative_path: Path | None = None
+        image_data_url: str | None = None
         image_part: dict[str, Any] | None = None
         response_obj: OpenAIResponse | None = None
         try:
-            derivative_path = make_ai_derivative_to_temp(Path(image_path))
-            image_part = self._build_image_part(derivative_path)
+            source_path = Path(image_path)
+            image_bytes = source_path.read_bytes()
+            mime_type = self._infer_image_mime_type(source_path, image_bytes)
+            encoded_image = base64.b64encode(image_bytes).decode("ascii")
+            del image_bytes
+            image_data_url = f"data:{mime_type};base64,{encoded_image}"
+            del encoded_image
+            image_part = self._build_image_part(image_data_url)
             payload = {
                 "model": model,
                 "text": {
@@ -216,15 +224,9 @@ class OpenAIClient:
             response_obj = await self._submit_request(payload)
             return response_obj
         finally:
-            if derivative_path and derivative_path.exists():
-                try:
-                    derivative_path.unlink()
-                except OSError:
-                    logging.debug(
-                        "Failed to remove temporary derivative %s", derivative_path
-                    )
             payload = None
             image_part = None
+            image_data_url = None
             response_obj = None
             gc.collect()
 
@@ -283,10 +285,22 @@ class OpenAIClient:
             "strict": strict,
         }
 
-    def _build_image_part(self, image_path: Path) -> dict[str, Any]:
+    def _infer_image_mime_type(self, image_path: Path, data: bytes) -> str:
+        mime_type, _ = mimetypes.guess_type(image_path.name)
+        if not mime_type or not mime_type.startswith("image/"):
+            detected = imghdr.what(None, h=data)
+            if detected:
+                mime_type = f"image/{detected}"
+        if not mime_type or not mime_type.startswith("image/"):
+            mime_type = "image/jpeg"
+        if mime_type.endswith("/jpg"):
+            mime_type = "image/jpeg"
+        return mime_type
+
+    def _build_image_part(self, image_data_url: str) -> dict[str, Any]:
         return {
             "type": "input_image",
-            "image_url": b64_data_url_from_file(image_path),
+            "image_url": image_data_url,
         }
 
     def _truncate_for_log(self, value: str, limit: int = 600) -> str:

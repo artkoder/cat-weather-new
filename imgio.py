@@ -95,28 +95,6 @@ def _create_temp_file(prefix: str) -> Path:
     return Path(temp_name)
 
 
-def make_ai_derivative_to_temp(src_path: str | os.PathLike[str] | Path) -> Path:
-    source_path = Path(src_path)
-    max_side = _env_int("ASSETS_AI_MAX_SIDE", 2048)
-    image = _prepare_image(source_path, max_side=max_side)
-    temp_path = _create_temp_file("ai-")
-    try:
-        image.save(temp_path, format="JPEG", quality=88, progressive=True)
-    finally:
-        image.close()
-        gc.collect()
-    return temp_path
-
-
-def b64_data_url_from_file(path: str | os.PathLike[str] | Path) -> str:
-    file_path = Path(path)
-    data = file_path.read_bytes()
-    import base64
-
-    encoded = base64.b64encode(data).decode("ascii")
-    return f"data:image/jpeg;base64,{encoded}"
-
-
 def _iter_quality_steps(min_quality: int) -> list[int]:
     base_steps = [92, 88, 86]
     qualities = [q for q in base_steps if q >= min_quality]

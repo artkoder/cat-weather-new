@@ -9709,17 +9709,36 @@ class Bot:
         if wind_detail:
             details.append(f"ветер {wind_detail}")
         snapshot["detail"] = ", ".join(details)
-        snapshot["trend_temperature"] = self._positive_temperature_trend(
-            snapshot["day_temperature"]
+        trend_temperature_value = (
+            snapshot.get("day_temperature")
             if snapshot.get("day_temperature") is not None
-            else snapshot["temperature"],
+            else snapshot.get("temperature")
+        )
+        trend_wind_value = (
+            snapshot.get("day_wind")
+            if snapshot.get("day_wind") is not None
+            else snapshot.get("wind_speed")
+        )
+        snapshot["trend_temperature_value"] = trend_temperature_value
+        snapshot["trend_wind_value"] = trend_wind_value
+        snapshot["trend_temperature_previous_value"] = snapshot.get(
+            "previous_temperature"
+        )
+        snapshot["trend_wind_previous_value"] = snapshot.get("previous_wind")
+
+        snapshot["trend_temperature"] = self._positive_temperature_trend(
+            trend_temperature_value,
             snapshot.get("previous_temperature"),
         )
         snapshot["trend_wind"] = self._positive_wind_trend(
-            snapshot["day_wind"] if snapshot.get("day_wind") is not None else snapshot["wind_speed"],
+            trend_wind_value,
             snapshot.get("previous_wind"),
         )
-        trends = [piece for piece in [snapshot["trend_temperature"], snapshot["trend_wind"]] if piece]
+        trends = [
+            piece
+            for piece in (snapshot["trend_temperature"], snapshot["trend_wind"])
+            if piece
+        ]
         snapshot["trend_summary"] = " и ".join(trends)
         if snapshot["trend_summary"]:
             snapshot["positive_intro"] = "Утро радует"

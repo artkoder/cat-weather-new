@@ -1,7 +1,7 @@
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from typing import Any
@@ -22,6 +22,40 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 
 def _insert_rubric(bot: Bot, code: str, config: dict, rubric_id: int = 1) -> None:
     bot.data.upsert_rubric(code, code.title(), config=config)
+
+
+def _seed_flowers_weather(bot: Bot) -> None:
+    now = datetime.utcnow()
+    timestamp = now.isoformat()
+    yesterday = (now - timedelta(days=1)).date().isoformat()
+    bot.db.execute(
+        "INSERT OR IGNORE INTO cities (id, name, lat, lon) VALUES (1, 'Kaliningrad', 54.7, 20.5)"
+    )
+    bot.db.execute(
+        """
+        INSERT OR REPLACE INTO weather_cache_hour (city_id, timestamp, temperature, weather_code, wind_speed, is_day)
+        VALUES (1, ?, 15.0, 1, 3.0, 1)
+        """,
+        (timestamp,),
+    )
+    bot.db.execute(
+        """
+        INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed)
+        VALUES (1, ?, 12.0, 2, 5.0)
+        """,
+        (yesterday,),
+    )
+    bot.db.execute(
+        "INSERT OR IGNORE INTO seas (id, name, lat, lon) VALUES (1, 'Балтийское побережье', 54.9, 20.0)"
+    )
+    bot.db.execute(
+        """
+        INSERT OR REPLACE INTO sea_cache (sea_id, updated, current, morning, day, evening, night, wave, morning_wave, day_wave, evening_wave, night_wave)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (1, timestamp, 8.5, None, None, None, None, 0.4, None, None, None, None),
+    )
+    bot.db.commit()
 
 
 @pytest.mark.asyncio
@@ -364,6 +398,7 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
         "enabled": True,
         "assets": {"min": asset_count, "max": asset_count},
     }
+    _seed_flowers_weather(bot)
     _insert_rubric(bot, "flowers", config, rubric_id=1)
     now = datetime.utcnow().isoformat()
     file_ids: list[str] = []
@@ -427,6 +462,16 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
     assert meta["rubric_code"] == "flowers"
     assert meta["asset_ids"]
     assert meta["greeting"]
+    weather_meta = meta.get("weather")
+    assert weather_meta and weather_meta.get("caption_line")
+    caption_line = weather_meta["caption_line"]
+    if expected_method == "sendPhoto":
+        caption_text = str(data.get("caption") or "")
+    else:
+        first = data.get("media", [{}])[0]
+        caption_text = str(first.get("caption") or "")
+    assert caption_line in caption_text
+    assert weather_meta.get("positive_summary")
     await bot.close()
 
 
@@ -982,6 +1027,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
         "test_channel_id": -600,
         "assets": {"min": 4, "max": 4},
     }
+    _seed_flowers_weather(bot)
     _insert_rubric(bot, "flowers", config, rubric_id=1)
 
     now = datetime.utcnow().isoformat()
@@ -1036,6 +1082,8 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     state = bot.pending_flowers_previews.get(1234)
     assert state is not None
     assert state.get("caption_message_id")
+    weather_state = state.get("weather")
+    assert weather_state and weather_state.get("caption_line")
 
     await bot._handle_flowers_preview_callback(1234, "regen_caption", {"id": "cb1"})
     assert any(call[0] == "editMessageText" for call in api_calls)
@@ -1057,6 +1105,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert not state.get("awaiting_instruction")
 
     caption_text = str(state.get("caption") or "").strip()
+    assert weather_state["caption_line"] in caption_text
     summary_updates = [
         data for method, data in api_calls if method == "editMessageText" and data
     ]
@@ -1080,6 +1129,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     meta = json.loads(history["metadata"])
     assert meta["asset_ids"]
     assert meta["test"] is False
+    assert meta.get("weather") and meta["weather"].get("caption_line")
 
     await bot.close()
 
@@ -1217,6 +1267,7 @@ async def test_guess_arch_asset_selection_random(tmp_path):
 async def test_generate_flowers_uses_gpt_4o(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {"enabled": True}
+    _seed_flowers_weather(bot)
     _insert_rubric(bot, "flowers", config, rubric_id=1)
     rubric = bot.data.get_rubric_by_code("flowers")
 
@@ -1250,6 +1301,10 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
     assert request["model"] == "gpt-4o"
     assert 0.9 <= request["temperature"] <= 1.1
     assert request["top_p"] == 0.9
+    prompt = request["user_prompt"]
+    assert "Структурированный план" in prompt
+    assert "Калининград" in prompt
+    assert "Главный вывод о погоде" in prompt
 
     await bot.close()
 
@@ -1258,6 +1313,7 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
 async def test_generate_flowers_retries_on_duplicate(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {"enabled": True}
+    _seed_flowers_weather(bot)
     _insert_rubric(bot, "flowers", config, rubric_id=1)
     rubric = bot.data.get_rubric_by_code("flowers")
     bot.data.record_post_history(1, 1, None, rubric.id, {

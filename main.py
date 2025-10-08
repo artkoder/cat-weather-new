@@ -34,6 +34,7 @@ from jobs import Job, JobDelayed, JobQueue
 from openai_client import OpenAIClient
 from supabase_client import SupabaseClient
 from weather_migration import migrate_weather_publish_channels
+from flowers_weather import FlowersWeatherPlanner
 
 if TYPE_CHECKING:
     from openai_client import OpenAIResponse
@@ -4326,11 +4327,13 @@ class Bot:
                         cities,
                         asset_count,
                         instructions=instructions_text,
+                        weather=preview_state.get('weather'),
                     )
                     caption, prepared_hashtags = self._build_flowers_caption(
                         greeting,
                         cities,
                         hashtags,
+                        preview_state.get('weather'),
                     )
                     await self._update_flowers_preview_caption_state(
                         preview_state,
@@ -7200,12 +7203,14 @@ class Bot:
             file_ids.append(file_id)
             asset_kinds.append(media_kind)
         cities = sorted({asset.city for asset in assets if asset.city})
+        weather = self._build_flowers_weather_block()
         greeting, hashtags = await self._generate_flowers_copy(
             rubric,
             cities,
             len(assets),
             job=job,
             instructions=instructions,
+            weather=weather,
         )
         asset_ids = [asset.id for asset in assets]
         return (
@@ -7216,6 +7221,7 @@ class Bot:
             cities,
             greeting,
             hashtags,
+            weather,
             conversion_map,
         )
 
@@ -7397,9 +7403,35 @@ class Bot:
         greeting: str,
         cities: Sequence[str],
         hashtags: Sequence[str],
+        weather: dict[str, Any] | None = None,
     ) -> tuple[str, list[str]]:
         hashtag_list = self._prepare_hashtags(hashtags)
-        caption_parts = [greeting.strip()] if greeting else []
+        caption_parts: list[str] = []
+        weather_line: str | None = None
+        if weather:
+            raw_line = weather.get("caption_line")
+            if isinstance(raw_line, str) and raw_line.strip():
+                weather_line = raw_line.strip()
+            else:
+                positive_summary = str(weather.get("positive_summary") or "").strip()
+                locations = weather.get("locations") or []
+                location_text = ", ".join(str(loc) for loc in locations if str(loc).strip())
+                if not location_text and cities:
+                    location_text = ", ".join(cities)
+                if not location_text:
+                    location_text = "Калининград, побережье"
+                if not positive_summary:
+                    positive_summary = "Погода дарит приятное настроение."
+                positive_summary = positive_summary.rstrip(".")
+                weather_line = f"{positive_summary} • {location_text}"
+        elif cities:
+            weather_line = "Погода дарит приятное настроение • " + ", ".join(cities)
+        else:
+            weather_line = "Погода дарит приятное настроение • Калининград, побережье"
+        if weather_line:
+            caption_parts.append(weather_line)
+        if greeting:
+            caption_parts.append(greeting.strip())
         if cities:
             caption_parts.append("Города съёмки: " + ", ".join(cities))
         if hashtag_list:
@@ -7446,9 +7478,15 @@ class Bot:
             cities,
             greeting,
             hashtags,
+            weather,
             conversion_map,
         ) = prepared
-        caption, hashtag_list = self._build_flowers_caption(greeting, cities, hashtags)
+        caption, hashtag_list = self._build_flowers_caption(
+            greeting,
+            cities,
+            hashtags,
+            weather,
+        )
         if initiator_id is not None:
             await self._send_flowers_preview(
                 rubric,
@@ -7463,6 +7501,7 @@ class Bot:
                 cities=cities,
                 greeting=greeting,
                 hashtags=hashtags,
+                weather=weather,
                 caption=caption,
                 prepared_hashtags=hashtag_list,
                 instructions=instructions,
@@ -7495,6 +7534,7 @@ class Bot:
             "cities": cities,
             "greeting": greeting,
             "hashtags": hashtag_list,
+            "weather": weather,
         }
         self.data.record_post_history(
             channel_id,
@@ -7644,6 +7684,7 @@ class Bot:
         cities: list[str],
         greeting: str,
         hashtags: list[str],
+        weather: dict[str, Any] | None,
         caption: str,
         prepared_hashtags: list[str],
         instructions: str | None,
@@ -7675,6 +7716,7 @@ class Bot:
             "cities": cities,
             "greeting": greeting,
             "hashtags": hashtags,
+            "weather": weather,
             "prepared_hashtags": prepared_hashtags,
             "caption": caption,
             "instructions": (instructions or "").strip(),
@@ -7851,6 +7893,7 @@ class Bot:
                 "cities": list(state.get("cities") or []),
                 "greeting": state.get("greeting"),
                 "hashtags": list(state.get("prepared_hashtags") or []),
+                "weather": state.get("weather"),
             }
             self.data.mark_assets_used(asset_ids)
             first_asset = asset_ids[0] if asset_ids else None
@@ -7936,12 +7979,14 @@ class Bot:
                 cities,
                 greeting,
                 hashtags,
+                weather,
                 conversion_map,
             ) = prepared
             caption, prepared_hashtags = self._build_flowers_caption(
                 greeting,
                 cities,
                 hashtags,
+                weather,
             )
             default_channel = state.get("default_channel_id")
             if not isinstance(default_channel, int):
@@ -7972,6 +8017,7 @@ class Bot:
                 cities=cities,
                 greeting=greeting,
                 hashtags=hashtags,
+                weather=weather,
                 caption=caption,
                 prepared_hashtags=prepared_hashtags,
                 instructions=state.get("instructions"),
@@ -8006,11 +8052,13 @@ class Bot:
                 cities,
                 asset_count,
                 instructions=state.get("instructions"),
+                weather=state.get("weather"),
             )
             caption, prepared_hashtags = self._build_flowers_caption(
                 greeting,
                 cities,
                 hashtags,
+                state.get("weather"),
             )
             await self._update_flowers_preview_caption_state(
                 state,
@@ -8118,6 +8166,7 @@ class Bot:
         *,
         job: Job | None = None,
         instructions: str | None = None,
+        weather: dict[str, Any] | None = None,
     ) -> tuple[str, list[str]]:
         if not self.openai or not self.openai.api_key:
             return self._default_flowers_greeting(cities), self._default_hashtags("flowers")
@@ -8132,6 +8181,49 @@ class Bot:
             )
         if instructions:
             prompt_parts.append(f"Дополнительные пожелания: {instructions}")
+        weather_positive = "Погода дарит приятное настроение."
+        plan_lines: list[str]
+        if weather:
+            positive_summary_raw = weather.get("positive_summary")
+            if isinstance(positive_summary_raw, str) and positive_summary_raw.strip():
+                weather_positive = positive_summary_raw.strip()
+            plan_lines = [
+                str(line).strip()
+                for line in weather.get("plan_lines", [])
+                if str(line).strip()
+            ]
+            if not plan_lines:
+                plan_lines = [
+                    "Текущая погода в Калининграде: утро приятное.",
+                    "Море у побережья: атмосфера дружелюбная.",
+                    "Вывод о переменах относительно вчера: погода остаётся приятной.",
+                    "Позитивные формулировки: Погода дарит приятное настроение.",
+                ]
+            examples = weather.get("positive_phrases") or []
+            positive_examples = " ".join(
+                str(example).strip()
+                for example in examples
+                if str(example).strip()
+            )
+            if positive_examples:
+                prompt_parts.append(
+                    "Позитивные формулировки для вдохновения: " + positive_examples
+                )
+        else:
+            plan_lines = [
+                "Текущая погода в Калининграде: утро приятное.",
+                "Море у побережья: атмосфера дружелюбная.",
+                "Вывод о переменах относительно вчера: погода остаётся приятной.",
+                "Позитивные формулировки: Погода дарит приятное настроение.",
+            ]
+        prompt_parts.append(f"Главный вывод о погоде: {weather_positive}")
+        plan_text = "\n".join(
+            f"{idx}. {line}" for idx, line in enumerate(plan_lines, start=1)
+        )
+        prompt_parts.append(
+            "Структурированный план (не перечисляй номера в ответе, но следуй логике):\n"
+            + plan_text
+        )
         prompt = " ".join(prompt_parts)
         schema = {
             "type": "object",
@@ -8687,6 +8779,11 @@ class Bot:
             99: "rain",
         }
         return mapping.get(code)
+
+    def _build_flowers_weather_block(self) -> dict[str, Any]:
+        planner = FlowersWeatherPlanner(self.db, emoji=weather_emoji)
+        return planner.build()
+
 
     def _get_city_weather_info(self, city_name: str) -> tuple[str | None, str | None]:
         row = self.db.execute(

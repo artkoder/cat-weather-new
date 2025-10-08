@@ -98,6 +98,8 @@ async def test_flowers_loader_and_plan_deterministic(monkeypatch, tmp_path):
     )
     assert plan_first["pattern_ids"] == plan_second["pattern_ids"]
     assert "weather_focus" in plan_first["pattern_ids"]
+    assert plan_first["pattern_ids"] == ["weather_focus", "color_palette"]
+    assert len(plan_first["patterns"]) == 2
     await bot.close()
 
 
@@ -125,10 +127,10 @@ async def test_flowers_plan_skips_recent_duplicate_pattern(monkeypatch, tmp_path
     monkeypatch.setattr(main_module, "datetime", FixedDatetime)
 
     metadata_recent = {
-        "pattern_ids": ["weather_focus", "color_palette", "micro_engagement_question"],
+        "pattern_ids": ["weather_focus", "color_palette"],
     }
     metadata_previous = {
-        "pattern_ids": ["weather_focus", "color_palette", "wisdom_seed"],
+        "pattern_ids": ["weather_focus", "micro_engagement_question"],
     }
     assert rubric is not None
     bot.data.record_post_history(1, 99, None, rubric.id, metadata_previous)
@@ -141,8 +143,8 @@ async def test_flowers_plan_skips_recent_duplicate_pattern(monkeypatch, tmp_path
         channel_id=-200,
     )
 
-    assert "weather_focus" in plan["pattern_ids"]
-    assert "color_palette" not in plan["pattern_ids"]
+    assert plan["pattern_ids"] == ["weather_focus", "texture_focus"]
+    assert len(plan["patterns"]) == 2
     await bot.close()
 
 

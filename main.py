@@ -7186,7 +7186,7 @@ class Bot:
 
     def _flowers_recent_pattern_ids(
         self, rubric: Rubric, limit: int = 14
-    ) -> tuple[set[str], set[str]]:
+    ) -> tuple[set[str], set[str], list[list[str]]]:
         pattern_history = self.data.get_recent_rubric_pattern_ids(rubric.code, limit=limit)
         result: set[str] = set()
         normalized_history: list[list[str]] = []
@@ -7199,7 +7199,52 @@ class Bot:
             latest = set(normalized_history[0])
             previous = set(normalized_history[1])
             consecutive_repeats = latest & previous
-        return result, consecutive_repeats
+        return result, consecutive_repeats, normalized_history
+
+    def _flowers_rotation_order(
+        self,
+        candidates: Sequence[FlowerPattern],
+        history: Sequence[Sequence[str]],
+        weather_pattern: FlowerPattern | None,
+    ) -> list[FlowerPattern]:
+        if not candidates:
+            return []
+        sorted_candidates = sorted(candidates, key=lambda pattern: pattern.id)
+        weather_id = weather_pattern.id if weather_pattern else None
+
+        recent_rotation: list[str] = []
+        for day in history:
+            for pattern_id in day:
+                if weather_id and pattern_id == weather_id:
+                    continue
+                recent_rotation.append(pattern_id)
+                break
+        order_ids = [pattern.id for pattern in sorted_candidates]
+        filtered_recent = [pid for pid in recent_rotation if pid in order_ids]
+        last_rotation = filtered_recent[0] if filtered_recent else None
+        exclusions = {pid for pid in filtered_recent[:2] if pid}
+        if exclusions and len(exclusions) >= len(order_ids):
+            exclusions = set()
+        start_index = 0
+        if last_rotation and last_rotation in order_ids:
+            start_index = (order_ids.index(last_rotation) + 1) % len(order_ids)
+        ordered_ids: list[str] = []
+        used: set[str] = set()
+        for offset in range(len(order_ids)):
+            index = (start_index + offset) % len(order_ids)
+            pattern_id = order_ids[index]
+            if pattern_id in used:
+                continue
+            if exclusions and pattern_id in exclusions:
+                continue
+            ordered_ids.append(pattern_id)
+            used.add(pattern_id)
+        for pattern_id in order_ids:
+            if pattern_id not in used:
+                ordered_ids.append(pattern_id)
+                used.add(pattern_id)
+        lookup = {pattern.id: pattern for pattern in sorted_candidates}
+        return [lookup[pattern_id] for pattern_id in ordered_ids if pattern_id in lookup]
 
     def _extract_flower_features(
         self,
@@ -7386,8 +7431,10 @@ class Bot:
         features = self._extract_flower_features(assets, weather_block, seed_rng=rng)
         if kb and not features.get("palettes") and kb.colors:
             features["palettes"] = list(kb.colors.values())
-        banned_recent, consecutive_repeats = self._flowers_recent_pattern_ids(rubric)
-        available: list[tuple[FlowerPattern, float]] = []
+        _banned_recent, consecutive_repeats, pattern_history = self._flowers_recent_pattern_ids(
+            rubric
+        )
+        available: list[FlowerPattern] = []
         weather_pattern: FlowerPattern | None = None
         if kb:
             for pattern in kb.patterns:
@@ -7395,12 +7442,9 @@ class Bot:
                     continue
                 if pattern.id in consecutive_repeats and not pattern.always_include:
                     continue
-                weight = max(pattern.weight, 0.0)
-                if pattern.id in banned_recent and not pattern.always_include:
-                    weight *= 0.25
                 if pattern.always_include and pattern.kind == "weather":
                     weather_pattern = pattern
-                available.append((pattern, weight))
+                available.append(pattern)
         selected: list[dict[str, Any]] = []
         pattern_ids: list[str] = []
         if weather_pattern:
@@ -7413,33 +7457,20 @@ class Bot:
             if rendered:
                 selected.append(rendered)
                 pattern_ids.append(weather_pattern.id)
-        pool = [item for item in available if item[0] is not weather_pattern]
-        total_weight = sum(weight for _, weight in pool)
-        target_count = 3 if len(pool) >= 3 else min(2, len(pool))
-        while pool and len(selected) < (target_count + (1 if weather_pattern else 0)):
-            if total_weight <= 0:
-                choice_pattern = pool.pop(0)[0]
-            else:
-                pick = rng.uniform(0, total_weight)
-                cumulative = 0.0
-                choice_pattern = pool[-1][0]
-                for candidate, weight in pool:
-                    cumulative += weight
-                    if pick <= cumulative:
-                        choice_pattern = candidate
-                        break
+        pool = [pattern for pattern in available if pattern is not weather_pattern]
+        candidate_order = self._flowers_rotation_order(pool, pattern_history, weather_pattern)
+        for choice_pattern in candidate_order:
             rendered = self._render_flower_pattern(
                 choice_pattern,
                 features=features,
                 kb=kb,
                 rng=rng,
             )
-            pool = [item for item in pool if item[0] != choice_pattern]
-            total_weight = sum(weight for _, weight in pool)
             if not rendered:
                 continue
             selected.append(rendered)
             pattern_ids.append(choice_pattern.id)
+            break
         cities = sorted({asset.city for asset in assets if asset.city})
         plan = {
             "seed": seed,

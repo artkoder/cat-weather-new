@@ -8234,9 +8234,11 @@ class Bot:
             pattern_lines.append(f"{idx}. {tag_prefix}{instruction}")
         if pattern_lines:
             pattern_html = "<br>".join(_escape_block_line(line) for line in pattern_lines)
-            service_sections.append(
-                f"Паттерны:\n<blockquote expandable=\"true\">{pattern_html}</blockquote>"
+            pattern_block = (
+                "Паттерны:\n"
+                f"<blockquote expandable=\"true\">{pattern_html}</blockquote>"
             )
+            service_sections.append(pattern_block)
 
 
         weather_lines: list[str] = []
@@ -8283,9 +8285,11 @@ class Bot:
 
         if weather_lines:
             weather_html = "<br>".join(_escape_block_line(line) for line in weather_lines)
-            service_sections.append(
-                f"Погода:\n<blockquote expandable=\"true\">{weather_html}</blockquote>"
+            weather_block = (
+                "Погода:\n"
+                f"<blockquote expandable=\"true\">{weather_html}</blockquote>"
             )
+            service_sections.append(weather_block)
 
         system_prompt = str(state.get("plan_system_prompt") or "").strip()
         user_prompt = str(state.get("plan_user_prompt") or "").strip()
@@ -8309,9 +8313,11 @@ class Bot:
                 block_sections.append(f"<b>User prompt</b>:<br>{escaped_user}")
             if block_sections:
                 block_html = "<br><br>".join(block_sections)
-                service_sections.append(
-                    f"Служебно{suffix}:\n<blockquote expandable=\"true\">{block_html}</blockquote>"
+                service_block = (
+                    f"Служебно{suffix}:\n"
+                    f"<blockquote expandable=\"true\">{block_html}</blockquote>"
                 )
+                service_sections.append(service_block)
 
         if service_sections:
             parts.extend(service_sections)

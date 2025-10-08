@@ -8107,6 +8107,12 @@ class Bot:
                     "callback_data": "flowers_preview:instruction",
                 },
             ],
+            [
+                {
+                    "text": "⬇️ Скачать инструкцию",
+                    "callback_data": "flowers_preview:download_prompt",
+                }
+            ],
         ]
         send_row: list[dict[str, Any]] = []
         if self._resolve_flowers_target(state, to_test=True) is not None:
@@ -8639,6 +8645,7 @@ class Bot:
             "regen_photos",
             "regen_caption",
             "instruction",
+            "download_prompt",
             "send_test",
             "send_main",
             "cancel",
@@ -8879,6 +8886,35 @@ class Bot:
                 {
                     "callback_query_id": query["id"],
                     "text": "Жду инструкцию в ответном сообщении.",
+                },
+            )
+            return
+        if action == "download_prompt":
+            plan_request_text = str(state.get("plan_request_text") or "")
+            if not plan_request_text.strip():
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Промпт недоступен.",
+                        "show_alert": True,
+                    },
+                )
+                return
+            buffer = io.BytesIO(plan_request_text.encode("utf-8"))
+            files = {"document": ("flowers_prompt.txt", buffer.getvalue())}
+            await self.api_request(
+                "sendDocument",
+                {
+                    "chat_id": user_id,
+                },
+                files=files,
+            )
+            await self.api_request(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": query["id"],
+                    "text": "Промпт отправлен.",
                 },
             )
             return

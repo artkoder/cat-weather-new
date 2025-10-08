@@ -1453,6 +1453,41 @@ async def test_flowers_preview_truncates_long_payload(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flowers_preview_weather_lines_escaped(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    today_raw = "Лёгкий дождь & ветер < 5 м/с"
+    yesterday_raw = "Ясно <туман> & солнце"
+    state = {
+        "preview_caption": "",
+        "weather_today_line": today_raw,
+        "weather_yesterday_line": yesterday_raw,
+        "weather_line": "",
+        "instructions": "",
+        "channel_id": -500,
+        "test_channel_id": -600,
+        "default_channel_id": -500,
+        "default_channel_type": "main",
+        "plan": {},
+    }
+
+    text = bot._render_flowers_preview_text(state)
+
+    assert len(text) <= FLOWERS_PREVIEW_MAX_LENGTH
+    assert "Погода сегодня: Лёгкий дождь & ветер < 5 м/с" not in text
+    assert "Погода вчера: Ясно <туман> & солнце" not in text
+    assert "Погода сегодня: Лёгкий дождь &amp; ветер &lt; 5 м/с" in text
+    assert "Погода вчера: Ясно &lt;туман&gt; &amp; солнце" in text
+
+    second_text = bot._render_flowers_preview_text(state)
+    assert second_text == text
+    assert state.get("weather_today_line_html") == html.escape(today_raw)
+    assert state.get("weather_yesterday_line_html") == html.escape(yesterday_raw)
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {

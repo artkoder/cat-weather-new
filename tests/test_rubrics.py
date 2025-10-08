@@ -34,6 +34,7 @@ def _seed_weather(bot: Bot) -> None:
         (1, "Kaliningrad", 54.7104, 20.4522),
     )
     timestamp = datetime.utcnow().isoformat()
+    today = datetime.utcnow().date().isoformat()
     yesterday = (datetime.utcnow() - timedelta(days=1)).date().isoformat()
     bot.db.execute(
         "INSERT OR REPLACE INTO weather_cache_hour (city_id, timestamp, temperature, weather_code, wind_speed, is_day) "
@@ -41,9 +42,14 @@ def _seed_weather(bot: Bot) -> None:
         (1, timestamp, 12.0, 1, 3.0, 1),
     )
     bot.db.execute(
-        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (1, yesterday, 9.0, 2, 5.0),
+        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed, temp_min, temp_max, precipitation, wind_speed_max) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (1, yesterday, 9.0, 2, 5.0, 7.0, 10.0, 0.2, 6.0),
+    )
+    bot.db.execute(
+        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed, temp_min, temp_max, precipitation, wind_speed_max) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (1, today, 11.0, 61, 4.0, 8.0, 12.0, 3.5, 6.5),
     )
     bot.db.execute(
         "INSERT OR IGNORE INTO seas (id, name, lat, lon) VALUES (?, ?, ?, ?)",
@@ -1594,6 +1600,82 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
     assert weather_block["city"] is not None
     assert weather_block["city"]["name"] in weather_block["line"]
     assert weather_block["city"]["name"].casefold() == "kaliningrad"
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_build_flowers_plan_uses_single_rotating_pattern(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {"enabled": True}
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+    rubric = bot.data.get_rubric_by_code("flowers")
+    assert rubric is not None
+    _seed_weather(bot)
+
+    asset = Asset(
+        id=5,
+        channel_id=1,
+        tg_chat_id=1,
+        message_id=5,
+        origin="test",
+        caption_template=None,
+        caption=None,
+        hashtags=None,
+        categories=[],
+        kind="photo",
+        file_id="file-5",
+        file_unique_id="uniq-5",
+        file_name="flower-5.jpg",
+        mime_type="image/jpeg",
+        file_size=None,
+        width=1080,
+        height=1350,
+        duration=None,
+        recognized_message_id=None,
+        exif_present=False,
+        latitude=None,
+        longitude=None,
+        city="Baltiisk",
+        country="Россия",
+        author_user_id=None,
+        author_username=None,
+        sender_chat_id=None,
+        via_bot_id=None,
+        forward_from_user=None,
+        forward_from_chat=None,
+        local_path=None,
+        metadata=None,
+        vision_results=None,
+        rubric_id=None,
+        vision_category="flowers",
+        vision_arch_view=None,
+        vision_photo_weather="солнечно",
+        vision_flower_varieties=["роза"],
+        vision_confidence=None,
+        vision_caption=None,
+    )
+
+    weather_block = bot._compose_flowers_weather_block([asset.city])  # type: ignore[attr-defined]
+    plan = bot._build_flowers_plan(
+        rubric,
+        [asset],
+        weather_block,
+        channel_id=-500,
+    )
+
+    patterns = plan.get("patterns")
+    assert isinstance(patterns, list)
+    assert len(patterns) == 2
+    pattern_ids = [item.get("id") for item in patterns if isinstance(item, dict)]
+    assert pattern_ids.count("weather_focus") == 1
+    assert len([pid for pid in pattern_ids if pid != "weather_focus"]) == 1
+
+    weather_payload = plan.get("weather", {})
+    analysis = weather_payload.get("analysis", {})
+    assert analysis.get("today")
+    assert analysis.get("trend")
+    assert weather_payload.get("day_detail")
 
     await bot.close()
 

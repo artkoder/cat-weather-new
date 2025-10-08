@@ -19,7 +19,7 @@ from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone, time as dtime
 from pathlib import Path
 
-from typing import Any, BinaryIO, Iterable, Sequence, TYPE_CHECKING
+from typing import Any, BinaryIO, Iterable, Mapping, Sequence, TYPE_CHECKING
 
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -576,6 +576,10 @@ CREATE_TABLES = [
             temperature REAL,
             weather_code INTEGER,
             wind_speed REAL,
+            temp_min REAL,
+            temp_max REAL,
+            precipitation REAL,
+            wind_speed_max REAL,
             PRIMARY KEY (city_id, day)
         )""",
         """CREATE TABLE IF NOT EXISTS weather_cache_hour (
@@ -1379,6 +1383,7 @@ class Bot:
             "https://api.open-meteo.com/v1/forecast?latitude="
             f"{lat}&longitude={lon}&current_weather=true"
             "&hourly=temperature_2m,weather_code,wind_speed_10m,is_day"
+            "&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_sum,wind_speed_10m_max"
             "&forecast_days=2&timezone=auto"
         )
         try:
@@ -1477,7 +1482,6 @@ class Bot:
 
                 w = data["current"]
                 ts = datetime.utcnow().replace(microsecond=0).isoformat()
-                day = ts.split("T")[0]
                 self.db.execute(
                     "INSERT OR REPLACE INTO weather_cache_hour (city_id, timestamp, temperature, weather_code, wind_speed, is_day) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
@@ -1490,18 +1494,87 @@ class Bot:
                         w.get("is_day"),
                     ),
                 )
-                self.db.execute(
-                    "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (
-                        c["id"],
-                        day,
-
-                        w.get("temperature_2m"),
-                        w.get("weather_code"),
-                        w.get("wind_speed_10m"),
-                    ),
+                daily_data = data.get("daily") or {}
+                daily_times = list(daily_data.get("time") or [])
+                temp_max_list = daily_data.get("temperature_2m_max") or []
+                temp_min_list = daily_data.get("temperature_2m_min") or []
+                code_list = (
+                    daily_data.get("weather_code")
+                    or daily_data.get("weathercode")
+                    or []
                 )
+                precip_list = daily_data.get("precipitation_sum") or []
+                wind_max_list = (
+                    daily_data.get("wind_speed_10m_max")
+                    or daily_data.get("windspeed_10m_max")
+                    or []
+                )
+
+                def _get_value(values: Sequence[Any], idx: int) -> Any:
+                    return values[idx] if idx < len(values) else None
+
+                inserted_daily = False
+                for idx, day_str in enumerate(daily_times):
+                    temp_max = _get_value(temp_max_list, idx)
+                    temp_min = _get_value(temp_min_list, idx)
+                    weather_code = _get_value(code_list, idx)
+                    precipitation = _get_value(precip_list, idx)
+                    wind_max = _get_value(wind_max_list, idx)
+                    try:
+                        temp_max_val = float(temp_max) if temp_max is not None else None
+                    except (TypeError, ValueError):
+                        temp_max_val = None
+                    try:
+                        temp_min_val = float(temp_min) if temp_min is not None else None
+                    except (TypeError, ValueError):
+                        temp_min_val = None
+                    if temp_max_val is not None and temp_min_val is not None:
+                        avg_temp = (temp_max_val + temp_min_val) / 2.0
+                    else:
+                        avg_temp = temp_max_val or temp_min_val or None
+                    try:
+                        wind_max_val = float(wind_max) if wind_max is not None else None
+                    except (TypeError, ValueError):
+                        wind_max_val = None
+                    try:
+                        precipitation_val = (
+                            float(precipitation) if precipitation is not None else None
+                        )
+                    except (TypeError, ValueError):
+                        precipitation_val = None
+                    inserted_daily = True
+                    self.db.execute(
+                        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed, temp_min, temp_max, precipitation, wind_speed_max) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            c["id"],
+                            day_str,
+                            avg_temp,
+                            weather_code,
+                            wind_max_val,
+                            temp_min_val,
+                            temp_max_val,
+                            precipitation_val,
+                            wind_max_val,
+                        ),
+                    )
+                if not inserted_daily:
+                    day = ts.split("T")[0]
+                    self.db.execute(
+                        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed, temp_min, temp_max, precipitation, wind_speed_max) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            c["id"],
+                            day,
+                            w.get("temperature_2m"),
+                            w.get("weather_code"),
+                            w.get("wind_speed_10m"),
+                            None,
+                            None,
+                            None,
+                            w.get("wind_speed_10m"),
+                        ),
+                    )
 
                 # parse hourly forecast for tomorrow using averages
 
@@ -7186,7 +7259,7 @@ class Bot:
 
     def _flowers_recent_pattern_ids(
         self, rubric: Rubric, limit: int = 14
-    ) -> tuple[set[str], set[str]]:
+    ) -> tuple[set[str], set[str], list[str]]:
         pattern_history = self.data.get_recent_rubric_pattern_ids(rubric.code, limit=limit)
         result: set[str] = set()
         normalized_history: list[list[str]] = []
@@ -7199,7 +7272,8 @@ class Bot:
             latest = set(normalized_history[0])
             previous = set(normalized_history[1])
             consecutive_repeats = latest & previous
-        return result, consecutive_repeats
+        last_sequence = normalized_history[0] if normalized_history else []
+        return result, consecutive_repeats, last_sequence
 
     def _extract_flower_features(
         self,
@@ -7386,7 +7460,8 @@ class Bot:
         features = self._extract_flower_features(assets, weather_block, seed_rng=rng)
         if kb and not features.get("palettes") and kb.colors:
             features["palettes"] = list(kb.colors.values())
-        banned_recent, consecutive_repeats = self._flowers_recent_pattern_ids(rubric)
+        banned_recent, consecutive_repeats, last_sequence = self._flowers_recent_pattern_ids(rubric)
+        last_used_set = {item for item in last_sequence if item}
         available: list[tuple[FlowerPattern, float]] = []
         weather_pattern: FlowerPattern | None = None
         if kb:
@@ -7414,16 +7489,23 @@ class Bot:
                 selected.append(rendered)
                 pattern_ids.append(weather_pattern.id)
         pool = [item for item in available if item[0] is not weather_pattern]
-        total_weight = sum(weight for _, weight in pool)
-        target_count = 3 if len(pool) >= 3 else min(2, len(pool))
-        while pool and len(selected) < (target_count + (1 if weather_pattern else 0)):
+        base_count = 1 if weather_pattern else 0
+        target_count = 1 if pool else 0
+        while pool and len(selected) < (target_count + base_count):
+            if len(selected) == base_count:
+                working_pool = [item for item in pool if item[0].id not in last_used_set]
+                if not working_pool:
+                    working_pool = pool
+            else:
+                working_pool = pool
+            total_weight = sum(weight for _, weight in working_pool)
             if total_weight <= 0:
-                choice_pattern = pool.pop(0)[0]
+                choice_pattern = working_pool[0][0]
             else:
                 pick = rng.uniform(0, total_weight)
                 cumulative = 0.0
-                choice_pattern = pool[-1][0]
-                for candidate, weight in pool:
+                choice_pattern = working_pool[-1][0]
+                for candidate, weight in working_pool:
                     cumulative += weight
                     if pick <= cumulative:
                         choice_pattern = candidate
@@ -7435,7 +7517,6 @@ class Bot:
                 rng=rng,
             )
             pool = [item for item in pool if item[0] != choice_pattern]
-            total_weight = sum(weight for _, weight in pool)
             if not rendered:
                 continue
             selected.append(rendered)
@@ -7463,12 +7544,20 @@ class Bot:
                 "line": weather_block.get("line"),
                 "detail": weather_block.get("details"),
                 "cities": weather_block.get("cities"),
+                "day_detail": weather_block.get("day_detail"),
+                "analysis": {
+                    "today": weather_block.get("day"),
+                    "yesterday": weather_block.get("yesterday_day"),
+                    "trend": weather_block.get("trend_summary"),
+                },
             }
         else:
             plan["weather"] = {
                 "line": None,
                 "detail": None,
                 "cities": None,
+                "day_detail": None,
+                "analysis": {"today": None, "yesterday": None, "trend": None},
             }
         plan["greeting"] = {
             "instruction": "Начни с тёплого приветствия и упоминания города, поддержи заботливый тон.",
@@ -8823,10 +8912,11 @@ class Bot:
             f"5. Итоговый текст должен быть от {min_len} до {max_len} символов.",
             "6. Текст один абзац без двойных переводов строк.",
             "7. Будь заботливым, избегай рекламных интонаций.",
+            "8. Используй analysis.weather: расскажи о прогнозе на день и мягко сравни с вчерашним, если изменения заметны.",
         ]
         if banned_words:
             rules.append(
-                "8. Не используй слова: " + ", ".join(sorted(banned_words))
+                f"{len(rules) + 1}. Не используй слова: " + ", ".join(sorted(banned_words))
             )
         user_prompt = (
             "Ты — редактор телеграм-канала про погоду, уют и цветы. "
@@ -9445,6 +9535,126 @@ class Bot:
             return None
         return f"{max(0, int(round(value)))} м/с"
 
+    def _format_temperature_range(
+        self, minimum: float | None, maximum: float | None
+    ) -> str | None:
+        if minimum is None and maximum is None:
+            return None
+        if minimum is not None and maximum is not None:
+            min_text = self._format_temperature_value(minimum)
+            max_text = self._format_temperature_value(maximum)
+            if min_text and max_text:
+                return f"от {min_text} до {max_text}"
+        bound = maximum if maximum is not None else minimum
+        bound_text = self._format_temperature_value(bound)
+        if bound_text:
+            return f"около {bound_text}"
+        return None
+
+    def _weather_condition_kind(self, code: int | None) -> str | None:
+        if code is None:
+            return None
+        if code in {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99}:
+            return "rain"
+        if code in {71, 73, 75, 77, 85, 86}:
+            return "snow"
+        if code in {45, 48}:
+            return "fog"
+        if code == 0:
+            return "clear"
+        if code == 1:
+            return "mostly_clear"
+        if code == 2:
+            return "partly_cloudy"
+        if code == 3:
+            return "overcast"
+        return "other"
+
+    def _daily_condition_phrase(self, kind: str | None) -> str | None:
+        if kind == "rain":
+            return "дождь освежит улицы"
+        if kind == "snow":
+            return "снег добавит светлых штрихов"
+        if kind == "fog":
+            return "утренний туман смягчит контуры"
+        if kind == "partly_cloudy":
+            return "будет мягкая облачность"
+        if kind == "overcast":
+            return "пасмурно, но цвета читаются ровно"
+        if kind in {"clear", "mostly_clear"}:
+            return "много света и простора"
+        return None
+
+    def _positive_precipitation_trend(
+        self,
+        today_code: int | None,
+        yesterday_code: int | None,
+        precipitation: float | None,
+    ) -> str:
+        today_kind = self._weather_condition_kind(today_code)
+        yesterday_kind = self._weather_condition_kind(yesterday_code)
+        if today_kind == "rain":
+            if precipitation is not None and precipitation >= 5:
+                return "дождь зарядит зелень свежестью"
+            if precipitation is not None and precipitation >= 1:
+                return "дождь поливает клумбы"
+            return "возможна лёгкая морось — воздух станет свежее"
+        if today_kind == "snow":
+            return "снег подсветит дворы"
+        if today_kind == "fog":
+            return "туман сделает утро камерным"
+        if yesterday_kind in {"rain", "snow"} and today_kind not in {"rain", "snow"}:
+            return "после осадков стало суше"
+        return ""
+
+    def _describe_daily_weather(self, payload: dict[str, Any] | None) -> str:
+        if not payload:
+            return ""
+        pieces: list[str] = []
+        range_text = self._format_temperature_range(
+            payload.get("temp_min"), payload.get("temp_max")
+        )
+        if range_text:
+            pieces.append(f"днём {range_text}")
+        elif payload.get("temperature") is not None:
+            temp_text = self._format_temperature_value(payload.get("temperature"))
+            if temp_text:
+                pieces.append(f"днём около {temp_text}")
+        wind_reference = payload.get("wind_speed_max") or payload.get("wind_speed")
+        wind_text = self._format_wind_value(wind_reference)
+        if wind_text:
+            pieces.append(f"ветер до {wind_text}")
+        condition_phrase = self._daily_condition_phrase(
+            self._weather_condition_kind(payload.get("weather_code"))
+        )
+        if condition_phrase:
+            pieces.append(condition_phrase)
+        precipitation = payload.get("precipitation")
+        if (
+            precipitation is not None
+            and precipitation > 0
+            and self._weather_condition_kind(payload.get("weather_code")) not in {"rain", "snow"}
+        ):
+            pieces.append("осадки кратковременные")
+        return ", ".join(piece for piece in pieces if piece)
+
+    def _normalize_daily_weather_row(self, row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        if hasattr(row, "keys"):
+            raw = {key: row[key] for key in row.keys()}
+        else:
+            raw = dict(row)
+        return {
+            "temperature": raw.get("temperature"),
+            "weather_code": raw.get("weather_code"),
+            "wind_speed": raw.get("wind_speed"),
+            "temp_min": raw.get("temp_min"),
+            "temp_max": raw.get("temp_max"),
+            "precipitation": raw.get("precipitation"),
+            "wind_speed_max": raw.get("wind_speed_max"),
+        }
+
     def _positive_temperature_trend(
         self, current: float | None, previous: float | None
     ) -> str:
@@ -9494,10 +9704,21 @@ class Bot:
         ).fetchone()
         if not weather_row:
             return None
+        today = datetime.utcnow().date().isoformat()
+        today_row = self.db.execute(
+            """
+            SELECT temperature, weather_code, wind_speed, temp_min, temp_max, precipitation, wind_speed_max
+            FROM weather_cache_day
+            WHERE city_id=? AND day=?
+            LIMIT 1
+            """,
+            (row["id"], today),
+        ).fetchone()
         yesterday = (datetime.utcnow() - timedelta(days=1)).date().isoformat()
         previous_row = self.db.execute(
             """
             SELECT temperature, wind_speed
+            , temp_min, temp_max, precipitation, weather_code, wind_speed_max
             FROM weather_cache_day
             WHERE city_id=? AND day=?
             LIMIT 1
@@ -9514,6 +9735,8 @@ class Bot:
             "previous_temperature": previous_row["temperature"] if previous_row else None,
             "previous_wind": previous_row["wind_speed"] if previous_row else None,
         }
+        snapshot["day"] = self._normalize_daily_weather_row(today_row)
+        snapshot["yesterday_day"] = self._normalize_daily_weather_row(previous_row)
         temp_detail = self._format_temperature_value(snapshot["temperature"])
         wind_detail = self._format_wind_value(snapshot["wind_speed"])
         details: list[str] = []
@@ -9522,13 +9745,29 @@ class Bot:
         if wind_detail:
             details.append(f"ветер {wind_detail}")
         snapshot["detail"] = ", ".join(details)
+        day_detail = self._describe_daily_weather(snapshot.get("day"))
+        if day_detail:
+            snapshot["day_detail"] = day_detail
         snapshot["trend_temperature"] = self._positive_temperature_trend(
             snapshot["temperature"], snapshot["previous_temperature"]
         )
         snapshot["trend_wind"] = self._positive_wind_trend(
             snapshot["wind_speed"], snapshot["previous_wind"]
         )
-        trends = [piece for piece in [snapshot["trend_temperature"], snapshot["trend_wind"]] if piece]
+        precipitation_trend = self._positive_precipitation_trend(
+            (snapshot.get("day") or {}).get("weather_code"),
+            (snapshot.get("yesterday_day") or {}).get("weather_code"),
+            (snapshot.get("day") or {}).get("precipitation"),
+        )
+        trends = [
+            piece
+            for piece in [
+                snapshot["trend_temperature"],
+                snapshot["trend_wind"],
+                precipitation_trend,
+            ]
+            if piece
+        ]
         snapshot["trend_summary"] = " и ".join(trends)
         if snapshot["trend_summary"]:
             snapshot["positive_intro"] = "Утро радует"
@@ -9622,6 +9861,9 @@ class Bot:
         detail_parts: list[str] = []
         if city_snapshot and city_snapshot.get("detail"):
             detail_parts.append(f"в городе {city_snapshot['detail']}")
+        day_detail = (city_snapshot or {}).get("day_detail")
+        if day_detail:
+            detail_parts.append(f"прогноз на день: {day_detail}")
         if coast_snapshot:
             if coast_snapshot.get("detail"):
                 detail_parts.append(coast_snapshot["detail"])
@@ -9640,6 +9882,9 @@ class Bot:
             "details": details,
             "line": line,
             "cities": city_list,
+            "day_detail": day_detail,
+            "day": (city_snapshot or {}).get("day"),
+            "yesterday_day": (city_snapshot or {}).get("yesterday_day"),
         }
 
     def _overlay_number(

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 - Positive weather block in the `flowers` rubric that highlights good local conditions when composing the greeting.
+- Daily Open-Meteo ingestion persists temperature range, precipitation and wind maxima for each day so the `flowers` rubric can brief GPT on the full forecast.
 - YAML-driven pattern and ban list loader for the `flowers` generator, enabling operators to expand copy templates without
   touching the codebase.
 - Flowers rubric preview workflow that lets operators review candidates, regenerate media or captions, capture manual
@@ -21,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Flowers caption generator now tracks recently used templates to avoid repeating the same copy across consecutive posts.
+- Flowers weather plan now forwards the daily forecast (temperature span, precipitation, wind) and limits rotation to one pattern plus the mandatory weather focus, prompting GPT to compare today with yesterday in a positive voice.
 - Updated the OpenAI Responses payload to use the latest `response_format` schema and
   ensured token usage metrics persist to Supabase with non-null totals.
 - OpenAI payloads now run through `strictify_schema`, enforcing required keys and null-tolerant

@@ -1332,6 +1332,29 @@ async def test_flowers_preview_service_block(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flowers_preview_instructions_escaped(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    instructions = "Используй <script> & проверь"
+    state: dict[str, Any] = {
+        "preview_caption": "",
+        "weather_today_line": "Ясно",
+        "weather_yesterday_line": "Дождливо",
+        "instructions": instructions,
+    }
+
+    text = bot._render_flowers_preview_text(state)
+
+    assert "Инструкции оператора:" in text
+    assert "<blockquote expandable=\"true\">" in text
+    assert "&lt;script&gt;" in text
+    assert "&amp; проверь" in text
+    assert "<script>" not in text
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_flowers_preview_truncates_long_payload(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
 

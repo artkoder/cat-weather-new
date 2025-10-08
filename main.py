@@ -8222,6 +8222,9 @@ class Bot:
                 return
             sections.append(_PreviewSection(normalized, priority, fallback))
 
+        def _escape_block_line(text: str) -> str:
+            return html.escape(text).replace("\n", "<br>")
+
         caption = str(state.get("preview_caption") or "").strip()
         if caption:
             _add_section("Подпись на медиа показана выше.", 0)
@@ -8237,11 +8240,19 @@ class Bot:
         _add_section(f"Погода вчера: {weather_yesterday_line}", 0)
         instructions = str(state.get("instructions") or "").strip()
         if instructions:
-            instructions_block = f"Инструкции оператора:\n{instructions}"
+            escaped_instructions = _escape_block_line(instructions)
+            instructions_block = (
+                "Инструкции оператора:\n"
+                f"<blockquote expandable=\"true\">{escaped_instructions}</blockquote>"
+            )
             fallback_block: str | None = None
             if len(instructions_block) > 600:
                 truncated = self._safe_preview_truncate(instructions, 600)
-                fallback_block = f"Инструкции оператора:\n{truncated}"
+                escaped_truncated = _escape_block_line(truncated)
+                fallback_block = (
+                    "Инструкции оператора:\n"
+                    f"<blockquote expandable=\"true\">{escaped_truncated}</blockquote>"
+                )
                 if fallback_block == instructions_block:
                     fallback_block = None
             _add_section(instructions_block, 2, fallback=fallback_block)
@@ -8256,9 +8267,6 @@ class Bot:
             _add_section("Доступные каналы: " + ", ".join(channels), 1)
         plan_raw = state.get("plan")
         plan_dict = plan_raw if isinstance(plan_raw, dict) else {}
-
-        def _escape_block_line(text: str) -> str:
-            return html.escape(text).replace("\n", "<br>")
 
         pattern_lines: list[str] = []
         for idx, raw_pattern in enumerate(plan_dict.get("patterns") or [], 1):

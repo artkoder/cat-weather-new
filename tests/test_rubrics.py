@@ -34,11 +34,17 @@ def _seed_weather(bot: Bot) -> None:
         (1, "Kaliningrad", 54.7104, 20.4522),
     )
     timestamp = datetime.utcnow().isoformat()
+    today = datetime.utcnow().date().isoformat()
     yesterday = (datetime.utcnow() - timedelta(days=1)).date().isoformat()
     bot.db.execute(
         "INSERT OR REPLACE INTO weather_cache_hour (city_id, timestamp, temperature, weather_code, wind_speed, is_day) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         (1, timestamp, 12.0, 1, 3.0, 1),
+    )
+    bot.db.execute(
+        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (1, today, 12.0, 1, 3.0),
     )
     bot.db.execute(
         "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed) "
@@ -55,6 +61,44 @@ def _seed_weather(bot: Bot) -> None:
         (1, timestamp, 8.5, None, None, None, None, 0.4, None, None, None, None),
     )
     bot.db.commit()
+
+
+@pytest.mark.asyncio
+async def test_build_flowers_plan_uses_daily_weather_trend(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {"enabled": True, "assets": {"min": 1, "max": 1}}
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+    _seed_weather(bot)
+
+    today = datetime.utcnow().date().isoformat()
+    yesterday = (datetime.utcnow() - timedelta(days=1)).date().isoformat()
+    bot.db.execute(
+        "UPDATE weather_cache_day SET temperature=?, wind_speed=? WHERE city_id=? AND day=?",
+        (
+            json.dumps({"temperature_2m_mean": 4.0, "temperature_2m_max": 8.0}),
+            json.dumps({"wind_speed_10m_max": 4.8}),
+            1,
+            today,
+        ),
+    )
+    bot.db.execute(
+        "UPDATE weather_cache_day SET temperature=?, wind_speed=? WHERE city_id=? AND day=?",
+        (
+            json.dumps({"temperature_2m_mean": 9.0}),
+            json.dumps({"wind_speed_10m_mean": 6.0}),
+            1,
+            yesterday,
+        ),
+    )
+    bot.db.commit()
+
+    weather_block = bot._compose_flowers_weather_block(["Kaliningrad"])
+    assert weather_block is not None
+    summary = weather_block.get("trend_summary")
+    assert summary == "свежесть бодрит — около 4°C и ветер стал спокойнее — около 5 м/с"
+    assert "12°C" not in summary
+
+    await bot.close()
 
 
 @pytest.mark.asyncio

@@ -1313,13 +1313,13 @@ async def test_flowers_preview_service_block(tmp_path):
     text = bot._render_flowers_preview_text(state)
 
     assert "Служебно (длина" in text
-    escaped_system = html.escape(state["plan_system_prompt"]).replace("\n", "<br>")
-    escaped_user = html.escape(state["plan_user_prompt"]).replace("\n", "<br>")
+    escaped_system = html.escape(state["plan_system_prompt"])
+    escaped_user = html.escape(state["plan_user_prompt"])
     assert (
         "<blockquote expandable=\"true\">"
-        f"<b>System prompt</b>:<br>{escaped_system}"
-        "<br><br>"
-        f"<b>User prompt</b>:<br>{escaped_user}"
+        f"<b>System prompt</b>:\n{escaped_system}"
+        "\n\n"
+        f"<b>User prompt</b>:\n{escaped_user}"
         "</blockquote>"
         in text
     )
@@ -1447,7 +1447,7 @@ async def test_flowers_preview_truncates_long_payload(tmp_path):
     assert "Выберите действие" in text
     assert "Инструкции оператора" in text
     assert "…" in text
-    assert "<blockquote" not in text
+    assert "<blockquote expandable=\"true\">" in text
 
     await bot.close()
 
@@ -1646,13 +1646,13 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     prompt_length = state.get("plan_prompt_length")
     assert isinstance(prompt_length, int)
     assert prompt_length <= 2000
-    escaped_system = html.escape(plan_system_prompt).replace("\n", "<br>")
-    escaped_user = html.escape(plan_user_prompt).replace("\n", "<br>")
+    escaped_system = html.escape(plan_system_prompt)
+    escaped_user = html.escape(plan_user_prompt)
     expected_block = (
         "<blockquote expandable=\"true\">"
-        f"<b>System prompt</b>:<br>{escaped_system}"
-        "<br><br>"
-        f"<b>User prompt</b>:<br>{escaped_user}"
+        f"<b>System prompt</b>:\n{escaped_system}"
+        "\n\n"
+        f"<b>User prompt</b>:\n{escaped_user}"
         "</blockquote>"
     )
     assert expected_block in summary_text

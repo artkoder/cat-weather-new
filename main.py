@@ -8072,6 +8072,68 @@ class Bot:
             channels.append(f"🧪 {test_target}")
         if channels:
             parts.append("Доступные каналы: " + ", ".join(channels))
+        service_sections: list[str] = []
+        plan = state.get("plan")
+        pattern_lines: list[str] = []
+        if isinstance(plan, dict):
+            patterns = plan.get("patterns")
+            if isinstance(patterns, list):
+                for item in patterns:
+                    if not isinstance(item, dict):
+                        continue
+                    pattern_id = str(item.get("id") or "").strip()
+                    instruction = str(item.get("instruction") or "").strip()
+                    if not pattern_id and not instruction:
+                        continue
+                    label = pattern_id or "—"
+                    if instruction:
+                        pattern_lines.append(f"{label}: {instruction}")
+                    else:
+                        pattern_lines.append(label)
+        if pattern_lines:
+            service_sections.append("Шаблоны:\n" + "\n".join(pattern_lines))
+        weather_block = state.get("weather_block")
+        weather_section_lines: list[str] = []
+        if isinstance(weather_block, dict) and weather_block:
+            weather_json = json.dumps(weather_block, ensure_ascii=False, indent=2, sort_keys=True)
+            weather_section_lines.append("Погодный блок (JSON):")
+            weather_section_lines.append(weather_json)
+            weather_details = state.get("weather_details")
+            detail_lines: list[str] = []
+            if isinstance(weather_details, dict):
+                city_info = weather_details.get("city")
+                sea_info = weather_details.get("sea")
+                positive_intro = weather_details.get("positive_intro")
+                trend_summary = weather_details.get("trend_summary")
+                city_text = (
+                    json.dumps(city_info, ensure_ascii=False)
+                    if city_info is not None
+                    else "—"
+                )
+                sea_text = (
+                    json.dumps(sea_info, ensure_ascii=False)
+                    if sea_info is not None
+                    else "—"
+                )
+                detail_lines.append(f"Город: {city_text}")
+                detail_lines.append(f"Море: {sea_text}")
+                detail_lines.append(
+                    "Позитивный заголовок: " + (str(positive_intro) if positive_intro else "—")
+                )
+                detail_lines.append(
+                    "Тренды: " + (str(trend_summary) if trend_summary else "—")
+                )
+            if detail_lines:
+                weather_section_lines.append("Детали погоды:\n" + "\n".join(detail_lines))
+        if weather_section_lines:
+            service_sections.append("\n".join(weather_section_lines))
+        previous_text = state.get("previous_main_post_text")
+        if previous_text:
+            service_sections.append("Вчера: " + str(previous_text))
+        else:
+            service_sections.append("Вчера: не публиковалось")
+        if service_sections:
+            parts.append("Служебно:\n" + "\n\n".join(service_sections))
         parts.append("Выберите действие на клавиатуре ниже.")
         return "\n\n".join(parts)
 
@@ -8164,6 +8226,51 @@ class Bot:
                 except ValueError:
                     return None
             return None
+        serialized_plan = (
+            serialize_plan(plan)
+            if isinstance(plan, dict)
+            else json.dumps(plan or {}, ensure_ascii=False, sort_keys=True)
+        )
+        weather_details: dict[str, Any] | None = None
+        if isinstance(weather_block, dict):
+            weather_details = {
+                "city": weather_block.get("city"),
+                "sea": weather_block.get("sea"),
+                "positive_intro": weather_block.get("positive_intro"),
+                "trend_summary": weather_block.get("trend_summary"),
+            }
+        previous_main_post_text: str | None = None
+        try:
+            rows = self.db.execute(
+                """
+                SELECT metadata
+                FROM posts_history
+                WHERE rubric_id=?
+                ORDER BY published_at DESC, id DESC
+                LIMIT 15
+                """,
+                (rubric.id,),
+            ).fetchall()
+        except Exception:
+            rows = []
+        for row in rows:
+            raw = row["metadata"] if row is not None else None
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("test"):
+                continue
+            text = (
+                payload.get("greeting")
+                or payload.get("text")
+                or payload.get("caption")
+            )
+            if text:
+                previous_main_post_text = str(text)
+                break
         state: dict[str, Any] = {
             "rubric_code": rubric.code,
             "rubric_id": rubric.id,
@@ -8184,6 +8291,9 @@ class Bot:
             "weather_line": (weather_block or {}).get("line") if weather_block else None,
             "plan": plan,
             "pattern_ids": list(plan.get("pattern_ids", [])) if isinstance(plan, dict) else [],
+            "serialized_plan": serialized_plan,
+            "weather_details": weather_details,
+            "previous_main_post_text": previous_main_post_text,
             "preview_chat_id": initiator_id,
             "media_message_ids": [],
             "caption_message_id": None,

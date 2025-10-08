@@ -1187,6 +1187,49 @@ async def test_publish_flowers_uses_distinct_assets(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_flowers_preview_service_block(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    state = {
+        "preview_caption": "Черновик",
+        "weather_line": "Солнечно",
+        "instructions": "Добавь тёплый тон",
+        "channel_id": -500,
+        "test_channel_id": -600,
+        "default_channel_id": -500,
+        "default_channel_type": "main",
+        "plan": {
+            "patterns": [
+                {"id": "p-1", "instruction": "Упомяни бутоны"},
+                {"id": "p-2", "instruction": "Добавь цитату"},
+            ]
+        },
+        "weather_block": {
+            "line": "Светлое утро",
+            "city": {"name": "Калининград"},
+        },
+        "weather_details": {
+            "city": {"name": "Калининград"},
+            "sea": {"detail": "спокойное"},
+            "positive_intro": "Светлый день",
+            "trend_summary": "ветер мягче",
+        },
+        "previous_main_post_text": "Вчерашний текст",
+    }
+
+    text = bot._render_flowers_preview_text(state)
+
+    assert "Шаблоны:" in text
+    assert "p-1: Упомяни бутоны" in text
+    assert "Погодный блок (JSON):" in text
+    assert "\"line\": \"Светлое утро\"" in text
+    assert "Позитивный заголовок: Светлый день" in text
+    assert "Тренды: ветер мягче" in text
+    assert "Вчера: Вчерашний текст" in text
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {
@@ -1296,6 +1339,10 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert "Доступные каналы:" in summary_text
     assert "📣 -500" in summary_text
     assert "🧪 -600" in summary_text
+    assert "Служебно:" in summary_text
+    assert "Шаблоны:" in summary_text
+    assert "Погодный блок (JSON):" in summary_text
+    assert "Вчера: не публиковалось" in summary_text
 
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb3"})
     confirmations = [

@@ -9665,6 +9665,12 @@ class Bot:
             "temperature_max",
         )
         wind_keys = (
+            "wind_speed_10m_max",
+            "wind_speed_max",
+            "wind_speed.max",
+            "wind_speed.gusts_max",
+        )
+        wind_fallbacks = (
             "wind_speed_10m_mean",
             "wind_speed_mean",
             "wind_speed_avg",
@@ -9672,12 +9678,6 @@ class Bot:
             "wind_speed.mean",
             "wind_speed.avg",
             "wind_speed.average",
-        )
-        wind_fallbacks = (
-            "wind_speed_10m_max",
-            "wind_speed_max",
-            "wind_speed.max",
-            "wind_speed.gusts_max",
             "wind_speed",
             "wind",
         )
@@ -9714,25 +9714,26 @@ class Bot:
             if snapshot.get("day_temperature") is not None
             else snapshot.get("temperature")
         )
+        trend_temperature_previous_value = snapshot.get("previous_temperature")
         trend_wind_value = (
             snapshot.get("day_wind")
             if snapshot.get("day_wind") is not None
             else snapshot.get("wind_speed")
         )
+        trend_wind_previous_value = snapshot.get("previous_wind")
+
         snapshot["trend_temperature_value"] = trend_temperature_value
+        snapshot["trend_temperature_previous_value"] = trend_temperature_previous_value
         snapshot["trend_wind_value"] = trend_wind_value
-        snapshot["trend_temperature_previous_value"] = snapshot.get(
-            "previous_temperature"
-        )
-        snapshot["trend_wind_previous_value"] = snapshot.get("previous_wind")
+        snapshot["trend_wind_previous_value"] = trend_wind_previous_value
 
         snapshot["trend_temperature"] = self._positive_temperature_trend(
             trend_temperature_value,
-            snapshot.get("previous_temperature"),
+            trend_temperature_previous_value,
         )
         snapshot["trend_wind"] = self._positive_wind_trend(
             trend_wind_value,
-            snapshot.get("previous_wind"),
+            trend_wind_previous_value,
         )
         trends = [
             piece

@@ -8236,8 +8236,31 @@ class Bot:
         weather_yesterday_line = self._normalize_weather_preview_line(
             state.get("weather_yesterday_line")
         )
-        _add_section(f"Погода сегодня: {weather_today_line}", 0)
-        _add_section(f"Погода вчера: {weather_yesterday_line}", 0)
+
+        def _ensure_weather_html(key: str, value: str) -> str:
+            html_key = f"{key}_html"
+            cached_html = state.get(html_key)
+            cached_value = state.get(key)
+            if (
+                isinstance(cached_html, str)
+                and isinstance(cached_value, str)
+                and cached_value == value
+            ):
+                return cached_html
+            state[key] = value
+            escaped = html.escape(value)
+            state[html_key] = escaped
+            return escaped
+
+        weather_today_html = _ensure_weather_html(
+            "weather_today_line", weather_today_line
+        )
+        weather_yesterday_html = _ensure_weather_html(
+            "weather_yesterday_line", weather_yesterday_line
+        )
+
+        _add_section(f"Погода сегодня: {weather_today_html}", 0)
+        _add_section(f"Погода вчера: {weather_yesterday_html}", 0)
         instructions = str(state.get("instructions") or "").strip()
         if instructions:
             escaped_instructions = _escape_block_line(instructions)
@@ -8558,6 +8581,8 @@ class Bot:
         weather_yesterday_line = self._normalize_weather_preview_line(
             previous_weather_line
         )
+        weather_today_line_html = html.escape(weather_today_line)
+        weather_yesterday_line_html = html.escape(weather_yesterday_line)
         state: dict[str, Any] = {
             "rubric_code": rubric.code,
             "rubric_id": rubric.id,
@@ -8577,6 +8602,8 @@ class Bot:
             "weather_block": weather_block,
             "weather_today_line": weather_today_line,
             "weather_yesterday_line": weather_yesterday_line,
+            "weather_today_line_html": weather_today_line_html,
+            "weather_yesterday_line_html": weather_yesterday_line_html,
             "weather_line": weather_today_line,
             "plan": plan,
             "pattern_ids": list((plan_meta or {}).get("pattern_ids", [])),
@@ -8695,6 +8722,8 @@ class Bot:
         )
         state["weather_today_line"] = weather_today_line
         state["weather_yesterday_line"] = weather_yesterday_line
+        state["weather_today_line_html"] = html.escape(weather_today_line)
+        state["weather_yesterday_line_html"] = html.escape(weather_yesterday_line)
         state["weather_line"] = weather_today_line
         chat_id = state.get("preview_chat_id")
         message_id = state.get("caption_message_id")

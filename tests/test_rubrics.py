@@ -1376,6 +1376,9 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     posted_link: dict[str, str] = {}
     message_counter = {"value": 200}
     openai_calls: list[dict[str, Any]] = []
+    document_uploads: list[
+        tuple[dict[str, Any] | None, dict[str, tuple[str, bytes]] | None]
+    ] = []
 
     class DummyOpenAI:
         def __init__(self) -> None:
@@ -1403,6 +1406,9 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
                 return {"ok": True, "result": [{"message_id": 10}, {"message_id": 11}]}
             posted_link["url"] = bot.post_url(-500, 210)
             return {"ok": True, "result": [{"message_id": 210}]}
+        if method == "sendDocument":
+            document_uploads.append((data, files))
+            return {"ok": True, "result": {"message_id": 310}}
         if method == "sendMessage":
             message_counter["value"] += 1
             return {"ok": True, "result": {"message_id": message_counter["value"]}}
@@ -1512,6 +1518,38 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     ]
     assert preview_messages
     assert preview_messages[-1].get("parse_mode") == "HTML"
+    reply_markup = preview_messages[-1].get("reply_markup")
+    assert isinstance(reply_markup, dict)
+    keyboard = reply_markup.get("inline_keyboard")
+    assert isinstance(keyboard, list)
+    assert any(
+        isinstance(button, dict)
+        and button.get("callback_data") == "flowers_preview:download_prompt"
+        for row in keyboard
+        if isinstance(row, list)
+        for button in row
+    ), "Ожидалась кнопка скачивания инструкции"
+
+    await bot._handle_flowers_preview_callback(1234, "download_prompt", {"id": "cb-download"})
+    assert document_uploads, "Ожидалось, что промпт будет отправлен документом"
+    download_data, download_files = document_uploads[-1]
+    assert download_data is not None
+    assert download_data.get("chat_id") == 1234
+    assert download_files is not None
+    document_entry = download_files.get("document") if download_files else None
+    assert document_entry is not None
+    filename, payload = document_entry
+    assert filename == "flowers_prompt.txt"
+    plan_request_text = str(state.get("plan_request_text") or "")
+    assert payload == plan_request_text.encode("utf-8")
+    download_confirmations = [
+        data
+        for method, data in api_calls
+        if method == "answerCallbackQuery"
+        and data
+        and data.get("text") == "Промпт отправлен."
+    ]
+    assert download_confirmations, "Ожидалось подтверждение отправки промпта"
 
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb3"})
     confirmations = [

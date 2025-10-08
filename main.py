@@ -8167,6 +8167,42 @@ class Bot:
                 break
         return previous_text, previous_weather
 
+    @staticmethod
+    def _flowers_pattern_lines(patterns: Iterable[Any]) -> list[str]:
+        lines: list[str] = []
+        filtered: list[dict[str, Any]] = [
+            item
+            for item in patterns or []
+            if isinstance(item, dict) and str(item.get("instruction") or "").strip()
+        ]
+        for idx, pattern in enumerate(filtered, 1):
+            instruction = str(pattern.get("instruction") or "").strip()
+            kind = str(pattern.get("kind") or "").strip()
+            tags: list[str] = []
+            if kind:
+                tags.append(kind)
+            if pattern.get("photo_dependent"):
+                tags.append("про фото")
+            tag_prefix = f"[{', '.join(tags)}] " if tags else ""
+            lines.append(f"{idx}. {tag_prefix}{instruction}")
+        return lines
+
+    @staticmethod
+    def _flowers_weather_lines(weather_info: Any) -> list[str]:
+        if not isinstance(weather_info, dict):
+            return []
+        parts: list[str] = []
+        line = str(weather_info.get("line") or "").strip()
+        if line:
+            parts.append(line)
+        detail = str(weather_info.get("detail") or "").strip()
+        if detail:
+            parts.append(detail)
+        cities = weather_info.get("cities")
+        if cities:
+            parts.append(f"города: {cities}")
+        return parts
+
     def _render_flowers_preview_text(self, state: dict[str, Any]) -> str:
         parts: list[str] = []
         caption = str(state.get("preview_caption") or "").strip()
@@ -8194,21 +8230,28 @@ class Bot:
             channels.append(f"🧪 {test_target}")
         if channels:
             parts.append("Доступные каналы: " + ", ".join(channels))
-        prompt_text = str(state.get("plan_prompt") or "").strip()
-        if prompt_text:
-            escaped_prompt = html.escape(prompt_text).replace("\n", "<br>")
-            length_value = state.get("plan_prompt_length")
-            fallback_used = bool(state.get("plan_prompt_fallback"))
-            meta_parts: list[str] = []
-            if isinstance(length_value, int):
-                meta_parts.append(f"длина {length_value}")
-            if fallback_used:
-                meta_parts.append("fallback")
-            suffix = f" ({', '.join(meta_parts)})" if meta_parts else ""
-            parts.append(
-                f"Служебно{suffix}:\n"
-                f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>"
+        plan = state.get("plan") if isinstance(state.get("plan"), dict) else {}
+        service_sections: list[str] = []
+        pattern_lines = self._flowers_pattern_lines(plan.get("patterns") or [])
+        if pattern_lines:
+            escaped_patterns = html.escape("\n".join(pattern_lines)).replace("\n", "<br>")
+            service_sections.append(
+                "Паттерны:\n"
+                "<blockquote expandable=\"true\">"
+                f"{escaped_patterns}"
+                "</blockquote>"
             )
+        weather_lines = self._flowers_weather_lines(plan.get("weather"))
+        if weather_lines:
+            escaped_weather = html.escape("\n".join(weather_lines)).replace("\n", "<br>")
+            service_sections.append(
+                "Погода:\n"
+                "<blockquote expandable=\"true\">"
+                f"{escaped_weather}"
+                "</blockquote>"
+            )
+        if service_sections:
+            parts.append("Служебно:\n" + "\n".join(service_sections))
         if "previous_main_post_text" in state:
             previous_text = str(state.get("previous_main_post_text") or "").strip()
             if previous_text:
@@ -8915,33 +8958,8 @@ class Bot:
             for word in (banned_words_raw or [])
             if str(word).strip()
         }
-        patterns = [
-            item
-            for item in plan_dict.get("patterns") or []
-            if isinstance(item, dict) and str(item.get("instruction") or "").strip()
-        ]
-        pattern_lines: list[str] = []
-        for idx, pattern in enumerate(patterns, 1):
-            instruction = str(pattern.get("instruction") or "").strip()
-            kind = str(pattern.get("kind") or "").strip()
-            tags: list[str] = []
-            if kind:
-                tags.append(kind)
-            if pattern.get("photo_dependent"):
-                tags.append("про фото")
-            tag_prefix = f"[{', '.join(tags)}] " if tags else ""
-            pattern_lines.append(f"{idx}. {tag_prefix}{instruction}")
-        weather_info = plan_dict.get("weather") if isinstance(plan_dict.get("weather"), dict) else {}
-        weather_parts: list[str] = []
-        weather_line = str((weather_info or {}).get("line") or "").strip()
-        if weather_line:
-            weather_parts.append(weather_line)
-        weather_detail = str((weather_info or {}).get("detail") or "").strip()
-        if weather_detail:
-            weather_parts.append(weather_detail)
-        weather_cities = weather_info.get("cities") if isinstance(weather_info, dict) else None
-        if weather_cities:
-            weather_parts.append(f"города: {weather_cities}")
+        pattern_lines = self._flowers_pattern_lines(plan_dict.get("patterns") or [])
+        weather_parts = self._flowers_weather_lines(plan_dict.get("weather"))
         flowers = plan_dict.get("flowers") if isinstance(plan_dict.get("flowers"), list) else []
         flower_names = [
             str(flower.get("name") or "").strip()

@@ -1309,10 +1309,21 @@ async def test_flowers_preview_service_block(tmp_path):
 
     text = bot._render_flowers_preview_text(state)
 
-    assert "Служебно (длина" in text
-    escaped_prompt = html.escape(state["plan_prompt"]).replace("\n", "<br>")
-    assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in text
-    assert "Шаблоны:" not in text
+    assert "Служебно:" in text
+    pattern_block = html.escape("\n".join(bot._flowers_pattern_lines(state["plan"]["patterns"]))).replace(
+        "\n", "<br>"
+    )
+    assert (
+        f"Паттерны:\n<blockquote expandable=\"true\">{pattern_block}</blockquote>"
+        in text
+    )
+    weather_block = html.escape(
+        "\n".join(bot._flowers_weather_lines(state["plan"]["weather"]))
+    ).replace("\n", "<br>")
+    assert (
+        f"Погода:\n<blockquote expandable=\"true\">{weather_block}</blockquote>"
+        in text
+    )
     assert "Погода сегодня: Солнечно" in text
     assert "Погода вчера: Вчера туман" in text
     assert "Предыдущая публикация: Вчерашний текст" in text
@@ -1436,20 +1447,30 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert "Доступные каналы:" in summary_text
     assert "📣 -500" in summary_text
     assert "🧪 -600" in summary_text
-    assert "Служебно (длина" in summary_text
+    assert "Служебно:" in summary_text
     plan_prompt_text = str(state.get("plan_prompt") or "")
     assert plan_prompt_text
     assert len(plan_prompt_text) <= 2000
     prompt_length = state.get("plan_prompt_length")
     assert isinstance(prompt_length, int)
     assert prompt_length <= 2000
-    escaped_prompt = html.escape(plan_prompt_text).replace("\n", "<br>")
-    assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in summary_text
     assert "Добавь смайлы" in plan_prompt_text
-    assert html.escape("Добавь смайлы") in escaped_prompt
     serialized_plan_text = str(state.get("serialized_plan") or "")
     assert "Добавь смайлы" in serialized_plan_text
-    assert "Шаблоны:" not in summary_text
+    pattern_lines = bot._flowers_pattern_lines((state.get("plan") or {}).get("patterns"))
+    if pattern_lines:
+        escaped_patterns = html.escape("\n".join(pattern_lines)).replace("\n", "<br>")
+        assert (
+            f"Паттерны:\n<blockquote expandable=\"true\">{escaped_patterns}</blockquote>"
+            in summary_text
+        )
+    weather_lines = bot._flowers_weather_lines((state.get("plan") or {}).get("weather"))
+    if weather_lines:
+        escaped_weather = html.escape("\n".join(weather_lines)).replace("\n", "<br>")
+        assert (
+            f"Погода:\n<blockquote expandable=\"true\">{escaped_weather}</blockquote>"
+            in summary_text
+        )
     assert f"Погода сегодня: {weather_today}" in summary_text
     assert f"Погода вчера: {weather_yesterday}" in summary_text
     assert "Предыдущая публикация: не публиковалось" in summary_text

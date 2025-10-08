@@ -8008,6 +8008,16 @@ class Bot:
         else:
             message_id = 0
         self.data.mark_assets_used(asset_ids)
+        previous_weather_line: str | None = None
+        rubric_id = getattr(rubric, "id", None)
+        if isinstance(rubric_id, int):
+            _, previous_weather_line = self._lookup_previous_flowers_post(rubric_id)
+        weather_today_line = self._normalize_weather_preview_line(
+            (weather_block or {}).get("line") if weather_block else None
+        )
+        weather_yesterday_line = self._normalize_weather_preview_line(
+            previous_weather_line
+        )
         metadata = {
             "rubric_code": rubric.code,
             "asset_ids": asset_ids,
@@ -8016,7 +8026,9 @@ class Bot:
             "greeting": greeting,
             "hashtags": hashtag_list,
             "weather": weather_block,
-            "weather_line": (weather_block or {}).get("line") if weather_block else None,
+            "weather_today_line": weather_today_line,
+            "weather_yesterday_line": weather_yesterday_line,
+            "weather_line": weather_today_line,
             "pattern_ids": plan.get("pattern_ids") if isinstance(plan, dict) else None,
             "plan": plan,
         }
@@ -8081,6 +8093,59 @@ class Bot:
         ])
         return {"inline_keyboard": rows}
 
+    @staticmethod
+    def _normalize_weather_preview_line(value: Any) -> str:
+        line = str(value or "").strip()
+        return line if line else "не публиковалось"
+
+    def _lookup_previous_flowers_post(
+        self, rubric_id: int
+    ) -> tuple[str | None, str | None]:
+        previous_text: str | None = None
+        previous_weather: str | None = None
+        try:
+            rows = self.db.execute(
+                """
+                SELECT metadata
+                FROM posts_history
+                WHERE rubric_id=?
+                ORDER BY published_at DESC, id DESC
+                LIMIT 15
+                """,
+                (rubric_id,),
+            ).fetchall()
+        except Exception:
+            rows = []
+        for row in rows:
+            raw = row["metadata"] if row is not None else None
+            if not raw:
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("test"):
+                continue
+            if previous_text is None:
+                text = (
+                    payload.get("greeting")
+                    or payload.get("text")
+                    or payload.get("caption")
+                )
+                if text:
+                    previous_text = str(text)
+            if previous_weather is None:
+                candidate = (
+                    payload.get("weather_today_line")
+                    or payload.get("weather_line")
+                )
+                candidate_str = str(candidate or "").strip()
+                if candidate_str:
+                    previous_weather = candidate_str
+            if previous_text and previous_weather:
+                break
+        return previous_text, previous_weather
+
     def _render_flowers_preview_text(self, state: dict[str, Any]) -> str:
         parts: list[str] = []
         caption = str(state.get("preview_caption") or "").strip()
@@ -8088,9 +8153,14 @@ class Bot:
             parts.append("Подпись на медиа показана выше.")
         else:
             parts.append("Подпись пока не сгенерирована.")
-        weather_line = str(state.get("weather_line") or "").strip()
-        if weather_line:
-            parts.append(f"Погода: {weather_line}")
+        weather_today_line = self._normalize_weather_preview_line(
+            state.get("weather_today_line")
+        )
+        weather_yesterday_line = self._normalize_weather_preview_line(
+            state.get("weather_yesterday_line")
+        )
+        parts.append(f"Погода сегодня: {weather_today_line}")
+        parts.append(f"Погода вчера: {weather_yesterday_line}")
         instructions = str(state.get("instructions") or "").strip()
         if instructions:
             parts.append(f"Инструкции оператора:\n{instructions}")
@@ -8220,37 +8290,31 @@ class Bot:
                 "trend_summary": weather_block.get("trend_summary"),
             }
         previous_main_post_text: str | None = None
-        try:
-            rows = self.db.execute(
-                """
-                SELECT metadata
-                FROM posts_history
-                WHERE rubric_id=?
-                ORDER BY published_at DESC, id DESC
-                LIMIT 15
-                """,
-                (rubric.id,),
-            ).fetchall()
-        except Exception:
-            rows = []
-        for row in rows:
-            raw = row["metadata"] if row is not None else None
-            if not raw:
-                continue
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if payload.get("test"):
-                continue
-            text = (
-                payload.get("greeting")
-                or payload.get("text")
-                or payload.get("caption")
-            )
-            if text:
-                previous_main_post_text = str(text)
-                break
+        previous_weather_line: str | None = None
+        rubric_id = getattr(rubric, "id", None)
+        if isinstance(rubric_id, int):
+            prev_text, prev_weather = self._lookup_previous_flowers_post(rubric_id)
+            previous_main_post_text = prev_text
+            previous_weather_line = prev_weather
+        if previous_state:
+            if previous_main_post_text is None:
+                stored_text = previous_state.get("previous_main_post_text")
+                if stored_text:
+                    previous_main_post_text = str(stored_text)
+            if previous_weather_line is None:
+                stored_weather = (
+                    previous_state.get("weather_yesterday_line")
+                    or previous_state.get("weather_line")
+                )
+                stored_weather_str = str(stored_weather or "").strip()
+                if stored_weather_str:
+                    previous_weather_line = stored_weather_str
+        weather_today_line = self._normalize_weather_preview_line(
+            (weather_block or {}).get("line") if weather_block else None
+        )
+        weather_yesterday_line = self._normalize_weather_preview_line(
+            previous_weather_line
+        )
         state: dict[str, Any] = {
             "rubric_code": rubric.code,
             "rubric_id": rubric.id,
@@ -8268,7 +8332,9 @@ class Bot:
             "publish_parse_mode": publish_parse_mode,
             "instructions": (instructions or "").strip(),
             "weather_block": weather_block,
-            "weather_line": (weather_block or {}).get("line") if weather_block else None,
+            "weather_today_line": weather_today_line,
+            "weather_yesterday_line": weather_yesterday_line,
+            "weather_line": weather_today_line,
             "plan": plan,
             "pattern_ids": list(plan.get("pattern_ids", [])) if isinstance(plan, dict) else [],
             "serialized_plan": serialized_plan,
@@ -8372,7 +8438,15 @@ class Bot:
         state["hashtags"] = hashtags
         state["prepared_hashtags"] = prepared_hashtags
         weather_block = state.get("weather_block")
-        state["weather_line"] = (weather_block or {}).get("line") if weather_block else None
+        weather_today_line = self._normalize_weather_preview_line(
+            (weather_block or {}).get("line") if weather_block else None
+        )
+        weather_yesterday_line = self._normalize_weather_preview_line(
+            state.get("weather_yesterday_line")
+        )
+        state["weather_today_line"] = weather_today_line
+        state["weather_yesterday_line"] = weather_yesterday_line
+        state["weather_line"] = weather_today_line
         chat_id = state.get("preview_chat_id")
         message_id = state.get("caption_message_id")
         if chat_id is None or message_id is None:
@@ -8460,7 +8534,9 @@ class Bot:
                 "greeting": state.get("greeting"),
                 "hashtags": list(state.get("prepared_hashtags") or []),
                 "weather": state.get("weather_block"),
-                "weather_line": state.get("weather_line"),
+                "weather_today_line": state.get("weather_today_line"),
+                "weather_yesterday_line": state.get("weather_yesterday_line"),
+                "weather_line": state.get("weather_today_line"),
                 "pattern_ids": list(state.get("pattern_ids") or []),
                 "plan": state.get("plan"),
             }

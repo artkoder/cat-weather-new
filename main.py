@@ -4334,9 +4334,12 @@ class Bot:
                 if rubric:
                     assets = list(preview_state.get('assets') or [])
                     weather_block = preview_state.get('weather_block')
-                    plan_override = (
-                        preview_state.get('plan') if isinstance(preview_state.get('plan'), dict) else None
-                    )
+                    plan_override = preview_state.get('plan')
+                    if isinstance(plan_override, dict):
+                        plan_override = deepcopy(plan_override)
+                        plan_override['instructions'] = instructions_text
+                    else:
+                        plan_override = None
                     channel_hint = preview_state.get('default_channel_id')
                     if not isinstance(channel_hint, int):
                         for key in ('channel_id', 'test_channel_id'):
@@ -4352,6 +4355,8 @@ class Bot:
                         instructions=instructions_text,
                         plan=plan_override,
                     )
+                    if isinstance(plan, dict):
+                        plan["instructions"] = instructions_text
                     (
                         preview_caption,
                         publish_caption,
@@ -4365,6 +4370,13 @@ class Bot:
                     )
                     preview_state['plan'] = plan
                     preview_state['pattern_ids'] = list(plan.get('pattern_ids', [])) if isinstance(plan, dict) else []
+                    prompt_payload = self._build_flowers_prompt_payload(plan)
+                    preview_state['serialized_plan'] = str(
+                        prompt_payload.get('serialized_plan') or '{}'
+                    )
+                    preview_state['plan_prompt'] = str(
+                        prompt_payload.get('user_prompt') or ''
+                    )
                     await self._update_flowers_preview_caption_state(
                         preview_state,
                         preview_caption=preview_caption,
@@ -8714,7 +8726,13 @@ class Bot:
                 return
             assets = list(state.get("assets") or [])
             weather_block = state.get("weather_block")
-            plan_override = state.get("plan") if isinstance(state.get("plan"), dict) else None
+            plan_override = state.get("plan")
+            instructions_text = str(state.get("instructions") or "")
+            if isinstance(plan_override, dict):
+                plan_override = deepcopy(plan_override)
+                plan_override["instructions"] = instructions_text
+            else:
+                plan_override = None
             channel_hint = state.get("default_channel_id")
             if not isinstance(channel_hint, int):
                 for key in ("channel_id", "test_channel_id"):
@@ -8727,9 +8745,11 @@ class Bot:
                 assets,
                 channel_id=channel_hint if isinstance(channel_hint, int) else None,
                 weather_block=weather_block,
-                instructions=state.get("instructions"),
+                instructions=instructions_text,
                 plan=plan_override,
             )
+            if isinstance(plan, dict):
+                plan["instructions"] = instructions_text
             (
                 preview_caption,
                 publish_caption,
@@ -8743,6 +8763,11 @@ class Bot:
             )
             state["plan"] = plan
             state["pattern_ids"] = list(plan.get("pattern_ids", [])) if isinstance(plan, dict) else []
+            prompt_payload = self._build_flowers_prompt_payload(plan)
+            state["serialized_plan"] = str(
+                prompt_payload.get("serialized_plan") or "{}"
+            )
+            state["plan_prompt"] = str(prompt_payload.get("user_prompt") or "")
             await self._update_flowers_preview_caption_state(
                 state,
                 preview_caption=preview_caption,

@@ -1428,6 +1428,10 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert plan_prompt_text
     escaped_prompt = html.escape(plan_prompt_text).replace("\n", "<br>")
     assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in summary_text
+    assert "Добавь смайлы" in plan_prompt_text
+    assert html.escape("Добавь смайлы") in escaped_prompt
+    serialized_plan_text = str(state.get("serialized_plan") or "")
+    assert "Добавь смайлы" in serialized_plan_text
     assert "Шаблоны:" not in summary_text
     assert f"Погода сегодня: {weather_today}" in summary_text
     assert f"Погода вчера: {weather_yesterday}" in summary_text

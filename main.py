@@ -4323,10 +4323,12 @@ class Bot:
                 if rubric:
                     cities = list(preview_state.get('cities') or [])
                     asset_count = len(preview_state.get('assets') or [])
+                    weather_block = preview_state.get('weather_block')
                     greeting, hashtags = await self._generate_flowers_copy(
                         rubric,
                         cities,
                         asset_count,
+                        weather_block=weather_block,
                         instructions=instructions_text,
                     )
                     (
@@ -4338,6 +4340,7 @@ class Bot:
                         greeting,
                         cities,
                         hashtags,
+                        weather_block,
                     )
                     await self._update_flowers_preview_caption_state(
                         preview_state,
@@ -7170,6 +7173,7 @@ class Bot:
             str,
             list[str],
             dict[int, dict[str, Any]],
+            dict[str, Any] | None,
         ]
         | None
     ):
@@ -7209,10 +7213,12 @@ class Bot:
             file_ids.append(file_id)
             asset_kinds.append(media_kind)
         cities = sorted({asset.city for asset in assets if asset.city})
+        weather_block = self._compose_flowers_weather_block(cities)
         greeting, hashtags = await self._generate_flowers_copy(
             rubric,
             cities,
             len(assets),
+            weather_block=weather_block,
             job=job,
             instructions=instructions,
         )
@@ -7226,6 +7232,7 @@ class Bot:
             greeting,
             hashtags,
             conversion_map,
+            weather_block,
         )
 
     async def _send_flowers_media_bundle(
@@ -7411,6 +7418,7 @@ class Bot:
         greeting: str,
         cities: Sequence[str],
         hashtags: Sequence[str],
+        weather_block: dict[str, Any] | None = None,
     ) -> tuple[str, str, str | None, list[str]]:
         greeting_text = str(greeting or "").strip()
         city_hashtags, trailing_hashtags = self._prepare_flowers_hashtag_sections(
@@ -7418,6 +7426,10 @@ class Bot:
             hashtags,
         )
         caption_parts: list[str] = []
+        weather_line = (weather_block or {}).get("line") if isinstance(weather_block, dict) else None
+        weather_line = str(weather_line or "").strip()
+        if weather_line:
+            caption_parts.append(weather_line)
         if greeting_text:
             caption_parts.append(greeting_text)
         if city_hashtags:
@@ -7520,13 +7532,19 @@ class Bot:
             greeting,
             hashtags,
             conversion_map,
+            weather_block,
         ) = prepared
         (
             preview_caption,
             publish_caption,
             publish_parse_mode,
             hashtag_list,
-        ) = self._build_flowers_caption(greeting, cities, hashtags)
+        ) = self._build_flowers_caption(
+            greeting,
+            cities,
+            hashtags,
+            weather_block,
+        )
         if initiator_id is not None:
             await self._send_flowers_preview(
                 rubric,
@@ -7546,6 +7564,7 @@ class Bot:
                 publish_parse_mode=publish_parse_mode,
                 prepared_hashtags=hashtag_list,
                 instructions=instructions,
+                weather_block=weather_block,
             )
             return True
         response, _ = await self._send_flowers_media_bundle(
@@ -7576,6 +7595,8 @@ class Bot:
             "cities": cities,
             "greeting": greeting,
             "hashtags": hashtag_list,
+            "weather": weather_block,
+            "weather_line": (weather_block or {}).get("line") if weather_block else None,
         }
         self.data.record_post_history(
             channel_id,
@@ -7645,6 +7666,9 @@ class Bot:
             parts.append("Подпись на медиа показана выше.")
         else:
             parts.append("Подпись пока не сгенерирована.")
+        weather_line = str(state.get("weather_line") or "").strip()
+        if weather_line:
+            parts.append(f"Погода: {weather_line}")
         instructions = str(state.get("instructions") or "").strip()
         if instructions:
             parts.append(f"Инструкции оператора:\n{instructions}")
@@ -7730,6 +7754,7 @@ class Bot:
         publish_parse_mode: str | None,
         prepared_hashtags: list[str],
         instructions: str | None,
+        weather_block: dict[str, Any] | None,
     ) -> None:
         previous_state = self.pending_flowers_previews.get(initiator_id)
         if previous_state:
@@ -7763,6 +7788,8 @@ class Bot:
             "publish_caption": publish_caption,
             "publish_parse_mode": publish_parse_mode,
             "instructions": (instructions or "").strip(),
+            "weather_block": weather_block,
+            "weather_line": (weather_block or {}).get("line") if weather_block else None,
             "preview_chat_id": initiator_id,
             "media_message_ids": [],
             "caption_message_id": None,
@@ -7858,6 +7885,8 @@ class Bot:
         state["greeting"] = greeting
         state["hashtags"] = hashtags
         state["prepared_hashtags"] = prepared_hashtags
+        weather_block = state.get("weather_block")
+        state["weather_line"] = (weather_block or {}).get("line") if weather_block else None
         chat_id = state.get("preview_chat_id")
         message_id = state.get("caption_message_id")
         if chat_id is None or message_id is None:
@@ -7943,6 +7972,8 @@ class Bot:
                 "cities": list(state.get("cities") or []),
                 "greeting": state.get("greeting"),
                 "hashtags": list(state.get("prepared_hashtags") or []),
+                "weather": state.get("weather_block"),
+                "weather_line": state.get("weather_line"),
             }
             self.data.mark_assets_used(asset_ids)
             first_asset = asset_ids[0] if asset_ids else None
@@ -8034,6 +8065,7 @@ class Bot:
                 greeting,
                 hashtags,
                 conversion_map,
+                weather_block,
             ) = prepared
             (
                 preview_caption,
@@ -8044,6 +8076,7 @@ class Bot:
                 greeting,
                 cities,
                 hashtags,
+                weather_block,
             )
             default_channel = state.get("default_channel_id")
             if not isinstance(default_channel, int):
@@ -8079,6 +8112,7 @@ class Bot:
                 publish_parse_mode=publish_parse_mode,
                 prepared_hashtags=prepared_hashtags,
                 instructions=state.get("instructions"),
+                weather_block=weather_block,
             )
             await self.api_request(
                 "answerCallbackQuery",
@@ -8105,10 +8139,12 @@ class Bot:
                 return
             cities = list(state.get("cities") or [])
             asset_count = len(state.get("assets") or [])
+            weather_block = state.get("weather_block")
             greeting, hashtags = await self._generate_flowers_copy(
                 rubric,
                 cities,
                 asset_count,
+                weather_block=weather_block,
                 instructions=state.get("instructions"),
             )
             (
@@ -8120,6 +8156,7 @@ class Bot:
                 greeting,
                 cities,
                 hashtags,
+                weather_block,
             )
             await self._update_flowers_preview_caption_state(
                 state,
@@ -8227,6 +8264,7 @@ class Bot:
         cities: list[str],
         asset_count: int,
         *,
+        weather_block: dict[str, Any] | None = None,
         job: Job | None = None,
         instructions: str | None = None,
     ) -> tuple[str, list[str]]:
@@ -8241,6 +8279,30 @@ class Bot:
             prompt_parts.append(
                 "Упомяни города: " + ", ".join(cities)
             )
+        plan_lines: list[str] = []
+        if weather_block:
+            city_snapshot = weather_block.get("city") or {}
+            sea_snapshot = weather_block.get("sea") or {}
+            city_detail = city_snapshot.get("detail") or "данные по городу недоступны"
+            sea_detail = sea_snapshot.get("detail") or "морская сводка недоступна"
+            trend_summary = weather_block.get("trend_summary") or "подчеркни уют в сравнении со вчера"
+            tone_example = weather_block.get("positive_intro") or "Утро радует"
+            plan_lines.append(
+                f"1. Текущая погода: {city_detail}; {sea_detail}."
+            )
+            plan_lines.append(
+                f"2. Перемены относительно вчера: {trend_summary}."
+            )
+            plan_lines.append(
+                f"3. Тон: используй позитивные формулировки вроде «{tone_example}»."
+            )
+        else:
+            plan_lines = [
+                "1. Текущая погода: данных нет, сделай тёплый общий ввод.",
+                "2. Перемены относительно вчера: подчеркни уют и поддержку.",
+                "3. Тон: позитивный и бодрый, благодарим за новый день.",
+            ]
+        prompt_parts.append("План:\n" + "\n".join(plan_lines))
         if instructions:
             prompt_parts.append(f"Дополнительные пожелания: {instructions}")
         prompt = " ".join(prompt_parts)
@@ -8800,36 +8862,20 @@ class Bot:
         return mapping.get(code)
 
     def _get_city_weather_info(self, city_name: str) -> tuple[str | None, str | None]:
-        row = self.db.execute(
-            "SELECT id, name FROM cities WHERE lower(name)=lower(?)",
-            (city_name,),
-        ).fetchone()
-        if not row:
+        snapshot = self._fetch_city_weather_snapshot(city_name)
+        if not snapshot:
             return None, None
-        weather_row = self.db.execute(
-            """
-            SELECT temperature, weather_code, wind_speed
-            FROM weather_cache_hour
-            WHERE city_id=?
-            ORDER BY timestamp DESC
-            LIMIT 1
-            """,
-            (row["id"],),
-        ).fetchone()
-        if not weather_row:
-            return None, None
-        temp = weather_row["temperature"]
-        code = weather_row["weather_code"]
-        wind = weather_row["wind_speed"]
-        weather_class = self._classify_weather_code(int(code) if code is not None else None)
-        emoji = weather_emoji(int(code), None) if code is not None else ""
+        weather_class = self._classify_weather_code(snapshot.get("weather_code"))
+        emoji = weather_emoji(snapshot["weather_code"], snapshot.get("is_day")) if snapshot.get("weather_code") is not None else ""
         parts: list[str] = []
+        temp = snapshot.get("temperature")
+        wind = snapshot.get("wind_speed")
         if temp is not None:
             parts.append(f"{int(round(temp))}°C")
         if wind is not None:
             parts.append(f"ветер {int(round(wind))} м/с")
         summary = ", ".join(parts)
-        city_display = row["name"]
+        city_display = snapshot.get("name") or city_name
         if emoji and summary:
             return f"{emoji} {city_display}: {summary}", weather_class
         if emoji:
@@ -8841,6 +8887,195 @@ class Bot:
     def _get_city_weather_summary(self, city_name: str) -> str | None:
         summary, _ = self._get_city_weather_info(city_name)
         return summary
+
+    def _format_temperature_value(self, value: float | None) -> str | None:
+        if value is None:
+            return None
+        return f"{int(round(value))}°C"
+
+    def _format_wind_value(self, value: float | None) -> str | None:
+        if value is None:
+            return None
+        return f"{max(0, int(round(value)))} м/с"
+
+    def _positive_temperature_trend(
+        self, current: float | None, previous: float | None
+    ) -> str:
+        if current is None:
+            return ""
+        current_text = self._format_temperature_value(current) or ""
+        if previous is None:
+            return f"температура около {current_text}".strip()
+        diff = current - previous
+        diff_value = int(round(abs(diff)))
+        if diff >= 1:
+            change = f"на {diff_value}°" if diff_value else ""
+            return f"стало теплее {change}".strip()
+        if diff <= -1:
+            return f"свежесть бодрит — около {current_text}".strip()
+        return f"температура держится около {current_text}".strip()
+
+    def _positive_wind_trend(self, current: float | None, previous: float | None) -> str:
+        if current is None:
+            return ""
+        current_text = self._format_wind_value(current) or ""
+        if previous is None:
+            return f"ветер около {current_text}".strip()
+        diff = current - previous
+        if diff <= -0.5:
+            return f"ветер стал спокойнее — около {current_text}".strip()
+        if diff >= 0.5:
+            return f"ветер бодрит до {current_text}, но остаётся дружелюбным".strip()
+        return f"ветер мягкий — около {current_text}".strip()
+
+    def _fetch_city_weather_snapshot(self, city_name: str) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT id, name FROM cities WHERE lower(name)=lower(?)",
+            (city_name,),
+        ).fetchone()
+        if not row:
+            return None
+        weather_row = self.db.execute(
+            """
+            SELECT temperature, weather_code, wind_speed, is_day
+            FROM weather_cache_hour
+            WHERE city_id=?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (row["id"],),
+        ).fetchone()
+        if not weather_row:
+            return None
+        yesterday = (datetime.utcnow() - timedelta(days=1)).date().isoformat()
+        previous_row = self.db.execute(
+            """
+            SELECT temperature, wind_speed
+            FROM weather_cache_day
+            WHERE city_id=? AND day=?
+            LIMIT 1
+            """,
+            (row["id"], yesterday),
+        ).fetchone()
+        snapshot: dict[str, Any] = {
+            "id": row["id"],
+            "name": row["name"],
+            "temperature": weather_row["temperature"],
+            "wind_speed": weather_row["wind_speed"],
+            "weather_code": weather_row["weather_code"],
+            "is_day": weather_row["is_day"],
+            "previous_temperature": previous_row["temperature"] if previous_row else None,
+            "previous_wind": previous_row["wind_speed"] if previous_row else None,
+        }
+        temp_detail = self._format_temperature_value(snapshot["temperature"])
+        wind_detail = self._format_wind_value(snapshot["wind_speed"])
+        details: list[str] = []
+        if temp_detail:
+            details.append(temp_detail)
+        if wind_detail:
+            details.append(f"ветер {wind_detail}")
+        snapshot["detail"] = ", ".join(details)
+        snapshot["trend_temperature"] = self._positive_temperature_trend(
+            snapshot["temperature"], snapshot["previous_temperature"]
+        )
+        snapshot["trend_wind"] = self._positive_wind_trend(
+            snapshot["wind_speed"], snapshot["previous_wind"]
+        )
+        trends = [piece for piece in [snapshot["trend_temperature"], snapshot["trend_wind"]] if piece]
+        snapshot["trend_summary"] = " и ".join(trends)
+        if snapshot["trend_summary"]:
+            snapshot["positive_intro"] = "Утро радует"
+        else:
+            snapshot["positive_intro"] = "Утро остаётся уютным"
+        return snapshot
+
+    def _fetch_coast_weather_snapshot(self) -> dict[str, Any] | None:
+        row = self.db.execute(
+            """
+            SELECT s.name, sc.current, sc.wave
+            FROM sea_cache AS sc
+            JOIN seas AS s ON sc.sea_id = s.id
+            ORDER BY sc.updated DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not row:
+            return None
+        temp = row["current"]
+        wave = row["wave"]
+        parts: list[str] = []
+        if temp is not None:
+            parts.append(f"вода {int(round(temp))}°C")
+        if wave is not None:
+            parts.append(f"волна {round(wave, 1)} м")
+        joined = ", ".join(parts)
+        if joined:
+            detail = f"{row['name']}: {joined}"
+        else:
+            detail = row["name"]
+        description: str
+        if wave is None or wave < 0.5:
+            description = "море спокойное"
+        elif wave < 1.2:
+            description = "волна мягко бодрит"
+        else:
+            description = "волна играет и заряжает"
+        return {
+            "name": row["name"],
+            "temperature": temp,
+            "wave": wave,
+            "detail": detail,
+            "description": description,
+        }
+
+    def _format_flowers_cities_for_weather(self, cities: Sequence[str], fallback: str) -> str:
+        unique = [str(city).strip() for city in cities if str(city or "").strip()]
+        if not unique:
+            return fallback
+        unique = sorted(dict.fromkeys(unique))
+        if len(unique) == 1:
+            return unique[0]
+        if len(unique) == 2:
+            return f"{unique[0]} и {unique[1]}"
+        return ", ".join(unique[:-1]) + f" и {unique[-1]}"
+
+    def _compose_flowers_weather_block(
+        self, cities: Sequence[str]
+    ) -> dict[str, Any] | None:
+        city_snapshot = self._fetch_city_weather_snapshot("Kaliningrad")
+        coast_snapshot = self._fetch_coast_weather_snapshot()
+        if not city_snapshot and not coast_snapshot:
+            return None
+        fallback_city_name = (city_snapshot or {}).get("name") or "Калининград"
+        city_list = self._format_flowers_cities_for_weather(cities, fallback_city_name)
+        positive_intro = (city_snapshot or {}).get("positive_intro") or "Утро радует"
+        trend_summary = (city_snapshot or {}).get("trend_summary") or "погода поддерживает уют"
+        if trend_summary:
+            headline = f"{positive_intro}: {trend_summary}"
+        else:
+            headline = positive_intro
+        detail_parts: list[str] = []
+        if city_snapshot and city_snapshot.get("detail"):
+            detail_parts.append(f"в городе {city_snapshot['detail']}")
+        if coast_snapshot:
+            if coast_snapshot.get("detail"):
+                detail_parts.append(coast_snapshot["detail"])
+            elif coast_snapshot.get("description"):
+                detail_parts.append(coast_snapshot["description"])
+        details = "; ".join(part for part in detail_parts if part)
+        if details:
+            line = f"{headline} {city_list}: {details}."
+        else:
+            line = f"{headline} {city_list}."
+        return {
+            "city": city_snapshot,
+            "sea": coast_snapshot,
+            "positive_intro": positive_intro,
+            "trend_summary": trend_summary,
+            "details": details,
+            "line": line,
+            "cities": city_list,
+        }
 
     def _overlay_number(
         self,

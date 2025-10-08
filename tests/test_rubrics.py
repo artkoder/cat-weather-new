@@ -2,7 +2,7 @@ import html
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from typing import Any
@@ -26,6 +26,35 @@ FLOWERS_FOOTER_LINK = '<a href="https://t.me/addlist/sW-rkrslxqo1NTVi">📂 П
 
 def _insert_rubric(bot: Bot, code: str, config: dict, rubric_id: int = 1) -> None:
     bot.data.upsert_rubric(code, code.title(), config=config)
+
+
+def _seed_weather(bot: Bot) -> None:
+    bot.db.execute(
+        "INSERT OR IGNORE INTO cities (id, name, lat, lon) VALUES (?, ?, ?, ?)",
+        (1, "Kaliningrad", 54.7104, 20.4522),
+    )
+    timestamp = datetime.utcnow().isoformat()
+    yesterday = (datetime.utcnow() - timedelta(days=1)).date().isoformat()
+    bot.db.execute(
+        "INSERT OR REPLACE INTO weather_cache_hour (city_id, timestamp, temperature, weather_code, wind_speed, is_day) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (1, timestamp, 12.0, 1, 3.0, 1),
+    )
+    bot.db.execute(
+        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (1, yesterday, 9.0, 2, 5.0),
+    )
+    bot.db.execute(
+        "INSERT OR IGNORE INTO seas (id, name, lat, lon) VALUES (?, ?, ?, ?)",
+        (1, "Балтика", 54.95, 20.2),
+    )
+    bot.db.execute(
+        "INSERT OR REPLACE INTO sea_cache (sea_id, updated, current, morning, day, evening, night, wave, morning_wave, day_wave, evening_wave, night_wave) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (1, timestamp, 8.5, None, None, None, None, 0.4, None, None, None, None),
+    )
+    bot.db.commit()
 
 
 @pytest.mark.asyncio
@@ -369,6 +398,7 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
         "assets": {"min": asset_count, "max": asset_count},
     }
     _insert_rubric(bot, "flowers", config, rubric_id=1)
+    _seed_weather(bot)
     now = datetime.utcnow().isoformat()
     file_ids: list[str] = []
     for idx in range(asset_count):
@@ -445,7 +475,12 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
     hashtags_combined = list(meta.get("hashtags") or [])
     assert hashtags_combined[: len(city_hashtags)] == city_hashtags
     trailing_only = hashtags_combined[len(city_hashtags) :]
-    preview_parts = [greeting]
+    weather_meta = meta.get("weather")
+    assert isinstance(weather_meta, dict)
+    weather_line = str(meta.get("weather_line") or "").strip()
+    assert weather_line
+    assert weather_line == weather_meta.get("line")
+    preview_parts = [weather_line, greeting]
     if city_hashtags:
         preview_parts.append(" ".join(city_hashtags))
     if trailing_only:
@@ -520,6 +555,7 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
         "assets": {"min": 1, "max": 1},
     }
     _insert_rubric(bot, "flowers", config, rubric_id=1)
+    _seed_weather(bot)
 
     now = datetime.utcnow().isoformat()
     file_meta = {"file_id": "single-file"}
@@ -587,6 +623,10 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     assert FLOWERS_FOOTER_LINK in publish_caption
     assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
     assert publish_mode == "HTML"
+    weather_line = str(state.get("weather_line") or "")
+    assert weather_line
+    assert weather_line in preview_caption
+    assert weather_line in publish_caption
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
 
@@ -608,6 +648,11 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     assert expected_link is not None
     assert any(expected_link in str(msg.get("text") or "") for msg in confirmations)
     assert bot.pending_flowers_previews.get(1234) is None
+    history = bot.db.execute("SELECT metadata FROM posts_history").fetchone()
+    assert history is not None
+    meta = json.loads(history["metadata"])
+    assert meta.get("weather_line") == weather_line
+    assert isinstance(meta.get("weather"), dict)
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0
 
@@ -624,6 +669,7 @@ async def test_flowers_preview_document_media_paths(tmp_path):
         "assets": {"min": 1, "max": 1},
     }
     _insert_rubric(bot, "flowers", config, rubric_id=1)
+    _seed_weather(bot)
 
     now = datetime.utcnow().isoformat()
     file_meta = {"file_id": "doc-file", "file_name": "flower.pdf"}
@@ -695,6 +741,10 @@ async def test_flowers_preview_document_media_paths(tmp_path):
     assert FLOWERS_FOOTER_LINK in publish_caption
     assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
     assert publish_mode == "HTML"
+    weather_line = str(state.get("weather_line") or "")
+    assert weather_line
+    assert weather_line in preview_caption
+    assert weather_line in publish_caption
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
 
@@ -734,6 +784,7 @@ async def test_flowers_preview_document_with_image_filename(tmp_path):
         "assets": {"min": 1, "max": 1},
     }
     _insert_rubric(bot, "flowers", config, rubric_id=1)
+    _seed_weather(bot)
 
     now = datetime.utcnow().isoformat()
     file_meta = {"file_id": "doc-photo", "file_name": "flower.jpg"}
@@ -832,6 +883,10 @@ async def test_flowers_preview_document_with_image_filename(tmp_path):
     assert FLOWERS_FOOTER_LINK in publish_caption
     assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
     assert publish_mode == "HTML"
+    weather_line = str(state.get("weather_line") or "")
+    assert weather_line
+    assert weather_line in preview_caption
+    assert weather_line in publish_caption
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
 
@@ -893,6 +948,7 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
         "assets": {"min": 1, "max": 1},
     }
     _insert_rubric(bot, "flowers", config, rubric_id=1)
+    _seed_weather(bot)
 
     file_meta = {
         "file_id": "photo_cached",
@@ -962,6 +1018,10 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
     assert FLOWERS_FOOTER_LINK in publish_caption
     assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
     assert publish_mode == "HTML"
+    weather_line = str(state.get("weather_line") or "")
+    assert weather_line
+    assert weather_line in preview_caption
+    assert weather_line in publish_caption
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
 
@@ -1062,6 +1122,7 @@ async def test_publish_flowers_uses_distinct_assets(tmp_path, monkeypatch):
         "assets": {"min": 4, "max": 4},
     }
     _insert_rubric(bot, "flowers", config, rubric_id=1)
+    _seed_weather(bot)
     now = datetime.utcnow().isoformat()
     for idx in range(8):
         file_meta = {"file_id": f"rf{idx}"}
@@ -1131,6 +1192,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
         "assets": {"min": 4, "max": 4},
     }
     _insert_rubric(bot, "flowers", config, rubric_id=1)
+    _seed_weather(bot)
 
     now = datetime.utcnow().isoformat()
     for idx in range(4):
@@ -1186,6 +1248,8 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     state = bot.pending_flowers_previews.get(1234)
     assert state is not None
     assert state.get("caption_message_id")
+    weather_line_initial = str(state.get("weather_line") or "")
+    assert weather_line_initial
 
     await bot._handle_flowers_preview_callback(1234, "regen_caption", {"id": "cb1"})
     assert any(call[0] == "editMessageText" for call in api_calls)
@@ -1211,6 +1275,10 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert FLOWERS_FOOTER_LINK not in preview_caption
     assert FLOWERS_FOOTER_LINK in publish_caption
     assert state.get("publish_parse_mode") == "HTML"
+    weather_line = str(state.get("weather_line") or "")
+    assert weather_line
+    assert weather_line in preview_caption
+    assert weather_line in publish_caption
     summary_updates = [
         data for method, data in api_calls if method == "editMessageText" and data
     ]
@@ -1243,6 +1311,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     meta = json.loads(history["metadata"])
     assert meta["asset_ids"]
     assert meta["test"] is False
+    assert meta.get("weather_line")
 
     await bot.close()
 
@@ -1382,6 +1451,8 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
     config = {"enabled": True}
     _insert_rubric(bot, "flowers", config, rubric_id=1)
     rubric = bot.data.get_rubric_by_code("flowers")
+    _seed_weather(bot)
+    weather_block = bot._compose_flowers_weather_block(["Москва"])  # type: ignore[attr-defined]
 
     calls: list[dict[str, Any]] = []
 
@@ -1404,7 +1475,12 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
 
     bot.openai = DummyOpenAI()
 
-    greeting, hashtags = await bot._generate_flowers_copy(rubric, ["Москва"], 4)
+    greeting, hashtags = await bot._generate_flowers_copy(
+        rubric,
+        ["Москва"],
+        4,
+        weather_block=weather_block,
+    )
 
     assert greeting == "Доброе утро"
     assert hashtags == ["котопогода", "цветы"]
@@ -1413,6 +1489,11 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
     assert request["model"] == "gpt-4o"
     assert 0.9 <= request["temperature"] <= 1.1
     assert request["top_p"] == 0.9
+    user_prompt = request["user_prompt"]
+    assert "План:" in user_prompt
+    assert "Текущая погода" in user_prompt
+    if weather_block and weather_block.get("city"):
+        assert weather_block["city"]["detail"] in user_prompt
 
     await bot.close()
 

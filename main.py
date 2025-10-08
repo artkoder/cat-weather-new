@@ -7504,12 +7504,20 @@ class Bot:
 
     @staticmethod
     def _jaccard_similarity(a: str, b: str) -> float:
-        tokens_a = {token for token in re.split(r"\W+", a.lower()) if token}
-        tokens_b = {token for token in re.split(r"\W+", b.lower()) if token}
-        if not tokens_a or not tokens_b:
+        words_a = [token for token in re.split(r"\W+", a.lower()) if token]
+        words_b = [token for token in re.split(r"\W+", b.lower()) if token]
+        bigrams_a = {
+            f"{words_a[i]} {words_a[i + 1]}"
+            for i in range(len(words_a) - 1)
+        }
+        bigrams_b = {
+            f"{words_b[i]} {words_b[i + 1]}"
+            for i in range(len(words_b) - 1)
+        }
+        if not bigrams_a or not bigrams_b:
             return 0.0
-        intersection = len(tokens_a & tokens_b)
-        union = len(tokens_a | tokens_b)
+        intersection = len(bigrams_a & bigrams_b)
+        union = len(bigrams_a | bigrams_b)
         if union == 0:
             return 0.0
         return intersection / union
@@ -8772,7 +8780,7 @@ class Bot:
                 continue
             if previous_text:
                 similarity = self._jaccard_similarity(previous_text, greeting)
-                if similarity >= 0.6:
+                if similarity >= 0.4:
                     logging.info(
                         "flowers copy слишком похож на предыдущий (Jaccard=%.2f), повторяем попытку",
                         similarity,

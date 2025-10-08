@@ -1664,7 +1664,7 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
     rubric = bot.data.get_rubric_by_code("flowers")
     bot.data.record_post_history(1, 1, None, rubric.id, {
         "rubric_code": "flowers",
-        "greeting": "Доброе утро",
+        "greeting": "Тёплый кот мурчит радостно",
         "hashtags": ["#котопогода"],
     })
 
@@ -1678,7 +1678,10 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
             calls.append(kwargs)
             if len(calls) == 1:
                 return OpenAIResponse(
-                    {"greeting": "Доброе утро", "hashtags": ["#котопогода"]},
+                    {
+                        "greeting": "Тёплый кот мурчит у окна",
+                        "hashtags": ["#котопогода"],
+                    },
                     {
                         "prompt_tokens": 5,
                         "completion_tokens": 5,
@@ -1688,7 +1691,10 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
                     },
                 )
             return OpenAIResponse(
-                {"greeting": "Привет, друзья", "hashtags": ["#котопогода", "#цветы"]},
+                {
+                    "greeting": "Солнечный привет, друзья",
+                    "hashtags": ["#котопогода", "#цветы"],
+                },
                 {
                     "prompt_tokens": 6,
                     "completion_tokens": 7,
@@ -1749,9 +1755,27 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
         channel_id=-200,
     )
 
-    assert greeting == "Привет, друзья"
+    assert greeting == "Солнечный привет, друзья"
     assert hashtags == ["#котопогода", "#цветы"]
     assert len(calls) >= 2
+    # Первая попытка должна быть отклонена из-за повторяющейся биграммы
+    assert bot._jaccard_similarity(
+        "Тёплый кот мурчит радостно",
+        "Тёплый кот мурчит у окна",
+    ) >= 0.4
+    assert isinstance(calls[0], dict)
+    assert calls[0]["schema"] == {
+        "type": "object",
+        "properties": {
+            "greeting": {"type": "string"},
+            "hashtags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 2,
+            },
+        },
+        "required": ["greeting", "hashtags"],
+    }
     assert isinstance(plan, dict)
 
     await bot.close()

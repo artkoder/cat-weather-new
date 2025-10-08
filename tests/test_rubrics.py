@@ -534,10 +534,13 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
     trailing_only = hashtags_combined[len(city_hashtags) :]
     weather_meta = meta.get("weather")
     assert isinstance(weather_meta, dict)
-    weather_line = str(meta.get("weather_line") or "").strip()
-    assert weather_line
-    assert weather_line == weather_meta.get("line")
-    preview_parts = [weather_line, greeting]
+    weather_today = str(meta.get("weather_today_line") or "").strip()
+    weather_yesterday = str(meta.get("weather_yesterday_line") or "").strip()
+    assert weather_today
+    assert weather_today == str(weather_meta.get("line") or "").strip()
+    assert weather_yesterday == "не публиковалось"
+    assert meta.get("weather_line") == weather_today
+    preview_parts = [weather_today, greeting]
     if city_hashtags:
         preview_parts.append(" ".join(city_hashtags))
     if trailing_only:
@@ -680,10 +683,13 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     assert FLOWERS_FOOTER_LINK in publish_caption
     assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
     assert publish_mode == "HTML"
-    weather_line = str(state.get("weather_line") or "")
-    assert weather_line
-    assert weather_line in preview_caption
-    assert weather_line in publish_caption
+    weather_today = str(state.get("weather_today_line") or "")
+    weather_yesterday = str(state.get("weather_yesterday_line") or "")
+    assert weather_today
+    assert weather_today in preview_caption
+    assert weather_today in publish_caption
+    assert weather_yesterday == "не публиковалось"
+    assert state.get("weather_line") == weather_today
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
 
@@ -708,7 +714,9 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     history = bot.db.execute("SELECT metadata FROM posts_history").fetchone()
     assert history is not None
     meta = json.loads(history["metadata"])
-    assert meta.get("weather_line") == weather_line
+    assert meta.get("weather_today_line") == weather_today
+    assert meta.get("weather_yesterday_line") == weather_yesterday
+    assert meta.get("weather_line") == weather_today
     assert isinstance(meta.get("weather"), dict)
     assert meta.get("pattern_ids"), "pattern ids should be persisted"
     assert isinstance(meta.get("plan"), dict)
@@ -800,10 +808,13 @@ async def test_flowers_preview_document_media_paths(tmp_path):
     assert FLOWERS_FOOTER_LINK in publish_caption
     assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
     assert publish_mode == "HTML"
-    weather_line = str(state.get("weather_line") or "")
-    assert weather_line
-    assert weather_line in preview_caption
-    assert weather_line in publish_caption
+    weather_today = str(state.get("weather_today_line") or "")
+    weather_yesterday = str(state.get("weather_yesterday_line") or "")
+    assert weather_today
+    assert weather_today in preview_caption
+    assert weather_today in publish_caption
+    assert weather_yesterday == "не публиковалось"
+    assert state.get("weather_line") == weather_today
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
 
@@ -942,10 +953,13 @@ async def test_flowers_preview_document_with_image_filename(tmp_path):
     assert FLOWERS_FOOTER_LINK in publish_caption
     assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
     assert publish_mode == "HTML"
-    weather_line = str(state.get("weather_line") or "")
-    assert weather_line
-    assert weather_line in preview_caption
-    assert weather_line in publish_caption
+    weather_today = str(state.get("weather_today_line") or "")
+    weather_yesterday = str(state.get("weather_yesterday_line") or "")
+    assert weather_today
+    assert weather_today in preview_caption
+    assert weather_today in publish_caption
+    assert weather_yesterday == "не публиковалось"
+    assert state.get("weather_line") == weather_today
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
 
@@ -1077,10 +1091,13 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
     assert FLOWERS_FOOTER_LINK in publish_caption
     assert publish_caption.endswith(FLOWERS_FOOTER_LINK)
     assert publish_mode == "HTML"
-    weather_line = str(state.get("weather_line") or "")
-    assert weather_line
-    assert weather_line in preview_caption
-    assert weather_line in publish_caption
+    weather_today = str(state.get("weather_today_line") or "")
+    weather_yesterday = str(state.get("weather_yesterday_line") or "")
+    assert weather_today
+    assert weather_today in preview_caption
+    assert weather_today in publish_caption
+    assert weather_yesterday == "не публиковалось"
+    assert state.get("weather_line") == weather_today
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
 
@@ -1246,6 +1263,8 @@ async def test_flowers_preview_service_block(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     state = {
         "preview_caption": "Черновик",
+        "weather_today_line": "Солнечно",
+        "weather_yesterday_line": "Вчера туман",
         "weather_line": "Солнечно",
         "instructions": "Добавь тёплый тон",
         "channel_id": -500,
@@ -1281,8 +1300,8 @@ async def test_flowers_preview_service_block(tmp_path):
     escaped_prompt = html.escape(state["plan_prompt"]).replace("\n", "<br>")
     assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in text
     assert "Шаблоны:" not in text
-    assert "Погода сегодня:" not in text
-    assert "Погода вчера:" not in text
+    assert "Погода сегодня: Солнечно" in text
+    assert "Погода вчера: Вчера туман" in text
     assert "Предыдущая публикация: Вчерашний текст" in text
 
     await bot.close()
@@ -1354,8 +1373,10 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     state = bot.pending_flowers_previews.get(1234)
     assert state is not None
     assert state.get("caption_message_id")
-    weather_line_initial = str(state.get("weather_line") or "")
-    assert weather_line_initial
+    weather_today_initial = str(state.get("weather_today_line") or "")
+    weather_yesterday_initial = str(state.get("weather_yesterday_line") or "")
+    assert weather_today_initial
+    assert weather_yesterday_initial == "не публиковалось"
 
     await bot._handle_flowers_preview_callback(1234, "regen_caption", {"id": "cb1"})
     assert any(call[0] == "editMessageText" for call in api_calls)
@@ -1381,10 +1402,13 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert FLOWERS_FOOTER_LINK not in preview_caption
     assert FLOWERS_FOOTER_LINK in publish_caption
     assert state.get("publish_parse_mode") == "HTML"
-    weather_line = str(state.get("weather_line") or "")
-    assert weather_line
-    assert weather_line in preview_caption
-    assert weather_line in publish_caption
+    weather_today = str(state.get("weather_today_line") or "")
+    weather_yesterday = str(state.get("weather_yesterday_line") or "")
+    assert weather_today
+    assert weather_today in preview_caption
+    assert weather_today in publish_caption
+    assert weather_yesterday == weather_yesterday_initial
+    assert state.get("weather_line") == weather_today
     summary_updates = [
         data for method, data in api_calls if method == "editMessageText" and data
     ]
@@ -1405,7 +1429,8 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     escaped_prompt = html.escape(plan_prompt_text).replace("\n", "<br>")
     assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in summary_text
     assert "Шаблоны:" not in summary_text
-    assert "Погода сегодня:" not in summary_text
+    assert f"Погода сегодня: {weather_today}" in summary_text
+    assert f"Погода вчера: {weather_yesterday}" in summary_text
     assert "Предыдущая публикация: не публиковалось" in summary_text
 
     preview_messages = [
@@ -1436,7 +1461,9 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     meta = json.loads(history["metadata"])
     assert meta["asset_ids"]
     assert meta["test"] is False
-    assert meta.get("weather_line")
+    assert meta.get("weather_today_line") == weather_today
+    assert meta.get("weather_yesterday_line") == weather_yesterday
+    assert meta.get("weather_line") == weather_today
     assert meta.get("pattern_ids")
     assert isinstance(meta.get("plan"), dict)
 

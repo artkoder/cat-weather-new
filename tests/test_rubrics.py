@@ -1505,7 +1505,7 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
     _insert_rubric(bot, "flowers", config, rubric_id=1)
     rubric = bot.data.get_rubric_by_code("flowers")
     _seed_weather(bot)
-    weather_block = bot._compose_flowers_weather_block(["Москва"])  # type: ignore[attr-defined]
+    weather_block = bot._compose_flowers_weather_block(["Baltiisk"])  # type: ignore[attr-defined]
 
     calls: list[dict[str, Any]] = []
 
@@ -1551,7 +1551,7 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
         exif_present=False,
         latitude=None,
         longitude=None,
-        city="Москва",
+        city="Baltiisk",
         country="Россия",
         author_user_id=None,
         author_username=None,
@@ -1591,6 +1591,9 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
     assert "План:" in user_prompt
     assert "Правила" in user_prompt
     assert "photo_dependent" in user_prompt
+    assert weather_block["city"] is not None
+    assert weather_block["city"]["name"] in weather_block["line"]
+    assert weather_block["city"]["name"].casefold() == "kaliningrad"
 
     await bot.close()
 

@@ -8123,46 +8123,16 @@ class Bot:
                         pattern_lines.append(label)
         if pattern_lines:
             service_sections.append("Шаблоны:\n" + "\n".join(pattern_lines))
-        weather_block = state.get("weather_block")
         weather_section_lines: list[str] = []
-        if isinstance(weather_block, dict) and weather_block:
-            weather_json = json.dumps(weather_block, ensure_ascii=False, indent=2, sort_keys=True)
-            weather_section_lines.append("Погодный блок (JSON):")
-            weather_section_lines.append(weather_json)
-            weather_details = state.get("weather_details")
-            detail_lines: list[str] = []
-            if isinstance(weather_details, dict):
-                city_info = weather_details.get("city")
-                sea_info = weather_details.get("sea")
-                positive_intro = weather_details.get("positive_intro")
-                trend_summary = weather_details.get("trend_summary")
-                city_text = (
-                    json.dumps(city_info, ensure_ascii=False)
-                    if city_info is not None
-                    else "—"
-                )
-                sea_text = (
-                    json.dumps(sea_info, ensure_ascii=False)
-                    if sea_info is not None
-                    else "—"
-                )
-                detail_lines.append(f"Город: {city_text}")
-                detail_lines.append(f"Море: {sea_text}")
-                detail_lines.append(
-                    "Позитивный заголовок: " + (str(positive_intro) if positive_intro else "—")
-                )
-                detail_lines.append(
-                    "Тренды: " + (str(trend_summary) if trend_summary else "—")
-                )
-            if detail_lines:
-                weather_section_lines.append("Детали погоды:\n" + "\n".join(detail_lines))
+        if weather_line:
+            weather_section_lines.append(f"Погода сегодня: {weather_line}")
+        previous_text = str(state.get("previous_main_post_text") or "").strip()
+        if previous_text:
+            weather_section_lines.append(f"Погода вчера: {previous_text}")
+        else:
+            weather_section_lines.append("Погода вчера: не публиковалось")
         if weather_section_lines:
             service_sections.append("\n".join(weather_section_lines))
-        previous_text = state.get("previous_main_post_text")
-        if previous_text:
-            service_sections.append("Вчера: " + str(previous_text))
-        else:
-            service_sections.append("Вчера: не публиковалось")
         if service_sections:
             parts.append("Служебно:\n" + "\n\n".join(service_sections))
         parts.append("Выберите действие на клавиатуре ниже.")

@@ -1275,11 +1275,10 @@ async def test_flowers_preview_service_block(tmp_path):
 
     assert "Шаблоны:" in text
     assert "p-1: Упомяни бутоны" in text
-    assert "Погодный блок (JSON):" in text
-    assert "\"line\": \"Светлое утро\"" in text
-    assert "Позитивный заголовок: Светлый день" in text
-    assert "Тренды: ветер мягче" in text
-    assert "Вчера: Вчерашний текст" in text
+    assert "Погода сегодня: Солнечно" in text
+    assert "Погода вчера: Вчерашний текст" in text
+    assert "Погодный блок (JSON):" not in text
+    assert "Детали погоды:" not in text
 
     await bot.close()
 
@@ -1396,8 +1395,8 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert "🧪 -600" in summary_text
     assert "Служебно:" in summary_text
     assert "Шаблоны:" in summary_text
-    assert "Погодный блок (JSON):" in summary_text
-    assert "Вчера: не публиковалось" in summary_text
+    assert "Погода сегодня:" in summary_text
+    assert "Погода вчера: не публиковалось" in summary_text
 
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb3"})
     confirmations = [

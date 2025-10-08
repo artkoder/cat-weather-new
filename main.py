@@ -8376,11 +8376,15 @@ class Bot:
         if "previous_main_post_text" in state:
             previous_text = str(state.get("previous_main_post_text") or "").strip()
             if previous_text:
-                full_block = f"Предыдущая публикация: {previous_text}"
+                escaped_previous_text = html.escape(previous_text)
+                full_block = f"Предыдущая публикация: {escaped_previous_text}"
                 fallback_text: str | None = None
                 if len(full_block) > 600:
                     truncated_prev = self._safe_preview_truncate(previous_text, 600)
-                    fallback_text = f"Предыдущая публикация: {truncated_prev}"
+                    escaped_truncated_prev = html.escape(truncated_prev)
+                    fallback_text = (
+                        f"Предыдущая публикация: {escaped_truncated_prev}"
+                    )
                     if fallback_text == full_block:
                         fallback_text = None
                 _add_section(full_block, 2, fallback=fallback_text)

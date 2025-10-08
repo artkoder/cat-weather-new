@@ -8103,38 +8103,19 @@ class Bot:
             channels.append(f"🧪 {test_target}")
         if channels:
             parts.append("Доступные каналы: " + ", ".join(channels))
-        service_sections: list[str] = []
-        plan = state.get("plan")
-        pattern_lines: list[str] = []
-        if isinstance(plan, dict):
-            patterns = plan.get("patterns")
-            if isinstance(patterns, list):
-                for item in patterns:
-                    if not isinstance(item, dict):
-                        continue
-                    pattern_id = str(item.get("id") or "").strip()
-                    instruction = str(item.get("instruction") or "").strip()
-                    if not pattern_id and not instruction:
-                        continue
-                    label = pattern_id or "—"
-                    if instruction:
-                        pattern_lines.append(f"{label}: {instruction}")
-                    else:
-                        pattern_lines.append(label)
-        if pattern_lines:
-            service_sections.append("Шаблоны:\n" + "\n".join(pattern_lines))
-        weather_section_lines: list[str] = []
-        if weather_line:
-            weather_section_lines.append(f"Погода сегодня: {weather_line}")
-        previous_text = str(state.get("previous_main_post_text") or "").strip()
-        if previous_text:
-            weather_section_lines.append(f"Погода вчера: {previous_text}")
-        else:
-            weather_section_lines.append("Погода вчера: не публиковалось")
-        if weather_section_lines:
-            service_sections.append("\n".join(weather_section_lines))
-        if service_sections:
-            parts.append("Служебно:\n" + "\n\n".join(service_sections))
+        prompt_text = str(state.get("plan_prompt") or "").strip()
+        if prompt_text:
+            escaped_prompt = html.escape(prompt_text).replace("\n", "<br>")
+            parts.append(
+                "Служебно:\n"
+                f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>"
+            )
+        if "previous_main_post_text" in state:
+            previous_text = str(state.get("previous_main_post_text") or "").strip()
+            if previous_text:
+                parts.append(f"Предыдущая публикация: {previous_text}")
+            else:
+                parts.append("Предыдущая публикация: не публиковалось")
         parts.append("Выберите действие на клавиатуре ниже.")
         return "\n\n".join(parts)
 
@@ -8227,11 +8208,9 @@ class Bot:
                 except ValueError:
                     return None
             return None
-        serialized_plan = (
-            serialize_plan(plan)
-            if isinstance(plan, dict)
-            else json.dumps(plan or {}, ensure_ascii=False, sort_keys=True)
-        )
+        prompt_payload = self._build_flowers_prompt_payload(plan)
+        serialized_plan = str(prompt_payload.get("serialized_plan") or "{}")
+        plan_prompt = str(prompt_payload.get("user_prompt") or "")
         weather_details: dict[str, Any] | None = None
         if isinstance(weather_block, dict):
             weather_details = {
@@ -8293,6 +8272,7 @@ class Bot:
             "plan": plan,
             "pattern_ids": list(plan.get("pattern_ids", [])) if isinstance(plan, dict) else [],
             "serialized_plan": serialized_plan,
+            "plan_prompt": plan_prompt,
             "weather_details": weather_details,
             "previous_main_post_text": previous_main_post_text,
             "preview_chat_id": initiator_id,
@@ -8348,6 +8328,7 @@ class Bot:
             {
                 "chat_id": initiator_id,
                 "text": text,
+                "parse_mode": "HTML",
                 "reply_markup": self._flowers_preview_keyboard(state),
             },
         )
@@ -8403,6 +8384,7 @@ class Bot:
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "text": text,
+                "parse_mode": "HTML",
                 "reply_markup": self._flowers_preview_keyboard(state),
             },
         )
@@ -8785,37 +8767,24 @@ class Bot:
             },
         )
 
-    async def _generate_flowers_copy(
-        self,
-        rubric: Rubric,
-        assets: Sequence[Asset],
-        *,
-        channel_id: int | None,
-        weather_block: dict[str, Any] | None = None,
-        job: Job | None = None,
-        instructions: str | None = None,
-        plan: dict[str, Any] | None = None,
-    ) -> tuple[str, list[str], dict[str, Any]]:
-        resolved_plan = plan or self._build_flowers_plan(
-            rubric,
-            assets,
-            weather_block,
-            channel_id=channel_id,
-            instructions=instructions,
-        )
-        context = resolved_plan.get("context") if isinstance(resolved_plan, dict) else {}
-        cities = list(context.get("cities") or []) if isinstance(context, dict) else []
-        banned_words = set(resolved_plan.get("banned_words") or []) if isinstance(resolved_plan, dict) else set()
-        if not self.openai or not self.openai.api_key:
-            return (
-                self._default_flowers_greeting(cities),
-                self._default_hashtags("flowers"),
-                resolved_plan,
-            )
-        length_cfg = resolved_plan.get("length") if isinstance(resolved_plan, dict) else {}
-        min_len = int(length_cfg.get("min") or 420) if isinstance(length_cfg, dict) else 420
-        max_len = int(length_cfg.get("max") or 520) if isinstance(length_cfg, dict) else 520
-        serialized_plan = serialize_plan(resolved_plan) if isinstance(resolved_plan, dict) else "{}"
+    def _build_flowers_prompt_payload(
+        self, plan: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        plan_dict = plan if isinstance(plan, dict) else {}
+        length_cfg_raw = plan_dict.get("length") if plan_dict else {}
+        length_cfg = length_cfg_raw if isinstance(length_cfg_raw, dict) else {}
+        min_len = int(length_cfg.get("min") or 420)
+        max_len = int(length_cfg.get("max") or 520)
+        if isinstance(plan, dict):
+            serialized_plan = serialize_plan(plan)
+        else:
+            serialized_plan = json.dumps(plan or {}, ensure_ascii=False, sort_keys=True)
+        banned_words_raw = plan_dict.get("banned_words") if plan_dict else []
+        banned_words = {
+            str(word).strip()
+            for word in (banned_words_raw or [])
+            if str(word).strip()
+        }
         rules: list[str] = [
             "1. Используй все пункты из списка patterns: упоминай их смысл в общем тексте, не делай маркированных списков.",
             "2. Фото-зависимые шаблоны (photo_dependent=true) свяжи с визуальными деталями снимков.",
@@ -8838,6 +8807,44 @@ class Bot:
             + "\n".join(rules)
             + "\nВерни JSON с ключами greeting (готовый текст) и hashtags (не менее двух тегов)."
         )
+        return {
+            "user_prompt": user_prompt,
+            "serialized_plan": serialized_plan,
+            "rules": rules,
+            "min_length": min_len,
+            "max_length": max_len,
+            "banned_words": banned_words,
+        }
+
+    async def _generate_flowers_copy(
+        self,
+        rubric: Rubric,
+        assets: Sequence[Asset],
+        *,
+        channel_id: int | None,
+        weather_block: dict[str, Any] | None = None,
+        job: Job | None = None,
+        instructions: str | None = None,
+        plan: dict[str, Any] | None = None,
+    ) -> tuple[str, list[str], dict[str, Any]]:
+        resolved_plan = plan or self._build_flowers_plan(
+            rubric,
+            assets,
+            weather_block,
+            channel_id=channel_id,
+            instructions=instructions,
+        )
+        context = resolved_plan.get("context") if isinstance(resolved_plan, dict) else {}
+        cities = list(context.get("cities") or []) if isinstance(context, dict) else []
+        prompt_payload = self._build_flowers_prompt_payload(resolved_plan)
+        banned_words = set(prompt_payload.get("banned_words") or [])
+        if not self.openai or not self.openai.api_key:
+            return (
+                self._default_flowers_greeting(cities),
+                self._default_hashtags("flowers"),
+                resolved_plan,
+            )
+        user_prompt = str(prompt_payload.get("user_prompt") or "")
         schema = {
             "type": "object",
             "properties": {

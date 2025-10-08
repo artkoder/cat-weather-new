@@ -1355,6 +1355,33 @@ async def test_flowers_preview_instructions_escaped(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flowers_preview_previous_text_html_escaped(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    snippet = '<b>Важное объявление</b> и <a href="https://example.com">ссылка</a>'
+    previous_text = " ".join([snippet for _ in range(200)])
+
+    state: dict[str, Any] = {
+        "preview_caption": "",
+        "weather_today_line": "Ясно",
+        "weather_yesterday_line": "Пасмурно",
+        "previous_main_post_text": previous_text,
+    }
+
+    text = bot._render_flowers_preview_text(state)
+
+    assert len(text) <= FLOWERS_PREVIEW_MAX_LENGTH
+    assert "Предыдущая публикация:" in text
+    assert "&lt;b&gt;Важное объявление&lt;/b&gt;" in text
+    assert "&lt;a href=&quot;https://example.com&quot;&gt;ссылка&lt;/a&gt;" in text
+    assert "<b>" not in text
+    assert "<a href=\"https://example.com\"" not in text
+    assert "…" in text
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_flowers_preview_truncates_long_payload(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
 

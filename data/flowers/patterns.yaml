@@ -1,0 +1,39 @@
+banned_words:
+  - "продажа"
+  - "скидка"
+  - "розыгрыш"
+patterns:
+  - id: "weather_focus"
+    kind: "weather"
+    weight: 1.0
+    always_include: true
+    template: "Свяжи погоду с ощущением уюта: {weather_intro}. Добавь деталь: {weather_detail}."
+    photo_dependent: false
+  - id: "color_palette"
+    kind: "color"
+    weight: 1.1
+    requires_photo: true
+    template: "Опиши палитру букета через образы ({palette_title}): {palette_descriptors}."
+    photo_dependent: true
+  - id: "tradition_memory"
+    kind: "tradition"
+    weight: 0.9
+    requires_flowers: true
+    template: "Вставь короткую местную традицию про {flower_name}: {tradition_note}."
+    photo_dependent: false
+  - id: "micro_engagement_question"
+    kind: "micro_engagement"
+    weight: 0.7
+    template: "Задай подписчикам вопрос: {prompt}."
+    photo_dependent: false
+  - id: "wisdom_seed"
+    kind: "wisdom"
+    weight: 0.6
+    template: "Добавь короткую мысль без цитатных кавычек: {wisdom_text}."
+    photo_dependent: false
+  - id: "texture_focus"
+    kind: "texture"
+    weight: 0.8
+    requires_photo: true
+    template: "Передай фактуру лепестков, опираясь на ощущение {texture_mood}."
+    photo_dependent: true

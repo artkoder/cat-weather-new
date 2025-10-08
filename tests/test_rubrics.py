@@ -466,6 +466,8 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
     assert meta["asset_ids"]
     greeting = str(meta.get("greeting") or "").strip()
     assert greeting
+    assert meta.get("pattern_ids"), "pattern ids should be stored in metadata"
+    assert isinstance(meta.get("plan"), dict)
     cities_meta = list(meta.get("cities") or [])
     city_hashtags: list[str] = []
     for city in cities_meta:
@@ -653,6 +655,8 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     meta = json.loads(history["metadata"])
     assert meta.get("weather_line") == weather_line
     assert isinstance(meta.get("weather"), dict)
+    assert meta.get("pattern_ids"), "pattern ids should be persisted"
+    assert isinstance(meta.get("plan"), dict)
     remaining = bot.db.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
     assert remaining == 0
 
@@ -1312,6 +1316,8 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert meta["asset_ids"]
     assert meta["test"] is False
     assert meta.get("weather_line")
+    assert meta.get("pattern_ids")
+    assert isinstance(meta.get("plan"), dict)
 
     await bot.close()
 
@@ -1475,15 +1481,60 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
 
     bot.openai = DummyOpenAI()
 
-    greeting, hashtags = await bot._generate_flowers_copy(
+    asset = Asset(
+        id=1,
+        channel_id=1,
+        tg_chat_id=1,
+        message_id=1,
+        origin="test",
+        caption_template=None,
+        caption=None,
+        hashtags=None,
+        categories=[],
+        kind="photo",
+        file_id="file-1",
+        file_unique_id="uniq-1",
+        file_name="flower.jpg",
+        mime_type="image/jpeg",
+        file_size=None,
+        width=1080,
+        height=1350,
+        duration=None,
+        recognized_message_id=None,
+        exif_present=False,
+        latitude=None,
+        longitude=None,
+        city="Москва",
+        country="Россия",
+        author_user_id=None,
+        author_username=None,
+        sender_chat_id=None,
+        via_bot_id=None,
+        forward_from_user=None,
+        forward_from_chat=None,
+        local_path=None,
+        metadata=None,
+        vision_results=None,
+        rubric_id=None,
+        vision_category="flowers",
+        vision_arch_view=None,
+        vision_photo_weather=None,
+        vision_flower_varieties=["rose"],
+        vision_confidence=None,
+        vision_caption=None,
+    )
+
+    greeting, hashtags, plan = await bot._generate_flowers_copy(
         rubric,
-        ["Москва"],
-        4,
+        [asset],
+        channel_id=-100,
         weather_block=weather_block,
     )
 
     assert greeting == "Доброе утро"
     assert hashtags == ["котопогода", "цветы"]
+    assert isinstance(plan, dict)
+    assert plan.get("pattern_ids"), "pattern ids should be present in plan"
     assert calls, "generate_json was not called"
     request = calls[0]
     assert request["model"] == "gpt-4o"
@@ -1491,9 +1542,8 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
     assert request["top_p"] == 0.9
     user_prompt = request["user_prompt"]
     assert "План:" in user_prompt
-    assert "Текущая погода" in user_prompt
-    if weather_block and weather_block.get("city"):
-        assert weather_block["city"]["detail"] in user_prompt
+    assert "Правила" in user_prompt
+    assert "photo_dependent" in user_prompt
 
     await bot.close()
 
@@ -1542,11 +1592,59 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
 
     bot.openai = DummyOpenAI()
 
-    greeting, hashtags = await bot._generate_flowers_copy(rubric, [], 4)
+    asset = Asset(
+        id=2,
+        channel_id=1,
+        tg_chat_id=1,
+        message_id=2,
+        origin="test",
+        caption_template=None,
+        caption=None,
+        hashtags=None,
+        categories=[],
+        kind="photo",
+        file_id="file-2",
+        file_unique_id="uniq-2",
+        file_name="flower2.jpg",
+        mime_type="image/jpeg",
+        file_size=None,
+        width=1080,
+        height=1080,
+        duration=None,
+        recognized_message_id=None,
+        exif_present=False,
+        latitude=None,
+        longitude=None,
+        city="Калининград",
+        country="Россия",
+        author_user_id=None,
+        author_username=None,
+        sender_chat_id=None,
+        via_bot_id=None,
+        forward_from_user=None,
+        forward_from_chat=None,
+        local_path=None,
+        metadata=None,
+        vision_results=None,
+        rubric_id=None,
+        vision_category="flowers",
+        vision_arch_view=None,
+        vision_photo_weather=None,
+        vision_flower_varieties=["tulip"],
+        vision_confidence=None,
+        vision_caption=None,
+    )
+
+    greeting, hashtags, plan = await bot._generate_flowers_copy(
+        rubric,
+        [asset],
+        channel_id=-200,
+    )
 
     assert greeting == "Привет, друзья"
     assert hashtags == ["#котопогода", "#цветы"]
     assert len(calls) >= 2
+    assert isinstance(plan, dict)
 
     await bot.close()
 

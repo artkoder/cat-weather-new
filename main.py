@@ -32,6 +32,12 @@ except Exception:  # pragma: no cover - fallback when LittleCMS is unavailable
 import piexif
 
 from data_access import Asset, DataAccess, Rubric
+from flowers_patterns import (
+    FlowerKnowledgeBase,
+    FlowerPattern,
+    load_flowers_knowledge,
+    serialize_plan,
+)
 from jobs import Job, JobDelayed, JobQueue
 from openai_client import OpenAIClient
 from supabase_client import SupabaseClient
@@ -774,6 +780,11 @@ class Bot:
         self.manual_buttons: dict[tuple[int, int], dict[str, list[list[dict]]]] = {}
         self.rubric_pending_runs: dict[tuple[int, str], str] = {}
         self.pending_flowers_previews: dict[int, dict[str, Any]] = {}
+        self.flowers_kb: FlowerKnowledgeBase | None = None
+        try:
+            self.flowers_kb = load_flowers_knowledge()
+        except Exception:
+            logging.exception("Failed to load flowers knowledge base")
 
     def _ensure_default_rubrics(self) -> None:
         created: list[str] = []
@@ -4321,15 +4332,25 @@ class Bot:
                     else None
                 )
                 if rubric:
-                    cities = list(preview_state.get('cities') or [])
-                    asset_count = len(preview_state.get('assets') or [])
+                    assets = list(preview_state.get('assets') or [])
                     weather_block = preview_state.get('weather_block')
-                    greeting, hashtags = await self._generate_flowers_copy(
+                    plan_override = (
+                        preview_state.get('plan') if isinstance(preview_state.get('plan'), dict) else None
+                    )
+                    channel_hint = preview_state.get('default_channel_id')
+                    if not isinstance(channel_hint, int):
+                        for key in ('channel_id', 'test_channel_id'):
+                            value = preview_state.get(key)
+                            if isinstance(value, int):
+                                channel_hint = value
+                                break
+                    greeting, hashtags, plan = await self._generate_flowers_copy(
                         rubric,
-                        cities,
-                        asset_count,
+                        assets,
+                        channel_id=channel_hint if isinstance(channel_hint, int) else None,
                         weather_block=weather_block,
                         instructions=instructions_text,
+                        plan=plan_override,
                     )
                     (
                         preview_caption,
@@ -4338,10 +4359,12 @@ class Bot:
                         prepared_hashtags,
                     ) = self._build_flowers_caption(
                         greeting,
-                        cities,
+                        list(preview_state.get('cities') or []),
                         hashtags,
                         weather_block,
                     )
+                    preview_state['plan'] = plan
+                    preview_state['pattern_ids'] = list(plan.get('pattern_ids', [])) if isinstance(plan, dict) else []
                     await self._update_flowers_preview_caption_state(
                         preview_state,
                         preview_caption=preview_caption,
@@ -7157,12 +7180,343 @@ class Bot:
             return "photo", missing_file
         return "document", missing_file
 
+    def _flowers_seed(self, channel_id: int | None) -> str:
+        today = datetime.utcnow().strftime("%Y%m%d")
+        return f"{today}:{channel_id or 0}"
+
+    def _flowers_recent_pattern_ids(self, rubric: Rubric, limit: int = 14) -> set[str]:
+        pattern_history = self.data.get_recent_rubric_pattern_ids(rubric.code, limit=limit)
+        result: set[str] = set()
+        for entries in pattern_history:
+            for item in entries:
+                result.add(str(item))
+        return result
+
+    def _extract_flower_features(
+        self,
+        assets: Sequence[Asset],
+        weather_block: dict[str, Any] | None,
+        *,
+        seed_rng: random.Random,
+    ) -> dict[str, Any]:
+        kb = self.flowers_kb
+        flowers: list[dict[str, Any]] = []
+        palettes: list[dict[str, Any]] = []
+        flower_ids: list[str] = []
+        has_photo = all(asset.kind == "photo" for asset in assets)
+        for asset in assets:
+            varieties = asset.vision_flower_varieties or []
+            for variety in varieties:
+                if not kb:
+                    continue
+                resolved = kb.resolve_flower(variety)
+                if not resolved:
+                    continue
+                if resolved in flower_ids:
+                    continue
+                flower_ids.append(resolved)
+                flower_payload = kb.flowers.get(resolved) or {}
+                flowers.append(
+                    {
+                        "id": resolved,
+                        "name": flower_payload.get("name") or resolved,
+                        "symbolism": flower_payload.get("symbolism"),
+                    }
+                )
+                palette = kb.palette_for_flower(resolved)
+                if palette:
+                    palettes.append(palette)
+        palette_cycle = list(palettes)
+        if not palette_cycle and kb and kb.colors:
+            palette_cycle = list(kb.colors.values())
+        weather_class: str | None = None
+        if weather_block and isinstance(weather_block, dict):
+            city_snapshot = weather_block.get("city") or {}
+            weather_code = city_snapshot.get("weather_code")
+            weather_class = self._classify_weather_code(weather_code)
+            if weather_class is None and weather_block.get("line"):
+                weather_class = "overcast"
+        season_key: str | None = None
+        season_description: str | None = None
+        if kb and kb.seasons:
+            now = datetime.utcnow()
+            month = now.month
+            for key, payload in kb.seasons.items():
+                months = payload.get("months") or []
+                if month in months:
+                    season_key = str(key)
+                    season_description = payload.get("description")
+                    break
+        holiday_note: dict[str, str] | None = None
+        if kb and kb.holidays:
+            today_key = datetime.utcnow().strftime("%m-%d")
+            holiday_payload = kb.holidays.get(today_key)
+            if isinstance(holiday_payload, dict):
+                title = holiday_payload.get("title")
+                note = holiday_payload.get("note")
+                if title or note:
+                    holiday_note = {"title": title or "", "note": note or ""}
+        wisdom: dict[str, str] | None = None
+        if kb and kb.wisdom:
+            wisdom = seed_rng.choice(kb.wisdom)
+        engagement: dict[str, str] | None = None
+        if kb and kb.micro_engagement:
+            engagement = seed_rng.choice(kb.micro_engagement)
+        return {
+            "has_photo": has_photo,
+            "flowers": flowers,
+            "flower_ids": flower_ids,
+            "palettes": palette_cycle,
+            "weather": weather_class,
+            "season": season_key,
+            "season_description": season_description,
+            "holiday": holiday_note,
+            "wisdom": wisdom,
+            "engagement": engagement,
+        }
+
+    def _render_flower_pattern(
+        self,
+        pattern: FlowerPattern,
+        *,
+        features: dict[str, Any],
+        kb: FlowerKnowledgeBase | None,
+        rng: random.Random,
+    ) -> dict[str, Any] | None:
+        if not kb:
+            return None
+        template = pattern.template
+        if not template:
+            return None
+        payload: dict[str, Any] = {
+            "id": pattern.id,
+            "kind": pattern.kind,
+            "photo_dependent": pattern.photo_dependent,
+        }
+        if pattern.kind == "color":
+            palettes = features.get("palettes") or []
+            if not palettes:
+                return None
+            palette = rng.choice(palettes)
+            descriptors = palette.get("descriptors") or []
+            if descriptors:
+                sample = rng.sample(descriptors, k=min(2, len(descriptors)))
+            else:
+                sample = []
+            payload["instruction"] = template.format(
+                palette_title=palette.get("title") or "палитра утра",
+                palette_descriptors=", ".join(sample) if sample else palette.get("title") or "ласковый свет",
+            )
+        elif pattern.kind == "tradition":
+            flowers = features.get("flowers") or []
+            if not flowers:
+                return None
+            flower_entry = rng.choice(flowers)
+            notes = kb.traditions.get(flower_entry["id"], {}).get("notes") if flower_entry.get("id") else None
+            if not notes:
+                return None
+            payload["instruction"] = template.format(
+                flower_name=flower_entry.get("name") or "цветы",
+                tradition_note=rng.choice(notes),
+            )
+        elif pattern.kind == "micro_engagement":
+            engagement = features.get("engagement") or {}
+            prompt_text = engagement.get("text") if isinstance(engagement, dict) else None
+            if not prompt_text and kb.micro_engagement:
+                prompt_text = rng.choice(kb.micro_engagement).get("text")
+            if not prompt_text:
+                return None
+            payload["instruction"] = template.format(prompt=prompt_text)
+        elif pattern.kind == "wisdom":
+            wisdom = features.get("wisdom") or {}
+            text = wisdom.get("text") if isinstance(wisdom, dict) else None
+            if not text and kb.wisdom:
+                text = rng.choice(kb.wisdom).get("text")
+            if not text:
+                return None
+            payload["instruction"] = template.format(wisdom_text=text)
+        elif pattern.kind == "texture":
+            palettes = features.get("palettes") or []
+            mood = None
+            if palettes:
+                palette = rng.choice(palettes)
+                mood = palette.get("mood")
+            if not mood:
+                mood = "уют"
+            payload["instruction"] = template.format(texture_mood=mood)
+        elif pattern.kind == "weather":
+            weather_class = features.get("weather")
+            weather_payload = kb.weather.get(weather_class) if weather_class else None
+            if not weather_payload:
+                weather_payload = kb.weather.get("overcast") or {}
+            intro = weather_payload.get("intro") or "Поддержи мягкий тон погоды"
+            details = weather_payload.get("details") or []
+            if details:
+                detail = rng.choice(details)
+            else:
+                detail = "Подчеркни, что даже пасмурно уютно"
+            payload["instruction"] = template.format(weather_intro=intro, weather_detail=detail)
+        else:
+            payload["instruction"] = template
+        if not payload.get("instruction"):
+            return None
+        return payload
+
+    def _build_flowers_plan(
+        self,
+        rubric: Rubric,
+        assets: Sequence[Asset],
+        weather_block: dict[str, Any] | None,
+        *,
+        channel_id: int | None,
+        instructions: str | None = None,
+    ) -> dict[str, Any]:
+        kb = self.flowers_kb
+        seed = self._flowers_seed(channel_id)
+        rng = random.Random(seed)
+        features = self._extract_flower_features(assets, weather_block, seed_rng=rng)
+        if kb and not features.get("palettes") and kb.colors:
+            features["palettes"] = list(kb.colors.values())
+        banned_recent = self._flowers_recent_pattern_ids(rubric)
+        available: list[tuple[FlowerPattern, float]] = []
+        weather_pattern: FlowerPattern | None = None
+        if kb:
+            for pattern in kb.patterns:
+                if not pattern.matches_context(features):
+                    continue
+                weight = max(pattern.weight, 0.0)
+                if pattern.id in banned_recent and not pattern.always_include:
+                    weight *= 0.25
+                if pattern.always_include and pattern.kind == "weather":
+                    weather_pattern = pattern
+                available.append((pattern, weight))
+        selected: list[dict[str, Any]] = []
+        pattern_ids: list[str] = []
+        if weather_pattern:
+            rendered = self._render_flower_pattern(
+                weather_pattern,
+                features=features,
+                kb=kb,
+                rng=rng,
+            )
+            if rendered:
+                selected.append(rendered)
+                pattern_ids.append(weather_pattern.id)
+        pool = [item for item in available if item[0] is not weather_pattern]
+        total_weight = sum(weight for _, weight in pool)
+        target_count = 3 if len(pool) >= 3 else min(2, len(pool))
+        while pool and len(selected) < (target_count + (1 if weather_pattern else 0)):
+            if total_weight <= 0:
+                choice_pattern = pool.pop(0)[0]
+            else:
+                pick = rng.uniform(0, total_weight)
+                cumulative = 0.0
+                choice_pattern = pool[-1][0]
+                for candidate, weight in pool:
+                    cumulative += weight
+                    if pick <= cumulative:
+                        choice_pattern = candidate
+                        break
+            rendered = self._render_flower_pattern(
+                choice_pattern,
+                features=features,
+                kb=kb,
+                rng=rng,
+            )
+            pool = [item for item in pool if item[0] != choice_pattern]
+            total_weight = sum(weight for _, weight in pool)
+            if not rendered:
+                continue
+            selected.append(rendered)
+            pattern_ids.append(choice_pattern.id)
+        cities = sorted({asset.city for asset in assets if asset.city})
+        plan = {
+            "seed": seed,
+            "rubric": rubric.code,
+            "context": {
+                "cities": cities,
+                "asset_count": len(assets),
+                "season": features.get("season"),
+                "season_description": features.get("season_description"),
+                "holiday": features.get("holiday"),
+                "flowers": features.get("flowers"),
+            },
+            "patterns": selected,
+            "pattern_ids": pattern_ids,
+            "banned_words": sorted((kb.banned_words if kb else set()) or []),
+            "length": {"min": 420, "max": 520},
+            "instructions": instructions or "",
+        }
+        if weather_block:
+            plan["weather"] = {
+                "line": weather_block.get("line"),
+                "detail": weather_block.get("details"),
+                "cities": weather_block.get("cities"),
+            }
+        else:
+            plan["weather"] = {
+                "line": None,
+                "detail": None,
+                "cities": None,
+            }
+        plan["greeting"] = {
+            "instruction": "Начни с тёплого приветствия и упоминания города, поддержи заботливый тон.",
+        }
+        closing_parts: list[str] = []
+        if features.get("season_description"):
+            closing_parts.append(features["season_description"])
+        holiday = features.get("holiday") or {}
+        if holiday.get("note"):
+            closing_parts.append(str(holiday["note"]))
+        if not closing_parts:
+            closing_parts.append("Заверши приглашением поделиться настроением дня.")
+        plan["closing"] = {
+            "instruction": " ".join(part for part in closing_parts if part),
+        }
+        return plan
+
+    def _flowers_contains_banned_word(
+        self, text: str, banned_words: Iterable[str]
+    ) -> bool:
+        lowered = text.casefold()
+        tokens = {token.strip() for token in re.split(r"\W+", lowered) if token.strip()}
+        for word in banned_words:
+            normalized = str(word).strip().casefold()
+            if not normalized:
+                continue
+            if normalized in tokens:
+                return True
+        return False
+
+    @staticmethod
+    def _jaccard_similarity(a: str, b: str) -> float:
+        tokens_a = {token for token in re.split(r"\W+", a.lower()) if token}
+        tokens_b = {token for token in re.split(r"\W+", b.lower()) if token}
+        if not tokens_a or not tokens_b:
+            return 0.0
+        intersection = len(tokens_a & tokens_b)
+        union = len(tokens_a | tokens_b)
+        if union == 0:
+            return 0.0
+        return intersection / union
+
+    def _latest_flowers_text(self, rubric: Rubric) -> str | None:
+        recent = self.data.get_recent_rubric_metadata(rubric.code, limit=1)
+        if not recent:
+            return None
+        entry = recent[0] or {}
+        text = entry.get("greeting") or entry.get("text")
+        if not text:
+            return None
+        return str(text)
+
     async def _prepare_flowers_drop(
         self,
         rubric: Rubric,
         *,
         job: Job | None = None,
         instructions: str | None = None,
+        channel_id: int | None = None,
     ) -> (
         tuple[
             list[Asset],
@@ -7174,6 +7528,7 @@ class Bot:
             list[str],
             dict[int, dict[str, Any]],
             dict[str, Any] | None,
+            dict[str, Any],
         ]
         | None
     ):
@@ -7214,13 +7569,21 @@ class Bot:
             asset_kinds.append(media_kind)
         cities = sorted({asset.city for asset in assets if asset.city})
         weather_block = self._compose_flowers_weather_block(cities)
-        greeting, hashtags = await self._generate_flowers_copy(
+        plan = self._build_flowers_plan(
             rubric,
-            cities,
-            len(assets),
+            assets,
+            weather_block,
+            channel_id=channel_id,
+            instructions=instructions,
+        )
+        greeting, hashtags, plan = await self._generate_flowers_copy(
+            rubric,
+            assets,
+            channel_id=channel_id,
             weather_block=weather_block,
             job=job,
             instructions=instructions,
+            plan=plan,
         )
         asset_ids = [asset.id for asset in assets]
         return (
@@ -7233,6 +7596,7 @@ class Bot:
             hashtags,
             conversion_map,
             weather_block,
+            plan,
         )
 
     async def _send_flowers_media_bundle(
@@ -7507,6 +7871,7 @@ class Bot:
             rubric,
             job=job,
             instructions=instructions,
+            channel_id=channel_id,
         )
         if not prepared:
             if initiator_id is not None:
@@ -7533,6 +7898,7 @@ class Bot:
             hashtags,
             conversion_map,
             weather_block,
+            plan,
         ) = prepared
         (
             preview_caption,
@@ -7565,6 +7931,7 @@ class Bot:
                 prepared_hashtags=hashtag_list,
                 instructions=instructions,
                 weather_block=weather_block,
+                plan=plan,
             )
             return True
         response, _ = await self._send_flowers_media_bundle(
@@ -7597,6 +7964,8 @@ class Bot:
             "hashtags": hashtag_list,
             "weather": weather_block,
             "weather_line": (weather_block or {}).get("line") if weather_block else None,
+            "pattern_ids": plan.get("pattern_ids") if isinstance(plan, dict) else None,
+            "plan": plan,
         }
         self.data.record_post_history(
             channel_id,
@@ -7755,6 +8124,7 @@ class Bot:
         prepared_hashtags: list[str],
         instructions: str | None,
         weather_block: dict[str, Any] | None,
+        plan: dict[str, Any],
     ) -> None:
         previous_state = self.pending_flowers_previews.get(initiator_id)
         if previous_state:
@@ -7790,6 +8160,8 @@ class Bot:
             "instructions": (instructions or "").strip(),
             "weather_block": weather_block,
             "weather_line": (weather_block or {}).get("line") if weather_block else None,
+            "plan": plan,
+            "pattern_ids": list(plan.get("pattern_ids", [])) if isinstance(plan, dict) else [],
             "preview_chat_id": initiator_id,
             "media_message_ids": [],
             "caption_message_id": None,
@@ -7974,6 +8346,8 @@ class Bot:
                 "hashtags": list(state.get("prepared_hashtags") or []),
                 "weather": state.get("weather_block"),
                 "weather_line": state.get("weather_line"),
+                "pattern_ids": list(state.get("pattern_ids") or []),
+                "plan": state.get("plan"),
             }
             self.data.mark_assets_used(asset_ids)
             first_asset = asset_ids[0] if asset_ids else None
@@ -8042,9 +8416,17 @@ class Bot:
                     },
                 )
                 return
+            channel_hint = state.get("default_channel_id")
+            if not isinstance(channel_hint, int):
+                for key in ("channel_id", "test_channel_id"):
+                    value = state.get(key)
+                    if isinstance(value, int):
+                        channel_hint = value
+                        break
             prepared = await self._prepare_flowers_drop(
                 rubric,
                 instructions=state.get("instructions"),
+                channel_id=channel_hint if isinstance(channel_hint, int) else None,
             )
             if not prepared:
                 await self.api_request(
@@ -8066,6 +8448,7 @@ class Bot:
                 hashtags,
                 conversion_map,
                 weather_block,
+                plan,
             ) = prepared
             (
                 preview_caption,
@@ -8113,6 +8496,7 @@ class Bot:
                 prepared_hashtags=prepared_hashtags,
                 instructions=state.get("instructions"),
                 weather_block=weather_block,
+                plan=plan,
             )
             await self.api_request(
                 "answerCallbackQuery",
@@ -8137,15 +8521,23 @@ class Bot:
                     },
                 )
                 return
-            cities = list(state.get("cities") or [])
-            asset_count = len(state.get("assets") or [])
+            assets = list(state.get("assets") or [])
             weather_block = state.get("weather_block")
-            greeting, hashtags = await self._generate_flowers_copy(
+            plan_override = state.get("plan") if isinstance(state.get("plan"), dict) else None
+            channel_hint = state.get("default_channel_id")
+            if not isinstance(channel_hint, int):
+                for key in ("channel_id", "test_channel_id"):
+                    value = state.get(key)
+                    if isinstance(value, int):
+                        channel_hint = value
+                        break
+            greeting, hashtags, plan = await self._generate_flowers_copy(
                 rubric,
-                cities,
-                asset_count,
+                assets,
+                channel_id=channel_hint if isinstance(channel_hint, int) else None,
                 weather_block=weather_block,
                 instructions=state.get("instructions"),
+                plan=plan_override,
             )
             (
                 preview_caption,
@@ -8154,10 +8546,12 @@ class Bot:
                 prepared_hashtags,
             ) = self._build_flowers_caption(
                 greeting,
-                cities,
+                list(state.get("cities") or []),
                 hashtags,
                 weather_block,
             )
+            state["plan"] = plan
+            state["pattern_ids"] = list(plan.get("pattern_ids", [])) if isinstance(plan, dict) else []
             await self._update_flowers_preview_caption_state(
                 state,
                 preview_caption=preview_caption,
@@ -8261,51 +8655,56 @@ class Bot:
     async def _generate_flowers_copy(
         self,
         rubric: Rubric,
-        cities: list[str],
-        asset_count: int,
+        assets: Sequence[Asset],
         *,
+        channel_id: int | None,
         weather_block: dict[str, Any] | None = None,
         job: Job | None = None,
         instructions: str | None = None,
-    ) -> tuple[str, list[str]]:
+        plan: dict[str, Any] | None = None,
+    ) -> tuple[str, list[str], dict[str, Any]]:
+        resolved_plan = plan or self._build_flowers_plan(
+            rubric,
+            assets,
+            weather_block,
+            channel_id=channel_id,
+            instructions=instructions,
+        )
+        context = resolved_plan.get("context") if isinstance(resolved_plan, dict) else {}
+        cities = list(context.get("cities") or []) if isinstance(context, dict) else []
+        banned_words = set(resolved_plan.get("banned_words") or []) if isinstance(resolved_plan, dict) else set()
         if not self.openai or not self.openai.api_key:
-            return self._default_flowers_greeting(cities), self._default_hashtags("flowers")
-        prompt_parts = [
-            "Составь короткий приветственный текст для утреннего поста с фото цветов.",
-            "Пиши дружелюбно и на русском языке.",
-            f"Фотографий: {asset_count}.",
+            return (
+                self._default_flowers_greeting(cities),
+                self._default_hashtags("flowers"),
+                resolved_plan,
+            )
+        length_cfg = resolved_plan.get("length") if isinstance(resolved_plan, dict) else {}
+        min_len = int(length_cfg.get("min") or 420) if isinstance(length_cfg, dict) else 420
+        max_len = int(length_cfg.get("max") or 520) if isinstance(length_cfg, dict) else 520
+        serialized_plan = serialize_plan(resolved_plan) if isinstance(resolved_plan, dict) else "{}"
+        rules: list[str] = [
+            "1. Используй все пункты из списка patterns: упоминай их смысл в общем тексте, не делай маркированных списков.",
+            "2. Фото-зависимые шаблоны (photo_dependent=true) свяжи с визуальными деталями снимков.",
+            "3. Фото-независимые шаблоны используй как настроение или совет.",
+            "4. Обязательно интегрируй погодный блок мягко, без сухих сводок.",
+            f"5. Итоговый текст должен быть от {min_len} до {max_len} символов.",
+            "6. Текст один абзац без двойных переводов строк.",
+            "7. Будь заботливым, избегай рекламных интонаций.",
         ]
-        if cities:
-            prompt_parts.append(
-                "Упомяни города: " + ", ".join(cities)
+        if banned_words:
+            rules.append(
+                "8. Не используй слова: " + ", ".join(sorted(banned_words))
             )
-        plan_lines: list[str] = []
-        if weather_block:
-            city_snapshot = weather_block.get("city") or {}
-            sea_snapshot = weather_block.get("sea") or {}
-            city_detail = city_snapshot.get("detail") or "данные по городу недоступны"
-            sea_detail = sea_snapshot.get("detail") or "морская сводка недоступна"
-            trend_summary = weather_block.get("trend_summary") or "подчеркни уют в сравнении со вчера"
-            tone_example = weather_block.get("positive_intro") or "Утро радует"
-            plan_lines.append(
-                f"1. Текущая погода: {city_detail}; {sea_detail}."
-            )
-            plan_lines.append(
-                f"2. Перемены относительно вчера: {trend_summary}."
-            )
-            plan_lines.append(
-                f"3. Тон: используй позитивные формулировки вроде «{tone_example}»."
-            )
-        else:
-            plan_lines = [
-                "1. Текущая погода: данных нет, сделай тёплый общий ввод.",
-                "2. Перемены относительно вчера: подчеркни уют и поддержку.",
-                "3. Тон: позитивный и бодрый, благодарим за новый день.",
-            ]
-        prompt_parts.append("План:\n" + "\n".join(plan_lines))
-        if instructions:
-            prompt_parts.append(f"Дополнительные пожелания: {instructions}")
-        prompt = " ".join(prompt_parts)
+        user_prompt = (
+            "Ты — редактор телеграм-канала про погоду, уют и цветы. "
+            "Собери итоговый текст по плану ниже, добавь подходящие хэштеги.\n\n"
+            "План:\n"
+            f"{serialized_plan}\n\n"
+            "Правила:\n"
+            + "\n".join(rules)
+            + "\nВерни JSON с ключами greeting (готовый текст) и hashtags (не менее двух тегов)."
+        )
         schema = {
             "type": "object",
             "properties": {
@@ -8313,11 +8712,12 @@ class Bot:
                 "hashtags": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "minItems": 1,
+                    "minItems": 2,
                 },
             },
             "required": ["greeting", "hashtags"],
         }
+        previous_text = self._latest_flowers_text(rubric)
         attempts = 3
         for attempt in range(1, attempts + 1):
             temperature = self._creative_temperature()
@@ -8333,10 +8733,10 @@ class Bot:
                 response = await self.openai.generate_json(
                     model="gpt-4o",
                     system_prompt=(
-                        "Ты редактор телеграм-канала про погоду и уют. "
-                        "Создавай дружелюбные тексты."
+                        "Ты редактор телеграм-канала о погоде и домашнем уюте. "
+                        "Подбирай образный язык, но избегай клише."
                     ),
-                    user_prompt=prompt,
+                    user_prompt=user_prompt,
                     schema=schema,
                     temperature=temperature,
                     top_p=0.9,
@@ -8353,6 +8753,17 @@ class Bot:
             hashtags = self._deduplicate_hashtags(raw_hashtags)
             if not greeting or not hashtags:
                 continue
+            if banned_words and self._flowers_contains_banned_word(greeting, banned_words):
+                logging.info("flowers copy содержит запрещённые слова, пробуем снова")
+                continue
+            if previous_text:
+                similarity = self._jaccard_similarity(previous_text, greeting)
+                if similarity >= 0.6:
+                    logging.info(
+                        "flowers copy слишком похож на предыдущий (Jaccard=%.2f), повторяем попытку",
+                        similarity,
+                    )
+                    continue
             if self._is_duplicate_rubric_copy("flowers", "greeting", greeting, hashtags):
                 logging.info(
                     "Получен повторяющийся текст для рубрики flowers, пробуем снова (%s/%s)",
@@ -8360,9 +8771,13 @@ class Bot:
                     attempts,
                 )
                 continue
-            return greeting, hashtags
+            return greeting, hashtags, resolved_plan
         logging.warning("Не удалось получить новый текст для рубрики flowers, используем запасной вариант")
-        return self._default_flowers_greeting(cities), self._default_hashtags("flowers")
+        return (
+            self._default_flowers_greeting(cities),
+            self._default_hashtags("flowers"),
+            resolved_plan,
+        )
 
     def _default_flowers_greeting(self, cities: list[str]) -> str:
         if cities:

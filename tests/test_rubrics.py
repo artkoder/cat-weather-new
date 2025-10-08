@@ -1549,6 +1549,114 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_generate_flowers_retries_on_banned_cliches(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {"enabled": True}
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+    rubric = bot.data.get_rubric_by_code("flowers")
+    assert rubric is not None
+
+    asset = Asset(
+        id=3,
+        channel_id=1,
+        tg_chat_id=1,
+        message_id=3,
+        origin="test",
+        caption_template=None,
+        caption=None,
+        hashtags=None,
+        categories=[],
+        kind="photo",
+        file_id="file-3",
+        file_unique_id="uniq-3",
+        file_name="flower-3.jpg",
+        mime_type="image/jpeg",
+        file_size=None,
+        width=1024,
+        height=1024,
+        duration=None,
+        recognized_message_id=None,
+        exif_present=False,
+        latitude=None,
+        longitude=None,
+        city="Калининград",
+        country="Россия",
+        author_user_id=None,
+        author_username=None,
+        sender_chat_id=None,
+        via_bot_id=None,
+        forward_from_user=None,
+        forward_from_chat=None,
+        local_path=None,
+        metadata=None,
+        vision_results=None,
+        rubric_id=None,
+        vision_category="flowers",
+        vision_arch_view=None,
+        vision_photo_weather=None,
+        vision_flower_varieties=["rose"],
+        vision_confidence=None,
+        vision_caption=None,
+    )
+
+    calls: list[dict[str, Any]] = []
+
+    class DummyOpenAI:
+        def __init__(self) -> None:
+            self.api_key = "test"
+
+        async def generate_json(self, **kwargs):  # type: ignore[override]
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return OpenAIResponse(
+                    {
+                        "greeting": "Какой прекрасный и волшебный день!",
+                        "hashtags": ["#котопогода", "#цветы"],
+                    },
+                    {
+                        "prompt_tokens": 7,
+                        "completion_tokens": 9,
+                        "total_tokens": 16,
+                        "request_id": "req-banned-1",
+                        "endpoint": "/v1/responses",
+                    },
+                )
+            return OpenAIResponse(
+                {
+                    "greeting": "Доброе утро, делимся уютом без клише",
+                    "hashtags": ["#котопогода", "#цветы", "#уют"],
+                },
+                {
+                    "prompt_tokens": 6,
+                    "completion_tokens": 8,
+                    "total_tokens": 14,
+                    "request_id": "req-banned-2",
+                    "endpoint": "/v1/responses",
+                },
+            )
+
+    bot.openai = DummyOpenAI()
+
+    greeting, hashtags, plan = await bot._generate_flowers_copy(
+        rubric,
+        [asset],
+        channel_id=-300,
+    )
+
+    assert len(calls) == 2
+    assert "прекрасн" not in greeting.casefold()
+    assert isinstance(plan, dict)
+    banned_words = plan.get("banned_words") or []
+    assert {"прекрасный", "волшебный", "неповторимый", "самый-самый"}.issubset(
+        set(banned_words)
+    )
+    for word in ["прекрасный", "волшебный", "неповторимый", "самый-самый"]:
+        sample = f"Это {word} букет!"
+        assert bot._flowers_contains_banned_word(sample, banned_words)
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_generate_flowers_retries_on_duplicate(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {"enabled": True}

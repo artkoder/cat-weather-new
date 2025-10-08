@@ -4376,9 +4376,19 @@ class Bot:
                     preview_state['serialized_plan'] = str(
                         prompt_payload.get('serialized_plan') or '{}'
                     )
-                    preview_state['plan_prompt'] = str(
+                    plan_system_prompt = str(
+                        prompt_payload.get('system_prompt') or ''
+                    )
+                    plan_user_prompt = str(
                         prompt_payload.get('user_prompt') or ''
                     )
+                    plan_request_text = str(
+                        prompt_payload.get('request_text') or ''
+                    )
+                    preview_state['plan_system_prompt'] = plan_system_prompt
+                    preview_state['plan_user_prompt'] = plan_user_prompt
+                    preview_state['plan_request_text'] = plan_request_text
+                    preview_state['plan_prompt'] = plan_user_prompt
                     preview_state['plan_prompt_length'] = prompt_payload.get('prompt_length')
                     preview_state['plan_prompt_fallback'] = bool(
                         prompt_payload.get('used_fallback')
@@ -8194,9 +8204,9 @@ class Bot:
             channels.append(f"🧪 {test_target}")
         if channels:
             parts.append("Доступные каналы: " + ", ".join(channels))
-        prompt_text = str(state.get("plan_prompt") or "").strip()
-        if prompt_text:
-            escaped_prompt = html.escape(prompt_text).replace("\n", "<br>")
+        system_prompt = str(state.get("plan_system_prompt") or "").strip()
+        user_prompt = str(state.get("plan_user_prompt") or "").strip()
+        if system_prompt or user_prompt:
             length_value = state.get("plan_prompt_length")
             fallback_used = bool(state.get("plan_prompt_fallback"))
             meta_parts: list[str] = []
@@ -8205,9 +8215,19 @@ class Bot:
             if fallback_used:
                 meta_parts.append("fallback")
             suffix = f" ({', '.join(meta_parts)})" if meta_parts else ""
+            block_sections: list[str] = []
+            if system_prompt:
+                escaped_system = html.escape(system_prompt).replace("\n", "<br>")
+                block_sections.append(
+                    f"<b>System prompt</b>:<br>{escaped_system}"
+                )
+            if user_prompt:
+                escaped_user = html.escape(user_prompt).replace("\n", "<br>")
+                block_sections.append(f"<b>User prompt</b>:<br>{escaped_user}")
+            block_html = "<br><br>".join(block_sections)
             parts.append(
                 f"Служебно{suffix}:\n"
-                f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>"
+                f"<blockquote expandable=\"true\">{block_html}</blockquote>"
             )
         if "previous_main_post_text" in state:
             previous_text = str(state.get("previous_main_post_text") or "").strip()
@@ -8310,7 +8330,9 @@ class Bot:
             return None
         prompt_payload = self._build_flowers_prompt_payload(plan, plan_meta)
         serialized_plan = str(prompt_payload.get("serialized_plan") or "{}")
-        plan_prompt = str(prompt_payload.get("user_prompt") or "")
+        plan_system_prompt = str(prompt_payload.get("system_prompt") or "")
+        plan_user_prompt = str(prompt_payload.get("user_prompt") or "")
+        plan_request_text = str(prompt_payload.get("request_text") or "")
         plan_prompt_length = prompt_payload.get("prompt_length")
         plan_prompt_fallback = bool(prompt_payload.get("used_fallback"))
         weather_details: dict[str, Any] | None = None
@@ -8370,7 +8392,10 @@ class Bot:
             "plan": plan,
             "pattern_ids": list((plan_meta or {}).get("pattern_ids", [])),
             "serialized_plan": serialized_plan,
-            "plan_prompt": plan_prompt,
+            "plan_prompt": plan_user_prompt,
+            "plan_system_prompt": plan_system_prompt,
+            "plan_user_prompt": plan_user_prompt,
+            "plan_request_text": plan_request_text,
             "plan_prompt_length": plan_prompt_length,
             "plan_prompt_fallback": plan_prompt_fallback,
             "weather_details": weather_details,
@@ -8795,7 +8820,13 @@ class Bot:
             state["serialized_plan"] = str(
                 prompt_payload.get("serialized_plan") or "{}"
             )
-            state["plan_prompt"] = str(prompt_payload.get("user_prompt") or "")
+            plan_system_prompt = str(prompt_payload.get("system_prompt") or "")
+            plan_user_prompt = str(prompt_payload.get("user_prompt") or "")
+            plan_request_text = str(prompt_payload.get("request_text") or "")
+            state["plan_system_prompt"] = plan_system_prompt
+            state["plan_user_prompt"] = plan_user_prompt
+            state["plan_request_text"] = plan_request_text
+            state["plan_prompt"] = plan_user_prompt
             state["plan_prompt_length"] = prompt_payload.get("prompt_length")
             state["plan_prompt_fallback"] = bool(prompt_payload.get("used_fallback"))
             await self._update_flowers_preview_caption_state(
@@ -8970,6 +9001,10 @@ class Bot:
             "5. Текст один абзац без двойных переводов строк.",
             "6. Будь заботливым, избегай рекламных интонаций.",
         ]
+        system_prompt = (
+            "Ты редактор телеграм-канала о погоде и домашнем уюте. "
+            "Подбирай образный язык, но избегай клише."
+        )
         if banned_words:
             rules.append(
                 "7. Не используй слова: " + ", ".join(sorted(banned_words))
@@ -9029,9 +9064,17 @@ class Bot:
         if prompt_length > 2000:
             user_prompt = user_prompt[:2000]
             prompt_length = len(user_prompt)
+        request_sections = []
+        if system_prompt:
+            request_sections.append("System prompt:\n" + system_prompt)
+        if user_prompt:
+            request_sections.append("User prompt:\n" + user_prompt)
+        request_text = "\n\n".join(request_sections)
         serialized_plan = json.dumps(plan_dict, ensure_ascii=False, sort_keys=True)
         return {
+            "system_prompt": system_prompt,
             "user_prompt": user_prompt,
+            "request_text": request_text,
             "serialized_plan": serialized_plan,
             "rules": rules,
             "min_length": min_len,
@@ -9073,6 +9116,7 @@ class Bot:
                 resolved_plan,
                 resolved_meta,
             )
+        system_prompt = str(prompt_payload.get("system_prompt") or "")
         user_prompt = str(prompt_payload.get("user_prompt") or "")
         schema = {
             "type": "object",
@@ -9101,10 +9145,7 @@ class Bot:
                 self._enforce_openai_limit(job, "gpt-4o")
                 response = await self.openai.generate_json(
                     model="gpt-4o",
-                    system_prompt=(
-                        "Ты редактор телеграм-канала о погоде и домашнем уюте. "
-                        "Подбирай образный язык, но избегай клише."
-                    ),
+                    system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     schema=schema,
                     temperature=temperature,

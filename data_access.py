@@ -904,6 +904,37 @@ class DataAccess:
             result.append(parsed if isinstance(parsed, dict) else {})
         return result
 
+    def get_recent_rubric_pattern_ids(self, rubric_code: str, limit: int = 14) -> list[list[str]]:
+        rows = self.conn.execute(
+            """
+            SELECT ph.metadata
+            FROM posts_history AS ph
+            JOIN rubrics AS r ON ph.rubric_id = r.id
+            WHERE r.code = ?
+            ORDER BY ph.published_at DESC, ph.id DESC
+            LIMIT ?
+            """,
+            (rubric_code, limit),
+        ).fetchall()
+        result: list[list[str]] = []
+        for row in rows:
+            raw = row["metadata"]
+            if not raw:
+                result.append([])
+                continue
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                result.append([])
+                continue
+            patterns_raw = payload.get("pattern_ids") or payload.get("patterns")
+            if isinstance(patterns_raw, list):
+                normalized = [str(item) for item in patterns_raw if str(item).strip()]
+            else:
+                normalized = []
+            result.append(normalized)
+        return result
+
     def upsert_weather_job(self, channel_id: int, post_time: str, next_run: datetime) -> None:
         now = datetime.utcnow().isoformat()
         run_iso = next_run.isoformat()

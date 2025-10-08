@@ -8223,7 +8223,7 @@ class Bot:
             sections.append(_PreviewSection(normalized, priority, fallback))
 
         def _escape_block_line(text: str) -> str:
-            return html.escape(text).replace("\n", "<br>")
+            return html.escape(text)
 
         caption = str(state.get("preview_caption") or "").strip()
         if caption:
@@ -8307,7 +8307,7 @@ class Bot:
             tag_prefix = f"[{', '.join(tags)}] " if tags else ""
             pattern_lines.append(f"{idx}. {tag_prefix}{instruction}")
         if pattern_lines:
-            escaped_patterns = "<br>".join(
+            escaped_patterns = "\n".join(
                 _escape_block_line(line) for line in pattern_lines
             )
             pattern_block = (
@@ -8360,7 +8360,7 @@ class Bot:
                     _add_weather_line(str(sea_snapshot.get(key) or ""))
 
         if weather_lines:
-            escaped_weather = "<br>".join(
+            escaped_weather = "\n".join(
                 _escape_block_line(line) for line in weather_lines
             )
             weather_block = (
@@ -8384,13 +8384,13 @@ class Bot:
             if system_prompt:
                 escaped_system = _escape_block_line(system_prompt)
                 block_sections.append(
-                    f"<b>System prompt</b>:<br>{escaped_system}"
+                    f"<b>System prompt</b>:\n{escaped_system}"
                 )
             if user_prompt:
                 escaped_user = _escape_block_line(user_prompt)
-                block_sections.append(f"<b>User prompt</b>:<br>{escaped_user}")
+                block_sections.append(f"<b>User prompt</b>:\n{escaped_user}")
             if block_sections:
-                block_html = "<br><br>".join(block_sections)
+                block_html = "\n\n".join(block_sections)
                 service_block = (
                     f"Служебно{suffix}:\n"
                     f"<blockquote expandable=\"true\">{block_html}</blockquote>"

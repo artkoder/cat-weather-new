@@ -7184,13 +7184,22 @@ class Bot:
         today = datetime.utcnow().strftime("%Y%m%d")
         return f"{today}:{channel_id or 0}"
 
-    def _flowers_recent_pattern_ids(self, rubric: Rubric, limit: int = 14) -> set[str]:
+    def _flowers_recent_pattern_ids(
+        self, rubric: Rubric, limit: int = 14
+    ) -> tuple[set[str], set[str]]:
         pattern_history = self.data.get_recent_rubric_pattern_ids(rubric.code, limit=limit)
         result: set[str] = set()
+        normalized_history: list[list[str]] = []
         for entries in pattern_history:
-            for item in entries:
-                result.add(str(item))
-        return result
+            normalized = [str(item).strip() for item in entries if str(item).strip()]
+            normalized_history.append(normalized)
+            result.update(normalized)
+        consecutive_repeats: set[str] = set()
+        if len(normalized_history) >= 2:
+            latest = set(normalized_history[0])
+            previous = set(normalized_history[1])
+            consecutive_repeats = latest & previous
+        return result, consecutive_repeats
 
     def _extract_flower_features(
         self,
@@ -7377,12 +7386,14 @@ class Bot:
         features = self._extract_flower_features(assets, weather_block, seed_rng=rng)
         if kb and not features.get("palettes") and kb.colors:
             features["palettes"] = list(kb.colors.values())
-        banned_recent = self._flowers_recent_pattern_ids(rubric)
+        banned_recent, consecutive_repeats = self._flowers_recent_pattern_ids(rubric)
         available: list[tuple[FlowerPattern, float]] = []
         weather_pattern: FlowerPattern | None = None
         if kb:
             for pattern in kb.patterns:
                 if not pattern.matches_context(features):
+                    continue
+                if pattern.id in consecutive_repeats and not pattern.always_include:
                     continue
                 weight = max(pattern.weight, 0.0)
                 if pattern.id in banned_recent and not pattern.always_include:

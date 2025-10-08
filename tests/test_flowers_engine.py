@@ -102,6 +102,51 @@ async def test_flowers_loader_and_plan_deterministic(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flowers_plan_skips_recent_duplicate_pattern(monkeypatch, tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    bot.data.upsert_rubric("flowers", "Flowers", config={"enabled": True})
+    rubric = bot.data.get_rubric_by_code("flowers")
+    asset = _make_asset(3, "Москва", ["rose", "tulip"])
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def utcnow(cls):  # type: ignore[override]
+            return datetime(2024, 5, 18, 6, 0, 0)
+
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            base = cls.utcnow()
+            if tz is None:
+                return base
+            return base.replace(tzinfo=timezone.utc).astimezone(tz)
+
+    import main as main_module
+
+    monkeypatch.setattr(main_module, "datetime", FixedDatetime)
+
+    metadata_recent = {
+        "pattern_ids": ["weather_focus", "color_palette", "micro_engagement_question"],
+    }
+    metadata_previous = {
+        "pattern_ids": ["weather_focus", "color_palette", "wisdom_seed"],
+    }
+    assert rubric is not None
+    bot.data.record_post_history(1, 99, None, rubric.id, metadata_previous)
+    bot.data.record_post_history(1, 100, None, rubric.id, metadata_recent)
+
+    plan = bot._build_flowers_plan(
+        rubric,
+        [asset],
+        weather_block=None,
+        channel_id=-200,
+    )
+
+    assert "weather_focus" in plan["pattern_ids"]
+    assert "color_palette" not in plan["pattern_ids"]
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_flowers_generation_skips_banned_words(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     bot.data.upsert_rubric("flowers", "Flowers", config={"enabled": True})

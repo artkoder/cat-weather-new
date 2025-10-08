@@ -9576,15 +9576,33 @@ class Bot:
         }
 
     def _format_flowers_cities_for_weather(self, cities: Sequence[str], fallback: str) -> str:
-        unique = [str(city).strip() for city in cities if str(city or "").strip()]
-        if not unique:
-            return fallback
-        unique = sorted(dict.fromkeys(unique))
-        if len(unique) == 1:
-            return unique[0]
-        if len(unique) == 2:
-            return f"{unique[0]} и {unique[1]}"
-        return ", ".join(unique[:-1]) + f" и {unique[-1]}"
+        base_city = (fallback or "").strip() or "Калининград"
+        base_key = base_city.casefold()
+        shooting_locations: list[str] = []
+        seen: set[str] = set()
+        for raw_city in cities:
+            city = str(raw_city or "").strip()
+            if not city:
+                continue
+            key = city.casefold()
+            if key == base_key:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            shooting_locations.append(city)
+
+        if not shooting_locations:
+            return base_city
+
+        if len(shooting_locations) == 1:
+            locations = shooting_locations[0]
+        elif len(shooting_locations) == 2:
+            locations = f"{shooting_locations[0]} и {shooting_locations[1]}"
+        else:
+            locations = ", ".join(shooting_locations[:-1]) + f" и {shooting_locations[-1]}"
+
+        return f"{base_city} (съёмка: {locations})"
 
     def _compose_flowers_weather_block(
         self, cities: Sequence[str]

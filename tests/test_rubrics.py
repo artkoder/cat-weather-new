@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import data_access
 from data_access import Asset
 from jobs import Job
-from main import Bot
+from main import Bot, FLOWERS_PREVIEW_MAX_LENGTH
 from openai_client import OpenAIResponse
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
@@ -1327,6 +1327,77 @@ async def test_flowers_preview_service_block(tmp_path):
     assert "Погода сегодня: Солнечно" in text
     assert "Погода вчера: Вчера туман" in text
     assert "Предыдущая публикация: Вчерашний текст" in text
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_preview_truncates_long_payload(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    long_instruction = " ".join(["очень" for _ in range(800)])
+    pattern_instruction = "Описание паттерна " + ("очень длинное предложение " * 20)
+    patterns = [
+        {
+            "id": f"p-{idx}",
+            "instruction": pattern_instruction,
+            "photo_dependent": idx % 2 == 0,
+            "kind": "detail" if idx % 3 == 0 else "",
+        }
+        for idx in range(60)
+    ]
+    plan_weather = {
+        "line": "Погодная сводка " + ("тепло " * 80),
+        "detail": "Подробности " + ("дождь " * 80),
+        "cities": ["Калининград", "Балтийск", "Советск"],
+    }
+    weather_details = {
+        "positive_intro": "Светлый день " + ("+" * 300),
+        "trend_summary": "Ветер утихает " + ("=" * 250),
+        "city": {
+            "detail": "Городская погода " + ("x" * 250),
+            "trend_summary": "Городской тренд " + ("y" * 250),
+        },
+        "sea": {
+            "detail": "Морская сводка " + ("z" * 250),
+            "description": "Описание моря " + ("w" * 250),
+        },
+    }
+    long_system = "System " + ("prompt " * 200)
+    long_user = "User " + ("prompt " * 200)
+    previous_text = " ".join(["Предыдущая" for _ in range(400)])
+
+    state = {
+        "preview_caption": "",
+        "weather_today_line": "Солнечно" + (" ☀️" * 50),
+        "weather_yesterday_line": "Дождливо" + (" 💧" * 50),
+        "weather_line": "",
+        "instructions": long_instruction,
+        "channel_id": -500,
+        "test_channel_id": -600,
+        "default_channel_id": -500,
+        "default_channel_type": "main",
+        "plan": {
+            "patterns": patterns,
+            "weather": plan_weather,
+        },
+        "plan_system_prompt": long_system,
+        "plan_user_prompt": long_user,
+        "plan_prompt_length": 9000,
+        "plan_prompt_fallback": True,
+        "weather_details": weather_details,
+        "previous_main_post_text": previous_text,
+    }
+
+    text = bot._render_flowers_preview_text(state)
+
+    assert len(text) <= FLOWERS_PREVIEW_MAX_LENGTH
+    assert "Погода сегодня" in text
+    assert "Погода вчера" in text
+    assert "Выберите действие" in text
+    assert "Инструкции оператора" in text
+    assert "…" in text
+    assert "<blockquote" not in text
 
     await bot.close()
 

@@ -19,6 +19,8 @@ from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone, time as dtime
 from pathlib import Path
 
+from dataclasses import dataclass
+
 from typing import Any, BinaryIO, Iterable, Sequence, TYPE_CHECKING
 
 from aiohttp import web, ClientSession, FormData
@@ -238,6 +240,8 @@ WEATHER_ALIAS_MAP: dict[str, str | None] = {
     "evening": "night",
     "sunset": "night",
 }
+
+FLOWERS_PREVIEW_MAX_LENGTH = 4000
 
 WEATHER_TAG_TRANSLATIONS: dict[str, str] = {
     "sunny": "солнечно",
@@ -8183,24 +8187,64 @@ class Bot:
                 break
         return previous_text, previous_weather
 
+    @staticmethod
+    def _safe_preview_truncate(text: str, limit: int) -> str:
+        if limit <= 0:
+            return ""
+        if len(text) <= limit:
+            return text
+        ellipsis = "\u2026"
+        available = max(limit - len(ellipsis), 0)
+        truncated = text[:available]
+        last_amp = truncated.rfind("&")
+        last_semicolon = truncated.rfind(";")
+        if last_amp > last_semicolon:
+            truncated = truncated[:last_amp]
+        last_lt = truncated.rfind("<")
+        last_gt = truncated.rfind(">")
+        if last_lt > last_gt:
+            truncated = truncated[:last_lt]
+        return truncated.rstrip() + ellipsis
+
     def _render_flowers_preview_text(self, state: dict[str, Any]) -> str:
-        parts: list[str] = []
+        @dataclass
+        class _PreviewSection:
+            text: str
+            priority: int
+            fallback: str | None = None
+            used_fallback: bool = False
+
+        sections: list[_PreviewSection] = []
+
+        def _add_section(text: str, priority: int, *, fallback: str | None = None) -> None:
+            normalized = text.strip("\n")
+            if not normalized:
+                return
+            sections.append(_PreviewSection(normalized, priority, fallback))
+
         caption = str(state.get("preview_caption") or "").strip()
         if caption:
-            parts.append("Подпись на медиа показана выше.")
+            _add_section("Подпись на медиа показана выше.", 0)
         else:
-            parts.append("Подпись пока не сгенерирована.")
+            _add_section("Подпись пока не сгенерирована.", 0)
         weather_today_line = self._normalize_weather_preview_line(
             state.get("weather_today_line")
         )
         weather_yesterday_line = self._normalize_weather_preview_line(
             state.get("weather_yesterday_line")
         )
-        parts.append(f"Погода сегодня: {weather_today_line}")
-        parts.append(f"Погода вчера: {weather_yesterday_line}")
+        _add_section(f"Погода сегодня: {weather_today_line}", 0)
+        _add_section(f"Погода вчера: {weather_yesterday_line}", 0)
         instructions = str(state.get("instructions") or "").strip()
         if instructions:
-            parts.append(f"Инструкции оператора:\n{instructions}")
+            instructions_block = f"Инструкции оператора:\n{instructions}"
+            fallback_block: str | None = None
+            if len(instructions_block) > 600:
+                truncated = self._safe_preview_truncate(instructions, 600)
+                fallback_block = f"Инструкции оператора:\n{truncated}"
+                if fallback_block == instructions_block:
+                    fallback_block = None
+            _add_section(instructions_block, 2, fallback=fallback_block)
         channels: list[str] = []
         main_target = self._resolve_flowers_target(state, to_test=False)
         if main_target is not None:
@@ -8209,10 +8253,9 @@ class Bot:
         if test_target is not None:
             channels.append(f"🧪 {test_target}")
         if channels:
-            parts.append("Доступные каналы: " + ", ".join(channels))
+            _add_section("Доступные каналы: " + ", ".join(channels), 1)
         plan_raw = state.get("plan")
         plan_dict = plan_raw if isinstance(plan_raw, dict) else {}
-        service_sections: list[str] = []
 
         def _escape_block_line(text: str) -> str:
             return html.escape(text).replace("\n", "<br>")
@@ -8240,7 +8283,7 @@ class Bot:
                 f"Паттерны:\n"
                 f"<blockquote expandable=\"true\">{escaped_patterns}</blockquote>"
             )
-            service_sections.append(pattern_block)
+            _add_section(pattern_block, 3)
 
 
         weather_lines: list[str] = []
@@ -8293,7 +8336,7 @@ class Bot:
                 f"Погода:\n"
                 f"<blockquote expandable=\"true\">{escaped_weather}</blockquote>"
             )
-            service_sections.append(weather_block)
+            _add_section(weather_block, 3)
 
         system_prompt = str(state.get("plan_system_prompt") or "").strip()
         user_prompt = str(state.get("plan_user_prompt") or "").strip()
@@ -8321,18 +8364,56 @@ class Bot:
                     f"Служебно{suffix}:\n"
                     f"<blockquote expandable=\"true\">{block_html}</blockquote>"
                 )
-                service_sections.append(service_block)
-
-        if service_sections:
-            parts.extend(service_sections)
+                _add_section(service_block, 3)
         if "previous_main_post_text" in state:
             previous_text = str(state.get("previous_main_post_text") or "").strip()
             if previous_text:
-                parts.append(f"Предыдущая публикация: {previous_text}")
+                full_block = f"Предыдущая публикация: {previous_text}"
+                fallback_text: str | None = None
+                if len(full_block) > 600:
+                    truncated_prev = self._safe_preview_truncate(previous_text, 600)
+                    fallback_text = f"Предыдущая публикация: {truncated_prev}"
+                    if fallback_text == full_block:
+                        fallback_text = None
+                _add_section(full_block, 2, fallback=fallback_text)
             else:
-                parts.append("Предыдущая публикация: не публиковалось")
-        parts.append("Выберите действие на клавиатуре ниже.")
-        return "\n\n".join(parts)
+                _add_section("Предыдущая публикация: не публиковалось", 1)
+        _add_section("Выберите действие на клавиатуре ниже.", 0)
+
+        def _total_length(items: Sequence[_PreviewSection]) -> int:
+            if not items:
+                return 0
+            return sum(len(section.text) for section in items) + 2 * (len(items) - 1)
+
+        limit = FLOWERS_PREVIEW_MAX_LENGTH
+        total_length = _total_length(sections)
+        if total_length > limit:
+            priorities = sorted({section.priority for section in sections}, reverse=True)
+            for priority in priorities:
+                idx = len(sections) - 1
+                while idx >= 0 and total_length > limit:
+                    section = sections[idx]
+                    if section.priority != priority:
+                        idx -= 1
+                        continue
+                    if section.fallback and not section.used_fallback:
+                        if section.fallback != section.text:
+                            section.text = section.fallback
+                            section.used_fallback = True
+                            total_length = _total_length(sections)
+                            if total_length <= limit:
+                                break
+                            continue
+                    sections.pop(idx)
+                    total_length = _total_length(sections)
+                    idx -= 1
+                if total_length <= limit:
+                    break
+
+        final_text = "\n\n".join(section.text for section in sections)
+        if len(final_text) > limit:
+            final_text = self._safe_preview_truncate(final_text, limit)
+        return final_text
 
     async def _delete_flowers_preview_messages(
         self, state: dict[str, Any], *, keep_prompt: bool = False

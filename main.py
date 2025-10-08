@@ -7486,6 +7486,9 @@ class Bot:
                 continue
             if normalized in tokens:
                 return True
+            pattern = re.escape(normalized)
+            if re.search(rf"(?<!\w){pattern}(?!\w)", lowered):
+                return True
         return False
 
     @staticmethod

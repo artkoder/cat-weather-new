@@ -1271,14 +1271,19 @@ async def test_flowers_preview_service_block(tmp_path):
         "previous_main_post_text": "Вчерашний текст",
     }
 
+    prompt_payload = bot._build_flowers_prompt_payload(state["plan"])
+    state["serialized_plan"] = prompt_payload["serialized_plan"]
+    state["plan_prompt"] = prompt_payload["user_prompt"]
+
     text = bot._render_flowers_preview_text(state)
 
-    assert "Шаблоны:" in text
-    assert "p-1: Упомяни бутоны" in text
-    assert "Погода сегодня: Солнечно" in text
-    assert "Погода вчера: Вчерашний текст" in text
-    assert "Погодный блок (JSON):" not in text
-    assert "Детали погоды:" not in text
+    assert "Служебно:" in text
+    escaped_prompt = html.escape(state["plan_prompt"]).replace("\n", "<br>")
+    assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in text
+    assert "Шаблоны:" not in text
+    assert "Погода сегодня:" not in text
+    assert "Погода вчера:" not in text
+    assert "Предыдущая публикация: Вчерашний текст" in text
 
     await bot.close()
 
@@ -1384,6 +1389,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
         data for method, data in api_calls if method == "editMessageText" and data
     ]
     assert summary_updates, "Ожидалось обновление текста предпросмотра"
+    assert summary_updates[-1].get("parse_mode") == "HTML"
     summary_text = str(summary_updates[-1].get("text") or "")
     if preview_caption:
         assert preview_caption not in summary_text
@@ -1394,9 +1400,23 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert "📣 -500" in summary_text
     assert "🧪 -600" in summary_text
     assert "Служебно:" in summary_text
-    assert "Шаблоны:" in summary_text
-    assert "Погода сегодня:" in summary_text
-    assert "Погода вчера: не публиковалось" in summary_text
+    plan_prompt_text = str(state.get("plan_prompt") or "")
+    assert plan_prompt_text
+    escaped_prompt = html.escape(plan_prompt_text).replace("\n", "<br>")
+    assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in summary_text
+    assert "Шаблоны:" not in summary_text
+    assert "Погода сегодня:" not in summary_text
+    assert "Предыдущая публикация: не публиковалось" in summary_text
+
+    preview_messages = [
+        data
+        for method, data in api_calls
+        if method == "sendMessage"
+        and data
+        and "Выберите действие на клавиатуре" in str(data.get("text") or "")
+    ]
+    assert preview_messages
+    assert preview_messages[-1].get("parse_mode") == "HTML"
 
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb3"})
     confirmations = [

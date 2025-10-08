@@ -1303,6 +1303,9 @@ async def test_flowers_preview_service_block(tmp_path):
     prompt_payload = bot._build_flowers_prompt_payload(state["plan"], state["plan_meta"])
     assert prompt_payload["prompt_length"] <= 2000
     state["serialized_plan"] = prompt_payload["serialized_plan"]
+    state["plan_system_prompt"] = prompt_payload["system_prompt"]
+    state["plan_user_prompt"] = prompt_payload["user_prompt"]
+    state["plan_request_text"] = prompt_payload["request_text"]
     state["plan_prompt"] = prompt_payload["user_prompt"]
     state["plan_prompt_length"] = prompt_payload["prompt_length"]
     state["plan_prompt_fallback"] = prompt_payload["used_fallback"]
@@ -1310,8 +1313,16 @@ async def test_flowers_preview_service_block(tmp_path):
     text = bot._render_flowers_preview_text(state)
 
     assert "Служебно (длина" in text
-    escaped_prompt = html.escape(state["plan_prompt"]).replace("\n", "<br>")
-    assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in text
+    escaped_system = html.escape(state["plan_system_prompt"]).replace("\n", "<br>")
+    escaped_user = html.escape(state["plan_user_prompt"]).replace("\n", "<br>")
+    assert (
+        "<blockquote expandable=\"true\">"
+        f"<b>System prompt</b>:<br>{escaped_system}"
+        "<br><br>"
+        f"<b>User prompt</b>:<br>{escaped_user}"
+        "</blockquote>"
+        in text
+    )
     assert "Шаблоны:" not in text
     assert "Погода сегодня: Солнечно" in text
     assert "Погода вчера: Вчера туман" in text
@@ -1364,6 +1375,26 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     api_calls: list[tuple[str, dict[str, Any] | None]] = []
     posted_link: dict[str, str] = {}
     message_counter = {"value": 200}
+    openai_calls: list[dict[str, Any]] = []
+
+    class DummyOpenAI:
+        def __init__(self) -> None:
+            self.api_key = "test"
+
+        async def generate_json(self, **kwargs):  # type: ignore[override]
+            openai_calls.append(kwargs)
+            return OpenAIResponse(
+                {"greeting": "Доброе утро, команда!", "hashtags": ["котопогода", "цветы"]},
+                {
+                    "prompt_tokens": 150,
+                    "completion_tokens": 200,
+                    "total_tokens": 350,
+                    "request_id": "req-flowers-preview",
+                    "endpoint": "/v1/responses",
+                },
+            )
+
+    bot.openai = DummyOpenAI()
 
     async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
         api_calls.append((method, data))
@@ -1437,16 +1468,34 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert "📣 -500" in summary_text
     assert "🧪 -600" in summary_text
     assert "Служебно (длина" in summary_text
+    plan_system_prompt = str(state.get("plan_system_prompt") or "")
+    plan_user_prompt = str(state.get("plan_user_prompt") or "")
+    plan_request_text = str(state.get("plan_request_text") or "")
+    assert plan_system_prompt
+    assert plan_user_prompt
+    assert plan_system_prompt in plan_request_text
+    assert plan_user_prompt in plan_request_text
+    assert openai_calls, "generate_json should have been called for preview"
+    assert openai_calls[-1]["system_prompt"] == plan_system_prompt
+    assert openai_calls[-1]["user_prompt"] == plan_user_prompt
     plan_prompt_text = str(state.get("plan_prompt") or "")
-    assert plan_prompt_text
+    assert plan_prompt_text == plan_user_prompt
     assert len(plan_prompt_text) <= 2000
     prompt_length = state.get("plan_prompt_length")
     assert isinstance(prompt_length, int)
     assert prompt_length <= 2000
-    escaped_prompt = html.escape(plan_prompt_text).replace("\n", "<br>")
-    assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in summary_text
+    escaped_system = html.escape(plan_system_prompt).replace("\n", "<br>")
+    escaped_user = html.escape(plan_user_prompt).replace("\n", "<br>")
+    expected_block = (
+        "<blockquote expandable=\"true\">"
+        f"<b>System prompt</b>:<br>{escaped_system}"
+        "<br><br>"
+        f"<b>User prompt</b>:<br>{escaped_user}"
+        "</blockquote>"
+    )
+    assert expected_block in summary_text
     assert "Добавь смайлы" in plan_prompt_text
-    assert html.escape("Добавь смайлы") in escaped_prompt
+    assert html.escape("Добавь смайлы") in escaped_user
     serialized_plan_text = str(state.get("serialized_plan") or "")
     assert "Добавь смайлы" in serialized_plan_text
     assert "Шаблоны:" not in summary_text

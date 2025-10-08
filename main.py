@@ -8210,6 +8210,83 @@ class Bot:
             channels.append(f"🧪 {test_target}")
         if channels:
             parts.append("Доступные каналы: " + ", ".join(channels))
+        plan_raw = state.get("plan")
+        plan_dict = plan_raw if isinstance(plan_raw, dict) else {}
+        service_sections: list[str] = []
+
+        def _escape_block_line(text: str) -> str:
+            return html.escape(text).replace("\n", "<br>")
+
+        pattern_lines: list[str] = []
+        for idx, raw_pattern in enumerate(plan_dict.get("patterns") or [], 1):
+            if not isinstance(raw_pattern, dict):
+                continue
+            instruction = str(raw_pattern.get("instruction") or "").strip()
+            if not instruction:
+                continue
+            tags: list[str] = []
+            kind = str(raw_pattern.get("kind") or "").strip()
+            if kind:
+                tags.append(kind)
+            if raw_pattern.get("photo_dependent"):
+                tags.append("про фото")
+            tag_prefix = f"[{', '.join(tags)}] " if tags else ""
+            pattern_lines.append(f"{idx}. {tag_prefix}{instruction}")
+        if pattern_lines:
+            pattern_html = "<br>".join(_escape_block_line(line) for line in pattern_lines)
+            service_sections.append(
+                f"Паттерны:\n<blockquote expandable=\"true\">{pattern_html}</blockquote>"
+            )
+
+
+        weather_lines: list[str] = []
+        seen_weather: set[str] = set()
+
+        def _add_weather_line(value: str) -> None:
+            normalized = value.strip()
+            if not normalized or normalized in seen_weather:
+                return
+            seen_weather.add(normalized)
+            weather_lines.append(normalized)
+
+        plan_weather = plan_dict.get("weather")
+        if isinstance(plan_weather, dict):
+            for key in ("line", "detail"):
+                _add_weather_line(str(plan_weather.get(key) or ""))
+            cities_value = plan_weather.get("cities")
+            if isinstance(cities_value, (list, tuple, set)):
+                cities_list = [
+                    str(city or "").strip()
+                    for city in cities_value
+                    if str(city or "").strip()
+                ]
+                if cities_list:
+                    _add_weather_line("Города: " + ", ".join(cities_list))
+            else:
+                city_str = str(cities_value or "").strip()
+                if city_str:
+                    _add_weather_line("Города: " + city_str)
+
+        weather_details_raw = state.get("weather_details")
+        weather_details = weather_details_raw if isinstance(weather_details_raw, dict) else {}
+        if weather_details:
+            for key in ("positive_intro", "trend_summary"):
+                _add_weather_line(str(weather_details.get(key) or ""))
+            city_snapshot = weather_details.get("city")
+            if isinstance(city_snapshot, dict):
+                for key in ("detail", "trend_summary"):
+                    _add_weather_line(str(city_snapshot.get(key) or ""))
+            sea_snapshot = weather_details.get("sea")
+            if isinstance(sea_snapshot, dict):
+                for key in ("detail", "description"):
+                    _add_weather_line(str(sea_snapshot.get(key) or ""))
+
+        if weather_lines:
+            weather_html = "<br>".join(_escape_block_line(line) for line in weather_lines)
+            service_sections.append(
+                f"Погода:\n<blockquote expandable=\"true\">{weather_html}</blockquote>"
+            )
+
         system_prompt = str(state.get("plan_system_prompt") or "").strip()
         user_prompt = str(state.get("plan_user_prompt") or "").strip()
         if system_prompt or user_prompt:
@@ -8223,18 +8300,21 @@ class Bot:
             suffix = f" ({', '.join(meta_parts)})" if meta_parts else ""
             block_sections: list[str] = []
             if system_prompt:
-                escaped_system = html.escape(system_prompt).replace("\n", "<br>")
+                escaped_system = _escape_block_line(system_prompt)
                 block_sections.append(
                     f"<b>System prompt</b>:<br>{escaped_system}"
                 )
             if user_prompt:
-                escaped_user = html.escape(user_prompt).replace("\n", "<br>")
+                escaped_user = _escape_block_line(user_prompt)
                 block_sections.append(f"<b>User prompt</b>:<br>{escaped_user}")
-            block_html = "<br><br>".join(block_sections)
-            parts.append(
-                f"Служебно{suffix}:\n"
-                f"<blockquote expandable=\"true\">{block_html}</blockquote>"
-            )
+            if block_sections:
+                block_html = "<br><br>".join(block_sections)
+                service_sections.append(
+                    f"Служебно{suffix}:\n<blockquote expandable=\"true\">{block_html}</blockquote>"
+                )
+
+        if service_sections:
+            parts.extend(service_sections)
         if "previous_main_post_text" in state:
             previous_text = str(state.get("previous_main_post_text") or "").strip()
             if previous_text:

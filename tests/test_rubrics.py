@@ -103,8 +103,11 @@ async def test_build_flowers_plan_uses_single_rotating_pattern(tmp_path):
     )
     assert city_snapshot["trend_temperature_value"] == 4.0
     assert city_snapshot["trend_wind_value"] == 4.8
+    assert city_snapshot["trend_temperature_previous_value"] == 9.0
+    assert city_snapshot["trend_wind_previous_value"] == 6.0
     assert "12°C" not in summary
     assert "12°C" in (city_snapshot.get("detail") or "")
+    assert "ветер 3 м/с" in (city_snapshot.get("detail") or "")
 
     await bot.close()
 

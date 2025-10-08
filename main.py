@@ -8234,7 +8234,12 @@ class Bot:
             pattern_lines.append(f"{idx}. {tag_prefix}{instruction}")
         if pattern_lines:
             pattern_html = "<br>".join(_escape_block_line(line) for line in pattern_lines)
-            pattern_block = f"Паттерны:\n<blockquote expandable=\"true\">{pattern_html}</blockquote>"
+            pattern_block = "\n".join(
+                (
+                    "Паттерны:",
+                    f"<blockquote expandable=\"true\">{pattern_html}</blockquote>",
+                )
+            )
             service_sections.append(pattern_block)
 
 
@@ -8282,7 +8287,12 @@ class Bot:
 
         if weather_lines:
             weather_html = "<br>".join(_escape_block_line(line) for line in weather_lines)
-            weather_block = f"Погода:\n<blockquote expandable=\"true\">{weather_html}</blockquote>"
+            weather_block = "\n".join(
+                (
+                    "Погода:",
+                    f"<blockquote expandable=\"true\">{weather_html}</blockquote>",
+                )
+            )
             service_sections.append(weather_block)
 
         system_prompt = str(state.get("plan_system_prompt") or "").strip()

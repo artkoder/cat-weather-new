@@ -64,7 +64,7 @@ def _seed_weather(bot: Bot) -> None:
 
 
 @pytest.mark.asyncio
-async def test_build_flowers_plan_uses_daily_weather_trend(tmp_path):
+async def test_build_flowers_plan_uses_single_rotating_pattern(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {"enabled": True, "assets": {"min": 1, "max": 1}}
     _insert_rubric(bot, "flowers", config, rubric_id=1)
@@ -94,9 +94,17 @@ async def test_build_flowers_plan_uses_daily_weather_trend(tmp_path):
 
     weather_block = bot._compose_flowers_weather_block(["Kaliningrad"])
     assert weather_block is not None
+    city_snapshot = weather_block.get("city")
+    assert city_snapshot is not None
     summary = weather_block.get("trend_summary")
-    assert summary == "свежесть бодрит — около 4°C и ветер стал спокойнее — около 5 м/с"
+    assert (
+        summary
+        == "свежесть бодрит — около 4°C и ветер стал спокойнее — около 5 м/с"
+    )
+    assert city_snapshot["trend_temperature_value"] == 4.0
+    assert city_snapshot["trend_wind_value"] == 4.8
     assert "12°C" not in summary
+    assert "12°C" in (city_snapshot.get("detail") or "")
 
     await bot.close()
 

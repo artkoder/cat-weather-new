@@ -1273,9 +1273,19 @@ async def test_flowers_preview_service_block(tmp_path):
         "default_channel_type": "main",
         "plan": {
             "patterns": [
-                {"id": "p-1", "instruction": "Упомяни бутоны"},
-                {"id": "p-2", "instruction": "Добавь цитату"},
-            ]
+                {"id": "p-1", "instruction": "Упомяни бутоны", "photo_dependent": True},
+                {"id": "p-2", "instruction": "Добавь цитату", "photo_dependent": False},
+            ],
+            "weather": {"line": "Светлое утро", "detail": "Лёгкий ветер", "cities": "Калининград"},
+            "flowers": [{"name": "ирисы"}, {"name": "тюльпаны"}],
+            "previous_text": "Учора говорили о тепле",
+            "instructions": "Добавь тёплый тон",
+        },
+        "plan_meta": {
+            "pattern_ids": ["p-1", "p-2"],
+            "banned_words": ["реклама"],
+            "length": {"min": 420, "max": 520},
+            "cities": ["Калининград"],
         },
         "weather_block": {
             "line": "Светлое утро",
@@ -1290,13 +1300,16 @@ async def test_flowers_preview_service_block(tmp_path):
         "previous_main_post_text": "Вчерашний текст",
     }
 
-    prompt_payload = bot._build_flowers_prompt_payload(state["plan"])
+    prompt_payload = bot._build_flowers_prompt_payload(state["plan"], state["plan_meta"])
+    assert prompt_payload["prompt_length"] <= 2000
     state["serialized_plan"] = prompt_payload["serialized_plan"]
     state["plan_prompt"] = prompt_payload["user_prompt"]
+    state["plan_prompt_length"] = prompt_payload["prompt_length"]
+    state["plan_prompt_fallback"] = prompt_payload["used_fallback"]
 
     text = bot._render_flowers_preview_text(state)
 
-    assert "Служебно:" in text
+    assert "Служебно (длина" in text
     escaped_prompt = html.escape(state["plan_prompt"]).replace("\n", "<br>")
     assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in text
     assert "Шаблоны:" not in text
@@ -1423,9 +1436,13 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert "Доступные каналы:" in summary_text
     assert "📣 -500" in summary_text
     assert "🧪 -600" in summary_text
-    assert "Служебно:" in summary_text
+    assert "Служебно (длина" in summary_text
     plan_prompt_text = str(state.get("plan_prompt") or "")
     assert plan_prompt_text
+    assert len(plan_prompt_text) <= 2000
+    prompt_length = state.get("plan_prompt_length")
+    assert isinstance(prompt_length, int)
+    assert prompt_length <= 2000
     escaped_prompt = html.escape(plan_prompt_text).replace("\n", "<br>")
     assert f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>" in summary_text
     assert "Добавь смайлы" in plan_prompt_text
@@ -1676,7 +1693,7 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
         vision_caption=None,
     )
 
-    greeting, hashtags, plan = await bot._generate_flowers_copy(
+    greeting, hashtags, plan, plan_meta = await bot._generate_flowers_copy(
         rubric,
         [asset],
         channel_id=-100,
@@ -1686,16 +1703,18 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
     assert greeting == "Доброе утро"
     assert hashtags == ["котопогода", "цветы"]
     assert isinstance(plan, dict)
-    assert plan.get("pattern_ids"), "pattern ids should be present in plan"
+    assert isinstance(plan_meta, dict)
+    assert plan_meta.get("pattern_ids"), "pattern ids should be present in metadata"
     assert calls, "generate_json was not called"
     request = calls[0]
     assert request["model"] == "gpt-4o"
     assert 0.9 <= request["temperature"] <= 1.1
     assert request["top_p"] == 0.9
     user_prompt = request["user_prompt"]
-    assert "План:" in user_prompt
+    assert "Контекст" in user_prompt
+    assert "Паттерны" in user_prompt
     assert "Правила" in user_prompt
-    assert "photo_dependent" in user_prompt
+    assert len(user_prompt) <= 2000
     assert weather_block["city"] is not None
     assert weather_block["city"]["name"] in weather_block["line"]
     assert weather_block["city"]["name"].casefold() == "kaliningrad"
@@ -1792,7 +1811,7 @@ async def test_generate_flowers_retries_on_banned_cliches(tmp_path):
 
     bot.openai = DummyOpenAI()
 
-    greeting, hashtags, plan = await bot._generate_flowers_copy(
+    greeting, hashtags, plan, plan_meta = await bot._generate_flowers_copy(
         rubric,
         [asset],
         channel_id=-300,
@@ -1801,7 +1820,8 @@ async def test_generate_flowers_retries_on_banned_cliches(tmp_path):
     assert len(calls) == 2
     assert "прекрасн" not in greeting.casefold()
     assert isinstance(plan, dict)
-    banned_words = plan.get("banned_words") or []
+    assert isinstance(plan_meta, dict)
+    banned_words = plan_meta.get("banned_words") or []
     assert {"прекрасный", "волшебный", "неповторимый", "самый-самый"}.issubset(
         set(banned_words)
     )
@@ -1904,7 +1924,7 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
         vision_caption=None,
     )
 
-    greeting, hashtags, plan = await bot._generate_flowers_copy(
+    greeting, hashtags, plan, plan_meta = await bot._generate_flowers_copy(
         rubric,
         [asset],
         channel_id=-200,
@@ -1932,6 +1952,7 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
         "required": ["greeting", "hashtags"],
     }
     assert isinstance(plan, dict)
+    assert isinstance(plan_meta, dict)
 
     await bot.close()
 

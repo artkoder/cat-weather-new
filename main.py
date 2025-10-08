@@ -9525,16 +9525,168 @@ class Bot:
         ).fetchone()
         if not weather_row:
             return None
-        yesterday = (datetime.utcnow() - timedelta(days=1)).date().isoformat()
+        now = datetime.utcnow()
+        today = now.date().isoformat()
+        yesterday = (now - timedelta(days=1)).date().isoformat()
+        day_row = self.db.execute(
+            """
+            SELECT temperature, wind_speed, weather_code
+            FROM weather_cache_day
+            WHERE city_id=? AND day=?
+            LIMIT 1
+            """,
+            (row["id"], today),
+        ).fetchone()
         previous_row = self.db.execute(
             """
-            SELECT temperature, wind_speed
+            SELECT temperature, wind_speed, weather_code
             FROM weather_cache_day
             WHERE city_id=? AND day=?
             LIMIT 1
             """,
             (row["id"], yesterday),
         ).fetchone()
+
+        def _row_to_day_payload(day_row: sqlite3.Row | None) -> dict[str, Any] | None:
+            if not day_row:
+                return None
+            payload: dict[str, Any] = {}
+            for key in day_row.keys():
+                value = day_row[key]
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    if stripped.startswith("{") or stripped.startswith("["):
+                        try:
+                            payload[key] = json.loads(stripped)
+                            continue
+                        except json.JSONDecodeError:
+                            pass
+                payload[key] = value
+            return payload
+
+        def _coerce_numeric(value: Any) -> float | None:
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return None
+                try:
+                    return float(stripped)
+                except ValueError:
+                    if stripped.startswith("{") or stripped.startswith("["):
+                        try:
+                            parsed = json.loads(stripped)
+                        except json.JSONDecodeError:
+                            return None
+                        return _coerce_numeric(parsed)
+                    return None
+            if isinstance(value, dict):
+                for key in ("mean", "avg", "average", "value"):
+                    if key in value:
+                        coerced = _coerce_numeric(value[key])
+                        if coerced is not None:
+                            return coerced
+                for nested_value in value.values():
+                    coerced = _coerce_numeric(nested_value)
+                    if coerced is not None:
+                        return coerced
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    coerced = _coerce_numeric(item)
+                    if coerced is not None:
+                        return coerced
+            return None
+
+        def _flatten_day_values(data: dict[str, Any] | None) -> dict[str, float]:
+            flattened: dict[str, float] = {}
+            if not data:
+                return flattened
+
+            def _collect(prefix: str, raw_value: Any) -> None:
+                numeric = _coerce_numeric(raw_value)
+                if numeric is not None:
+                    keys = [prefix]
+                    if "." in prefix:
+                        keys.append(prefix.rsplit(".", 1)[-1])
+                    for key in keys:
+                        if key and key not in flattened:
+                            flattened[key] = numeric
+                    return
+                if isinstance(raw_value, dict):
+                    for sub_key, sub_value in raw_value.items():
+                        next_prefix = f"{prefix}.{sub_key}" if prefix else sub_key
+                        _collect(next_prefix, sub_value)
+                elif isinstance(raw_value, (list, tuple)):
+                    for index, item in enumerate(raw_value):
+                        next_prefix = f"{prefix}[{index}]" if prefix else str(index)
+                        _collect(next_prefix, item)
+
+            for key, value in data.items():
+                if key in {"day", "city_id"}:
+                    continue
+                _collect(key, value)
+            return flattened
+
+        def _select_metric(
+            values: dict[str, float],
+            preferred: Sequence[str],
+            fallbacks: Sequence[str],
+        ) -> float | None:
+            for key in preferred:
+                if key in values:
+                    return values[key]
+            for key in fallbacks:
+                if key in values:
+                    return values[key]
+            return None
+
+        today_day = _row_to_day_payload(day_row)
+        yesterday_day = _row_to_day_payload(previous_row)
+        today_values = _flatten_day_values(today_day)
+        yesterday_values = _flatten_day_values(yesterday_day)
+        temperature_keys = (
+            "temperature_2m_mean",
+            "temperature_mean",
+            "temperature_avg",
+            "temperature_average",
+            "temp_mean",
+            "temp_avg",
+            "temperature.mean",
+            "temperature.avg",
+            "temperature.average",
+        )
+        temperature_fallbacks = (
+            "temperature",
+            "temperature_day",
+            "temperature.value",
+            "temperature.max",
+            "temperature_2m_max",
+            "temperature_max",
+        )
+        wind_keys = (
+            "wind_speed_10m_mean",
+            "wind_speed_mean",
+            "wind_speed_avg",
+            "wind_speed_average",
+            "wind_speed.mean",
+            "wind_speed.avg",
+            "wind_speed.average",
+        )
+        wind_fallbacks = (
+            "wind_speed_10m_max",
+            "wind_speed_max",
+            "wind_speed.max",
+            "wind_speed.gusts_max",
+            "wind_speed",
+            "wind",
+        )
+        day_temperature = _select_metric(today_values, temperature_keys, temperature_fallbacks)
+        day_wind = _select_metric(today_values, wind_keys, wind_fallbacks)
+        previous_temperature = _select_metric(
+            yesterday_values, temperature_keys, temperature_fallbacks
+        )
+        previous_wind = _select_metric(yesterday_values, wind_keys, wind_fallbacks)
         snapshot: dict[str, Any] = {
             "id": row["id"],
             "name": row["name"],
@@ -9542,8 +9694,12 @@ class Bot:
             "wind_speed": weather_row["wind_speed"],
             "weather_code": weather_row["weather_code"],
             "is_day": weather_row["is_day"],
-            "previous_temperature": previous_row["temperature"] if previous_row else None,
-            "previous_wind": previous_row["wind_speed"] if previous_row else None,
+            "day": today_day,
+            "yesterday_day": yesterday_day,
+            "day_temperature": day_temperature,
+            "day_wind": day_wind,
+            "previous_temperature": previous_temperature,
+            "previous_wind": previous_wind,
         }
         temp_detail = self._format_temperature_value(snapshot["temperature"])
         wind_detail = self._format_wind_value(snapshot["wind_speed"])
@@ -9554,10 +9710,14 @@ class Bot:
             details.append(f"ветер {wind_detail}")
         snapshot["detail"] = ", ".join(details)
         snapshot["trend_temperature"] = self._positive_temperature_trend(
-            snapshot["temperature"], snapshot["previous_temperature"]
+            snapshot["day_temperature"]
+            if snapshot.get("day_temperature") is not None
+            else snapshot["temperature"],
+            snapshot.get("previous_temperature"),
         )
         snapshot["trend_wind"] = self._positive_wind_trend(
-            snapshot["wind_speed"], snapshot["previous_wind"]
+            snapshot["day_wind"] if snapshot.get("day_wind") is not None else snapshot["wind_speed"],
+            snapshot.get("previous_wind"),
         )
         trends = [piece for piece in [snapshot["trend_temperature"], snapshot["trend_wind"]] if piece]
         snapshot["trend_summary"] = " и ".join(trends)

@@ -36,7 +36,6 @@ from flowers_patterns import (
     FlowerKnowledgeBase,
     FlowerPattern,
     load_flowers_knowledge,
-    serialize_plan,
 )
 from jobs import Job, JobDelayed, JobQueue
 from openai_client import OpenAIClient
@@ -4347,13 +4346,15 @@ class Bot:
                             if isinstance(value, int):
                                 channel_hint = value
                                 break
-                    greeting, hashtags, plan = await self._generate_flowers_copy(
+                    plan_meta_override = preview_state.get('plan_meta')
+                    greeting, hashtags, plan, plan_meta = await self._generate_flowers_copy(
                         rubric,
                         assets,
                         channel_id=channel_hint if isinstance(channel_hint, int) else None,
                         weather_block=weather_block,
                         instructions=instructions_text,
                         plan=plan_override,
+                        plan_meta=plan_meta_override if isinstance(plan_meta_override, dict) else None,
                     )
                     if isinstance(plan, dict):
                         plan["instructions"] = instructions_text
@@ -4369,13 +4370,18 @@ class Bot:
                         weather_block,
                     )
                     preview_state['plan'] = plan
-                    preview_state['pattern_ids'] = list(plan.get('pattern_ids', [])) if isinstance(plan, dict) else []
-                    prompt_payload = self._build_flowers_prompt_payload(plan)
+                    preview_state['plan_meta'] = plan_meta or {}
+                    preview_state['pattern_ids'] = list((plan_meta or {}).get('pattern_ids', []))
+                    prompt_payload = self._build_flowers_prompt_payload(plan, plan_meta)
                     preview_state['serialized_plan'] = str(
                         prompt_payload.get('serialized_plan') or '{}'
                     )
                     preview_state['plan_prompt'] = str(
                         prompt_payload.get('user_prompt') or ''
+                    )
+                    preview_state['plan_prompt_length'] = prompt_payload.get('prompt_length')
+                    preview_state['plan_prompt_fallback'] = bool(
+                        prompt_payload.get('used_fallback')
                     )
                     await self._update_flowers_preview_caption_state(
                         preview_state,
@@ -7436,7 +7442,7 @@ class Bot:
         *,
         channel_id: int | None,
         instructions: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         kb = self.flowers_kb
         seed = self._flowers_seed(channel_id)
         rng = random.Random(seed)
@@ -7484,50 +7490,48 @@ class Bot:
             pattern_ids.append(choice_pattern.id)
             break
         cities = sorted({asset.city for asset in assets if asset.city})
-        plan = {
-            "seed": seed,
-            "rubric": rubric.code,
-            "context": {
-                "cities": cities,
-                "asset_count": len(assets),
-                "season": features.get("season"),
-                "season_description": features.get("season_description"),
-                "holiday": features.get("holiday"),
-                "flowers": features.get("flowers"),
-            },
-            "patterns": selected,
-            "pattern_ids": pattern_ids,
-            "banned_words": sorted((kb.banned_words if kb else set()) or []),
-            "length": {"min": 420, "max": 520},
-            "instructions": instructions or "",
-        }
         if weather_block:
-            plan["weather"] = {
+            weather_summary = {
                 "line": weather_block.get("line"),
                 "detail": weather_block.get("details"),
                 "cities": weather_block.get("cities"),
             }
         else:
-            plan["weather"] = {
+            weather_summary = {
                 "line": None,
                 "detail": None,
                 "cities": None,
             }
-        plan["greeting"] = {
-            "instruction": "Начни с тёплого приветствия и упоминания города, поддержи заботливый тон.",
+        flower_entries: list[dict[str, Any]] = []
+        for flower in features.get("flowers") or []:
+            if not isinstance(flower, dict):
+                continue
+            name = str(flower.get("name") or "").strip()
+            if not name:
+                continue
+            entry: dict[str, Any] = {"name": name}
+            if flower.get("id"):
+                entry["id"] = flower.get("id")
+            flower_entries.append(entry)
+        previous_text: str | None = None
+        rubric_id = getattr(rubric, "id", None)
+        if isinstance(rubric_id, int):
+            previous_text, _ = self._lookup_previous_flowers_post(rubric_id)
+        plan = {
+            "patterns": selected,
+            "weather": weather_summary,
+            "flowers": flower_entries,
+            "previous_text": previous_text,
+            "instructions": instructions or "",
         }
-        closing_parts: list[str] = []
-        if features.get("season_description"):
-            closing_parts.append(features["season_description"])
-        holiday = features.get("holiday") or {}
-        if holiday.get("note"):
-            closing_parts.append(str(holiday["note"]))
-        if not closing_parts:
-            closing_parts.append("Заверши приглашением поделиться настроением дня.")
-        plan["closing"] = {
-            "instruction": " ".join(part for part in closing_parts if part),
+        banned_words = sorted((kb.banned_words if kb else set()) or [])
+        plan_meta = {
+            "pattern_ids": pattern_ids,
+            "banned_words": banned_words,
+            "length": {"min": 420, "max": 520},
+            "cities": cities,
         }
-        return plan
+        return plan, plan_meta
 
     def _flowers_contains_banned_word(
         self, text: str, banned_words: Iterable[str]
@@ -7594,6 +7598,7 @@ class Bot:
             dict[int, dict[str, Any]],
             dict[str, Any] | None,
             dict[str, Any],
+            dict[str, Any],
         ]
         | None
     ):
@@ -7634,14 +7639,14 @@ class Bot:
             asset_kinds.append(media_kind)
         cities = sorted({asset.city for asset in assets if asset.city})
         weather_block = self._compose_flowers_weather_block(cities)
-        plan = self._build_flowers_plan(
+        plan, plan_meta = self._build_flowers_plan(
             rubric,
             assets,
             weather_block,
             channel_id=channel_id,
             instructions=instructions,
         )
-        greeting, hashtags, plan = await self._generate_flowers_copy(
+        greeting, hashtags, plan, plan_meta = await self._generate_flowers_copy(
             rubric,
             assets,
             channel_id=channel_id,
@@ -7649,6 +7654,7 @@ class Bot:
             job=job,
             instructions=instructions,
             plan=plan,
+            plan_meta=plan_meta,
         )
         asset_ids = [asset.id for asset in assets]
         return (
@@ -7662,6 +7668,7 @@ class Bot:
             conversion_map,
             weather_block,
             plan,
+            plan_meta,
         )
 
     async def _send_flowers_media_bundle(
@@ -7964,6 +7971,7 @@ class Bot:
             conversion_map,
             weather_block,
             plan,
+            plan_meta,
         ) = prepared
         (
             preview_caption,
@@ -7997,6 +8005,7 @@ class Bot:
                 instructions=instructions,
                 weather_block=weather_block,
                 plan=plan,
+                plan_meta=plan_meta,
             )
             return True
         response, _ = await self._send_flowers_media_bundle(
@@ -8041,7 +8050,7 @@ class Bot:
             "weather_today_line": weather_today_line,
             "weather_yesterday_line": weather_yesterday_line,
             "weather_line": weather_today_line,
-            "pattern_ids": plan.get("pattern_ids") if isinstance(plan, dict) else None,
+            "pattern_ids": list(plan_meta.get("pattern_ids", [])) if isinstance(plan_meta, dict) else None,
             "plan": plan,
         }
         self.data.record_post_history(
@@ -8188,8 +8197,16 @@ class Bot:
         prompt_text = str(state.get("plan_prompt") or "").strip()
         if prompt_text:
             escaped_prompt = html.escape(prompt_text).replace("\n", "<br>")
+            length_value = state.get("plan_prompt_length")
+            fallback_used = bool(state.get("plan_prompt_fallback"))
+            meta_parts: list[str] = []
+            if isinstance(length_value, int):
+                meta_parts.append(f"длина {length_value}")
+            if fallback_used:
+                meta_parts.append("fallback")
+            suffix = f" ({', '.join(meta_parts)})" if meta_parts else ""
             parts.append(
-                "Служебно:\n"
+                f"Служебно{suffix}:\n"
                 f"<blockquote expandable=\"true\">{escaped_prompt}</blockquote>"
             )
         if "previous_main_post_text" in state:
@@ -8273,6 +8290,7 @@ class Bot:
         instructions: str | None,
         weather_block: dict[str, Any] | None,
         plan: dict[str, Any],
+        plan_meta: dict[str, Any] | None,
     ) -> None:
         previous_state = self.pending_flowers_previews.get(initiator_id)
         if previous_state:
@@ -8290,9 +8308,11 @@ class Bot:
                 except ValueError:
                     return None
             return None
-        prompt_payload = self._build_flowers_prompt_payload(plan)
+        prompt_payload = self._build_flowers_prompt_payload(plan, plan_meta)
         serialized_plan = str(prompt_payload.get("serialized_plan") or "{}")
         plan_prompt = str(prompt_payload.get("user_prompt") or "")
+        plan_prompt_length = prompt_payload.get("prompt_length")
+        plan_prompt_fallback = bool(prompt_payload.get("used_fallback"))
         weather_details: dict[str, Any] | None = None
         if isinstance(weather_block, dict):
             weather_details = {
@@ -8348,9 +8368,11 @@ class Bot:
             "weather_yesterday_line": weather_yesterday_line,
             "weather_line": weather_today_line,
             "plan": plan,
-            "pattern_ids": list(plan.get("pattern_ids", [])) if isinstance(plan, dict) else [],
+            "pattern_ids": list((plan_meta or {}).get("pattern_ids", [])),
             "serialized_plan": serialized_plan,
             "plan_prompt": plan_prompt,
+            "plan_prompt_length": plan_prompt_length,
+            "plan_prompt_fallback": plan_prompt_fallback,
             "weather_details": weather_details,
             "previous_main_post_text": previous_main_post_text,
             "preview_chat_id": initiator_id,
@@ -8362,6 +8384,7 @@ class Bot:
             "test_channel_id": _to_int(test_channel_raw),
             "default_channel_id": int(default_channel),
             "default_channel_type": "test" if test_requested else "main",
+            "plan_meta": plan_meta or {},
         }
         normalized_caption = str(preview_caption or "")
         response, remaining_conversion = await self._send_flowers_media_bundle(
@@ -8652,6 +8675,7 @@ class Bot:
                 conversion_map,
                 weather_block,
                 plan,
+                plan_meta,
             ) = prepared
             (
                 preview_caption,
@@ -8700,6 +8724,7 @@ class Bot:
                 instructions=state.get("instructions"),
                 weather_block=weather_block,
                 plan=plan,
+                plan_meta=plan_meta,
             )
             await self.api_request(
                 "answerCallbackQuery",
@@ -8740,13 +8765,15 @@ class Bot:
                     if isinstance(value, int):
                         channel_hint = value
                         break
-            greeting, hashtags, plan = await self._generate_flowers_copy(
+            plan_meta_override = state.get("plan_meta")
+            greeting, hashtags, plan, plan_meta = await self._generate_flowers_copy(
                 rubric,
                 assets,
                 channel_id=channel_hint if isinstance(channel_hint, int) else None,
                 weather_block=weather_block,
                 instructions=instructions_text,
                 plan=plan_override,
+                plan_meta=plan_meta_override if isinstance(plan_meta_override, dict) else None,
             )
             if isinstance(plan, dict):
                 plan["instructions"] = instructions_text
@@ -8762,12 +8789,15 @@ class Bot:
                 weather_block,
             )
             state["plan"] = plan
-            state["pattern_ids"] = list(plan.get("pattern_ids", [])) if isinstance(plan, dict) else []
-            prompt_payload = self._build_flowers_prompt_payload(plan)
+            state["plan_meta"] = plan_meta or {}
+            state["pattern_ids"] = list((plan_meta or {}).get("pattern_ids", []))
+            prompt_payload = self._build_flowers_prompt_payload(plan, plan_meta)
             state["serialized_plan"] = str(
                 prompt_payload.get("serialized_plan") or "{}"
             )
             state["plan_prompt"] = str(prompt_payload.get("user_prompt") or "")
+            state["plan_prompt_length"] = prompt_payload.get("prompt_length")
+            state["plan_prompt_fallback"] = bool(prompt_payload.get("used_fallback"))
             await self._update_flowers_preview_caption_state(
                 state,
                 preview_caption=preview_caption,
@@ -8869,45 +8899,137 @@ class Bot:
         )
 
     def _build_flowers_prompt_payload(
-        self, plan: dict[str, Any] | None
+        self,
+        plan: dict[str, Any] | None,
+        plan_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         plan_dict = plan if isinstance(plan, dict) else {}
-        length_cfg_raw = plan_dict.get("length") if plan_dict else {}
+        meta = plan_meta if isinstance(plan_meta, dict) else {}
+        length_cfg_raw = meta.get("length") if isinstance(meta, dict) else {}
         length_cfg = length_cfg_raw if isinstance(length_cfg_raw, dict) else {}
         min_len = int(length_cfg.get("min") or 420)
         max_len = int(length_cfg.get("max") or 520)
-        if isinstance(plan, dict):
-            serialized_plan = serialize_plan(plan)
-        else:
-            serialized_plan = json.dumps(plan or {}, ensure_ascii=False, sort_keys=True)
-        banned_words_raw = plan_dict.get("banned_words") if plan_dict else []
+        banned_words_raw = meta.get("banned_words") if isinstance(meta, dict) else []
         banned_words = {
             str(word).strip()
             for word in (banned_words_raw or [])
             if str(word).strip()
         }
+        patterns = [
+            item
+            for item in plan_dict.get("patterns") or []
+            if isinstance(item, dict) and str(item.get("instruction") or "").strip()
+        ]
+        pattern_lines: list[str] = []
+        for idx, pattern in enumerate(patterns, 1):
+            instruction = str(pattern.get("instruction") or "").strip()
+            kind = str(pattern.get("kind") or "").strip()
+            tags: list[str] = []
+            if kind:
+                tags.append(kind)
+            if pattern.get("photo_dependent"):
+                tags.append("про фото")
+            tag_prefix = f"[{', '.join(tags)}] " if tags else ""
+            pattern_lines.append(f"{idx}. {tag_prefix}{instruction}")
+        weather_info = plan_dict.get("weather") if isinstance(plan_dict.get("weather"), dict) else {}
+        weather_parts: list[str] = []
+        weather_line = str((weather_info or {}).get("line") or "").strip()
+        if weather_line:
+            weather_parts.append(weather_line)
+        weather_detail = str((weather_info or {}).get("detail") or "").strip()
+        if weather_detail:
+            weather_parts.append(weather_detail)
+        weather_cities = weather_info.get("cities") if isinstance(weather_info, dict) else None
+        if weather_cities:
+            weather_parts.append(f"города: {weather_cities}")
+        flowers = plan_dict.get("flowers") if isinstance(plan_dict.get("flowers"), list) else []
+        flower_names = [
+            str(flower.get("name") or "").strip()
+            for flower in flowers
+            if isinstance(flower, dict) and str(flower.get("name") or "").strip()
+        ]
+        previous_text = str(plan_dict.get("previous_text") or "").strip()
+        extra_instructions = str(plan_dict.get("instructions") or "").strip()
+        context_sections: list[str] = []
+        if pattern_lines:
+            context_sections.append("Паттерны:\n" + "\n".join(pattern_lines))
+        if weather_parts:
+            context_sections.append("Погода:\n" + "\n".join(weather_parts))
+        if flower_names:
+            context_sections.append("Цветы: " + ", ".join(flower_names))
+        if previous_text:
+            context_sections.append("Вчерашний текст: " + previous_text)
+        if extra_instructions:
+            context_sections.append("Доп. инструкция: " + extra_instructions)
+        context_block = "\n\n".join(context_sections).strip()
         rules: list[str] = [
-            "1. Используй все пункты из списка patterns: упоминай их смысл в общем тексте, не делай маркированных списков.",
-            "2. Фото-зависимые шаблоны (photo_dependent=true) свяжи с визуальными деталями снимков.",
-            "3. Фото-независимые шаблоны используй как настроение или совет.",
-            "4. Обязательно интегрируй погодный блок мягко, без сухих сводок.",
-            f"5. Итоговый текст должен быть от {min_len} до {max_len} символов.",
-            "6. Текст один абзац без двойных переводов строк.",
-            "7. Будь заботливым, избегай рекламных интонаций.",
+            "1. Используй все идеи из раздела паттернов, вплетая их в один абзац без списков.",
+            "2. Фото-зависимые шаблоны свяжи с визуальными деталями снимков.",
+            "3. Погоду интегрируй мягко, без сухих перечислений.",
+            f"4. Итоговый текст должен быть от {min_len} до {max_len} символов.",
+            "5. Текст один абзац без двойных переводов строк.",
+            "6. Будь заботливым, избегай рекламных интонаций.",
         ]
         if banned_words:
             rules.append(
-                "8. Не используй слова: " + ", ".join(sorted(banned_words))
+                "7. Не используй слова: " + ", ".join(sorted(banned_words))
             )
-        user_prompt = (
+        header = (
             "Ты — редактор телеграм-канала про погоду, уют и цветы. "
-            "Собери итоговый текст по плану ниже, добавь подходящие хэштеги.\n\n"
-            "План:\n"
-            f"{serialized_plan}\n\n"
-            "Правила:\n"
-            + "\n".join(rules)
-            + "\nВерни JSON с ключами greeting (готовый текст) и hashtags (не менее двух тегов)."
+            "Собери итоговый текст и подбери подходящие хэштеги."
         )
+        sections: list[str] = [header]
+        if context_block:
+            sections.append("Контекст:\n" + context_block)
+        sections.append("Правила:\n" + "\n".join(rules))
+        sections.append(
+            "Верни JSON с ключами greeting (готовый текст) и hashtags (не менее двух тегов)."
+        )
+        user_prompt = "\n\n".join(section.strip() for section in sections if section.strip())
+
+        def _fallback_prompt() -> str:
+            ideas = [
+                re.sub(r"^\d+\.\s*", "", line)
+                for line in pattern_lines[:3]
+            ]
+            ideas_text = "; ".join(idea for idea in ideas if idea)
+            if len(ideas_text) > 360:
+                ideas_text = ideas_text[:357].rstrip() + "…"
+            weather_text = "; ".join(weather_parts[:2])
+            fallback_lines = [
+                header,
+                f"Собери один абзац длиной {min_len}-{max_len} символов.",
+            ]
+            if ideas_text:
+                fallback_lines.append("Основные идеи: " + ideas_text)
+            if weather_text:
+                fallback_lines.append("Погода: " + weather_text)
+            if flower_names:
+                fallback_lines.append("Цветы: " + ", ".join(flower_names[:4]))
+            if extra_instructions:
+                trimmed = extra_instructions
+                if len(trimmed) > 200:
+                    trimmed = trimmed[:197].rstrip() + "…"
+                fallback_lines.append("Дополнение: " + trimmed)
+            if banned_words:
+                fallback_lines.append(
+                    "Избегай слов: " + ", ".join(sorted(list(banned_words))[:8])
+                )
+            fallback_lines.append(
+                "Верни JSON с ключами greeting и hashtags (не менее двух тегов)."
+            )
+            return "\n".join(fallback_lines)
+
+        prompt_length = len(user_prompt)
+        used_fallback = False
+        if prompt_length > 2000:
+            user_prompt = _fallback_prompt()
+            prompt_length = len(user_prompt)
+            used_fallback = True
+        if prompt_length > 2000:
+            user_prompt = user_prompt[:2000]
+            prompt_length = len(user_prompt)
+        serialized_plan = json.dumps(plan_dict, ensure_ascii=False, sort_keys=True)
         return {
             "user_prompt": user_prompt,
             "serialized_plan": serialized_plan,
@@ -8915,6 +9037,8 @@ class Bot:
             "min_length": min_len,
             "max_length": max_len,
             "banned_words": banned_words,
+            "prompt_length": prompt_length,
+            "used_fallback": used_fallback,
         }
 
     async def _generate_flowers_copy(
@@ -8927,23 +9051,27 @@ class Bot:
         job: Job | None = None,
         instructions: str | None = None,
         plan: dict[str, Any] | None = None,
-    ) -> tuple[str, list[str], dict[str, Any]]:
-        resolved_plan = plan or self._build_flowers_plan(
-            rubric,
-            assets,
-            weather_block,
-            channel_id=channel_id,
-            instructions=instructions,
-        )
-        context = resolved_plan.get("context") if isinstance(resolved_plan, dict) else {}
-        cities = list(context.get("cities") or []) if isinstance(context, dict) else []
-        prompt_payload = self._build_flowers_prompt_payload(resolved_plan)
+        plan_meta: dict[str, Any] | None = None,
+    ) -> tuple[str, list[str], dict[str, Any], dict[str, Any]]:
+        if plan is None or not isinstance(plan, dict) or not isinstance(plan_meta, dict):
+            plan, plan_meta = self._build_flowers_plan(
+                rubric,
+                assets,
+                weather_block,
+                channel_id=channel_id,
+                instructions=instructions,
+            )
+        resolved_plan = plan
+        resolved_meta = plan_meta or {}
+        cities = list(resolved_meta.get("cities") or [])
+        prompt_payload = self._build_flowers_prompt_payload(resolved_plan, resolved_meta)
         banned_words = set(prompt_payload.get("banned_words") or [])
         if not self.openai or not self.openai.api_key:
             return (
                 self._default_flowers_greeting(cities),
                 self._default_hashtags("flowers"),
                 resolved_plan,
+                resolved_meta,
             )
         user_prompt = str(prompt_payload.get("user_prompt") or "")
         schema = {
@@ -9012,12 +9140,13 @@ class Bot:
                     attempts,
                 )
                 continue
-            return greeting, hashtags, resolved_plan
+            return greeting, hashtags, resolved_plan, resolved_meta
         logging.warning("Не удалось получить новый текст для рубрики flowers, используем запасной вариант")
         return (
             self._default_flowers_greeting(cities),
             self._default_hashtags("flowers"),
             resolved_plan,
+            resolved_meta,
         )
 
     def _default_flowers_greeting(self, cities: list[str]) -> str:

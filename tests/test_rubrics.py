@@ -1354,9 +1354,9 @@ async def test_flowers_preview_service_block(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     state = {
         "preview_caption": "Черновик",
-        "weather_today_line": "Калининград: Сегодня: температура 6°C, ветер 3 м/с, код 1",
-        "weather_yesterday_line": "Калининград: Вчера: температура 4°C, ветер 5 м/с, код 3",
-        "weather_line": "Калининград: Сегодня: температура 6°C, ветер 3 м/с, код 1",
+        "weather_today_line": "Калининград: Сегодня: переменная облачность, температура 6°C, ветер 3 м/с",
+        "weather_yesterday_line": "Калининград: Вчера: пасмурно, температура 4°C, ветер 5 м/с",
+        "weather_line": "Калининград: Сегодня: переменная облачность, температура 6°C, ветер 3 м/с",
         "instructions": "Добавь тёплый тон",
         "channel_id": -500,
         "test_channel_id": -600,
@@ -1369,8 +1369,16 @@ async def test_flowers_preview_service_block(tmp_path):
             ],
             "weather": {
                 "cities": "Калининград",
-                "today": {"temperature": 6.0, "wind_speed": 3.2, "weather_code": 1},
-                "yesterday": {"temperature": 4.0, "wind_speed": 5.1, "weather_code": 3},
+                "today": {
+                    "temperature": 6.0,
+                    "wind_speed": 3.2,
+                    "condition": "переменная облачность",
+                },
+                "yesterday": {
+                    "temperature": 4.0,
+                    "wind_speed": 5.1,
+                    "condition": "пасмурно",
+                },
                 "sea": {"temperature": 9.0, "wave": 0.4},
             },
             "flowers": [{"name": "ирисы"}, {"name": "тюльпаны"}],
@@ -1386,14 +1394,30 @@ async def test_flowers_preview_service_block(tmp_path):
         "weather_block": {
             "city": {"name": "Калининград"},
             "cities": "Калининград",
-            "today": {"temperature": 6.0, "wind_speed": 3.2, "weather_code": 1},
-            "yesterday": {"temperature": 4.0, "wind_speed": 5.1, "weather_code": 3},
+            "today": {
+                "temperature": 6.0,
+                "wind_speed": 3.2,
+                "condition": "переменная облачность",
+            },
+            "yesterday": {
+                "temperature": 4.0,
+                "wind_speed": 5.1,
+                "condition": "пасмурно",
+            },
         },
         "weather_details": {
             "city": {"name": "Калининград"},
             "sea": {"temperature": 9.0, "wave": 0.4, "description": "море спокойное"},
-            "today": {"temperature": 6.0, "wind_speed": 3.2, "weather_code": 1},
-            "yesterday": {"temperature": 4.0, "wind_speed": 5.1, "weather_code": 3},
+            "today": {
+                "temperature": 6.0,
+                "wind_speed": 3.2,
+                "condition": "переменная облачность",
+            },
+            "yesterday": {
+                "temperature": 4.0,
+                "wind_speed": 5.1,
+                "condition": "пасмурно",
+            },
         },
         "previous_main_post_text": "Вчерашний текст",
     }
@@ -1423,11 +1447,11 @@ async def test_flowers_preview_service_block(tmp_path):
     )
     assert "Шаблоны:" not in text
     assert (
-        "Погода сегодня: Калининград: Сегодня: температура 6°C, ветер 3 м/с, код 1"
+        "Погода сегодня: Калининград: Сегодня: переменная облачность, температура 6°C, ветер 3 м/с"
         in text
     )
     assert (
-        "Погода вчера: Калининград: Вчера: температура 4°C, ветер 5 м/с, код 3"
+        "Погода вчера: Калининград: Вчера: пасмурно, температура 4°C, ветер 5 м/с"
         in text
     )
     assert "Море: вода 9°C, волна 0.4 м" in text
@@ -1451,8 +1475,16 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
         ],
         "weather": {
             "cities": "Калининград",
-            "today": {"temperature": 6.0, "wind_speed": 3.0, "weather_code": 61},
-            "yesterday": {"temperature": 4.0, "wind_speed": 5.0, "weather_code": 63},
+            "today": {
+                "temperature": 6.0,
+                "wind_speed": 3.0,
+                "condition": "дождь",
+            },
+            "yesterday": {
+                "temperature": 4.0,
+                "wind_speed": 5.0,
+                "condition": "дождь",
+            },
         },
         "flowers": [],
         "previous_text": "",
@@ -1472,7 +1504,7 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
     assert '"today"' in user_prompt
     assert '"temperature": 6.0' in user_prompt
     assert '"yesterday"' in user_prompt
-    assert '"weather_code": 63' in user_prompt
+    assert '"condition": "дождь"' in user_prompt
     assert "Сравни сегодня с вчера" in user_prompt
     assert "positive_intro" not in user_prompt
     assert "trend_summary" not in user_prompt
@@ -1552,12 +1584,12 @@ async def test_flowers_preview_truncates_long_payload(tmp_path):
         "today": {
             "temperature": 12.5,
             "wind_speed": 6.7,
-            "weather_code": 3,
+            "condition": "пасмурно",
         },
         "yesterday": {
             "temperature": 10.2,
             "wind_speed": 8.5,
-            "weather_code": 61,
+            "condition": "дождь",
         },
     }
     weather_details = {
@@ -1571,12 +1603,12 @@ async def test_flowers_preview_truncates_long_payload(tmp_path):
         "today": {
             "temperature": 12.5,
             "wind_speed": 6.7,
-            "weather_code": 3,
+            "condition": "пасмурно",
         },
         "yesterday": {
             "temperature": 10.2,
             "wind_speed": 8.5,
-            "weather_code": 61,
+            "condition": "дождь",
         },
     }
     long_system = "System " + ("prompt " * 200)

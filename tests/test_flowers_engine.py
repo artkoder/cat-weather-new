@@ -58,6 +58,12 @@ def _make_asset(asset_id: int, city: str, varieties: list[str]) -> Asset:
     )
 
 
+def test_flowers_loader_banned_words_contains_new_entries():
+    kb = load_flowers_knowledge()
+    assert "шепчет" in kb.banned_words
+    assert "громче" in kb.banned_words
+
+
 @pytest.mark.asyncio
 async def test_flowers_loader_and_plan_deterministic(monkeypatch, tmp_path):
     kb = load_flowers_knowledge()

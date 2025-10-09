@@ -6,6 +6,8 @@ banned_words:
   - "волшебный"
   - "неповторимый"
   - "самый-самый"
+  - "шепчет"
+  - "громче"
 patterns:
   - id: "weather_focus"
     kind: "weather"

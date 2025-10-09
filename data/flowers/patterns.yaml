@@ -11,7 +11,7 @@ patterns:
     kind: "weather"
     weight: 1.0
     always_include: true
-    template: "Свяжи погоду с ощущением уюта: {weather_intro}. Добавь деталь: {weather_detail}."
+    template: "Напомни, что нужно сравнить сегодняшние и вчерашние показатели погоды, опираясь на переданные цифры."
     photo_dependent: false
   - id: "color_palette"
     kind: "color"

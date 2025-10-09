@@ -185,7 +185,14 @@ async def test_flowers_weather_block_uses_configured_city(tmp_path):
     city_snapshot = weather_block.get("city")
     assert city_snapshot is not None
     assert city_snapshot.get("name") == "Minsk"
-    assert "Minsk" in weather_block.get("line", "")
+    today_metrics = weather_block.get("today")
+    assert isinstance(today_metrics, dict)
+    assert today_metrics.get("temperature") == pytest.approx(7.0)
+    assert today_metrics.get("wind_speed") == pytest.approx(2.2)
+    yesterday_metrics = weather_block.get("yesterday")
+    assert isinstance(yesterday_metrics, dict)
+    assert yesterday_metrics.get("temperature") == pytest.approx(4.0)
+    assert yesterday_metrics.get("wind_speed") == pytest.approx(3.8)
 
     await bot.close()
 
@@ -615,8 +622,14 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
     weather_today = str(meta.get("weather_today_line") or "").strip()
     weather_yesterday = str(meta.get("weather_yesterday_line") or "").strip()
     assert weather_today
-    assert weather_today == str(weather_meta.get("line") or "").strip()
-    assert weather_yesterday == "не публиковалось"
+    assert "Сегодня" in weather_today
+    assert "Вчера" in weather_yesterday
+    today_metrics = weather_meta.get("today")
+    yesterday_metrics = weather_meta.get("yesterday")
+    assert isinstance(today_metrics, dict)
+    assert isinstance(yesterday_metrics, dict)
+    assert today_metrics.get("temperature") is not None
+    assert yesterday_metrics.get("temperature") is not None
     assert meta.get("weather_line") == weather_today
     preview_parts = [weather_today, greeting]
     if city_hashtags:
@@ -766,7 +779,7 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     assert weather_today
     assert weather_today in preview_caption
     assert weather_today in publish_caption
-    assert weather_yesterday == "не публиковалось"
+    assert "Вчера:" in weather_yesterday
     assert state.get("weather_line") == weather_today
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
@@ -891,7 +904,7 @@ async def test_flowers_preview_document_media_paths(tmp_path):
     assert weather_today
     assert weather_today in preview_caption
     assert weather_today in publish_caption
-    assert weather_yesterday == "не публиковалось"
+    assert "Вчера:" in weather_yesterday
     assert state.get("weather_line") == weather_today
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
@@ -1036,7 +1049,7 @@ async def test_flowers_preview_document_with_image_filename(tmp_path):
     assert weather_today
     assert weather_today in preview_caption
     assert weather_today in publish_caption
-    assert weather_yesterday == "не публиковалось"
+    assert "Вчера:" in weather_yesterday
     assert state.get("weather_line") == weather_today
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
@@ -1174,7 +1187,7 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
     assert weather_today
     assert weather_today in preview_caption
     assert weather_today in publish_caption
-    assert weather_yesterday == "не публиковалось"
+    assert "Вчера:" in weather_yesterday
     assert state.get("weather_line") == weather_today
     if preview_caption:
         assert publish_caption.startswith(html.escape(preview_caption.strip()))
@@ -1341,9 +1354,9 @@ async def test_flowers_preview_service_block(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     state = {
         "preview_caption": "Черновик",
-        "weather_today_line": "Солнечно",
-        "weather_yesterday_line": "Вчера туман",
-        "weather_line": "Солнечно",
+        "weather_today_line": "Калининград: Сегодня: температура 6°C, ветер 3 м/с, код 1",
+        "weather_yesterday_line": "Калининград: Вчера: температура 4°C, ветер 5 м/с, код 3",
+        "weather_line": "Калининград: Сегодня: температура 6°C, ветер 3 м/с, код 1",
         "instructions": "Добавь тёплый тон",
         "channel_id": -500,
         "test_channel_id": -600,
@@ -1354,7 +1367,12 @@ async def test_flowers_preview_service_block(tmp_path):
                 {"id": "p-1", "instruction": "Упомяни бутоны", "photo_dependent": True},
                 {"id": "p-2", "instruction": "Добавь цитату", "photo_dependent": False},
             ],
-            "weather": {"line": "Светлое утро", "detail": "Лёгкий ветер", "cities": "Калининград"},
+            "weather": {
+                "cities": "Калининград",
+                "today": {"temperature": 6.0, "wind_speed": 3.2, "weather_code": 1},
+                "yesterday": {"temperature": 4.0, "wind_speed": 5.1, "weather_code": 3},
+                "sea": {"temperature": 9.0, "wave": 0.4},
+            },
             "flowers": [{"name": "ирисы"}, {"name": "тюльпаны"}],
             "previous_text": "Учора говорили о тепле",
             "instructions": "Добавь тёплый тон",
@@ -1366,14 +1384,16 @@ async def test_flowers_preview_service_block(tmp_path):
             "cities": ["Калининград"],
         },
         "weather_block": {
-            "line": "Светлое утро",
             "city": {"name": "Калининград"},
+            "cities": "Калининград",
+            "today": {"temperature": 6.0, "wind_speed": 3.2, "weather_code": 1},
+            "yesterday": {"temperature": 4.0, "wind_speed": 5.1, "weather_code": 3},
         },
         "weather_details": {
             "city": {"name": "Калининград"},
-            "sea": {"detail": "спокойное"},
-            "positive_intro": "Светлый день",
-            "trend_summary": "ветер мягче",
+            "sea": {"temperature": 9.0, "wave": 0.4, "description": "море спокойное"},
+            "today": {"temperature": 6.0, "wind_speed": 3.2, "weather_code": 1},
+            "yesterday": {"temperature": 4.0, "wind_speed": 5.1, "weather_code": 3},
         },
         "previous_main_post_text": "Вчерашний текст",
     }
@@ -1402,9 +1422,62 @@ async def test_flowers_preview_service_block(tmp_path):
         in text
     )
     assert "Шаблоны:" not in text
-    assert "Погода сегодня: Солнечно" in text
-    assert "Погода вчера: Вчера туман" in text
+    assert (
+        "Погода сегодня: Калининград: Сегодня: температура 6°C, ветер 3 м/с, код 1"
+        in text
+    )
+    assert (
+        "Погода вчера: Калининград: Вчера: температура 4°C, ветер 5 м/с, код 3"
+        in text
+    )
+    assert "Море: вода 9°C, волна 0.4 м" in text
     assert "Предыдущая публикация: Вчерашний текст" in text
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    plan = {
+        "patterns": [
+            {
+                "id": "weather_focus",
+                "instruction": "Напомни про сравнение",
+                "kind": "weather",
+                "photo_dependent": False,
+            }
+        ],
+        "weather": {
+            "cities": "Калининград",
+            "today": {"temperature": 6.0, "wind_speed": 3.0, "weather_code": 61},
+            "yesterday": {"temperature": 4.0, "wind_speed": 5.0, "weather_code": 63},
+        },
+        "flowers": [],
+        "previous_text": "",
+        "instructions": "",
+    }
+    plan_meta = {
+        "pattern_ids": ["weather_focus"],
+        "banned_words": [],
+        "length": {"min": 420, "max": 520},
+        "cities": ["Калининград"],
+    }
+
+    prompt_payload = bot._build_flowers_prompt_payload(plan, plan_meta)
+    user_prompt = prompt_payload["user_prompt"]
+
+    assert "Сырые данные погоды (JSON):" in user_prompt
+    assert '"today"' in user_prompt
+    assert '"temperature": 6.0' in user_prompt
+    assert '"yesterday"' in user_prompt
+    assert '"weather_code": 63' in user_prompt
+    assert "Сравни сегодня с вчера" in user_prompt
+    assert "positive_intro" not in user_prompt
+    assert "trend_summary" not in user_prompt
+    assert "Утро радует" not in user_prompt
+    assert any("Сравни сегодня с вчера" in rule for rule in prompt_payload["rules"])
 
     await bot.close()
 
@@ -1475,20 +1548,35 @@ async def test_flowers_preview_truncates_long_payload(tmp_path):
         for idx in range(60)
     ]
     plan_weather = {
-        "line": "Погодная сводка " + ("тепло " * 80),
-        "detail": "Подробности " + ("дождь " * 80),
         "cities": ["Калининград", "Балтийск", "Советск"],
+        "today": {
+            "temperature": 12.5,
+            "wind_speed": 6.7,
+            "weather_code": 3,
+        },
+        "yesterday": {
+            "temperature": 10.2,
+            "wind_speed": 8.5,
+            "weather_code": 61,
+        },
     }
     weather_details = {
-        "positive_intro": "Светлый день " + ("+" * 300),
-        "trend_summary": "Ветер утихает " + ("=" * 250),
-        "city": {
-            "detail": "Городская погода " + ("x" * 250),
-            "trend_summary": "Городской тренд " + ("y" * 250),
-        },
+        "city": {"name": "Калининград"},
         "sea": {
-            "detail": "Морская сводка " + ("z" * 250),
-            "description": "Описание моря " + ("w" * 250),
+            "temperature": 7.2,
+            "wave": 1.4,
+            "description": "Море играет",
+            "detail": "Балтика волнуется",
+        },
+        "today": {
+            "temperature": 12.5,
+            "wind_speed": 6.7,
+            "weather_code": 3,
+        },
+        "yesterday": {
+            "temperature": 10.2,
+            "wind_speed": 8.5,
+            "weather_code": 61,
         },
     }
     long_system = "System " + ("prompt " * 200)
@@ -1520,8 +1608,8 @@ async def test_flowers_preview_truncates_long_payload(tmp_path):
     text = bot._render_flowers_preview_text(state)
 
     assert len(text) <= FLOWERS_PREVIEW_MAX_LENGTH
-    assert "Погода сегодня" in text
-    assert "Погода вчера" in text
+    assert "Погода сегодня: Солнечно" in text
+    assert "Погода вчера: Дождливо" in text
     assert "Выберите действие" in text
     assert "Инструкции оператора" in text
     assert "…" in text
@@ -1660,7 +1748,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     weather_today_initial = str(state.get("weather_today_line") or "")
     weather_yesterday_initial = str(state.get("weather_yesterday_line") or "")
     assert weather_today_initial
-    assert weather_yesterday_initial == "не публиковалось"
+    assert "Вчера:" in weather_yesterday_initial
 
     await bot._handle_flowers_preview_callback(1234, "regen_caption", {"id": "cb1"})
     assert any(call[0] == "editMessageText" for call in api_calls)
@@ -2037,8 +2125,9 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
     assert "Правила" in user_prompt
     assert len(user_prompt) <= 2000
     assert weather_block["city"] is not None
-    assert weather_block["city"]["name"] in weather_block["line"]
     assert weather_block["city"]["name"].casefold() == "kaliningrad"
+    assert isinstance(weather_block.get("today"), dict)
+    assert isinstance(weather_block.get("yesterday"), dict)
 
     await bot.close()
 

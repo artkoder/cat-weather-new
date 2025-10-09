@@ -1512,6 +1512,44 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
     assert "trend_summary" not in user_prompt
     assert "Утро радует" not in user_prompt
     assert any("Сравни сегодня с вчера" in rule for rule in prompt_payload["rules"])
+    assert any(
+        "Пиши естественно, как живой человек" in rule
+        for rule in prompt_payload["rules"]
+    )
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_prompt_fallback_contains_human_tone(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    long_instruction = "Очень длинное описание " * 120
+    plan = {
+        "patterns": [
+            {
+                "id": f"p-{idx}",
+                "instruction": long_instruction,
+                "photo_dependent": False,
+            }
+            for idx in range(60)
+        ],
+        "weather": {},
+        "flowers": [],
+        "previous_text": "",
+        "instructions": "",
+    }
+    plan_meta = {
+        "pattern_ids": [f"p-{idx}" for idx in range(60)],
+        "banned_words": [],
+        "length": {"min": 420, "max": 520},
+        "cities": [],
+    }
+
+    prompt_payload = bot._build_flowers_prompt_payload(plan, plan_meta)
+
+    assert prompt_payload["used_fallback"]
+    assert "Пиши естественно, как живой человек" in prompt_payload["user_prompt"]
 
     await bot.close()
 

@@ -7796,21 +7796,18 @@ class Bot:
         weather_class: str | None = None
         if weather_block and isinstance(weather_block, dict):
             city_snapshot = weather_block.get("city") or {}
-            weather_code = city_snapshot.get("weather_code")
-            weather_class = self._classify_weather_code(weather_code)
-            if weather_class is None:
+            weather_class = city_snapshot.get("weather_class")
+            if not weather_class:
+                weather_code = city_snapshot.get("weather_code")
+                weather_class = self._classify_weather_code(weather_code)
+            if not weather_class:
+                condition_value = city_snapshot.get("weather_condition")
+                weather_class = Bot._normalize_weather_enum(condition_value)
+            if not weather_class:
                 today_metrics = weather_block.get("today")
                 if isinstance(today_metrics, Mapping):
-                    code_value = today_metrics.get("weather_code")
-                    if code_value is not None:
-                        try:
-                            normalized_code = int(code_value)
-                        except (TypeError, ValueError):
-                            normalized_code = None
-                        else:
-                            weather_class = self._classify_weather_code(
-                                normalized_code
-                            )
+                    condition_metric = today_metrics.get("condition")
+                    weather_class = Bot._normalize_weather_enum(condition_metric)
             if weather_class is None and (
                 weather_block.get("today") or weather_block.get("yesterday")
             ):
@@ -7985,6 +7982,17 @@ class Bot:
             pattern_ids.append(choice_pattern.id)
             break
         cities = sorted({asset.city for asset in assets if asset.city})
+        def _filter_metrics(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+            if not isinstance(payload, Mapping):
+                return {}
+            allowed_keys = ("temperature", "wind_speed", "condition")
+            filtered: dict[str, Any] = {}
+            for key in allowed_keys:
+                value = payload.get(key)
+                if value is not None:
+                    filtered[key] = value
+            return filtered
+
         if weather_block:
             today_metrics = (
                 weather_block.get("today")
@@ -7998,8 +8006,8 @@ class Bot:
             )
             weather_summary = {
                 "cities": weather_block.get("cities"),
-                "today": today_metrics,
-                "yesterday": yesterday_metrics,
+                "today": _filter_metrics(today_metrics),
+                "yesterday": _filter_metrics(yesterday_metrics),
             }
             if isinstance(weather_block.get("sea"), dict):
                 weather_summary["sea"] = weather_block.get("sea")
@@ -9862,9 +9870,16 @@ class Bot:
                 if not isinstance(payload, Mapping):
                     return {}
                 metrics: dict[str, Any] = {}
-                for key in ("temperature", "wind_speed", "weather_code"):
+                for key in ("temperature", "wind_speed", "condition"):
                     value = payload.get(key)
-                    if value is not None:
+                    if value is None:
+                        continue
+                    if isinstance(value, str):
+                        trimmed = value.strip()
+                        if not trimmed:
+                            continue
+                        metrics[key] = trimmed
+                    else:
                         metrics[key] = value
                 return metrics
 
@@ -10614,8 +10629,14 @@ class Bot:
         snapshot = self._fetch_city_weather_snapshot(city_name)
         if not snapshot:
             return None, None
-        weather_class = self._classify_weather_code(snapshot.get("weather_code"))
-        emoji = weather_emoji(snapshot["weather_code"], snapshot.get("is_day")) if snapshot.get("weather_code") is not None else ""
+        weather_class = snapshot.get("weather_class")
+        if weather_class is None:
+            weather_class = self._classify_weather_code(snapshot.get("weather_code"))
+        emoji = (
+            weather_emoji(snapshot["weather_code"], snapshot.get("is_day"))
+            if snapshot.get("weather_code") is not None
+            else ""
+        )
         parts: list[str] = []
         temp = snapshot.get("temperature")
         wind = snapshot.get("wind_speed")
@@ -10667,6 +10688,9 @@ class Bot:
             return None
 
         parts: list[str] = []
+        condition = str(metrics.get("condition") or "").strip()
+        if condition:
+            parts.append(condition)
         temp_value = _coerce_numeric(metrics.get("temperature"))
         if temp_value is not None:
             formatted = self._format_temperature_value(temp_value)
@@ -10677,15 +10701,6 @@ class Bot:
             formatted_wind = self._format_wind_value(wind_value)
             if formatted_wind:
                 parts.append(f"ветер {formatted_wind}")
-        code_value = metrics.get("weather_code")
-        if code_value is not None:
-            code_str: str | None
-            try:
-                code_str = str(int(code_value))
-            except (TypeError, ValueError):
-                code_str = str(code_value).strip() or None
-            if code_str:
-                parts.append(f"код {code_str}")
         if not parts:
             return f"{label}: данные отсутствуют"
         return f"{label}: " + ", ".join(parts)
@@ -10930,12 +10945,21 @@ class Bot:
             yesterday_values, temperature_keys, temperature_fallbacks
         )
         previous_wind = _select_metric(yesterday_values, wind_keys, wind_fallbacks)
+        weather_code = weather_row["weather_code"]
+        weather_class = self._classify_weather_code(weather_code)
+        weather_condition = (
+            WEATHER_TAG_TRANSLATIONS.get(weather_class, weather_class)
+            if weather_class
+            else None
+        )
         snapshot: dict[str, Any] = {
             "id": row["id"],
             "name": row["name"],
             "temperature": weather_row["temperature"],
             "wind_speed": weather_row["wind_speed"],
-            "weather_code": weather_row["weather_code"],
+            "weather_code": weather_code,
+            "weather_class": weather_class,
+            "weather_condition": weather_condition,
             "is_day": weather_row["is_day"],
             "day": today_day,
             "yesterday_day": yesterday_day,
@@ -11099,20 +11123,54 @@ class Bot:
             line = f"{headline} {city_list}: {details}."
         else:
             line = f"{headline} {city_list}."
+        def _extract_condition(value: Any) -> str | None:
+            def _normalize_code(raw: Any) -> int | None:
+                if isinstance(raw, (int, float)):
+                    return int(round(raw))
+                if isinstance(raw, str):
+                    stripped = raw.strip()
+                    if not stripped:
+                        return None
+                    try:
+                        return int(float(stripped.replace(",", ".")))
+                    except ValueError:
+                        return None
+                if isinstance(raw, Mapping):
+                    for key in ("weather_code", "code", "value"):
+                        if key in raw:
+                            normalized = _normalize_code(raw[key])
+                            if normalized is not None:
+                                return normalized
+                return None
+
+            code = _normalize_code(value)
+            if code is None:
+                return None
+            weather_class = self._classify_weather_code(code)
+            if not weather_class:
+                return None
+            return WEATHER_TAG_TRANSLATIONS.get(weather_class, weather_class)
+
         today_metrics: dict[str, Any] = {}
         yesterday_metrics: dict[str, Any] = {}
         if city_snapshot:
+            today_condition = city_snapshot.get("weather_condition")
+            if not today_condition:
+                today_condition = _extract_condition(
+                    (city_snapshot.get("day") or {}).get("weather_code")
+                )
+            yesterday_condition = _extract_condition(
+                (city_snapshot.get("yesterday_day") or {}).get("weather_code")
+            )
             today_metrics = {
                 "temperature": city_snapshot.get("trend_temperature_value"),
                 "wind_speed": city_snapshot.get("trend_wind_value"),
-                "weather_code": city_snapshot.get("weather_code"),
+                "condition": today_condition,
             }
             yesterday_metrics = {
                 "temperature": city_snapshot.get("trend_temperature_previous_value"),
                 "wind_speed": city_snapshot.get("trend_wind_previous_value"),
-                "weather_code": (city_snapshot.get("yesterday_day") or {}).get(
-                    "weather_code"
-                ),
+                "condition": yesterday_condition,
             }
         def _drop_empty(metrics: dict[str, Any]) -> dict[str, Any]:
             return {

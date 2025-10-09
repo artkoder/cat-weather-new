@@ -84,22 +84,79 @@ async def test_flowers_loader_and_plan_deterministic(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main_module, "datetime", FixedDatetime)
 
-    plan_first = bot._build_flowers_plan(
+    plan_first, meta_first = bot._build_flowers_plan(
         rubric,
         [asset],
         weather_block=None,
         channel_id=-100,
     )
-    plan_second = bot._build_flowers_plan(
+    plan_second, meta_second = bot._build_flowers_plan(
         rubric,
         [asset],
         weather_block=None,
         channel_id=-100,
     )
-    assert plan_first["pattern_ids"] == plan_second["pattern_ids"]
-    assert "weather_focus" in plan_first["pattern_ids"]
-    assert plan_first["pattern_ids"] == ["weather_focus", "color_palette"]
+    assert meta_first["pattern_ids"] == meta_second["pattern_ids"]
+    assert "weather_focus" in meta_first["pattern_ids"]
+    assert meta_first["pattern_ids"] == ["weather_focus", "color_palette"]
     assert len(plan_first["patterns"]) == 2
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_plan_uses_detected_colors(monkeypatch, tmp_path):
+    kb = load_flowers_knowledge()
+    assert kb.patterns, "patterns should be loaded"
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    bot.flowers_kb = kb
+    bot.data.upsert_rubric("flowers", "Flowers", config={"enabled": True})
+    rubric = bot.data.get_rubric_by_code("flowers")
+    asset = _make_asset(10, "Светлогорск", ["rose"])
+    asset.vision_results = {
+        "colors": {
+            "palettes": [
+                {
+                    "title": "Рассветная гамма",
+                    "descriptors": ["персиковый отблеск", "янтарный свет"],
+                }
+            ]
+        }
+    }
+    asset.vision_caption = "Цвета: персиковый отблеск, янтарный свет"
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def utcnow(cls):  # type: ignore[override]
+            return datetime(2024, 5, 19, 6, 0, 0)
+
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            base = cls.utcnow()
+            if tz is None:
+                return base
+            return base.replace(tzinfo=timezone.utc).astimezone(tz)
+
+    import main as main_module
+
+    monkeypatch.setattr(main_module, "datetime", FixedDatetime)
+
+    assert rubric is not None
+    plan, _ = bot._build_flowers_plan(
+        rubric,
+        [asset],
+        weather_block=None,
+        channel_id=-150,
+    )
+    color_instruction = ""
+    for pattern in plan["patterns"]:
+        if pattern.get("id") == "color_palette":
+            color_instruction = pattern.get("instruction") or ""
+            break
+
+    assert color_instruction
+    assert "Рассветная гамма" in color_instruction
+    assert "персиковый отблеск" in color_instruction
+    assert "янтарный свет" in color_instruction
     await bot.close()
 
 
@@ -136,14 +193,14 @@ async def test_flowers_plan_skips_recent_duplicate_pattern(monkeypatch, tmp_path
     bot.data.record_post_history(1, 99, None, rubric.id, metadata_previous)
     bot.data.record_post_history(1, 100, None, rubric.id, metadata_recent)
 
-    plan = bot._build_flowers_plan(
+    plan, meta = bot._build_flowers_plan(
         rubric,
         [asset],
         weather_block=None,
         channel_id=-200,
     )
 
-    assert plan["pattern_ids"] == ["weather_focus", "texture_focus"]
+    assert meta["pattern_ids"] == ["weather_focus", "texture_focus"]
     assert len(plan["patterns"]) == 2
     await bot.close()
 
@@ -187,7 +244,7 @@ async def test_flowers_generation_skips_banned_words(tmp_path):
 
     bot.openai = DummyOpenAI()
 
-    greeting, hashtags, plan = await bot._generate_flowers_copy(
+    greeting, hashtags, plan, plan_meta = await bot._generate_flowers_copy(
         rubric,
         [asset],
         channel_id=-200,
@@ -197,4 +254,5 @@ async def test_flowers_generation_skips_banned_words(tmp_path):
     assert "скидка" not in greeting.lower()
     assert hashtags == ["#котопогода", "#цветы"]
     assert isinstance(plan, dict)
+    assert isinstance(plan_meta, dict)
     await bot.close()

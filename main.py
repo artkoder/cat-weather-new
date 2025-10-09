@@ -7287,9 +7287,155 @@ class Bot:
     ) -> dict[str, Any]:
         kb = self.flowers_kb
         flowers: list[dict[str, Any]] = []
-        palettes: list[dict[str, Any]] = []
         flower_ids: list[str] = []
         has_photo = all(asset.kind == "photo" for asset in assets)
+
+        def _normalize_descriptors(value: Any) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                cleaned = value.replace("•", ",").replace("\n", ",")
+                cleaned = cleaned.replace("—", ",").replace("–", ",")
+                cleaned = re.sub(r"\s+и\s+", ", ", cleaned, flags=re.IGNORECASE)
+                parts = [
+                    part.strip(" \t\r\f\v-–—•·")
+                    for part in re.split(r"[,;/]", cleaned)
+                    if part.strip()
+                ]
+                return [re.sub(r"\s+", " ", part) for part in parts if part]
+            if isinstance(value, (list, tuple, set)):
+                descriptors: list[str] = []
+                for item in value:
+                    descriptors.extend(_normalize_descriptors(item))
+                return descriptors
+            if isinstance(value, dict):
+                descriptors: list[str] = []
+                for key in ("name", "label", "title", "description", "value", "text"):
+                    if key in value:
+                        descriptors.extend(_normalize_descriptors(value[key]))
+                if not descriptors:
+                    for item in value.values():
+                        descriptors.extend(_normalize_descriptors(item))
+                return descriptors
+            text = str(value).strip()
+            return [text] if text else []
+
+        def _build_palette_entry(
+            title: str | None,
+            descriptors: Iterable[Any] | str,
+            *,
+            mood: str | None = None,
+            default_title: str | None = None,
+        ) -> dict[str, Any] | None:
+            normalized_title = str(title or "").strip()
+            if not normalized_title and default_title:
+                normalized_title = default_title
+            normalized_descriptors: list[str] = []
+            seen: set[str] = set()
+            if isinstance(descriptors, str):
+                descriptor_iterable: Iterable[Any] = [descriptors]
+            else:
+                descriptor_iterable = descriptors
+            for descriptor in descriptor_iterable:
+                text = str(descriptor or "").strip()
+                if not text:
+                    continue
+                cleaned = re.sub(r"\s+", " ", text)
+                lowered = cleaned.casefold()
+                if lowered in seen:
+                    continue
+                seen.add(lowered)
+                normalized_descriptors.append(cleaned)
+            if not normalized_descriptors and not normalized_title:
+                return None
+            entry: dict[str, Any] = {"descriptors": normalized_descriptors}
+            if normalized_title:
+                entry["title"] = normalized_title
+            if mood:
+                mood_text = str(mood).strip()
+                if mood_text:
+                    entry["mood"] = mood_text
+            return entry
+
+        def _collect_color_palettes_from_results(result_payload: dict[str, Any]) -> list[dict[str, Any]]:
+            raw_colors = result_payload.get("colors") if isinstance(result_payload, dict) else None
+            if not raw_colors:
+                return []
+
+            def _flatten_palette(payload: Any) -> list[tuple[str | None, list[str]]]:
+                flattened: list[tuple[str | None, list[str]]] = []
+                if isinstance(payload, dict):
+                    if isinstance(payload.get("palettes"), (list, tuple, set)):
+                        for item in payload["palettes"]:
+                            flattened.extend(_flatten_palette(item))
+                    else:
+                        title = (
+                            payload.get("title")
+                            or payload.get("name")
+                            or payload.get("label")
+                            or payload.get("palette")
+                            or payload.get("theme")
+                            or payload.get("caption")
+                        )
+                        descriptors: list[str] = []
+                        for key in (
+                            "descriptors",
+                            "colors",
+                            "swatches",
+                            "keywords",
+                            "tones",
+                            "dominant",
+                            "primary",
+                            "values",
+                            "names",
+                            "items",
+                            "description",
+                            "summary",
+                        ):
+                            if key in payload:
+                                descriptors.extend(_normalize_descriptors(payload[key]))
+                        if not descriptors and len(payload) == 1:
+                            only_value = next(iter(payload.values()))
+                            descriptors.extend(_normalize_descriptors(only_value))
+                        flattened.append((title, descriptors))
+                elif isinstance(payload, (list, tuple, set)):
+                    for item in payload:
+                        flattened.extend(_flatten_palette(item))
+                else:
+                    flattened.append((None, _normalize_descriptors(payload)))
+                return flattened
+
+            entries: list[dict[str, Any]] = []
+            for title, descriptors in _flatten_palette(raw_colors):
+                entry = _build_palette_entry(title, descriptors, default_title="Палитра снимка")
+                if entry:
+                    entries.append(entry)
+            return entries
+
+        def _collect_color_palettes_from_caption(caption_text: str) -> list[dict[str, Any]]:
+            palettes: list[dict[str, Any]] = []
+            if not caption_text:
+                return palettes
+            for raw_line in caption_text.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                match = re.match(r"(?P<title>.+?)([:\-—]\s*)(?P<body>.+)", line)
+                if not match:
+                    continue
+                title = match.group("title").strip()
+                if not re.search(r"палитр|цвет", title, re.IGNORECASE):
+                    continue
+                body = match.group("body").strip()
+                descriptors = _normalize_descriptors(body)
+                entry = _build_palette_entry(title, descriptors, default_title="Палитра снимка")
+                if entry:
+                    palettes.append(entry)
+            return palettes
+
+        vision_palettes: list[dict[str, Any]] = []
+        kb_palettes: list[dict[str, Any]] = []
+
         for asset in assets:
             varieties = asset.vision_flower_varieties or []
             for variety in varieties:
@@ -7309,12 +7455,57 @@ class Bot:
                         "symbolism": flower_payload.get("symbolism"),
                     }
                 )
-                palette = kb.palette_for_flower(resolved)
-                if palette:
-                    palettes.append(palette)
-        palette_cycle = list(palettes)
+                palette_payload = kb.palette_for_flower(resolved)
+                if palette_payload:
+                    entry = _build_palette_entry(
+                        palette_payload.get("title"),
+                        palette_payload.get("descriptors") or [],
+                        mood=palette_payload.get("mood"),
+                    )
+                    if entry:
+                        kb_palettes.append(entry)
+            result_palettes: list[dict[str, Any]] = []
+            if isinstance(asset.vision_results, dict):
+                result_palettes = _collect_color_palettes_from_results(
+                    asset.vision_results
+                )
+                vision_palettes.extend(result_palettes)
+            if asset.vision_caption and not result_palettes:
+                vision_palettes.extend(
+                    _collect_color_palettes_from_caption(asset.vision_caption)
+                )
+
+        palette_cycle: list[dict[str, Any]] = []
+        seen_keys: set[tuple[str, tuple[str, ...]]] = set()
+
+        def _register_palette(entry: dict[str, Any]) -> None:
+            descriptors = entry.get("descriptors") or []
+            if not isinstance(descriptors, list) or not descriptors:
+                return
+            title_value = str(entry.get("title") or "").strip()
+            key = (
+                title_value.casefold(),
+                tuple(descriptor.casefold() for descriptor in descriptors),
+            )
+            if key in seen_keys:
+                return
+            seen_keys.add(key)
+            palette_cycle.append(entry)
+
+        for entry in vision_palettes:
+            _register_palette(entry)
+        if not palette_cycle:
+            for entry in kb_palettes:
+                _register_palette(entry)
         if not palette_cycle and kb and kb.colors:
-            palette_cycle = list(kb.colors.values())
+            for palette_payload in kb.colors.values():
+                entry = _build_palette_entry(
+                    palette_payload.get("title"),
+                    palette_payload.get("descriptors") or [],
+                    mood=palette_payload.get("mood"),
+                )
+                if entry:
+                    _register_palette(entry)
         weather_class: str | None = None
         if weather_block and isinstance(weather_block, dict):
             city_snapshot = weather_block.get("city") or {}

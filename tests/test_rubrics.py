@@ -63,6 +63,45 @@ def _seed_weather(bot: Bot) -> None:
     bot.db.commit()
 
 
+def _seed_city(
+    bot: Bot,
+    *,
+    city_id: int,
+    name: str,
+    lat: float = 0.0,
+    lon: float = 0.0,
+    hourly_temperature: float = 10.0,
+    hourly_wind: float = 2.0,
+    today_temperature: float = 9.0,
+    yesterday_temperature: float = 6.0,
+    today_wind: float = 3.0,
+    yesterday_wind: float = 2.0,
+) -> None:
+    timestamp = datetime.utcnow().isoformat()
+    today = datetime.utcnow().date().isoformat()
+    yesterday = (datetime.utcnow() - timedelta(days=1)).date().isoformat()
+    bot.db.execute(
+        "INSERT OR IGNORE INTO cities (id, name, lat, lon) VALUES (?, ?, ?, ?)",
+        (city_id, name, lat, lon),
+    )
+    bot.db.execute(
+        "INSERT OR REPLACE INTO weather_cache_hour (city_id, timestamp, temperature, weather_code, wind_speed, is_day) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (city_id, timestamp, hourly_temperature, 1, hourly_wind, 1),
+    )
+    bot.db.execute(
+        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (city_id, today, today_temperature, 1, today_wind),
+    )
+    bot.db.execute(
+        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (city_id, yesterday, yesterday_temperature, 2, yesterday_wind),
+    )
+    bot.db.commit()
+
+
 @pytest.mark.asyncio
 async def test_build_flowers_plan_uses_single_rotating_pattern(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
@@ -92,7 +131,9 @@ async def test_build_flowers_plan_uses_single_rotating_pattern(tmp_path):
     )
     bot.db.commit()
 
-    weather_block = bot._compose_flowers_weather_block(["Kaliningrad"])
+    rubric = bot.data.get_rubric_by_code("flowers")
+    assert rubric is not None
+    weather_block = bot._compose_flowers_weather_block(["Kaliningrad"], rubric)
     assert weather_block is not None
     city_snapshot = weather_block.get("city")
     assert city_snapshot is not None
@@ -108,6 +149,43 @@ async def test_build_flowers_plan_uses_single_rotating_pattern(tmp_path):
     assert "12°C" not in summary
     assert "12°C" in (city_snapshot.get("detail") or "")
     assert "ветер 3 м/с" in (city_snapshot.get("detail") or "")
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_weather_block_uses_configured_city(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "assets": {"min": 1, "max": 1},
+        "weather_city": "Minsk",
+        "weather_city_id": 2,
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=3)
+    _seed_weather(bot)
+    _seed_city(
+        bot,
+        city_id=2,
+        name="Minsk",
+        lat=53.9,
+        lon=27.5667,
+        hourly_temperature=5.0,
+        hourly_wind=1.5,
+        today_temperature=7.0,
+        yesterday_temperature=4.0,
+        today_wind=2.2,
+        yesterday_wind=3.8,
+    )
+
+    rubric = bot.data.get_rubric_by_code("flowers")
+    assert rubric is not None
+    weather_block = bot._compose_flowers_weather_block([], rubric)
+    assert weather_block is not None
+    city_snapshot = weather_block.get("city")
+    assert city_snapshot is not None
+    assert city_snapshot.get("name") == "Minsk"
+    assert "Minsk" in weather_block.get("line", "")
 
     await bot.close()
 

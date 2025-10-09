@@ -455,6 +455,7 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
 
 
 CHANNEL_PICKER_PAGE_SIZE = 6
+CITY_PICKER_PAGE_SIZE = 8
 CHANNEL_SEARCH_CHARSETS = {
     "rus": list("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"),
     "lat": list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
@@ -471,6 +472,12 @@ CHANNEL_SEARCH_CONTROLS = [
     ("Сбросить", "rubric_channel_search_clear"),
     ("Готово", "rubric_channel_search_done"),
 ]
+CITY_SEARCH_CONTROLS = [
+    ("⬅️", "rubric_city_search_del"),
+    ("Пробел", "rubric_city_search_add:20"),
+    ("Сбросить", "rubric_city_search_clear"),
+    ("Готово", "rubric_city_search_done"),
+]
 
 
 DEFAULT_RUBRIC_PRESETS: dict[str, dict[str, Any]] = {
@@ -480,6 +487,7 @@ DEFAULT_RUBRIC_PRESETS: dict[str, dict[str, Any]] = {
             "enabled": False,
             "schedules": [],
             "assets": {"min": 1, "max": 6, "categories": ["flowers"]},
+            "weather_city": "Kaliningrad",
         },
     },
     "guess_arch": {
@@ -5785,9 +5793,34 @@ class Bot:
                     }
                 }
                 await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_city:') and self.is_superadmin(user_id):
+            code = data.split(':', 1)[1] if ':' in data else ''
+            if code:
+                self._clear_rubric_pending_run(user_id, code)
+                self.pending[user_id] = {
+                    'rubric_input': {
+                        'mode': 'city_picker',
+                        'code': code,
+                        'message': query.get('message'),
+                        'page': 0,
+                        'search': '',
+                        'search_mode': False,
+                        'search_charset': 'rus',
+                    }
+                }
+                await self._edit_rubric_input_message(user_id)
         elif data.startswith('rubric_channel_page:') and self.is_superadmin(user_id):
             state = self.pending.get(user_id, {}).get('rubric_input')
             if state and state.get('mode') == 'channel_picker':
+                try:
+                    page = int(data.split(':', 1)[1])
+                except ValueError:
+                    page = 0
+                state['page'] = max(page, 0)
+                await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_city_page:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'city_picker':
                 try:
                     page = int(data.split(':', 1)[1])
                 except ValueError:
@@ -5801,6 +5834,13 @@ class Bot:
                 if state['search_mode']:
                     state.setdefault('search_charset', 'rus')
                 await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_city_search_toggle' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'city_picker':
+                state['search_mode'] = not state.get('search_mode', False)
+                if state['search_mode']:
+                    state.setdefault('search_charset', 'rus')
+                await self._edit_rubric_input_message(user_id)
         elif data.startswith('rubric_channel_search_charset:') and self.is_superadmin(user_id):
             state = self.pending.get(user_id, {}).get('rubric_input')
             if state and state.get('mode') == 'channel_picker':
@@ -5808,9 +5848,28 @@ class Bot:
                 if key in CHANNEL_SEARCH_CHARSETS:
                     state['search_charset'] = key
                 await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_city_search_charset:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'city_picker':
+                key = data.split(':', 1)[1]
+                if key in CHANNEL_SEARCH_CHARSETS:
+                    state['search_charset'] = key
+                await self._edit_rubric_input_message(user_id)
         elif data.startswith('rubric_channel_search_add:') and self.is_superadmin(user_id):
             state = self.pending.get(user_id, {}).get('rubric_input')
             if state and state.get('mode') == 'channel_picker':
+                hex_value = data.split(':', 1)[1]
+                try:
+                    char = bytes.fromhex(hex_value).decode('utf-8')
+                except ValueError:
+                    char = ''
+                if char:
+                    state['search'] = (state.get('search') or '') + char
+                    state['page'] = 0
+                await self._edit_rubric_input_message(user_id)
+        elif data.startswith('rubric_city_search_add:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'city_picker':
                 hex_value = data.split(':', 1)[1]
                 try:
                     char = bytes.fromhex(hex_value).decode('utf-8')
@@ -5828,15 +5887,35 @@ class Bot:
                     state['search'] = current[:-1]
                     state['page'] = 0
                 await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_city_search_del' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'city_picker':
+                current = state.get('search') or ''
+                if current:
+                    state['search'] = current[:-1]
+                    state['page'] = 0
+                await self._edit_rubric_input_message(user_id)
         elif data == 'rubric_channel_search_clear' and self.is_superadmin(user_id):
             state = self.pending.get(user_id, {}).get('rubric_input')
             if state and state.get('mode') == 'channel_picker':
                 state['search'] = ''
                 state['page'] = 0
                 await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_city_search_clear' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'city_picker':
+                state['search'] = ''
+                state['page'] = 0
+                await self._edit_rubric_input_message(user_id)
         elif data == 'rubric_channel_search_done' and self.is_superadmin(user_id):
             state = self.pending.get(user_id, {}).get('rubric_input')
             if state and state.get('mode') == 'channel_picker':
+                state['search_mode'] = False
+                state['page'] = 0
+                await self._edit_rubric_input_message(user_id)
+        elif data == 'rubric_city_search_done' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'city_picker':
                 state['search_mode'] = False
                 state['page'] = 0
                 await self._edit_rubric_input_message(user_id)
@@ -5876,6 +5955,43 @@ class Bot:
                             code,
                             message=message_obj,
                         )
+        elif data.startswith('rubric_city_set:') and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'city_picker':
+                raw_value = data.split(':', 1)[1]
+                city_id: int | None
+                try:
+                    city_id = int(raw_value)
+                except ValueError:
+                    city_id = None
+                code = state.get('code')
+                if code:
+                    config = self._normalize_rubric_config(
+                        self.data.get_rubric_config(code) or {}
+                    )
+                    if city_id is None:
+                        config.pop('weather_city', None)
+                        config.pop('weather_city_id', None)
+                    else:
+                        row = self.db.execute(
+                            'SELECT id, name FROM cities WHERE id=?',
+                            (city_id,),
+                        ).fetchone()
+                        if row:
+                            config['weather_city_id'] = int(row['id'])
+                            config['weather_city'] = row['name']
+                        else:
+                            config.pop('weather_city', None)
+                            config.pop('weather_city_id', None)
+                    self.data.save_rubric_config(code, config)
+                message_obj = state.get('message')
+                del self.pending[user_id]
+                if code:
+                    await self._send_rubric_overview(
+                        user_id,
+                        code,
+                        message=message_obj,
+                    )
         elif data == 'rubric_channel_clear' and self.is_superadmin(user_id):
             state = self.pending.get(user_id, {}).get('rubric_input')
             if state and state.get('mode') == 'channel_picker':
@@ -5903,6 +6019,25 @@ class Bot:
                             code,
                             message=message_obj,
                         )
+        elif data == 'rubric_city_clear' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'city_picker':
+                code = state.get('code')
+                if code:
+                    config = self._normalize_rubric_config(
+                        self.data.get_rubric_config(code) or {}
+                    )
+                    config.pop('weather_city', None)
+                    config.pop('weather_city_id', None)
+                    self.data.save_rubric_config(code, config)
+                message_obj = state.get('message')
+                del self.pending[user_id]
+                if code:
+                    await self._send_rubric_overview(
+                        user_id,
+                        code,
+                        message=message_obj,
+                    )
         elif data == 'rubric_channel_cancel' and self.is_superadmin(user_id):
             state = self.pending.get(user_id, {}).get('rubric_input')
             if state:
@@ -5921,6 +6056,18 @@ class Bot:
                             code,
                             message=message_obj,
                         )
+        elif data == 'rubric_city_cancel' and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get('rubric_input')
+            if state and state.get('mode') == 'city_picker':
+                code = state.get('code')
+                message_obj = state.get('message')
+                del self.pending[user_id]
+                if code:
+                    await self._send_rubric_overview(
+                        user_id,
+                        code,
+                        message=message_obj,
+                    )
         elif data.startswith('rubric_sched_add:') and self.is_superadmin(user_id):
             code = data.split(':', 1)[1]
             self._clear_rubric_pending_run(user_id, code)
@@ -6379,6 +6526,16 @@ class Bot:
         title = row["title"] if row and row["title"] else None
         return title or str(chat_id)
 
+    def _get_city_name(self, city_id: int | None) -> str | None:
+        if city_id is None:
+            return None
+        row = self.db.execute(
+            "SELECT name FROM cities WHERE id=?",
+            (city_id,),
+        ).fetchone()
+        name = row["name"] if row and row["name"] else None
+        return name
+
     @staticmethod
     def _weekday_label(day: str) -> str:
         mapping = {
@@ -6450,6 +6607,47 @@ class Bot:
         keyboard_rows.append(switch_row)
         control_row: list[dict[str, Any]] = []
         for label, callback in CHANNEL_SEARCH_CONTROLS:
+            control_row.append({"text": label, "callback_data": callback})
+        keyboard_rows.append(control_row)
+        return "\n".join(lines), {"inline_keyboard": keyboard_rows}
+
+    def _render_city_search_keyboard(
+        self, state: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        search = state.get("search") or ""
+        charset_key = state.get("search_charset") or "rus"
+        charset = CHANNEL_SEARCH_CHARSETS.get(charset_key) or CHANNEL_SEARCH_CHARSETS["rus"]
+        header = state.get("code") or ""
+        lines = [
+            f"Поиск города для {header}",
+            f"Запрос: {search or '—'}",
+            "Нажмите символы для фильтрации.",
+        ]
+        keyboard_rows: list[list[dict[str, Any]]] = []
+        for idx in range(0, len(charset), 6):
+            row_buttons: list[dict[str, Any]] = []
+            for ch in charset[idx : idx + 6]:
+                encoded = ch.encode("utf-8").hex()
+                row_buttons.append(
+                    {
+                        "text": ch,
+                        "callback_data": f"rubric_city_search_add:{encoded}",
+                    }
+                )
+            if row_buttons:
+                keyboard_rows.append(row_buttons)
+        switch_row: list[dict[str, Any]] = []
+        for key, label in CHANNEL_SEARCH_LABELS.items():
+            prefix = "• " if key == charset_key else ""
+            switch_row.append(
+                {
+                    "text": f"{prefix}{label}",
+                    "callback_data": f"rubric_city_search_charset:{key}",
+                }
+            )
+        keyboard_rows.append(switch_row)
+        control_row: list[dict[str, Any]] = []
+        for label, callback in CITY_SEARCH_CONTROLS:
             control_row.append({"text": label, "callback_data": callback})
         keyboard_rows.append(control_row)
         return "\n".join(lines), {"inline_keyboard": keyboard_rows}
@@ -6544,6 +6742,88 @@ class Bot:
         cancel_text = "Назад" if state.get("return_mode") == "schedule_wizard" else "Отмена"
         keyboard_rows.append(
             [{"text": cancel_text, "callback_data": "rubric_channel_cancel"}]
+        )
+        return "\n".join(lines), {"inline_keyboard": keyboard_rows}
+
+    def _render_city_picker(
+        self, state: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        if state.get("search_mode"):
+            return self._render_city_search_keyboard(state)
+        code = state.get("code") or ""
+        search = state.get("search") or ""
+        page = max(int(state.get("page", 0)), 0)
+        params: list[Any] = []
+        where_clause = ""
+        if search:
+            where_clause = " WHERE name LIKE ?"
+            params.append(f"%{search}%")
+        count_row = self.db.execute(
+            f"SELECT COUNT(*) FROM cities{where_clause}",
+            params,
+        ).fetchone()
+        total = count_row[0] if count_row else 0
+        per_page = CITY_PICKER_PAGE_SIZE
+        max_page = max((total - 1) // per_page, 0)
+        page = min(page, max_page)
+        state["page"] = page
+        offset = page * per_page
+        rows = self.db.execute(
+            f"SELECT id, name FROM cities{where_clause} ORDER BY name ASC LIMIT ? OFFSET ?",
+            params + [per_page, offset],
+        ).fetchall()
+        config = self._normalize_rubric_config(
+            self.data.get_rubric_config(code) or {}
+        )
+        current_id = config.get("weather_city_id")
+        current_name = config.get("weather_city")
+        lines = [
+            f"Выбор города погоды для {code}",
+            f"Поиск: {search or '—'}",
+        ]
+        if current_name:
+            lines.append(f"Текущий: {current_name}")
+        if not rows:
+            lines.append("Города не найдены")
+        total_pages = max_page + 1 if total else 1
+        lines.append(f"Страница {page + 1}/{total_pages}")
+        keyboard_rows: list[list[dict[str, Any]]] = []
+        for row in rows:
+            city_id = row["id"]
+            name = row["name"] or str(city_id)
+            display = name if len(name) <= 50 else name[:47] + "…"
+            prefix = "✅ " if current_id == city_id or (
+                current_id is None and current_name and name == current_name
+            ) else ""
+            keyboard_rows.append(
+                [
+                    {
+                        "text": f"{prefix}{display}",
+                        "callback_data": f"rubric_city_set:{city_id}",
+                    }
+                ]
+            )
+        nav_row: list[dict[str, Any]] = []
+        if page > 0:
+            nav_row.append({"text": "◀️", "callback_data": f"rubric_city_page:{page - 1}"})
+        if page < max_page:
+            nav_row.append({"text": "▶️", "callback_data": f"rubric_city_page:{page + 1}"})
+        if nav_row:
+            keyboard_rows.append(nav_row)
+        keyboard_rows.append(
+            [
+                {
+                    "text": "🔍 Поиск",
+                    "callback_data": "rubric_city_search_toggle",
+                },
+                {
+                    "text": "Очистить",
+                    "callback_data": "rubric_city_clear",
+                },
+            ]
+        )
+        keyboard_rows.append(
+            [{"text": "Отмена", "callback_data": "rubric_city_cancel"}]
         )
         return "\n".join(lines), {"inline_keyboard": keyboard_rows}
 
@@ -6709,6 +6989,8 @@ class Bot:
         chat_id, message_id = target
         if state.get("mode") == "channel_picker":
             text, keyboard = self._render_channel_picker(state)
+        elif state.get("mode") == "city_picker":
+            text, keyboard = self._render_city_picker(state)
         elif state.get("mode") == "schedule_wizard":
             text, keyboard = self._render_schedule_wizard(state)
         else:
@@ -6817,7 +7099,25 @@ class Bot:
             if days_default
             else "Дни по умолчанию: —"
         )
-        lines = [title_line, f"Статус: {flag}", channel_line, test_line, tz_line, days_line, "Расписания:"]
+        weather_city_line: str | None = None
+        if rubric.code == "flowers":
+            city_name = config.get("weather_city")
+            city_id = config.get("weather_city_id")
+            if (not city_name or not str(city_name).strip()) and isinstance(city_id, int):
+                resolved = self._get_city_name(city_id)
+                if resolved:
+                    city_name = resolved
+            city_display = city_name if city_name else "—"
+            weather_city_line = f"Город погоды: {city_display}"
+        lines = [
+            title_line,
+            f"Статус: {flag}",
+            channel_line,
+            test_line,
+        ]
+        if weather_city_line:
+            lines.append(weather_city_line)
+        lines.extend([tz_line, days_line, "Расписания:"])
         schedules = config.get("schedules", [])
         if schedules:
             for idx, schedule in enumerate(schedules):
@@ -6879,6 +7179,15 @@ class Bot:
                 },
             ]
         )
+        if rubric.code == "flowers":
+            keyboard_rows.append(
+                [
+                    {
+                        "text": "Город погоды",
+                        "callback_data": f"rubric_city:{rubric.code}",
+                    }
+                ]
+            )
         keyboard_rows.append(
             [
                 {
@@ -7652,7 +7961,7 @@ class Bot:
             file_ids.append(file_id)
             asset_kinds.append(media_kind)
         cities = sorted({asset.city for asset in assets if asset.city})
-        weather_block = self._compose_flowers_weather_block(cities)
+        weather_block = self._compose_flowers_weather_block(cities, rubric)
         plan, plan_meta = self._build_flowers_plan(
             rubric,
             assets,
@@ -10312,13 +10621,26 @@ class Bot:
         return f"{base_city} (съёмка: {locations})"
 
     def _compose_flowers_weather_block(
-        self, cities: Sequence[str]
+        self,
+        cities: Sequence[str],
+        rubric: Rubric | None = None,
     ) -> dict[str, Any] | None:
-        city_snapshot = self._fetch_city_weather_snapshot("Kaliningrad")
+        config = self._normalize_rubric_config(rubric.config if rubric else {})
+        configured_city = str(config.get("weather_city") or "").strip()
+        if not configured_city:
+            city_id = config.get("weather_city_id")
+            if isinstance(city_id, int):
+                resolved = self._get_city_name(city_id)
+                if resolved:
+                    configured_city = resolved
+        requested_city = configured_city or "Kaliningrad"
+        city_snapshot = self._fetch_city_weather_snapshot(requested_city)
+        if not city_snapshot and requested_city != "Kaliningrad":
+            city_snapshot = self._fetch_city_weather_snapshot("Kaliningrad")
         coast_snapshot = self._fetch_coast_weather_snapshot()
         if not city_snapshot and not coast_snapshot:
             return None
-        fallback_city_name = (city_snapshot or {}).get("name") or "Калининград"
+        fallback_city_name = (city_snapshot or {}).get("name") or requested_city or "Калининград"
         city_list = self._format_flowers_cities_for_weather(cities, fallback_city_name)
         positive_intro = (city_snapshot or {}).get("positive_intro") or "Утро радует"
         trend_summary = (city_snapshot or {}).get("trend_summary") or "погода поддерживает уют"

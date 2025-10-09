@@ -8380,17 +8380,6 @@ class Bot:
             hashtags,
         )
         caption_parts: list[str] = []
-        weather_line = ""
-        if isinstance(weather_block, dict):
-            metrics_line = self._compose_weather_metrics_preview_line(
-                weather_block.get("today"),
-                label="Сегодня",
-            )
-            location = self._extract_weather_location_label(weather_block)
-            weather_line = metrics_line if not location else f"{location}: {metrics_line}"
-        weather_line = str(weather_line or "").strip()
-        if weather_line:
-            caption_parts.append(weather_line)
         if greeting_text:
             caption_parts.append(greeting_text)
         if city_hashtags:

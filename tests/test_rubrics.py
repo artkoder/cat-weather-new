@@ -631,7 +631,7 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
     assert today_metrics.get("temperature") is not None
     assert yesterday_metrics.get("temperature") is not None
     assert meta.get("weather_line") == weather_today
-    preview_parts = [weather_today, greeting]
+    preview_parts = [greeting]
     if city_hashtags:
         preview_parts.append(" ".join(city_hashtags))
     if trailing_only:
@@ -639,6 +639,8 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
     expected_preview = "\n\n".join(preview_parts)
     expected_publish = html.escape(expected_preview) + "\n\n" + FLOWERS_FOOTER_LINK
     assert caption == expected_publish
+    assert weather_today not in expected_preview
+    assert html.escape(weather_today) not in caption
     assert FLOWERS_FOOTER_LINK in caption
     await bot.close()
 
@@ -777,8 +779,8 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     weather_today = str(state.get("weather_today_line") or "")
     weather_yesterday = str(state.get("weather_yesterday_line") or "")
     assert weather_today
-    assert weather_today in preview_caption
-    assert weather_today in publish_caption
+    assert weather_today not in preview_caption
+    assert html.escape(weather_today) not in publish_caption
     assert "Вчера:" in weather_yesterday
     assert state.get("weather_line") == weather_today
     if preview_caption:
@@ -902,8 +904,8 @@ async def test_flowers_preview_document_media_paths(tmp_path):
     weather_today = str(state.get("weather_today_line") or "")
     weather_yesterday = str(state.get("weather_yesterday_line") or "")
     assert weather_today
-    assert weather_today in preview_caption
-    assert weather_today in publish_caption
+    assert weather_today not in preview_caption
+    assert html.escape(weather_today) not in publish_caption
     assert "Вчера:" in weather_yesterday
     assert state.get("weather_line") == weather_today
     if preview_caption:
@@ -1047,8 +1049,8 @@ async def test_flowers_preview_document_with_image_filename(tmp_path):
     weather_today = str(state.get("weather_today_line") or "")
     weather_yesterday = str(state.get("weather_yesterday_line") or "")
     assert weather_today
-    assert weather_today in preview_caption
-    assert weather_today in publish_caption
+    assert weather_today not in preview_caption
+    assert html.escape(weather_today) not in publish_caption
     assert "Вчера:" in weather_yesterday
     assert state.get("weather_line") == weather_today
     if preview_caption:
@@ -1185,8 +1187,8 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
     weather_today = str(state.get("weather_today_line") or "")
     weather_yesterday = str(state.get("weather_yesterday_line") or "")
     assert weather_today
-    assert weather_today in preview_caption
-    assert weather_today in publish_caption
+    assert weather_today not in preview_caption
+    assert html.escape(weather_today) not in publish_caption
     assert "Вчера:" in weather_yesterday
     assert state.get("weather_line") == weather_today
     if preview_caption:
@@ -1809,8 +1811,8 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     weather_today = str(state.get("weather_today_line") or "")
     weather_yesterday = str(state.get("weather_yesterday_line") or "")
     assert weather_today
-    assert weather_today in preview_caption
-    assert weather_today in publish_caption
+    assert weather_today not in preview_caption
+    assert html.escape(weather_today) not in publish_caption
     assert weather_yesterday == weather_yesterday_initial
     assert state.get("weather_line") == weather_today
     summary_updates = [

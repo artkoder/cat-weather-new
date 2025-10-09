@@ -1,7 +1,6 @@
 flowers:
   rose:
     name: "роза"
-    color: warm
     symbolism: "символ нежности и постоянства"
     varieties:
       - "rose"
@@ -9,21 +8,18 @@ flowers:
       - "чайная роза"
   tulip:
     name: "тюльпан"
-    color: warm
     symbolism: "напоминает про обновление и лёгкость"
     varieties:
       - "tulip"
       - "тюльпан"
   hydrangea:
     name: "гортензия"
-    color: cool
     symbolism: "дарит ощущение морского бриза"
     varieties:
       - "hydrangea"
       - "гортензия"
   chamomile:
     name: "ромашка"
-    color: neutral
     symbolism: "зовёт к простому и искреннему теплу"
     varieties:
       - "chamomile"

@@ -62,7 +62,6 @@ def _make_asset(asset_id: int, city: str, varieties: list[str]) -> Asset:
 async def test_flowers_loader_and_plan_deterministic(monkeypatch, tmp_path):
     kb = load_flowers_knowledge()
     assert kb.patterns, "patterns should be loaded"
-    assert kb.colors, "colors should be loaded"
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     bot.data.upsert_rubric("flowers", "Flowers", config={"enabled": True})
     rubric = bot.data.get_rubric_by_code("flowers")
@@ -98,8 +97,8 @@ async def test_flowers_loader_and_plan_deterministic(monkeypatch, tmp_path):
     )
     assert meta_first["pattern_ids"] == meta_second["pattern_ids"]
     assert "weather_focus" in meta_first["pattern_ids"]
-    assert meta_first["pattern_ids"] == ["weather_focus", "color_palette"]
-    assert len(plan_first["patterns"]) == 2
+    assert "color_palette" not in meta_first["pattern_ids"]
+    assert len(plan_first["patterns"]) == len(meta_first["pattern_ids"])
     await bot.close()
 
 
@@ -141,12 +140,13 @@ async def test_flowers_plan_uses_detected_colors(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module, "datetime", FixedDatetime)
 
     assert rubric is not None
-    plan, _ = bot._build_flowers_plan(
+    plan, meta = bot._build_flowers_plan(
         rubric,
         [asset],
         weather_block=None,
         channel_id=-150,
     )
+    assert "color_palette" in meta["pattern_ids"]
     color_instruction = ""
     for pattern in plan["patterns"]:
         if pattern.get("id") == "color_palette":

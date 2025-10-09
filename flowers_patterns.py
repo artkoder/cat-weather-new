@@ -138,7 +138,6 @@ class FlowerKnowledgeBase:
     def __init__(
         self,
         *,
-        colors: dict[str, Any],
         flowers: dict[str, Any],
         traditions: dict[str, Any],
         weather: dict[str, Any],
@@ -149,7 +148,6 @@ class FlowerKnowledgeBase:
         patterns: list[FlowerPattern],
         banned_words: set[str],
     ) -> None:
-        self.colors = colors
         self.flowers = flowers
         self.traditions = traditions
         self.weather = weather
@@ -174,14 +172,6 @@ class FlowerKnowledgeBase:
         if key in self.flowers:
             return key
         return self._flower_lookup.get(key)
-
-    def palette_for_flower(self, flower_id: str) -> dict[str, Any] | None:
-        flower = self.flowers.get(flower_id) or {}
-        palette_id = flower.get("color")
-        if not palette_id:
-            return None
-        return self.colors.get(str(palette_id))
-
 
 def _load_yaml(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as fh:
@@ -221,7 +211,6 @@ def _load_patterns(path: Path) -> tuple[list[FlowerPattern], set[str]]:
 @lru_cache(maxsize=1)
 def load_flowers_knowledge(base_path: str | Path | None = None) -> FlowerKnowledgeBase:
     root = Path(base_path) if base_path else Path(__file__).resolve().parent / "data" / "flowers"
-    colors = _load_yaml(root / "colors.yaml").get("palettes", {})
     flowers = _load_yaml(root / "flowers.yaml").get("flowers", {})
     traditions = _load_yaml(root / "traditions.yaml").get("traditions", {})
     weather = _load_yaml(root / "weather.yaml").get("weather", {})
@@ -231,7 +220,6 @@ def load_flowers_knowledge(base_path: str | Path | None = None) -> FlowerKnowled
     micro_engagement = _load_yaml(root / "micro_engagement.yaml").get("prompts", [])
     patterns, banned_words = _load_patterns(root / "patterns.yaml")
     return FlowerKnowledgeBase(
-        colors=colors,
         flowers=flowers,
         traditions=traditions,
         weather=weather,

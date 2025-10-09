@@ -7743,7 +7743,6 @@ class Bot:
             return palettes
 
         vision_palettes: list[dict[str, Any]] = []
-        kb_palettes: list[dict[str, Any]] = []
 
         for asset in assets:
             varieties = asset.vision_flower_varieties or []
@@ -7764,15 +7763,6 @@ class Bot:
                         "symbolism": flower_payload.get("symbolism"),
                     }
                 )
-                palette_payload = kb.palette_for_flower(resolved)
-                if palette_payload:
-                    entry = _build_palette_entry(
-                        palette_payload.get("title"),
-                        palette_payload.get("descriptors") or [],
-                        mood=palette_payload.get("mood"),
-                    )
-                    if entry:
-                        kb_palettes.append(entry)
             result_palettes: list[dict[str, Any]] = []
             if isinstance(asset.vision_results, dict):
                 result_palettes = _collect_color_palettes_from_results(
@@ -7803,18 +7793,6 @@ class Bot:
 
         for entry in vision_palettes:
             _register_palette(entry)
-        if not palette_cycle:
-            for entry in kb_palettes:
-                _register_palette(entry)
-        if not palette_cycle and kb and kb.colors:
-            for palette_payload in kb.colors.values():
-                entry = _build_palette_entry(
-                    palette_payload.get("title"),
-                    palette_payload.get("descriptors") or [],
-                    mood=palette_payload.get("mood"),
-                )
-                if entry:
-                    _register_palette(entry)
         weather_class: str | None = None
         if weather_block and isinstance(weather_block, dict):
             city_snapshot = weather_block.get("city") or {}
@@ -7966,8 +7944,6 @@ class Bot:
         seed = self._flowers_seed(channel_id)
         rng = random.Random(seed)
         features = self._extract_flower_features(assets, weather_block, seed_rng=rng)
-        if kb and not features.get("palettes") and kb.colors:
-            features["palettes"] = list(kb.colors.values())
         _banned_recent, consecutive_repeats, pattern_history = self._flowers_recent_pattern_ids(
             rubric
         )

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from dataclasses import dataclass
 
-from typing import Any, BinaryIO, Iterable, Sequence, TYPE_CHECKING
+from typing import Any, BinaryIO, Iterable, Mapping, Sequence, TYPE_CHECKING
 
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -7820,7 +7820,22 @@ class Bot:
             city_snapshot = weather_block.get("city") or {}
             weather_code = city_snapshot.get("weather_code")
             weather_class = self._classify_weather_code(weather_code)
-            if weather_class is None and weather_block.get("line"):
+            if weather_class is None:
+                today_metrics = weather_block.get("today")
+                if isinstance(today_metrics, Mapping):
+                    code_value = today_metrics.get("weather_code")
+                    if code_value is not None:
+                        try:
+                            normalized_code = int(code_value)
+                        except (TypeError, ValueError):
+                            normalized_code = None
+                        else:
+                            weather_class = self._classify_weather_code(
+                                normalized_code
+                            )
+            if weather_class is None and (
+                weather_block.get("today") or weather_block.get("yesterday")
+            ):
                 weather_class = "overcast"
         season_key: str | None = None
         season_description: str | None = None
@@ -7931,17 +7946,7 @@ class Bot:
                 mood = "уют"
             payload["instruction"] = template.format(texture_mood=mood)
         elif pattern.kind == "weather":
-            weather_class = features.get("weather")
-            weather_payload = kb.weather.get(weather_class) if weather_class else None
-            if not weather_payload:
-                weather_payload = kb.weather.get("overcast") or {}
-            intro = weather_payload.get("intro") or "Поддержи мягкий тон погоды"
-            details = weather_payload.get("details") or []
-            if details:
-                detail = rng.choice(details)
-            else:
-                detail = "Подчеркни, что даже пасмурно уютно"
-            payload["instruction"] = template.format(weather_intro=intro, weather_detail=detail)
+            payload["instruction"] = template
         else:
             payload["instruction"] = template
         if not payload.get("instruction"):
@@ -8005,16 +8010,31 @@ class Bot:
             break
         cities = sorted({asset.city for asset in assets if asset.city})
         if weather_block:
+            today_metrics = (
+                weather_block.get("today")
+                if isinstance(weather_block.get("today"), dict)
+                else {}
+            )
+            yesterday_metrics = (
+                weather_block.get("yesterday")
+                if isinstance(weather_block.get("yesterday"), dict)
+                else {}
+            )
             weather_summary = {
-                "line": weather_block.get("line"),
-                "detail": weather_block.get("details"),
                 "cities": weather_block.get("cities"),
+                "today": today_metrics,
+                "yesterday": yesterday_metrics,
             }
+            if isinstance(weather_block.get("sea"), dict):
+                weather_summary["sea"] = weather_block.get("sea")
+            city_snapshot = weather_block.get("city")
+            if isinstance(city_snapshot, dict) and city_snapshot.get("name"):
+                weather_summary["city_name"] = city_snapshot.get("name")
         else:
             weather_summary = {
-                "line": None,
-                "detail": None,
                 "cities": None,
+                "today": {},
+                "yesterday": {},
             }
         flower_entries: list[dict[str, Any]] = []
         for flower in features.get("flowers") or []:
@@ -8376,7 +8396,14 @@ class Bot:
             hashtags,
         )
         caption_parts: list[str] = []
-        weather_line = (weather_block or {}).get("line") if isinstance(weather_block, dict) else None
+        weather_line = ""
+        if isinstance(weather_block, dict):
+            metrics_line = self._compose_weather_metrics_preview_line(
+                weather_block.get("today"),
+                label="Сегодня",
+            )
+            location = self._extract_weather_location_label(weather_block)
+            weather_line = metrics_line if not location else f"{location}: {metrics_line}"
         weather_line = str(weather_line or "").strip()
         if weather_line:
             caption_parts.append(weather_line)
@@ -8547,11 +8574,29 @@ class Bot:
         rubric_id = getattr(rubric, "id", None)
         if isinstance(rubric_id, int):
             _, previous_weather_line = self._lookup_previous_flowers_post(rubric_id)
-        weather_today_line = self._normalize_weather_preview_line(
-            (weather_block or {}).get("line") if weather_block else None
-        )
+        today_line_source: str | None = None
+        yesterday_line_source: str | None = None
+        if isinstance(weather_block, dict):
+            location_label = self._extract_weather_location_label(weather_block)
+            today_metrics_line = self._compose_weather_metrics_preview_line(
+                weather_block.get("today"),
+                label="Сегодня",
+            )
+            yesterday_metrics_line = self._compose_weather_metrics_preview_line(
+                weather_block.get("yesterday"),
+                label="Вчера",
+            )
+            if location_label:
+                today_line_source = f"{location_label}: {today_metrics_line}"
+                yesterday_line_source = f"{location_label}: {yesterday_metrics_line}"
+            else:
+                today_line_source = today_metrics_line
+                yesterday_line_source = yesterday_metrics_line
+        if not yesterday_line_source and previous_weather_line:
+            yesterday_line_source = previous_weather_line
+        weather_today_line = self._normalize_weather_preview_line(today_line_source)
         weather_yesterday_line = self._normalize_weather_preview_line(
-            previous_weather_line
+            yesterday_line_source
         )
         metadata = {
             "rubric_code": rubric.code,
@@ -8829,35 +8874,99 @@ class Bot:
 
         plan_weather = plan_dict.get("weather")
         if isinstance(plan_weather, dict):
-            for key in ("line", "detail"):
-                _add_weather_line(str(plan_weather.get(key) or ""))
-            cities_value = plan_weather.get("cities")
-            if isinstance(cities_value, (list, tuple, set)):
-                cities_list = [
-                    str(city or "").strip()
-                    for city in cities_value
-                    if str(city or "").strip()
-                ]
-                if cities_list:
-                    _add_weather_line("Города: " + ", ".join(cities_list))
-            else:
-                city_str = str(cities_value or "").strip()
-                if city_str:
-                    _add_weather_line("Города: " + city_str)
+            location_label = self._extract_weather_location_label(plan_weather)
+            today_metrics = plan_weather.get("today")
+            if isinstance(today_metrics, Mapping) and today_metrics:
+                today_line = self._compose_weather_metrics_preview_line(
+                    today_metrics,
+                    label="Сегодня",
+                )
+                _add_weather_line(
+                    today_line
+                    if not location_label
+                    else f"{location_label}: {today_line}"
+                )
+            yesterday_metrics = plan_weather.get("yesterday")
+            if isinstance(yesterday_metrics, Mapping) and yesterday_metrics:
+                yesterday_line = self._compose_weather_metrics_preview_line(
+                    yesterday_metrics,
+                    label="Вчера",
+                )
+                _add_weather_line(
+                    yesterday_line
+                    if not location_label
+                    else f"{location_label}: {yesterday_line}"
+                )
+            sea_info = plan_weather.get("sea")
+            if isinstance(sea_info, Mapping) and sea_info:
+                sea_parts: list[str] = []
+                temp = sea_info.get("temperature")
+                if isinstance(temp, (int, float)):
+                    sea_parts.append(f"вода {int(round(temp))}°C")
+                wave = sea_info.get("wave")
+                if isinstance(wave, (int, float)):
+                    sea_parts.append(f"волна {round(float(wave), 1)} м")
+                if sea_parts:
+                    _add_weather_line("Море: " + ", ".join(sea_parts))
 
         weather_details_raw = state.get("weather_details")
         weather_details = weather_details_raw if isinstance(weather_details_raw, dict) else {}
         if weather_details:
-            for key in ("positive_intro", "trend_summary"):
-                _add_weather_line(str(weather_details.get(key) or ""))
-            city_snapshot = weather_details.get("city")
-            if isinstance(city_snapshot, dict):
-                for key in ("detail", "trend_summary"):
-                    _add_weather_line(str(city_snapshot.get(key) or ""))
-            sea_snapshot = weather_details.get("sea")
-            if isinstance(sea_snapshot, dict):
-                for key in ("detail", "description"):
-                    _add_weather_line(str(sea_snapshot.get(key) or ""))
+            details_location = self._extract_weather_location_label(weather_details)
+            if (
+                (not isinstance(plan_weather, Mapping))
+                or not isinstance(plan_weather.get("today"), Mapping)
+                or not plan_weather.get("today")
+            ):
+                today_metrics = weather_details.get("today")
+                if isinstance(today_metrics, Mapping) and today_metrics:
+                    today_line = self._compose_weather_metrics_preview_line(
+                        today_metrics,
+                        label="Сегодня",
+                    )
+                    _add_weather_line(
+                        today_line
+                        if not details_location
+                        else f"{details_location}: {today_line}"
+                    )
+            if (
+                (not isinstance(plan_weather, Mapping))
+                or not isinstance(plan_weather.get("yesterday"), Mapping)
+                or not plan_weather.get("yesterday")
+            ):
+                yesterday_metrics = weather_details.get("yesterday")
+                if isinstance(yesterday_metrics, Mapping) and yesterday_metrics:
+                    yesterday_line = self._compose_weather_metrics_preview_line(
+                        yesterday_metrics,
+                        label="Вчера",
+                    )
+                    _add_weather_line(
+                        yesterday_line
+                        if not details_location
+                        else f"{details_location}: {yesterday_line}"
+                    )
+            if (
+                (not isinstance(plan_weather, Mapping))
+                or not isinstance(plan_weather.get("sea"), Mapping)
+                or not plan_weather.get("sea")
+            ):
+                sea_snapshot = weather_details.get("sea")
+                if isinstance(sea_snapshot, Mapping):
+                    sea_parts: list[str] = []
+                    temp = sea_snapshot.get("temperature")
+                    if isinstance(temp, (int, float)):
+                        sea_parts.append(f"вода {int(round(temp))}°C")
+                    wave = sea_snapshot.get("wave")
+                    if isinstance(wave, (int, float)):
+                        sea_parts.append(f"волна {round(float(wave), 1)} м")
+                    description = str(sea_snapshot.get("description") or "").strip()
+                    if description:
+                        sea_parts.append(description)
+                    detail = str(sea_snapshot.get("detail") or "").strip()
+                    if detail:
+                        sea_parts.append(detail)
+                    if sea_parts:
+                        _add_weather_line("Море: " + ", ".join(sea_parts))
 
         if weather_lines:
             escaped_weather = "\n".join(
@@ -9054,6 +9163,8 @@ class Bot:
                 "sea": weather_block.get("sea"),
                 "positive_intro": weather_block.get("positive_intro"),
                 "trend_summary": weather_block.get("trend_summary"),
+                "today": weather_block.get("today"),
+                "yesterday": weather_block.get("yesterday"),
             }
         previous_main_post_text: str | None = None
         previous_weather_line: str | None = None
@@ -9075,11 +9186,29 @@ class Bot:
                 stored_weather_str = str(stored_weather or "").strip()
                 if stored_weather_str:
                     previous_weather_line = stored_weather_str
-        weather_today_line = self._normalize_weather_preview_line(
-            (weather_block or {}).get("line") if weather_block else None
-        )
+        today_line_source: str | None = None
+        yesterday_line_source: str | None = None
+        if isinstance(weather_block, dict):
+            location_label = self._extract_weather_location_label(weather_block)
+            today_metrics_line = self._compose_weather_metrics_preview_line(
+                weather_block.get("today"),
+                label="Сегодня",
+            )
+            yesterday_metrics_line = self._compose_weather_metrics_preview_line(
+                weather_block.get("yesterday"),
+                label="Вчера",
+            )
+            if location_label:
+                today_line_source = f"{location_label}: {today_metrics_line}"
+                yesterday_line_source = f"{location_label}: {yesterday_metrics_line}"
+            else:
+                today_line_source = today_metrics_line
+                yesterday_line_source = yesterday_metrics_line
+        if not yesterday_line_source and previous_weather_line:
+            yesterday_line_source = previous_weather_line
+        weather_today_line = self._normalize_weather_preview_line(today_line_source)
         weather_yesterday_line = self._normalize_weather_preview_line(
-            previous_weather_line
+            yesterday_line_source
         )
         weather_today_line_html = html.escape(weather_today_line)
         weather_yesterday_line_html = html.escape(weather_yesterday_line)
@@ -9214,11 +9343,29 @@ class Bot:
         state["hashtags"] = hashtags
         state["prepared_hashtags"] = prepared_hashtags
         weather_block = state.get("weather_block")
-        weather_today_line = self._normalize_weather_preview_line(
-            (weather_block or {}).get("line") if weather_block else None
-        )
+        today_line_source: str | None = None
+        yesterday_line_source: str | None = None
+        if isinstance(weather_block, Mapping):
+            location_label = self._extract_weather_location_label(weather_block)
+            today_metrics_line = self._compose_weather_metrics_preview_line(
+                weather_block.get("today"),
+                label="Сегодня",
+            )
+            yesterday_metrics_line = self._compose_weather_metrics_preview_line(
+                weather_block.get("yesterday"),
+                label="Вчера",
+            )
+            if location_label:
+                today_line_source = f"{location_label}: {today_metrics_line}"
+                yesterday_line_source = f"{location_label}: {yesterday_metrics_line}"
+            else:
+                today_line_source = today_metrics_line
+                yesterday_line_source = yesterday_metrics_line
+        weather_today_line = self._normalize_weather_preview_line(today_line_source)
+        if not yesterday_line_source:
+            yesterday_line_source = state.get("weather_yesterday_line")
         weather_yesterday_line = self._normalize_weather_preview_line(
-            state.get("weather_yesterday_line")
+            yesterday_line_source
         )
         state["weather_today_line"] = weather_today_line
         state["weather_yesterday_line"] = weather_yesterday_line
@@ -9710,17 +9857,63 @@ class Bot:
                 tags.append("про фото")
             tag_prefix = f"[{', '.join(tags)}] " if tags else ""
             pattern_lines.append(f"{idx}. {tag_prefix}{instruction}")
-        weather_info = plan_dict.get("weather") if isinstance(plan_dict.get("weather"), dict) else {}
-        weather_parts: list[str] = []
-        weather_line = str((weather_info or {}).get("line") or "").strip()
-        if weather_line:
-            weather_parts.append(weather_line)
-        weather_detail = str((weather_info or {}).get("detail") or "").strip()
-        if weather_detail:
-            weather_parts.append(weather_detail)
-        weather_cities = weather_info.get("cities") if isinstance(weather_info, dict) else None
-        if weather_cities:
-            weather_parts.append(f"города: {weather_cities}")
+        weather_info = (
+            plan_dict.get("weather")
+            if isinstance(plan_dict.get("weather"), dict)
+            else {}
+        )
+        raw_weather_payload: dict[str, Any] = {}
+        raw_weather_text = ""
+        if isinstance(weather_info, dict) and weather_info:
+            cities_value = weather_info.get("cities")
+            if isinstance(cities_value, (list, tuple, set)):
+                normalized_cities = [
+                    str(city or "").strip()
+                    for city in cities_value
+                    if str(city or "").strip()
+                ]
+                if normalized_cities:
+                    raw_weather_payload["cities"] = normalized_cities
+            else:
+                city_str = str(cities_value or "").strip()
+                if city_str:
+                    raw_weather_payload["cities"] = city_str
+            city_name = str(weather_info.get("city_name") or "").strip()
+            if city_name:
+                raw_weather_payload["city_name"] = city_name
+
+            def _extract_metrics(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+                if not isinstance(payload, Mapping):
+                    return {}
+                metrics: dict[str, Any] = {}
+                for key in ("temperature", "wind_speed", "weather_code"):
+                    value = payload.get(key)
+                    if value is not None:
+                        metrics[key] = value
+                return metrics
+
+            today_metrics = _extract_metrics(weather_info.get("today"))
+            if today_metrics:
+                raw_weather_payload["today"] = today_metrics
+            yesterday_metrics = _extract_metrics(weather_info.get("yesterday"))
+            if yesterday_metrics:
+                raw_weather_payload["yesterday"] = yesterday_metrics
+            sea_info = weather_info.get("sea")
+            if isinstance(sea_info, Mapping):
+                sea_payload: dict[str, Any] = {}
+                for key in ("temperature", "wave"):
+                    value = sea_info.get(key)
+                    if value is not None:
+                        sea_payload[key] = value
+                if sea_payload:
+                    raw_weather_payload["sea"] = sea_payload
+            if raw_weather_payload:
+                raw_weather_text = json.dumps(
+                    raw_weather_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                )
         flowers = plan_dict.get("flowers") if isinstance(plan_dict.get("flowers"), list) else []
         flower_names = [
             str(flower.get("name") or "").strip()
@@ -9732,8 +9925,10 @@ class Bot:
         context_sections: list[str] = []
         if pattern_lines:
             context_sections.append("Паттерны:\n" + "\n".join(pattern_lines))
-        if weather_parts:
-            context_sections.append("Погода:\n" + "\n".join(weather_parts))
+        if raw_weather_text:
+            context_sections.append(
+                "Сырые данные погоды (JSON):\n" + raw_weather_text
+            )
         if flower_names:
             context_sections.append("Цветы: " + ", ".join(flower_names))
         if previous_text:
@@ -9741,22 +9936,24 @@ class Bot:
         if extra_instructions:
             context_sections.append("Доп. инструкция: " + extra_instructions)
         context_block = "\n\n".join(context_sections).strip()
-        rules: list[str] = [
-            "1. Используй все идеи из раздела паттернов, вплетая их в один абзац без списков.",
-            "2. Фото-зависимые шаблоны свяжи с визуальными деталями снимков.",
-            "3. Погоду интегрируй мягко, без сухих перечислений.",
-            f"4. Итоговый текст должен быть от {min_len} до {max_len} символов.",
-            "5. Текст один абзац без двойных переводов строк.",
-            "6. Будь заботливым, избегай рекламных интонаций.",
+        rule_items: list[str] = [
+            "Используй все идеи из раздела паттернов, вплетая их в один абзац без списков.",
+            "Фото-зависимые шаблоны свяжи с визуальными деталями снимков.",
+            "Сравни сегодня с вчера, опираясь на сырые погодные данные, не придумывай новые показатели.",
+            "Погоду интегрируй мягко, без сухих перечислений.",
+            f"Итоговый текст должен быть от {min_len} до {max_len} символов.",
+            "Текст один абзац без двойных переводов строк.",
+            "Будь заботливым, избегай рекламных интонаций.",
         ]
         system_prompt = (
             "Ты редактор телеграм-канала о погоде и домашнем уюте. "
             "Подбирай образный язык, но избегай клише."
         )
         if banned_words:
-            rules.append(
-                "7. Не используй слова: " + ", ".join(sorted(banned_words))
+            rule_items.append(
+                "Не используй слова: " + ", ".join(sorted(banned_words))
             )
+        rules = [f"{idx}. {text}" for idx, text in enumerate(rule_items, 1)]
         header = (
             "Ты — редактор телеграм-канала про погоду, уют и цветы. "
             "Собери итоговый текст и подбери подходящие хэштеги."
@@ -9778,15 +9975,17 @@ class Bot:
             ideas_text = "; ".join(idea for idea in ideas if idea)
             if len(ideas_text) > 360:
                 ideas_text = ideas_text[:357].rstrip() + "…"
-            weather_text = "; ".join(weather_parts[:2])
             fallback_lines = [
                 header,
                 f"Собери один абзац длиной {min_len}-{max_len} символов.",
             ]
             if ideas_text:
                 fallback_lines.append("Основные идеи: " + ideas_text)
-            if weather_text:
-                fallback_lines.append("Погода: " + weather_text)
+            if raw_weather_text:
+                fallback_lines.append("Сырые данные погоды:\n" + raw_weather_text)
+                fallback_lines.append(
+                    "Сравни сегодня с вчера, опираясь на эти показатели."
+                )
             if flower_names:
                 fallback_lines.append("Цветы: " + ", ".join(flower_names[:4]))
             if extra_instructions:
@@ -10472,6 +10671,78 @@ class Bot:
             return None
         return f"{max(0, int(round(value)))} м/с"
 
+    def _compose_weather_metrics_preview_line(
+        self, metrics: Mapping[str, Any] | None, *, label: str
+    ) -> str:
+        if not isinstance(metrics, Mapping):
+            return f"{label}: данные отсутствуют"
+
+        def _coerce_numeric(value: Any) -> float | None:
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                stripped = value.strip().replace(",", ".")
+                if not stripped:
+                    return None
+                try:
+                    return float(stripped)
+                except ValueError:
+                    return None
+            return None
+
+        parts: list[str] = []
+        temp_value = _coerce_numeric(metrics.get("temperature"))
+        if temp_value is not None:
+            formatted = self._format_temperature_value(temp_value)
+            if formatted:
+                parts.append(f"температура {formatted}")
+        wind_value = _coerce_numeric(metrics.get("wind_speed"))
+        if wind_value is not None:
+            formatted_wind = self._format_wind_value(wind_value)
+            if formatted_wind:
+                parts.append(f"ветер {formatted_wind}")
+        code_value = metrics.get("weather_code")
+        if code_value is not None:
+            code_str: str | None
+            try:
+                code_str = str(int(code_value))
+            except (TypeError, ValueError):
+                code_str = str(code_value).strip() or None
+            if code_str:
+                parts.append(f"код {code_str}")
+        if not parts:
+            return f"{label}: данные отсутствуют"
+        return f"{label}: " + ", ".join(parts)
+
+    @staticmethod
+    def _extract_weather_location_label(
+        payload: Mapping[str, Any] | None,
+    ) -> str | None:
+        if not isinstance(payload, Mapping):
+            return None
+        cities_value = payload.get("cities")
+        if isinstance(cities_value, (list, tuple, set)):
+            locations = [
+                str(city or "").strip()
+                for city in cities_value
+                if str(city or "").strip()
+            ]
+            if locations:
+                return ", ".join(locations)
+        else:
+            location = str(cities_value or "").strip()
+            if location:
+                return location
+        city_snapshot = payload.get("city")
+        if isinstance(city_snapshot, Mapping):
+            name = str(city_snapshot.get("name") or "").strip()
+            if name:
+                return name
+        city_name = payload.get("city_name")
+        if isinstance(city_name, str) and city_name.strip():
+            return city_name.strip()
+        return None
+
     def _positive_temperature_trend(
         self, current: float | None, previous: float | None
     ) -> str:
@@ -10852,6 +11123,27 @@ class Bot:
             line = f"{headline} {city_list}: {details}."
         else:
             line = f"{headline} {city_list}."
+        today_metrics: dict[str, Any] = {}
+        yesterday_metrics: dict[str, Any] = {}
+        if city_snapshot:
+            today_metrics = {
+                "temperature": city_snapshot.get("trend_temperature_value"),
+                "wind_speed": city_snapshot.get("trend_wind_value"),
+                "weather_code": city_snapshot.get("weather_code"),
+            }
+            yesterday_metrics = {
+                "temperature": city_snapshot.get("trend_temperature_previous_value"),
+                "wind_speed": city_snapshot.get("trend_wind_previous_value"),
+                "weather_code": (city_snapshot.get("yesterday_day") or {}).get(
+                    "weather_code"
+                ),
+            }
+        def _drop_empty(metrics: dict[str, Any]) -> dict[str, Any]:
+            return {
+                key: value
+                for key, value in metrics.items()
+                if value is not None
+            }
         return {
             "city": city_snapshot,
             "sea": coast_snapshot,
@@ -10860,6 +11152,8 @@ class Bot:
             "details": details,
             "line": line,
             "cities": city_list,
+            "today": _drop_empty(today_metrics),
+            "yesterday": _drop_empty(yesterday_metrics),
         }
 
     def _overlay_number(

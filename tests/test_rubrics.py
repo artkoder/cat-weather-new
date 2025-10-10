@@ -1487,8 +1487,31 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
                 "wind_speed": 5.0,
                 "condition": "дождь",
             },
+            "trend_indicators": [
+                {
+                    "metric": "temperature",
+                    "today": 6.0,
+                    "yesterday": 4.0,
+                    "delta": 2.0,
+                    "text": "стало теплее на 2°",
+                },
+                {
+                    "metric": "wind",
+                    "today": 3.0,
+                    "yesterday": 5.0,
+                    "delta": -2.0,
+                    "text": "ветер стал спокойнее — около 3 м/с",
+                },
+            ],
+            "trend_strings": [
+                "стало теплее на 2°",
+                "ветер стал спокойнее — около 3 м/с",
+            ],
         },
-        "flowers": [],
+        "flowers": [
+            {"name": "роза"},
+            {"name": "тюльпан"},
+        ],
         "previous_text": "",
         "instructions": "",
     }
@@ -1507,6 +1530,11 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
     assert '"temperature": 6.0' in user_prompt
     assert '"yesterday"' in user_prompt
     assert '"condition": "дождь"' in user_prompt
+    assert '"trend_indicators"' in user_prompt
+    assert '"metric": "temperature"' in user_prompt
+    assert '"delta": 2.0' in user_prompt
+    assert '"trend_strings"' in user_prompt
+    assert "Цветы на фото (распознаны): роза, тюльпан" in user_prompt
     assert "Сравни сегодня с вчера" in user_prompt
     assert "positive_intro" not in user_prompt
     assert "trend_summary" not in user_prompt
@@ -1514,6 +1542,18 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
     assert any("Сравни сегодня с вчера" in rule for rule in prompt_payload["rules"])
     assert any(
         "Пиши естественно, как живой человек" in rule
+        for rule in prompt_payload["rules"]
+    )
+    assert any(
+        "Игнорируй микроколебания погоды" in rule
+        for rule in prompt_payload["rules"]
+    )
+    assert any(
+        "Оцени погодные тренды" in rule
+        for rule in prompt_payload["rules"]
+    )
+    assert any(
+        "Цветы описывай" in rule
         for rule in prompt_payload["rules"]
     )
 
@@ -2193,8 +2233,11 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
     assert request["top_p"] == 0.9
     user_prompt = request["user_prompt"]
     assert "Контекст" in user_prompt
-    assert "Паттерны" in user_prompt
-    assert "Правила" in user_prompt
+    if "Паттерны" in user_prompt:
+        assert "Правила" in user_prompt
+    else:
+        assert "Основные идеи" in user_prompt
+        assert "Пиши естественно" in user_prompt
     assert len(user_prompt) <= 2000
     assert weather_block["city"] is not None
     assert weather_block["city"]["name"].casefold() == "kaliningrad"

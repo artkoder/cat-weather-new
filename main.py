@@ -7993,6 +7993,76 @@ class Bot:
                     filtered[key] = value
             return filtered
 
+        def _collect_trend_strings(city: Mapping[str, Any] | None) -> list[str]:
+            if not isinstance(city, Mapping):
+                return []
+            skip_numeric_keys = {
+                "trend_temperature_value",
+                "trend_temperature_previous_value",
+                "trend_wind_value",
+                "trend_wind_previous_value",
+            }
+            trend_strings: list[str] = []
+            for key, value in city.items():
+                if not key.startswith("trend_") or key in skip_numeric_keys:
+                    continue
+                if isinstance(value, str):
+                    trimmed = value.strip()
+                    if trimmed and trimmed not in trend_strings:
+                        trend_strings.append(trimmed)
+            return trend_strings
+
+        def _collect_trend_indicators(
+            city: Mapping[str, Any] | None,
+        ) -> list[dict[str, Any]]:
+            if not isinstance(city, Mapping):
+                return []
+
+            indicators: list[dict[str, Any]] = []
+
+            def _add_indicator(
+                metric: str,
+                today_key: str,
+                yesterday_key: str,
+                text_key: str,
+            ) -> None:
+                today_value = city.get(today_key)
+                yesterday_value = city.get(yesterday_key)
+                indicator: dict[str, Any] = {}
+                metric_name = metric.strip()
+                if metric_name:
+                    indicator["metric"] = metric_name
+                if today_value is not None:
+                    indicator["today"] = today_value
+                if yesterday_value is not None:
+                    indicator["yesterday"] = yesterday_value
+                if (
+                    isinstance(today_value, (int, float))
+                    and isinstance(yesterday_value, (int, float))
+                ):
+                    indicator["delta"] = round(today_value - yesterday_value, 2)
+                text_value = city.get(text_key)
+                if isinstance(text_value, str):
+                    trimmed_text = text_value.strip()
+                    if trimmed_text:
+                        indicator["text"] = trimmed_text
+                if len(indicator) > 1:
+                    indicators.append(indicator)
+
+            _add_indicator(
+                "temperature",
+                "trend_temperature_value",
+                "trend_temperature_previous_value",
+                "trend_temperature",
+            )
+            _add_indicator(
+                "wind",
+                "trend_wind_value",
+                "trend_wind_previous_value",
+                "trend_wind",
+            )
+            return indicators
+
         if weather_block:
             today_metrics = (
                 weather_block.get("today")
@@ -8012,8 +8082,18 @@ class Bot:
             if isinstance(weather_block.get("sea"), dict):
                 weather_summary["sea"] = weather_block.get("sea")
             city_snapshot = weather_block.get("city")
+            trend_strings = _collect_trend_strings(
+                city_snapshot if isinstance(city_snapshot, Mapping) else None
+            )
+            trend_indicators = _collect_trend_indicators(
+                city_snapshot if isinstance(city_snapshot, Mapping) else None
+            )
             if isinstance(city_snapshot, dict) and city_snapshot.get("name"):
                 weather_summary["city_name"] = city_snapshot.get("name")
+            if trend_strings:
+                weather_summary["trend_strings"] = trend_strings
+            if trend_indicators:
+                weather_summary["trend_indicators"] = trend_indicators
         else:
             weather_summary = {
                 "cities": None,
@@ -9887,6 +9967,42 @@ class Bot:
                         sea_payload[key] = value
                 if sea_payload:
                     raw_weather_payload["sea"] = sea_payload
+            trend_indicators_info = weather_info.get("trend_indicators")
+            if isinstance(trend_indicators_info, (list, tuple, set)):
+                normalized_indicators: list[dict[str, Any]] = []
+                for item in trend_indicators_info:
+                    if not isinstance(item, Mapping):
+                        continue
+                    indicator: dict[str, Any] = {}
+                    metric = str(item.get("metric") or "").strip()
+                    if metric:
+                        indicator["metric"] = metric
+                    for key in ("today", "yesterday", "delta"):
+                        value = item.get(key)
+                        if value is not None:
+                            indicator[key] = value
+                    text_value = item.get("text")
+                    if isinstance(text_value, str):
+                        trimmed_text = text_value.strip()
+                        if trimmed_text:
+                            indicator["text"] = trimmed_text
+                    if indicator:
+                        normalized_indicators.append(indicator)
+                if normalized_indicators:
+                    raw_weather_payload["trend_indicators"] = normalized_indicators
+            trend_strings_info = weather_info.get("trend_strings")
+            if isinstance(trend_strings_info, (list, tuple, set)):
+                normalized_strings = [
+                    str(value or "").strip()
+                    for value in trend_strings_info
+                    if str(value or "").strip()
+                ]
+                if normalized_strings:
+                    raw_weather_payload["trend_strings"] = normalized_strings
+            elif isinstance(trend_strings_info, str):
+                trimmed = trend_strings_info.strip()
+                if trimmed:
+                    raw_weather_payload["trend_strings"] = [trimmed]
             if raw_weather_payload:
                 raw_weather_text = json.dumps(
                     raw_weather_payload,
@@ -9910,7 +10026,9 @@ class Bot:
                 "Сырые данные погоды (JSON):\n" + raw_weather_text
             )
         if flower_names:
-            context_sections.append("Цветы: " + ", ".join(flower_names))
+            context_sections.append(
+                "Цветы на фото (распознаны): " + ", ".join(flower_names)
+            )
         if previous_text:
             context_sections.append("Вчерашний текст: " + previous_text)
         if extra_instructions:
@@ -9920,11 +10038,14 @@ class Bot:
             "Используй все идеи из раздела паттернов, вплетая их в один абзац без списков.",
             "Фото-зависимые шаблоны свяжи с визуальными деталями снимков.",
             "Сравни сегодня с вчера, опираясь на сырые погодные данные, не придумывай новые показатели.",
+            "Игнорируй микроколебания погоды — делись только заметными изменениями.",
+            "Оцени погодные тренды в совокупности: сопоставляй температуру, ветер и другие показатели, делая единый вывод.",
             "Погоду интегрируй мягко, без сухих перечислений.",
             "Пиши естественно, как живой человек; уместные эмодзи допустимы без перебора.",
             f"Итоговый текст должен быть от {min_len} до {max_len} символов.",
             "Текст один абзац без двойных переводов строк.",
             "Будь заботливым, избегай рекламных интонаций.",
+            "Цветы описывай по снимкам, не придумывай воображаемые растения.",
         ]
         system_prompt = (
             "Ты редактор телеграм-канала о погоде и домашнем уюте. "
@@ -9962,18 +10083,24 @@ class Bot:
             ]
             if ideas_text:
                 fallback_lines.append("Основные идеи: " + ideas_text)
+            context_lines: list[str] = []
             if raw_weather_text:
-                fallback_lines.append("Сырые данные погоды:\n" + raw_weather_text)
-                fallback_lines.append(
+                context_lines.append("Сырые данные погоды:\n" + raw_weather_text)
+                context_lines.append(
                     "Сравни сегодня с вчера, опираясь на эти показатели."
                 )
             if flower_names:
-                fallback_lines.append("Цветы: " + ", ".join(flower_names[:4]))
+                context_lines.append(
+                    "Цветы на фото (распознаны): " + ", ".join(flower_names[:4])
+                )
             if extra_instructions:
                 trimmed = extra_instructions
                 if len(trimmed) > 200:
                     trimmed = trimmed[:197].rstrip() + "…"
-                fallback_lines.append("Дополнение: " + trimmed)
+                context_lines.append("Доп. инструкция: " + trimmed)
+            if context_lines:
+                fallback_lines.append("Контекст:")
+                fallback_lines.extend(context_lines)
             if banned_words:
                 fallback_lines.append(
                     "Избегай слов: " + ", ".join(sorted(list(banned_words))[:8])

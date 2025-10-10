@@ -1689,6 +1689,7 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
 
     prompt_payload = bot._build_flowers_prompt_payload(plan, plan_meta)
     user_prompt = prompt_payload["user_prompt"]
+    system_prompt = prompt_payload["system_prompt"]
 
     assert "Сырые данные погоды" in user_prompt
     assert '"today"' in user_prompt
@@ -1710,6 +1711,9 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     assert "Подсказки: Весенний букет в вазе; Тёплый солнечный луч на столе" in user_prompt
     assert "Локация: Калининград" in user_prompt
     assert "Фото 2: Локация: Светлогорск" in user_prompt
+    assert "Доброе утро! Ты — редактор телеграм-канала про погоду, уют и цветы." in user_prompt
+    assert "«Порадую вас цветами…»" in user_prompt
+    assert "назови несколько распознанных цветов" in user_prompt
     comparison_rule = (
         "Сравнивай сегодня и вчера, опираясь на сырые погодные данные; если изменения ощутимые, коротко озвучь их"
     )
@@ -1744,7 +1748,9 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     system_timeliness_clause = (
         "Фотографии сделаны заранее, поэтому не описывай их как отражение сегодняшней погоды."
     )
-    assert system_timeliness_clause in prompt_payload["system_prompt"]
+    assert system_timeliness_clause in system_prompt
+    assert "Доброе утро" in system_prompt
+    assert "«Порадую вас цветами…»" in system_prompt
 
     short_plan = deepcopy(plan)
     short_plan["weather"]["today"]["parts"] = {}

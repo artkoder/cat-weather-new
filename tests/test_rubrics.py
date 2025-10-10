@@ -1713,11 +1713,18 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     comparison_rule = (
         "Сравнивай сегодня и вчера, опираясь на сырые погодные данные; если изменения ощутимые, коротко озвучь их"
     )
+    photo_timeliness_rule = (
+        "Помни: фотографии сделаны заранее, поэтому не описывай их как отражение сегодняшней погоды."
+    )
     assert comparison_rule in user_prompt
+    assert photo_timeliness_rule in user_prompt
     assert "positive_intro" not in user_prompt
     assert "trend_summary" not in user_prompt
     assert "Утро радует" not in user_prompt
     assert any(comparison_rule in rule for rule in prompt_payload["rules"])
+    assert any(
+        photo_timeliness_rule in rule for rule in prompt_payload["rules"]
+    )
     assert any(
         "Пиши естественно, как живой человек" in rule
         for rule in prompt_payload["rules"]
@@ -1734,6 +1741,10 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
         "Приветствие опирай на реальные фото" in rule
         for rule in prompt_payload["rules"]
     )
+    system_timeliness_clause = (
+        "Фотографии сделаны заранее, поэтому не описывай их как отражение сегодняшней погоды."
+    )
+    assert system_timeliness_clause in prompt_payload["system_prompt"]
 
     short_plan = deepcopy(plan)
     short_plan["weather"]["today"]["parts"] = {}

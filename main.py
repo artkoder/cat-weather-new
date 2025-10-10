@@ -11107,7 +11107,7 @@ class Bot:
             FROM weather_cache_hour
             WHERE city_id=?
             ORDER BY timestamp DESC
-            LIMIT 24
+            LIMIT 60
             """,
             (row["id"],),
         ).fetchall()
@@ -11368,55 +11368,249 @@ class Bot:
                 }
             )
 
-        for day_key, segments in list(dayparts.items()):
-            for segment, segment_payload in list(segments.items()):
-                samples = segment_payload.get("samples")
-                if not isinstance(samples, list) or not samples:
-                    segments.pop(segment, None)
-                    continue
-                codes = [
-                    _normalize_code(sample.get("weather_code"))
-                    for sample in samples
-                    if isinstance(sample, Mapping)
-                ]
-                codes = [code for code in codes if code is not None]
-                representative_code: int | None = None
-                if codes:
-                    representative_code = codes[len(codes) // 2]
-                weather_class_segment = (
-                    self._classify_weather_code(representative_code)
-                    if representative_code is not None
+        def _build_fallback_segment(
+            day_key: str,
+            segment_key: str,
+            segment_payload: Any,
+        ) -> dict[str, Any] | None:
+            samples: list[Any] = []
+            if isinstance(segment_payload, Mapping):
+                raw_samples = segment_payload.get("samples")
+                if isinstance(raw_samples, list):
+                    samples = list(raw_samples)
+                existing: dict[str, Any] = {}
+                for key in ("condition", "code", "class", "temperature", "wind_speed"):
+                    if key not in segment_payload:
+                        continue
+                    value = segment_payload.get(key)
+                    if value is None:
+                        continue
+                    if isinstance(value, str):
+                        trimmed = value.strip()
+                        if not trimmed:
+                            continue
+                        existing[key] = trimmed
+                    else:
+                        existing[key] = value
+                if existing:
+                    existing["samples"] = samples
+                    return existing
+            elif isinstance(segment_payload, str):
+                trimmed = segment_payload.strip()
+                if trimmed:
+                    return {"condition": trimmed, "samples": samples}
+                return None
+
+            day_payload = today_day if day_key == "today" else yesterday_day
+            flattened = today_values if day_key == "today" else yesterday_values
+            fallback_temperature = day_temperature if day_key == "today" else previous_temperature
+            fallback_wind = day_wind if day_key == "today" else previous_wind
+            fallback_code = (
+                _normalize_code(weather_row["weather_code"])
+                if day_key == "today"
+                else (
+                    _normalize_code(previous_row["weather_code"])
+                    if previous_row and "weather_code" in previous_row.keys()
                     else None
                 )
-                condition_segment = (
-                    WEATHER_TAG_TRANSLATIONS.get(weather_class_segment, weather_class_segment)
-                    if weather_class_segment
+            )
+
+            condition: str | None = None
+            code: int | None = fallback_code
+            temperature = fallback_temperature
+            wind_speed = fallback_wind
+
+            def _ingest(value: Any) -> None:
+                nonlocal condition, code, temperature, wind_speed
+                if value is None:
+                    return
+                if isinstance(value, Mapping):
+                    if condition is None:
+                        for key in ("condition", "summary", "text", "description", "value"):
+                            raw = value.get(key)
+                            if isinstance(raw, str) and raw.strip():
+                                condition = raw.strip()
+                                break
+                    if code is None:
+                        for key in ("code", "weather_code", "wmo_code", "wmo"):
+                            candidate = _normalize_code(value.get(key))
+                            if candidate is not None:
+                                code = candidate
+                                break
+                    if temperature is None:
+                        for key in (
+                            "temperature",
+                            "temp",
+                            "temperature_mean",
+                            "temperature_avg",
+                            "mean",
+                            "avg",
+                            "average",
+                        ):
+                            candidate_temp = _coerce_numeric(value.get(key))
+                            if candidate_temp is not None:
+                                temperature = candidate_temp
+                                break
+                    if wind_speed is None:
+                        for key in ("wind_speed", "wind", "wind_gust", "gust"):
+                            candidate_wind = _coerce_numeric(value.get(key))
+                            if candidate_wind is not None:
+                                wind_speed = candidate_wind
+                                break
+                    for nested in value.values():
+                        if isinstance(nested, (Mapping, list, tuple, set)):
+                            _ingest(nested)
+                elif isinstance(value, str):
+                    trimmed_value = value.strip()
+                    if trimmed_value and condition is None:
+                        condition = trimmed_value
+                elif isinstance(value, (list, tuple, set)):
+                    for item in value:
+                        _ingest(item)
+                else:
+                    if code is None:
+                        normalized = _normalize_code(value)
+                        if normalized is not None:
+                            code = normalized
+
+            if isinstance(day_payload, Mapping):
+                _ingest(day_payload.get(segment_key))
+                for container_key in ("segments", "dayparts", "parts", "periods", "details", "summary"):
+                    container = day_payload.get(container_key)
+                    if isinstance(container, Mapping):
+                        _ingest(container.get(segment_key))
+
+            if isinstance(flattened, Mapping):
+                temperature_keys = [
+                    f"{segment_key}_temperature",
+                    f"temperature_{segment_key}",
+                    f"{segment_key}.temperature",
+                    f"temperature.{segment_key}",
+                    f"{segment_key}_temp",
+                    f"temp_{segment_key}",
+                ]
+                for key in temperature_keys:
+                    if temperature is not None:
+                        break
+                    if key in flattened:
+                        temperature = flattened[key]
+                wind_keys = [
+                    f"{segment_key}_wind_speed",
+                    f"wind_speed_{segment_key}",
+                    f"{segment_key}.wind_speed",
+                    f"wind_speed.{segment_key}",
+                    f"{segment_key}_wind",
+                    f"wind_{segment_key}",
+                ]
+                for key in wind_keys:
+                    if wind_speed is not None:
+                        break
+                    if key in flattened:
+                        wind_speed = flattened[key]
+                code_keys = [
+                    f"{segment_key}_code",
+                    f"{segment_key}_weather_code",
+                    f"weather_code_{segment_key}",
+                    f"{segment_key}.code",
+                    f"code.{segment_key}",
+                ]
+                for key in code_keys:
+                    if code is not None:
+                        break
+                    if key in flattened:
+                        candidate_code = _normalize_code(flattened[key])
+                        if candidate_code is not None:
+                            code = candidate_code
+
+            payload: dict[str, Any] = {}
+            if condition is not None and condition:
+                payload["condition"] = condition
+            if temperature is not None:
+                payload["temperature"] = temperature
+            if wind_speed is not None:
+                payload["wind_speed"] = wind_speed
+            if code is not None:
+                payload["code"] = code
+                weather_class = self._classify_weather_code(code)
+                if weather_class:
+                    payload["class"] = weather_class
+                    if not payload.get("condition"):
+                        payload["condition"] = WEATHER_TAG_TRANSLATIONS.get(
+                            weather_class, weather_class
+                        )
+            if not payload:
+                return None
+            payload["samples"] = samples
+            payload["source"] = "daily"
+            return payload
+
+        for day_key in ("today", "yesterday"):
+            segments = dayparts.setdefault(day_key, {})
+            for segment_key in ("morning", "day", "evening"):
+                segment_payload = segments.get(segment_key)
+                if segment_payload is None:
+                    segment_payload = {}
+                    segments[segment_key] = segment_payload
+                samples = (
+                    segment_payload.get("samples")
+                    if isinstance(segment_payload, Mapping)
                     else None
                 )
-                temperatures = [
-                    float(sample["temperature"])
-                    for sample in samples
-                    if isinstance(sample, Mapping)
-                    and sample.get("temperature") is not None
-                ]
-                winds = [
-                    float(sample["wind_speed"])
-                    for sample in samples
-                    if isinstance(sample, Mapping)
-                    and sample.get("wind_speed") is not None
-                ]
-                segment_payload.update(
-                    {
-                        "code": representative_code,
-                        "class": weather_class_segment,
-                        "condition": condition_segment,
-                        "temperature": _avg(temperatures),
-                        "wind_speed": _avg(winds),
-                    }
-                )
-                if segment_payload.get("condition") is None and not temperatures and not winds:
-                    # If we have no usable data, drop the segment entirely.
-                    segments.pop(segment, None)
+                if isinstance(samples, list) and samples:
+                    codes = [
+                        _normalize_code(sample.get("weather_code"))
+                        for sample in samples
+                        if isinstance(sample, Mapping)
+                    ]
+                    codes = [code for code in codes if code is not None]
+                    representative_code: int | None = None
+                    if codes:
+                        representative_code = codes[len(codes) // 2]
+                    weather_class_segment = (
+                        self._classify_weather_code(representative_code)
+                        if representative_code is not None
+                        else None
+                    )
+                    condition_segment = (
+                        WEATHER_TAG_TRANSLATIONS.get(weather_class_segment, weather_class_segment)
+                        if weather_class_segment
+                        else None
+                    )
+                    temperatures = [
+                        float(sample["temperature"])
+                        for sample in samples
+                        if isinstance(sample, Mapping)
+                        and sample.get("temperature") is not None
+                    ]
+                    winds = [
+                        float(sample["wind_speed"])
+                        for sample in samples
+                        if isinstance(sample, Mapping)
+                        and sample.get("wind_speed") is not None
+                    ]
+                    segment_payload.update(
+                        {
+                            "code": representative_code,
+                            "class": weather_class_segment,
+                            "condition": condition_segment,
+                            "temperature": _avg(temperatures),
+                            "wind_speed": _avg(winds),
+                        }
+                    )
+                    if (
+                        segment_payload.get("condition") is None
+                        and not temperatures
+                        and not winds
+                    ):
+                        segments.pop(segment_key, None)
+                else:
+                    fallback_segment = _build_fallback_segment(
+                        day_key, segment_key, segment_payload
+                    )
+                    if fallback_segment is None:
+                        segments.pop(segment_key, None)
+                    else:
+                        segments[segment_key] = fallback_segment
             if not segments:
                 dayparts.pop(day_key, None)
 

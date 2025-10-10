@@ -7743,6 +7743,7 @@ class Bot:
             return palettes
 
         vision_palettes: list[dict[str, Any]] = []
+        photo_context: list[dict[str, Any]] = []
 
         for asset in assets:
             varieties = asset.vision_flower_varieties or []
@@ -7773,6 +7774,93 @@ class Bot:
                 vision_palettes.extend(
                     _collect_color_palettes_from_caption(asset.vision_caption)
                 )
+
+            recognized_flowers = [
+                str(variety).strip()
+                for variety in (asset.vision_flower_varieties or [])
+                if str(variety or "").strip()
+            ]
+
+            photo_hints: list[str] = []
+
+            def _add_hint(value: Any) -> None:
+                if not value:
+                    return
+                text = str(value).strip()
+                if not text:
+                    return
+                if text not in photo_hints:
+                    photo_hints.append(text)
+
+            if asset.vision_caption:
+                _add_hint(asset.vision_caption)
+
+            if isinstance(asset.vision_results, Mapping):
+                results_mapping: Mapping[str, Any] = asset.vision_results
+                for key in ("caption", "description", "summary"):
+                    _add_hint(results_mapping.get(key))
+                tags_value = results_mapping.get("tags")
+                if isinstance(tags_value, (list, tuple, set)):
+                    tags = [
+                        str(tag or "").strip()
+                        for tag in tags_value
+                        if str(tag or "").strip()
+                    ]
+                    if tags:
+                        _add_hint("Теги: " + ", ".join(tags))
+                display_map = {
+                    "weather_final_display": "Погода: {}",
+                    "season_final_display": "Сезон: {}",
+                    "time_of_day_display": "Время суток: {}",
+                }
+                for display_key, template in display_map.items():
+                    value = results_mapping.get(display_key)
+                    if isinstance(value, str) and value.strip():
+                        _add_hint(template.format(value.strip()))
+                arch_style = results_mapping.get("arch_style")
+                if isinstance(arch_style, Mapping):
+                    label = str(arch_style.get("label") or "").strip()
+                    confidence = arch_style.get("confidence")
+                    if label:
+                        if isinstance(confidence, (int, float)):
+                            percent = int(round(confidence * 100))
+                            _add_hint(f"Архитектура: {label} (~{percent}% уверенность)")
+                        else:
+                            _add_hint(f"Архитектура: {label}")
+                colors_info = results_mapping.get("colors")
+                if isinstance(colors_info, Mapping):
+                    palettes_value = colors_info.get("palettes")
+                    if isinstance(palettes_value, (list, tuple)):
+                        for palette in palettes_value:
+                            if not isinstance(palette, Mapping):
+                                continue
+                            title = str(palette.get("title") or "").strip()
+                            descriptors_raw = palette.get("descriptors")
+                            descriptors = [
+                                str(desc or "").strip()
+                                for desc in (descriptors_raw or [])
+                                if str(desc or "").strip()
+                            ]
+                            if title and descriptors:
+                                _add_hint(f"{title}: {', '.join(descriptors)}")
+                            elif title:
+                                _add_hint(title)
+                            elif descriptors:
+                                _add_hint(", ".join(descriptors))
+                _add_hint(results_mapping.get("notes"))
+
+            if len(photo_hints) > 8:
+                photo_hints = photo_hints[:8]
+
+            location = str(asset.city or "").strip()
+            photo_entry: dict[str, Any] = {}
+            if recognized_flowers:
+                photo_entry["flowers"] = recognized_flowers
+            if photo_hints:
+                photo_entry["hints"] = photo_hints
+            if location:
+                photo_entry["location"] = location
+            photo_context.append(photo_entry)
 
         palette_cycle: list[dict[str, Any]] = []
         seen_keys: set[tuple[str, tuple[str, ...]]] = set()
@@ -8133,6 +8221,7 @@ class Bot:
             "flowers": flower_entries,
             "previous_text": previous_text,
             "instructions": instructions or "",
+            "photo_context": photo_context,
         }
         banned_words = sorted((kb.banned_words if kb else set()) or [])
         plan_meta = {
@@ -9922,6 +10011,49 @@ class Bot:
                 tags.append("про фото")
             tag_prefix = f"[{', '.join(tags)}] " if tags else ""
             pattern_lines.append(f"{idx}. {tag_prefix}{instruction}")
+        photo_context_raw = plan_dict.get("photo_context")
+        photo_descriptions: list[str] = []
+        if isinstance(photo_context_raw, list):
+            for idx, entry in enumerate(photo_context_raw, 1):
+                flowers_list: list[str] = []
+                hints_list: list[str] = []
+                location_text = ""
+                if isinstance(entry, Mapping):
+                    raw_flowers = entry.get("flowers")
+                    if isinstance(raw_flowers, (list, tuple, set)):
+                        flowers_list = [
+                            re.sub(r"\s+", " ", str(value or "").strip())
+                            for value in raw_flowers
+                            if str(value or "").strip()
+                        ]
+                    elif isinstance(raw_flowers, str) and raw_flowers.strip():
+                        flowers_list = [re.sub(r"\s+", " ", raw_flowers.strip())]
+                    raw_hints = entry.get("hints")
+                    if isinstance(raw_hints, (list, tuple, set)):
+                        hints_list = [
+                            re.sub(r"\s+", " ", str(value or "").strip())
+                            for value in raw_hints
+                            if str(value or "").strip()
+                        ]
+                    elif isinstance(raw_hints, str) and raw_hints.strip():
+                        hints_list = [re.sub(r"\s+", " ", raw_hints.strip())]
+                    location_value = entry.get("location")
+                    if isinstance(location_value, str) and location_value.strip():
+                        location_text = re.sub(r"\s+", " ", location_value.strip())
+                elif isinstance(entry, str) and entry.strip():
+                    hints_list = [re.sub(r"\s+", " ", entry.strip())]
+                if hints_list and len(hints_list) > 5:
+                    hints_list = hints_list[:5]
+                parts: list[str] = []
+                if flowers_list:
+                    parts.append("Цветы: " + ", ".join(flowers_list))
+                if hints_list:
+                    parts.append("Подсказки: " + "; ".join(hints_list))
+                if location_text:
+                    parts.append("Локация: " + location_text)
+                if not parts:
+                    parts.append("Подсказок нет — ориентируйся на настроение кадра.")
+                photo_descriptions.append(f"Фото {idx}: " + "; ".join(parts))
         weather_info = (
             plan_dict.get("weather")
             if isinstance(plan_dict.get("weather"), dict)
@@ -10045,6 +10177,8 @@ class Bot:
         context_sections: list[str] = []
         if pattern_lines:
             context_sections.append("Паттерны:\n" + "\n".join(pattern_lines))
+        if photo_descriptions:
+            context_sections.append("Фотографии:\n" + "\n".join(photo_descriptions))
         if raw_weather_text:
             context_sections.append(
                 "Сырые данные погоды (JSON):\n" + raw_weather_text
@@ -10113,6 +10247,9 @@ class Bot:
                 context_lines.append(
                     "Сравни сегодня с вчера, опираясь на эти показатели."
                 )
+            if photo_descriptions:
+                context_lines.append("Фотографии:")
+                context_lines.extend(photo_descriptions)
             if flower_names:
                 context_lines.append(
                     "Цветы на фото (распознаны): " + ", ".join(flower_names[:4])

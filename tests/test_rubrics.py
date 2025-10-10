@@ -1710,14 +1710,14 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     assert "Подсказки: Весенний букет в вазе; Тёплый солнечный луч на столе" in user_prompt
     assert "Локация: Калининград" in user_prompt
     assert "Фото 2: Локация: Светлогорск" in user_prompt
-    assert "Модель 4o сама сравнивает сегодня и вчера" in user_prompt
+    comparison_rule = (
+        "Сравнивай сегодня и вчера, опираясь на сырые погодные данные; если изменения ощутимые, коротко озвучь их"
+    )
+    assert comparison_rule in user_prompt
     assert "positive_intro" not in user_prompt
     assert "trend_summary" not in user_prompt
     assert "Утро радует" not in user_prompt
-    assert any(
-        "Модель 4o сама сравнивает сегодня и вчера" in rule
-        for rule in prompt_payload["rules"]
-    )
+    assert any(comparison_rule in rule for rule in prompt_payload["rules"])
     assert any(
         "Пиши естественно, как живой человек" in rule
         for rule in prompt_payload["rules"]

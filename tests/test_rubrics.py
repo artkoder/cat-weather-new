@@ -14,7 +14,7 @@ from PIL import Image
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import data_access
-from data_access import Asset
+from data_access import Asset, Rubric
 from jobs import Job
 from main import Bot, FLOWERS_PREVIEW_MAX_LENGTH
 from openai_client import OpenAIResponse
@@ -1494,7 +1494,7 @@ async def test_flowers_preview_service_block(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
+async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
 
     plan = {
@@ -1633,6 +1633,46 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
     assert "Фото 1: Цветы: роза, тюльпан" in short_prompt
     assert "Подсказки: Весенний букет в вазе; Тёплый солнечный луч на столе" in short_prompt
     assert "Фото 2: Локация: Светлогорск" in short_prompt
+
+    fake_photo_context = [{"flowers": ["ромашка"], "hints": ["Лёгкий ветер"], "location": "Балтика"}]
+
+    class DummyAsset:
+        def __init__(self, city: str):
+            self.city = city
+
+    def fake_extract(self, assets, weather_block, *, seed_rng):
+        return {
+            "has_photo": True,
+            "flowers": [],
+            "flower_ids": [],
+            "palettes": [],
+            "photo_context": fake_photo_context,
+            "weather": None,
+            "season": None,
+            "season_description": None,
+            "holiday": None,
+            "wisdom": None,
+            "engagement": None,
+        }
+
+    monkeypatch.setattr(Bot, "_extract_flower_features", fake_extract)
+    monkeypatch.setattr(
+        Bot,
+        "_flowers_recent_pattern_ids",
+        lambda self, rubric, limit=14: (set(), set(), []),
+    )
+    bot.flowers_kb = None
+
+    rubric = Rubric(id=1, code="flowers", title="Цветы", description=None, config={})
+    built_plan, _ = bot._build_flowers_plan(
+        rubric,
+        [DummyAsset("Балтийск")],
+        {},
+        channel_id=None,
+        instructions=None,
+    )
+
+    assert built_plan["photo_context"] == fake_photo_context
 
     await bot.close()
 

@@ -1587,6 +1587,10 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     assert '"condition": "дождь"' in user_prompt
     assert '"parts"' in user_prompt
     assert '"morning": "солнечно"' in user_prompt
+    assert '"day": "пасмурно"' in user_prompt
+    assert '"evening": "туман"' in user_prompt
+    assert '"morning": "ливень"' in user_prompt
+    assert '"day": "снег"' in user_prompt
     assert '"evening": "ветер"' in user_prompt
     assert '"trend_indicators"' in user_prompt
     assert '"metric": "temperature"' in user_prompt

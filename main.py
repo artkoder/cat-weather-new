@@ -11070,6 +11070,16 @@ class Bot:
         now = datetime.utcnow()
         today = now.date().isoformat()
         yesterday = (now - timedelta(days=1)).date().isoformat()
+        hourly_rows = self.db.execute(
+            """
+            SELECT timestamp, temperature, weather_code, wind_speed, is_day
+            FROM weather_cache_hour
+            WHERE city_id=?
+            ORDER BY timestamp DESC
+            LIMIT 24
+            """,
+            (row["id"],),
+        ).fetchall()
         day_row = self.db.execute(
             """
             SELECT temperature, wind_speed, weather_code
@@ -11252,6 +11262,135 @@ class Bot:
             "previous_temperature": previous_temperature,
             "previous_wind": previous_wind,
         }
+        dayparts: dict[str, dict[str, Any]] = {"today": {}, "yesterday": {}}
+
+        def _parse_timestamp(value: Any) -> datetime | None:
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return None
+                if stripped.endswith("Z"):
+                    stripped = stripped[:-1] + "+00:00"
+                try:
+                    return datetime.fromisoformat(stripped)
+                except ValueError:
+                    return None
+            return None
+
+        def _segment_for_hour(hour: int) -> str | None:
+            if 6 <= hour < 12:
+                return "morning"
+            if 12 <= hour < 18:
+                return "day"
+            if 18 <= hour < 24:
+                return "evening"
+            return None
+
+        def _normalize_code(value: Any) -> int | None:
+            if isinstance(value, (int, float)):
+                return int(round(value))
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return None
+                try:
+                    return int(float(stripped.replace(",", ".")))
+                except ValueError:
+                    return None
+            return None
+
+        def _avg(values: list[float]) -> float | None:
+            return sum(values) / len(values) if values else None
+
+        hourly_entries: list[tuple[datetime, sqlite3.Row]] = []
+        for hourly_row in hourly_rows or []:
+            ts = _parse_timestamp(hourly_row["timestamp"])
+            if not ts:
+                continue
+            hourly_entries.append((ts, hourly_row))
+        hourly_entries.sort(key=lambda item: item[0])
+        today_date = now.date()
+        yesterday_date = (now - timedelta(days=1)).date()
+        for ts, hourly_row in hourly_entries:
+            segment = _segment_for_hour(ts.hour)
+            if not segment:
+                continue
+            day_key: str | None
+            if ts.date() == today_date:
+                day_key = "today"
+            elif ts.date() == yesterday_date:
+                day_key = "yesterday"
+            else:
+                continue
+            samples = dayparts.setdefault(day_key, {}).setdefault(segment, {}).setdefault(
+                "samples", []
+            )
+            samples.append(
+                {
+                    "timestamp": ts.isoformat(),
+                    "temperature": hourly_row["temperature"],
+                    "weather_code": hourly_row["weather_code"],
+                    "wind_speed": hourly_row["wind_speed"],
+                    "is_day": hourly_row["is_day"],
+                }
+            )
+
+        for day_key, segments in list(dayparts.items()):
+            for segment, segment_payload in list(segments.items()):
+                samples = segment_payload.get("samples")
+                if not isinstance(samples, list) or not samples:
+                    segments.pop(segment, None)
+                    continue
+                codes = [
+                    _normalize_code(sample.get("weather_code"))
+                    for sample in samples
+                    if isinstance(sample, Mapping)
+                ]
+                codes = [code for code in codes if code is not None]
+                representative_code: int | None = None
+                if codes:
+                    representative_code = codes[len(codes) // 2]
+                weather_class_segment = (
+                    self._classify_weather_code(representative_code)
+                    if representative_code is not None
+                    else None
+                )
+                condition_segment = (
+                    WEATHER_TAG_TRANSLATIONS.get(weather_class_segment, weather_class_segment)
+                    if weather_class_segment
+                    else None
+                )
+                temperatures = [
+                    float(sample["temperature"])
+                    for sample in samples
+                    if isinstance(sample, Mapping)
+                    and sample.get("temperature") is not None
+                ]
+                winds = [
+                    float(sample["wind_speed"])
+                    for sample in samples
+                    if isinstance(sample, Mapping)
+                    and sample.get("wind_speed") is not None
+                ]
+                segment_payload.update(
+                    {
+                        "code": representative_code,
+                        "class": weather_class_segment,
+                        "condition": condition_segment,
+                        "temperature": _avg(temperatures),
+                        "wind_speed": _avg(winds),
+                    }
+                )
+                if segment_payload.get("condition") is None and not temperatures and not winds:
+                    # If we have no usable data, drop the segment entirely.
+                    segments.pop(segment, None)
+            if not segments:
+                dayparts.pop(day_key, None)
+
+        if dayparts:
+            snapshot["dayparts"] = dayparts
         temp_detail = self._format_temperature_value(snapshot["temperature"])
         wind_detail = self._format_wind_value(snapshot["wind_speed"])
         details: list[str] = []
@@ -11407,49 +11546,64 @@ class Bot:
             line = f"{headline} {city_list}: {details}."
         else:
             line = f"{headline} {city_list}."
-        def _extract_condition(value: Any) -> str | None:
-            def _normalize_code(raw: Any) -> int | None:
-                if isinstance(raw, (int, float)):
-                    return int(round(raw))
-                if isinstance(raw, str):
-                    stripped = raw.strip()
-                    if not stripped:
-                        return None
-                    try:
-                        return int(float(stripped.replace(",", ".")))
-                    except ValueError:
-                        return None
-                if isinstance(raw, Mapping):
-                    for key in ("weather_code", "code", "value"):
-                        if key in raw:
-                            normalized = _normalize_code(raw[key])
-                            if normalized is not None:
-                                return normalized
+        def _condition_from_code(value: Any) -> str | None:
+            code: int | None
+            if isinstance(value, Mapping):
+                for key in ("code", "weather_code", "value"):
+                    if key in value:
+                        return _condition_from_code(value[key])
                 return None
-
-            code = _normalize_code(value)
-            if code is None:
+            if isinstance(value, (int, float)):
+                code = int(round(value))
+            elif isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return None
+                try:
+                    code = int(float(stripped.replace(",", ".")))
+                except ValueError:
+                    return None
+            else:
                 return None
             weather_class = self._classify_weather_code(code)
             if not weather_class:
                 return None
             return WEATHER_TAG_TRANSLATIONS.get(weather_class, weather_class)
 
-        def _extract_part_conditions(day_payload: Any) -> dict[str, str]:
-            if not isinstance(day_payload, Mapping):
+        def _extract_daypart_conditions(dayparts_payload: Any, day_key: str) -> dict[str, str]:
+            if not isinstance(dayparts_payload, Mapping):
+                return {}
+            day_bucket = dayparts_payload.get(day_key)
+            if not isinstance(day_bucket, Mapping):
                 return {}
             parts: dict[str, str] = {}
             for segment_key in ("morning", "day", "evening"):
-                raw_segment = day_payload.get(segment_key)
-                if raw_segment is None:
-                    continue
-                condition = _extract_condition(raw_segment)
-                if not condition and isinstance(raw_segment, Mapping):
-                    segment_text = raw_segment.get("condition")
-                    if isinstance(segment_text, str):
-                        trimmed = segment_text.strip()
-                        if trimmed:
-                            condition = trimmed
+                segment_value = day_bucket.get(segment_key)
+                condition: str | None = None
+                if isinstance(segment_value, Mapping):
+                    text = segment_value.get("condition")
+                    if isinstance(text, str) and text.strip():
+                        condition = text.strip()
+                    if not condition:
+                        weather_class = segment_value.get("class")
+                        if isinstance(weather_class, str) and weather_class.strip():
+                            normalized = weather_class.strip()
+                            condition = WEATHER_TAG_TRANSLATIONS.get(normalized, normalized)
+                    if not condition:
+                        condition = _condition_from_code(segment_value.get("code"))
+                    if not condition:
+                        samples = segment_value.get("samples")
+                        if isinstance(samples, Sequence):
+                            for sample in samples:
+                                condition = _condition_from_code(sample)
+                                if condition:
+                                    break
+                elif isinstance(segment_value, str):
+                    trimmed = segment_value.strip()
+                    if trimmed:
+                        condition = trimmed
+                else:
+                    condition = _condition_from_code(segment_value)
                 if condition:
                     parts[segment_key] = condition
             return parts
@@ -11458,17 +11612,21 @@ class Bot:
         yesterday_metrics: dict[str, Any] = {}
         if city_snapshot:
             today_condition = city_snapshot.get("weather_condition")
+            dayparts_payload = city_snapshot.get("dayparts")
+            today_parts = _extract_daypart_conditions(dayparts_payload, "today")
+            yesterday_parts = _extract_daypart_conditions(dayparts_payload, "yesterday")
             if not today_condition:
-                today_condition = _extract_condition(
-                    (city_snapshot.get("day") or {}).get("weather_code")
-                )
-            yesterday_condition = _extract_condition(
-                (city_snapshot.get("yesterday_day") or {}).get("weather_code")
-            )
-            today_parts = _extract_part_conditions(city_snapshot.get("day"))
-            yesterday_parts = _extract_part_conditions(
-                city_snapshot.get("yesterday_day")
-            )
+                for segment_key in ("day", "morning", "evening"):
+                    candidate = today_parts.get(segment_key)
+                    if candidate:
+                        today_condition = candidate
+                        break
+            yesterday_condition = None
+            for segment_key in ("day", "morning", "evening"):
+                candidate = yesterday_parts.get(segment_key)
+                if candidate:
+                    yesterday_condition = candidate
+                    break
             today_metrics = {
                 "temperature": city_snapshot.get("trend_temperature_value"),
                 "wind_speed": city_snapshot.get("trend_wind_value"),

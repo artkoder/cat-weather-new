@@ -1616,7 +1616,7 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
         for rule in prompt_payload["rules"]
     )
     assert any(
-        "Цветы описывай" in rule
+        "Приветствие опирай на реальные фото" in rule
         for rule in prompt_payload["rules"]
     )
 

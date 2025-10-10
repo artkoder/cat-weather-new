@@ -2,6 +2,7 @@ import html
 import json
 import os
 import sys
+from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -1554,6 +1555,19 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
         ],
         "previous_text": "",
         "instructions": "",
+        "photo_context": [
+            {
+                "flowers": ["роза", "тюльпан"],
+                "hints": [
+                    "Весенний букет в вазе",
+                    "Тёплый солнечный луч на столе",
+                ],
+                "location": "Калининград",
+            },
+            {
+                "location": "Светлогорск",
+            },
+        ],
     }
     plan_meta = {
         "pattern_ids": ["weather_focus"],
@@ -1563,9 +1577,10 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
     }
 
     prompt_payload = bot._build_flowers_prompt_payload(plan, plan_meta)
+    assert prompt_payload["used_fallback"]
     user_prompt = prompt_payload["user_prompt"]
 
-    assert "Сырые данные погоды (JSON):" in user_prompt
+    assert "Сырые данные погоды" in user_prompt
     assert '"today"' in user_prompt
     assert '"temperature": 6.0' in user_prompt
     assert '"yesterday"' in user_prompt
@@ -1578,6 +1593,11 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
     assert '"delta": 2.0' in user_prompt
     assert '"trend_strings"' in user_prompt
     assert "Цветы на фото (распознаны): роза, тюльпан" in user_prompt
+    assert "Фотографии:" in user_prompt
+    assert "Фото 1: Цветы: роза, тюльпан" in user_prompt
+    assert "Подсказки: Весенний букет в вазе; Тёплый солнечный луч на столе" in user_prompt
+    assert "Локация: Калининград" in user_prompt
+    assert "Фото 2: Локация: Светлогорск" in user_prompt
     assert "Сравни сегодня с вчера" in user_prompt
     assert "positive_intro" not in user_prompt
     assert "trend_summary" not in user_prompt
@@ -1599,6 +1619,20 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
         "Цветы описывай" in rule
         for rule in prompt_payload["rules"]
     )
+
+    short_plan = deepcopy(plan)
+    short_plan["weather"]["trend_indicators"] = []
+    short_plan["weather"]["trend_strings"] = []
+    short_plan["weather"]["today"]["parts"] = {}
+    short_plan["weather"]["yesterday"]["parts"] = {}
+
+    short_payload = bot._build_flowers_prompt_payload(short_plan, plan_meta)
+    assert not short_payload["used_fallback"]
+    short_prompt = short_payload["user_prompt"]
+    assert "Фотографии:" in short_prompt
+    assert "Фото 1: Цветы: роза, тюльпан" in short_prompt
+    assert "Подсказки: Весенний букет в вазе; Тёплый солнечный луч на столе" in short_prompt
+    assert "Фото 2: Локация: Светлогорск" in short_prompt
 
     await bot.close()
 

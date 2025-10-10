@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- Ingest now preserves EXIF capture timestamps, season detection prefers those capture times when available, and operator
+  captions surface the photo's capture date and time for easier context.
 - Operator style brief that puts a stronger emphasis on a lively, conversational tone and captures the explicit prompting
   instructions we now provide for the `gpt-4o` writers.
 - YAML-driven pattern and ban list loader for the `flowers` generator, enabling operators to expand copy templates without

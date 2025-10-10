@@ -7931,6 +7931,7 @@ class Bot:
             "flowers": flowers,
             "flower_ids": flower_ids,
             "palettes": palette_cycle,
+            "photo_context": photo_context,
             "weather": weather_class,
             "season": season_key,
             "season_description": season_description,
@@ -8029,6 +8030,7 @@ class Bot:
         seed = self._flowers_seed(channel_id)
         rng = random.Random(seed)
         features = self._extract_flower_features(assets, weather_block, seed_rng=rng)
+        photo_context = features.get("photo_context") or []
         _banned_recent, consecutive_repeats, pattern_history = self._flowers_recent_pattern_ids(
             rubric
         )

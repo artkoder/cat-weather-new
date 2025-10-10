@@ -1528,26 +1528,6 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
                     "evening": "ветер",
                 },
             },
-            "trend_indicators": [
-                {
-                    "metric": "temperature",
-                    "today": 6.0,
-                    "yesterday": 4.0,
-                    "delta": 2.0,
-                    "text": "стало теплее на 2°",
-                },
-                {
-                    "metric": "wind",
-                    "today": 3.0,
-                    "yesterday": 5.0,
-                    "delta": -2.0,
-                    "text": "ветер стал спокойнее — около 3 м/с",
-                },
-            ],
-            "trend_strings": [
-                "стало теплее на 2°",
-                "ветер стал спокойнее — около 3 м/с",
-            ],
         },
         "flowers": [
             {"name": "роза"},
@@ -1577,7 +1557,6 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     }
 
     prompt_payload = bot._build_flowers_prompt_payload(plan, plan_meta)
-    assert prompt_payload["used_fallback"]
     user_prompt = prompt_payload["user_prompt"]
 
     assert "Сырые данные погоды" in user_prompt
@@ -1592,21 +1571,22 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     assert '"morning": "ливень"' in user_prompt
     assert '"day": "снег"' in user_prompt
     assert '"evening": "ветер"' in user_prompt
-    assert '"trend_indicators"' in user_prompt
-    assert '"metric": "temperature"' in user_prompt
-    assert '"delta": 2.0' in user_prompt
-    assert '"trend_strings"' in user_prompt
+    assert '"trend_indicators"' not in user_prompt
+    assert '"trend_strings"' not in user_prompt
     assert "Цветы на фото (распознаны): роза, тюльпан" in user_prompt
     assert "Фотографии:" in user_prompt
     assert "Фото 1: Цветы: роза, тюльпан" in user_prompt
     assert "Подсказки: Весенний букет в вазе; Тёплый солнечный луч на столе" in user_prompt
     assert "Локация: Калининград" in user_prompt
     assert "Фото 2: Локация: Светлогорск" in user_prompt
-    assert "Сравни сегодня с вчера" in user_prompt
+    assert "Модель 4o сама сравнивает сегодня и вчера" in user_prompt
     assert "positive_intro" not in user_prompt
     assert "trend_summary" not in user_prompt
     assert "Утро радует" not in user_prompt
-    assert any("Сравни сегодня с вчера" in rule for rule in prompt_payload["rules"])
+    assert any(
+        "Модель 4o сама сравнивает сегодня и вчера" in rule
+        for rule in prompt_payload["rules"]
+    )
     assert any(
         "Пиши естественно, как живой человек" in rule
         for rule in prompt_payload["rules"]
@@ -1616,7 +1596,7 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
         for rule in prompt_payload["rules"]
     )
     assert any(
-        "Оцени погодные тренды" in rule
+        "Сопоставляй температуру, ветер и другие показатели" in rule
         for rule in prompt_payload["rules"]
     )
     assert any(
@@ -1625,8 +1605,6 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     )
 
     short_plan = deepcopy(plan)
-    short_plan["weather"]["trend_indicators"] = []
-    short_plan["weather"]["trend_strings"] = []
     short_plan["weather"]["today"]["parts"] = {}
     short_plan["weather"]["yesterday"]["parts"] = {}
 

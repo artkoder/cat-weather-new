@@ -3,6 +3,7 @@
 ## Photo context tips
 - Prioritize recognition output for flower varieties and architectural elements; mention only details the model confirms.
 - Reference the time of day or setting when EXIF or operator notes clearly establish it, but avoid speculating beyond captured context.
+- Operator previews now append the EXIF capture date to the info block above each caption, so rely on that timestamp when you need to cite shooting conditions.
 - When multiple photos appear in a carousel, call out the hero frame explicitly (e.g., "First photo" or "Cover shot") so editors can map feedback to assets.
 
 ## Weather interpretation

@@ -257,7 +257,12 @@ async def test_ingest_extracts_gps_for_convertible_document(tmp_path, monkeypatc
         piexif.GPSIFD.GPSLongitudeRef: b'E',
         piexif.GPSIFD.GPSLongitude: [(37, 1), (36, 1), (56, 1)],
     }
-    exif_bytes = piexif.dump({'GPS': gps_ifd})
+    exif_ifd = {
+        piexif.ExifIFD.DateTimeOriginal: b'2023:09:15 12:34:56',
+        piexif.ExifIFD.DateTimeDigitized: b'2023:09:15 12:35:00',
+    }
+    zeroth_ifd = {piexif.ImageIFD.DateTime: b'2023:09:16 01:02:03'}
+    exif_bytes = piexif.dump({'GPS': gps_ifd, 'Exif': exif_ifd, '0th': zeroth_ifd})
     buffer = BytesIO()
     img.save(buffer, format='JPEG', exif=exif_bytes)
     image_bytes = buffer.getvalue()
@@ -397,6 +402,11 @@ async def test_ingest_extracts_gps_for_convertible_document(tmp_path, monkeypatc
     assert asset.longitude == pytest.approx(37.6156, rel=1e-4)
     assert asset.city == 'Москва'
     assert asset.country == 'Россия'
+    assert asset.metadata is not None
+    assert asset.metadata.get('exif_datetime_original') == '2023:09:15 12:34:56'
+    assert asset.metadata.get('exif_datetime_digitized') == '2023:09:15 12:35:00'
+    assert asset.metadata.get('exif_datetime') == '2023:09:16 01:02:03'
+    assert asset.metadata.get('exif_datetime_best') == '2023:09:15 12:34:56'
 
     vision_job = Job(
         id=2,

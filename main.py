@@ -2598,6 +2598,68 @@ class Bot:
         return None
 
     @staticmethod
+    def _decode_exif_datetime_value(value: Any) -> str | None:
+        if isinstance(value, bytes):
+            for encoding in ("utf-8", "ascii", "latin-1"):
+                try:
+                    decoded = value.decode(encoding, errors="ignore")
+                except Exception:
+                    continue
+                decoded = decoded.strip().strip("\x00")
+                if decoded:
+                    return decoded
+            return None
+        if isinstance(value, str):
+            decoded = value.strip().strip("\x00")
+            return decoded or None
+        return None
+
+    @classmethod
+    def _extract_exif_datetimes(
+        cls, image_source: str | Path | BinaryIO
+    ) -> dict[str, str]:
+        try:
+            with Image.open(image_source, mode="r") as img:
+                exif_bytes = img.info.get("exif")
+            if exif_bytes:
+                exif_dict = piexif.load(exif_bytes)
+            else:
+                if isinstance(image_source, (str, Path)):
+                    exif_dict = piexif.load(str(image_source))
+                else:
+                    return {}
+        except Exception:
+            logging.exception("Failed to parse EXIF metadata")
+            return {}
+
+        result: dict[str, str] = {}
+        exif_ifd = exif_dict.get("Exif") or {}
+        original_value = cls._decode_exif_datetime_value(
+            exif_ifd.get(piexif.ExifIFD.DateTimeOriginal)
+        )
+        if original_value:
+            result["exif_datetime_original"] = original_value
+        digitized_value = cls._decode_exif_datetime_value(
+            exif_ifd.get(piexif.ExifIFD.DateTimeDigitized)
+        )
+        if digitized_value:
+            result["exif_datetime_digitized"] = digitized_value
+        zeroth_ifd = exif_dict.get("0th") or {}
+        image_datetime_value = cls._decode_exif_datetime_value(
+            zeroth_ifd.get(piexif.ImageIFD.DateTime)
+        )
+        if image_datetime_value:
+            result["exif_datetime"] = image_datetime_value
+        best_value = (
+            result.get("exif_datetime_original")
+            or result.get("exif_datetime_digitized")
+            or result.get("exif_datetime")
+        )
+        if best_value:
+            result["exif_datetime_best"] = best_value
+        return result
+
+    @staticmethod
     def _normalize_month_value(value: Any) -> int | None:
         if isinstance(value, int):
             if 1 <= value <= 12:
@@ -3179,6 +3241,7 @@ class Bot:
         if not downloaded_path:
             raise RuntimeError(f"Failed to download file for asset {asset_id}")
         cleanup_path = str(downloaded_path)
+        exif_datetimes = self._extract_exif_datetimes(downloaded_path)
         try:
             gps = None
             should_extract_gps = asset.kind == "photo" or self._is_convertible_image_document(asset)
@@ -3198,6 +3261,8 @@ class Bot:
                 "local_path": None,
                 "exif_present": bool(gps),
             }
+            if exif_datetimes:
+                update_kwargs["metadata"] = exif_datetimes
             if gps:
                 lat, lon = gps
                 update_kwargs["latitude"] = lat

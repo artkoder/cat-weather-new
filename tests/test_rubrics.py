@@ -1694,6 +1694,97 @@ async def test_flowers_prompt_fallback_contains_human_tone(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flowers_prompt_preserves_all_photo_descriptions(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    photo_context = [
+        {
+            "flowers": [f"цветок {idx}", f"деталь {idx}"],
+            "hints": [
+                f"подсказка {idx}-{hint}" for hint in range(1, 8)
+            ],
+            "location": f"Локация {idx}",
+        }
+        for idx in range(1, 7)
+    ]
+
+    plan = {
+        "patterns": [
+            {
+                "id": "p-short",
+                "instruction": "Сделай приветствие солнечным",
+                "photo_dependent": False,
+            },
+            {
+                "id": "p-photo",
+                "instruction": "Отметь детали на снимках",
+                "photo_dependent": True,
+            },
+        ],
+        "weather": {},
+        "flowers": [],
+        "previous_text": "",
+        "instructions": "",
+        "photo_context": photo_context,
+    }
+    plan_meta = {
+        "pattern_ids": ["p-short", "p-photo"],
+        "banned_words": [],
+        "length": {"min": 420, "max": 520},
+        "cities": ["Калининград"],
+    }
+
+    primary_payload = bot._build_flowers_prompt_payload(plan, plan_meta)
+    assert not primary_payload["used_fallback"]
+    primary_lines = [
+        line
+        for line in primary_payload["user_prompt"].splitlines()
+        if line.startswith("Фото ")
+    ]
+    assert len(primary_lines) == 6
+    for idx in range(1, 7):
+        matching_line = next(
+            (line for line in primary_lines if line.startswith(f"Фото {idx}:")),
+            "",
+        )
+        assert matching_line
+        assert f"Локация {idx}" in matching_line
+        assert "Подсказки:" in matching_line
+
+    long_instruction = "Очень длинное описание " * 200
+    fallback_plan = deepcopy(plan)
+    fallback_plan["patterns"] = [
+        {
+            "id": f"p-{idx}",
+            "instruction": long_instruction,
+            "photo_dependent": False,
+        }
+        for idx in range(90)
+    ]
+    fallback_meta = deepcopy(plan_meta)
+    fallback_meta["pattern_ids"] = [f"p-{idx}" for idx in range(90)]
+
+    fallback_payload = bot._build_flowers_prompt_payload(fallback_plan, fallback_meta)
+    assert fallback_payload["used_fallback"]
+    fallback_lines = [
+        line
+        for line in fallback_payload["user_prompt"].splitlines()
+        if line.startswith("Фото ")
+    ]
+    assert len(fallback_lines) == 6
+    for idx in range(1, 7):
+        matching_line = next(
+            (line for line in fallback_lines if line.startswith(f"Фото {idx}:")),
+            "",
+        )
+        assert matching_line
+        assert f"Локация {idx}" in matching_line
+        assert "Подсказки:" in matching_line
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_flowers_preview_instructions_escaped(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
 

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from dataclasses import dataclass
 
-from typing import Any, BinaryIO, Iterable, Mapping, Sequence, TYPE_CHECKING
+from typing import Any, BinaryIO, Iterable, Mapping, Sequence, TYPE_CHECKING, Callable
 
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -9933,8 +9933,17 @@ class Bot:
                 tags.append("про фото")
             tag_prefix = f"[{', '.join(tags)}] " if tags else ""
             pattern_lines.append(f"{idx}. {tag_prefix}{instruction}")
+
+        def _smart_trim(text: str, limit: int) -> str:
+            if len(text) <= limit:
+                return text
+            trimmed = text[:limit].rsplit(" ", 1)[0].strip()
+            if len(trimmed) < int(limit * 0.6):
+                trimmed = text[:limit].strip()
+            return trimmed.rstrip(",.;:-") + "…"
+
         photo_context_raw = plan_dict.get("photo_context")
-        photo_descriptions: list[str] = []
+        photo_entries: list[dict[str, Any]] = []
         if isinstance(photo_context_raw, list):
             for idx, entry in enumerate(photo_context_raw, 1):
                 flowers_list: list[str] = []
@@ -9966,23 +9975,21 @@ class Bot:
                     hints_list = [re.sub(r"\s+", " ", entry.strip())]
                 if hints_list and len(hints_list) > 5:
                     hints_list = hints_list[:5]
-                parts: list[str] = []
-                if flowers_list:
-                    parts.append("Цветы: " + ", ".join(flowers_list))
-                if hints_list:
-                    parts.append("Подсказки: " + "; ".join(hints_list))
-                if location_text:
-                    parts.append("Локация: " + location_text)
-                if not parts:
-                    parts.append("Подсказок нет — ориентируйся на настроение кадра.")
-                photo_descriptions.append(f"Фото {idx}: " + "; ".join(parts))
+                photo_entries.append(
+                    {
+                        "idx": idx,
+                        "flowers": flowers_list,
+                        "hints": hints_list,
+                        "location": location_text,
+                    }
+                )
+
         weather_info = (
             plan_dict.get("weather")
             if isinstance(plan_dict.get("weather"), dict)
             else {}
         )
         raw_weather_payload: dict[str, Any] = {}
-        raw_weather_text = ""
         if isinstance(weather_info, dict) and weather_info:
             cities_value = weather_info.get("cities")
             if isinstance(cities_value, (list, tuple, set)):
@@ -10045,13 +10052,7 @@ class Bot:
                         sea_payload[key] = value
                 if sea_payload:
                     raw_weather_payload["sea"] = sea_payload
-            if raw_weather_payload:
-                raw_weather_text = json.dumps(
-                    raw_weather_payload,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    indent=2,
-                )
+
         flowers = plan_dict.get("flowers") if isinstance(plan_dict.get("flowers"), list) else []
         flower_names = [
             str(flower.get("name") or "").strip()
@@ -10060,24 +10061,7 @@ class Bot:
         ]
         previous_text = str(plan_dict.get("previous_text") or "").strip()
         extra_instructions = str(plan_dict.get("instructions") or "").strip()
-        context_sections: list[str] = []
-        if pattern_lines:
-            context_sections.append("Паттерны:\n" + "\n".join(pattern_lines))
-        if photo_descriptions:
-            context_sections.append("Фотографии:\n" + "\n".join(photo_descriptions))
-        if raw_weather_text:
-            context_sections.append(
-                "Сырые данные погоды (JSON):\n" + raw_weather_text
-            )
-        if flower_names:
-            context_sections.append(
-                "Цветы на фото (распознаны): " + ", ".join(flower_names)
-            )
-        if previous_text:
-            context_sections.append("Вчерашний текст: " + previous_text)
-        if extra_instructions:
-            context_sections.append("Доп. инструкция: " + extra_instructions)
-        context_block = "\n\n".join(context_sections).strip()
+
         rule_items: list[str] = [
             "Используй все идеи из раздела паттернов, вплетая их в один абзац без списков.",
             "Фото-зависимые шаблоны свяжи с визуальными деталями снимков.",
@@ -10105,16 +10089,181 @@ class Bot:
             "Ты — редактор телеграм-канала про погоду, уют и цветы. "
             "Подготовь тёплое приветственное описание к этим фотографиям цветов, опираясь на их контекст и погоду, без выдуманных деталей; подбери подходящие хэштеги, уместные эмодзи допустимы."
         )
-        sections: list[str] = [header]
-        if context_block:
-            sections.append("Контекст:\n" + context_block)
-        sections.append("Правила:\n" + "\n".join(rules))
-        sections.append(
-            "Верни JSON с ключами greeting (готовый текст) и hashtags (не менее двух тегов)."
-        )
-        user_prompt = "\n\n".join(section.strip() for section in sections if section.strip())
 
-        def _fallback_prompt() -> str:
+        def _render_photo_descriptions(
+            entries: Sequence[Mapping[str, Any]], *, max_hints: int | None
+        ) -> list[str]:
+            descriptions: list[str] = []
+            for entry in entries:
+                hints: list[str] = list(entry.get("hints") or [])
+                if max_hints is not None and len(hints) > max_hints:
+                    hints = hints[:max_hints]
+                parts: list[str] = []
+                flowers = [str(value) for value in entry.get("flowers") or [] if str(value)]
+                if flowers:
+                    parts.append("Цветы: " + ", ".join(flowers))
+                if hints:
+                    parts.append("Подсказки: " + "; ".join(hints))
+                location = str(entry.get("location") or "").strip()
+                if location:
+                    parts.append("Локация: " + location)
+                if not parts:
+                    parts.append("Подсказок нет — ориентируйся на настроение кадра.")
+                descriptions.append(f"Фото {entry.get('idx')}: " + "; ".join(parts))
+            return descriptions
+
+        raw_weather_text_pretty = ""
+        raw_weather_text_compact = ""
+        if raw_weather_payload:
+            raw_weather_text_pretty = json.dumps(
+                raw_weather_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                indent=2,
+            )
+            raw_weather_text_compact = json.dumps(
+                raw_weather_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ": "),
+            )
+        flower_names_text = ", ".join(flower_names)
+
+        def _assemble_prompt(config: dict[str, Any]) -> dict[str, Any]:
+            context_sections: list[str] = []
+            if pattern_lines:
+                context_sections.append("Паттерны:\n" + "\n".join(pattern_lines))
+
+            photos_lines: list[str] = []
+            if photo_entries:
+                photos_lines = _render_photo_descriptions(
+                    photo_entries,
+                    max_hints=config.get("photo_hint_limit"),
+                )
+                context_sections.append("Фотографии:\n" + "\n".join(photos_lines))
+
+            weather_payload_text = ""
+            if config.get("include_weather") and raw_weather_text_pretty:
+                weather_payload_text = (
+                    raw_weather_text_compact
+                    if config.get("use_compact_weather")
+                    else raw_weather_text_pretty
+                )
+                context_sections.append(
+                    "Сырые данные погоды (JSON):\n" + weather_payload_text
+                )
+
+            flower_text = ""
+            if config.get("include_flowers") and flower_names_text:
+                flower_text = flower_names_text
+                context_sections.append(
+                    "Цветы на фото (распознаны): " + flower_text
+                )
+
+            trimmed_previous = previous_text
+            previous_limit = config.get("previous_limit")
+            if trimmed_previous and previous_limit:
+                trimmed_previous = _smart_trim(trimmed_previous, int(previous_limit))
+            if trimmed_previous:
+                context_sections.append("Вчерашний текст: " + trimmed_previous)
+
+            trimmed_instructions = extra_instructions
+            instructions_limit = config.get("instructions_limit")
+            if trimmed_instructions and instructions_limit:
+                trimmed_instructions = _smart_trim(
+                    trimmed_instructions, int(instructions_limit)
+                )
+            if trimmed_instructions:
+                context_sections.append("Доп. инструкция: " + trimmed_instructions)
+
+            context_block = "\n\n".join(context_sections).strip()
+
+            sections: list[str] = [header]
+            if context_block:
+                sections.append("Контекст:\n" + context_block)
+            sections.append("Правила:\n" + "\n".join(rules))
+            sections.append(
+                "Верни JSON с ключами greeting (готовый текст) и hashtags (не менее двух тегов)."
+            )
+            user_prompt_text = "\n\n".join(
+                section.strip() for section in sections if section.strip()
+            )
+            return {
+                "user_prompt": user_prompt_text,
+                "context_block": context_block,
+                "photos_lines": photos_lines,
+                "weather_payload_text": weather_payload_text,
+                "flower_text": flower_text,
+                "previous_text": trimmed_previous,
+                "instructions_text": trimmed_instructions,
+            }
+
+        prompt_limit = 2000
+        config: dict[str, Any] = {
+            "photo_hint_limit": 4 if photo_entries else None,
+            "use_compact_weather": False,
+            "include_weather": bool(raw_weather_text_pretty),
+            "include_flowers": bool(flower_names_text),
+            "previous_limit": None,
+            "instructions_limit": None,
+        }
+
+        render_state = _assemble_prompt(config)
+        user_prompt = render_state["user_prompt"]
+
+        limit_keys = {"previous_limit", "instructions_limit", "photo_hint_limit"}
+
+        def _apply_config_change(key: str, value: Any) -> bool:
+            current_value = config.get(key)
+            if key in limit_keys and current_value is not None:
+                if current_value <= value:
+                    return False
+            if current_value == value:
+                return False
+            config[key] = value
+            return True
+
+        def _maybe_adjust(
+            key: str,
+            value: Any,
+            condition: Callable[[], bool],
+        ) -> None:
+            nonlocal render_state, user_prompt
+            if len(user_prompt) <= prompt_limit:
+                return
+            try:
+                should_apply = bool(condition())
+            except Exception:
+                should_apply = False
+            if not should_apply:
+                return
+            if _apply_config_change(key, value):
+                render_state = _assemble_prompt(config)
+                user_prompt = render_state["user_prompt"]
+
+        # Prefer compact weather representation if available.
+        _maybe_adjust("use_compact_weather", True, lambda: bool(raw_weather_text_pretty))
+
+        # Gradually trim the lengthier optional sections before falling back.
+        for limit_value in (480, 360, 240, 180, 140, 100, 80, 60):
+            _maybe_adjust("previous_limit", limit_value, lambda: bool(previous_text))
+            _maybe_adjust(
+                "instructions_limit", limit_value, lambda: bool(extra_instructions)
+            )
+            if len(user_prompt) <= prompt_limit:
+                break
+
+        # Reduce per-photo hint verbosity while keeping all photo descriptions present.
+        for hint_cap in (3, 2, 1):
+            _maybe_adjust("photo_hint_limit", hint_cap, lambda: bool(photo_entries))
+            if len(user_prompt) <= prompt_limit:
+                break
+
+        # Remove optional sections entirely only as a last resort.
+        _maybe_adjust("include_flowers", False, lambda: bool(flower_names_text))
+        _maybe_adjust("include_weather", False, lambda: bool(raw_weather_text_pretty))
+
+        def _build_fallback_prompt(state: Mapping[str, Any]) -> str:
             ideas = [
                 re.sub(r"^\d+\.\s*", "", line)
                 for line in pattern_lines[:3]
@@ -10129,23 +10278,24 @@ class Bot:
             if ideas_text:
                 fallback_lines.append("Основные идеи: " + ideas_text)
             context_lines: list[str] = []
-            if raw_weather_text:
-                context_lines.append("Сырые данные погоды:\n" + raw_weather_text)
+            weather_payload_text = str(state.get("weather_payload_text") or "").strip()
+            if weather_payload_text:
+                context_lines.append("Сырые данные погоды:\n" + weather_payload_text)
                 context_lines.append(
                     "Модель 4o должна сама сравнить сегодняшний и вчерашний день, опираясь на эти показатели."
                 )
-            if photo_descriptions:
+            photos_lines = list(state.get("photos_lines") or [])
+            if photos_lines:
                 context_lines.append("Фотографии:")
-                context_lines.extend(photo_descriptions)
-            if flower_names:
+                context_lines.extend(photos_lines)
+            flower_text = str(state.get("flower_text") or "").strip()
+            if flower_text:
                 context_lines.append(
-                    "Цветы на фото (распознаны): " + ", ".join(flower_names[:4])
+                    "Цветы на фото (распознаны): " + flower_text
                 )
-            if extra_instructions:
-                trimmed = extra_instructions
-                if len(trimmed) > 200:
-                    trimmed = trimmed[:197].rstrip() + "…"
-                context_lines.append("Доп. инструкция: " + trimmed)
+            instructions_text = str(state.get("instructions_text") or "").strip()
+            if instructions_text:
+                context_lines.append("Доп. инструкция: " + instructions_text)
             if context_lines:
                 fallback_lines.append("Контекст:")
                 fallback_lines.extend(context_lines)
@@ -10161,15 +10311,12 @@ class Bot:
             )
             return "\n".join(fallback_lines)
 
-        prompt_length = len(user_prompt)
         used_fallback = False
-        if prompt_length > 2000:
-            user_prompt = _fallback_prompt()
-            prompt_length = len(user_prompt)
+        if len(user_prompt) > prompt_limit:
+            user_prompt = _build_fallback_prompt(render_state)
             used_fallback = True
-        if prompt_length > 2000:
-            user_prompt = user_prompt[:2000]
-            prompt_length = len(user_prompt)
+
+        prompt_length = len(user_prompt)
         request_sections = []
         if system_prompt:
             request_sections.append("System prompt:\n" + system_prompt)

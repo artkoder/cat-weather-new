@@ -3582,6 +3582,41 @@ class Bot:
                 tags.append("architecture_wide")
             await self._maybe_append_marine_tag(asset, tags)
             metadata_dict = asset.metadata if isinstance(asset.metadata, dict) else {}
+            capture_datetime: datetime | None = None
+            capture_time_display: str | None = None
+            timestamp_keys = [
+                "exif_datetime_best",
+                "exif_datetime_original",
+                "exif_datetime",
+                "exif_datetime_digitized",
+            ]
+            for ts_key in timestamp_keys:
+                raw_value = metadata_dict.get(ts_key)
+                if raw_value is None:
+                    continue
+                if isinstance(raw_value, (list, tuple)):
+                    candidate = next(
+                        (
+                            str(item).strip()
+                            for item in raw_value
+                            if str(item).strip()
+                        ),
+                        "",
+                    )
+                else:
+                    candidate = str(raw_value).strip()
+                if not candidate or candidate.lower() == "none":
+                    continue
+                try:
+                    parsed_dt = datetime.strptime(candidate, "%Y:%m:%d %H:%M:%S")
+                except ValueError:
+                    parsed_dt = None
+                if parsed_dt:
+                    capture_datetime = parsed_dt
+                    capture_time_display = parsed_dt.strftime("%Y-%m-%d %H:%M")
+                else:
+                    capture_time_display = candidate
+                break
             exif_month = self._extract_month_from_metadata(metadata_dict)
             if (
                 exif_month is None
@@ -3793,6 +3828,8 @@ class Bot:
             caption_lines.append(f"Архитектура: {'да' if arch_view else 'нет'}")
             season_caption_display = season_final_display or "неизвестно"
             weather_caption_display = photo_weather_display or "неизвестно"
+            capture_display_value = capture_time_display or "неизвестно"
+            caption_lines.append(f"Время съёмки: {capture_display_value}")
             caption_lines.append(f"Погода: {weather_caption_display}")
             caption_lines.append(f"Сезон: {season_caption_display}")
             if arch_style and arch_style.get("label"):

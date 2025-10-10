@@ -428,6 +428,7 @@ async def test_ingest_extracts_gps_for_convertible_document(tmp_path, monkeypatc
     assert caption_payload is not None and 'caption' in caption_payload
     caption_text = caption_payload['caption']
     assert caption_text and 'Москва' in caption_text
+    assert 'Время съёмки: 2023-09-15 12:34' in caption_text
     assert 'Адрес (EXIF)' in caption_text
 
     assert not any(

@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vision schema enhancements that capture framing, detailed weather, seasonal context and architectural style metadata, and an automatic conversion path that renders document uploads into photo assets before publication.
 
 ### Changed
+- Flowers rubric prompts now weave daypart weather context into the greeting, retain per-photo descriptions, and spell out the
+  latest `gpt-4o` response rules, with regression coverage in `tests/test_rubrics.py` and `tests/test_vision_results.py`.
 - Weather automation replaces raw `weather_code` values with localized text conditions before publication so operators no
   longer need to translate numeric codes manually.
 - Expanded the stop-word list for caption linting to catch additional filler phrases during operator review.

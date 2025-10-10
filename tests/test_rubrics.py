@@ -64,6 +64,94 @@ def _seed_weather(bot: Bot) -> None:
     bot.db.commit()
 
 
+def _seed_two_day_hourly_weather(bot: Bot) -> None:
+    now = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    today = now.date()
+    yesterday = (now - timedelta(days=1)).date()
+    city_id = 1
+    bot.db.execute(
+        "INSERT OR IGNORE INTO cities (id, name, lat, lon) VALUES (?, ?, ?, ?)",
+        (city_id, "Kaliningrad", 54.7104, 20.4522),
+    )
+
+    for day_date in (yesterday, today):
+        base_dt = datetime.combine(day_date, datetime.min.time())
+        is_today = day_date == today
+        for hour in range(24):
+            ts = base_dt + timedelta(hours=hour)
+            if is_today:
+                if 6 <= hour < 12:
+                    code = 0  # sunny
+                    temp = 12.0 + hour * 0.1
+                    wind = 3.2
+                elif 12 <= hour < 18:
+                    code = 3  # overcast
+                    temp = 15.0 + hour * 0.1
+                    wind = 4.4
+                elif 18 <= hour < 24:
+                    code = 45  # fog
+                    temp = 9.0 + hour * 0.1
+                    wind = 2.6
+                else:
+                    code = 0
+                    temp = 10.0 + hour * 0.05
+                    wind = 2.2
+            else:
+                if 6 <= hour < 12:
+                    code = 61  # rain
+                    temp = 6.0 + hour * 0.1
+                    wind = 5.4
+                elif 12 <= hour < 18:
+                    code = 71  # snow
+                    temp = 1.0 + hour * 0.1
+                    wind = 6.0
+                elif 18 <= hour < 24:
+                    code = 2  # partly cloudy
+                    temp = 3.5 + hour * 0.1
+                    wind = 3.6
+                else:
+                    code = 61
+                    temp = 4.5 + hour * 0.05
+                    wind = 4.8
+            is_day = 1 if 6 <= hour < 22 else 0
+            bot.db.execute(
+                "INSERT OR REPLACE INTO weather_cache_hour (city_id, timestamp, temperature, weather_code, wind_speed, is_day) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    city_id,
+                    ts.isoformat(),
+                    temp,
+                    code,
+                    wind,
+                    is_day,
+                ),
+            )
+
+    bot.db.execute(
+        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            city_id,
+            today.isoformat(),
+            14.0,
+            3,
+            4.0,
+        ),
+    )
+    bot.db.execute(
+        "INSERT OR REPLACE INTO weather_cache_day (city_id, day, temperature, weather_code, wind_speed) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            city_id,
+            yesterday.isoformat(),
+            5.5,
+            61,
+            5.2,
+        ),
+    )
+    bot.db.commit()
+
+
 def _seed_city(
     bot: Bot,
     *,
@@ -194,6 +282,49 @@ async def test_flowers_weather_block_uses_configured_city(tmp_path):
     assert isinstance(yesterday_metrics, dict)
     assert yesterday_metrics.get("temperature") == pytest.approx(4.0)
     assert yesterday_metrics.get("wind_speed") == pytest.approx(3.8)
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_prompt_includes_dayparts_for_two_days(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    _insert_rubric(bot, "flowers", {"enabled": True, "assets": {"min": 0, "max": 2}}, rubric_id=7)
+    _seed_two_day_hourly_weather(bot)
+
+    rubric = bot.data.get_rubric_by_code("flowers")
+    assert rubric is not None
+
+    weather_block = bot._compose_flowers_weather_block([], rubric)
+    assert weather_block is not None
+
+    plan, plan_meta = bot._build_flowers_plan(rubric, [], weather_block, channel_id=None)
+    today_parts = plan["weather"]["today"].get("parts", {})
+    yesterday_parts = plan["weather"]["yesterday"].get("parts", {})
+    assert today_parts == {
+        "morning": "солнечно",
+        "day": "пасмурно",
+        "evening": "туман",
+    }
+    assert yesterday_parts == {
+        "morning": "дождь",
+        "day": "снег",
+        "evening": "переменная облачность",
+    }
+
+    prompt_payload = bot._build_flowers_prompt_payload(plan, plan_meta)
+    user_prompt = prompt_payload["user_prompt"]
+    assert '"today"' in user_prompt
+    assert '"yesterday"' in user_prompt
+    for snippet in (
+        '"morning": "солнечно"',
+        '"day": "пасмурно"',
+        '"evening": "туман"',
+        '"morning": "дождь"',
+        '"day": "снег"',
+        '"evening": "переменная облачность"',
+    ):
+        assert snippet in user_prompt
 
     await bot.close()
 

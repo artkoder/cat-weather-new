@@ -277,6 +277,14 @@ SEASON_TRANSLATIONS: dict[str, str] = {
 }
 
 
+SEASON_ADJACENCY: dict[str, set[str]] = {
+    "spring": {"winter", "summer"},
+    "summer": {"spring", "autumn"},
+    "autumn": {"summer", "winter"},
+    "winter": {"autumn", "spring"},
+}
+
+
 
 
 ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
@@ -2834,6 +2842,80 @@ class Bot:
         if value is None:
             return None
         return SEASON_BY_MONTH.get(value)
+
+    def _resolve_asset_season(self, asset: Asset) -> str | None:
+        season: str | None = None
+        vision_payload = asset.vision_results if isinstance(asset.vision_results, Mapping) else None
+        if vision_payload:
+            raw_season = vision_payload.get("season_final")
+            if isinstance(raw_season, str):
+                season = self._normalize_season(raw_season)
+        if not season:
+            month = self._extract_month_from_metadata(asset.metadata)
+            season_from_month = self._season_from_month(month)
+            season = self._normalize_season(season_from_month)
+        return season
+
+    def _collect_asset_seasons(self, assets: Sequence[Asset]) -> dict[int, str]:
+        seasons: dict[int, str] = {}
+        for asset in assets:
+            season = self._resolve_asset_season(asset)
+            if season:
+                seasons[asset.id] = season
+        return seasons
+
+    def _filter_flower_assets_by_season(
+        self,
+        assets: Sequence[Asset],
+        *,
+        min_count: int,
+        max_count: int,
+    ) -> tuple[list[Asset], dict[int, str]] | None:
+        if not assets:
+            return None
+        asset_seasons: dict[int, str] = {}
+        filtered_assets: list[Asset] = []
+        for asset in assets:
+            season = self._resolve_asset_season(asset)
+            if not season:
+                continue
+            asset_seasons[asset.id] = season
+            filtered_assets.append(asset)
+        if len(filtered_assets) < min_count:
+            return None
+
+        unique_seasons = {asset_seasons[asset.id] for asset in filtered_assets}
+        candidate_sets: list[set[str]] = []
+        for season in unique_seasons:
+            candidate_sets.append({season})
+            for neighbor in SEASON_ADJACENCY.get(season, set()):
+                if neighbor in unique_seasons:
+                    candidate_sets.append({season, neighbor})
+
+        best_selection: list[Asset] | None = None
+
+        for allowed_seasons in candidate_sets:
+            selection = [
+                asset
+                for asset in filtered_assets
+                if asset_seasons.get(asset.id) in allowed_seasons
+            ]
+            if len(selection) < min_count:
+                continue
+            selection = selection[:max_count]
+            if not best_selection or len(selection) > len(best_selection):
+                best_selection = selection
+            elif best_selection and len(selection) == len(best_selection):
+                current_diversity = len({asset_seasons[a.id] for a in best_selection})
+                new_diversity = len({asset_seasons[a.id] for a in selection})
+                if new_diversity < current_diversity:
+                    best_selection = selection
+
+        if not best_selection:
+            return None
+
+        final_seasons = {asset.id: asset_seasons[asset.id] for asset in best_selection}
+        return best_selection, final_seasons
 
     async def reverse_geocode_osm(self, lat: float, lon: float) -> dict[str, Any]:
         if self.dry_run or not self.session:
@@ -7695,11 +7777,13 @@ class Bot:
         weather_block: dict[str, Any] | None,
         *,
         seed_rng: random.Random,
+        asset_seasons: Mapping[int, str] | None = None,
     ) -> dict[str, Any]:
         kb = self.flowers_kb
         flowers: list[dict[str, Any]] = []
         flower_ids: list[str] = []
         has_photo = all(asset.kind == "photo" for asset in assets)
+        seasons_lookup = dict(asset_seasons or {})
 
         def _normalize_descriptors(value: Any) -> list[str]:
             if value is None:
@@ -7962,6 +8046,11 @@ class Bot:
                 photo_entry["hints"] = photo_hints
             if location:
                 photo_entry["location"] = location
+            season_value = seasons_lookup.get(asset.id)
+            if season_value:
+                photo_entry["season"] = season_value
+                display_value = SEASON_TRANSLATIONS.get(season_value, season_value)
+                photo_entry["season_display"] = display_value
             photo_context.append(photo_entry)
 
         palette_cycle: list[dict[str, Any]] = []
@@ -8127,11 +8216,17 @@ class Bot:
         *,
         channel_id: int | None,
         instructions: str | None = None,
+        asset_seasons: Mapping[int, str] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         kb = self.flowers_kb
         seed = self._flowers_seed(channel_id)
         rng = random.Random(seed)
-        features = self._extract_flower_features(assets, weather_block, seed_rng=rng)
+        features = self._extract_flower_features(
+            assets,
+            weather_block,
+            seed_rng=rng,
+            asset_seasons=asset_seasons,
+        )
         photo_context = features.get("photo_context") or []
         _banned_recent, consecutive_repeats, pattern_history = self._flowers_recent_pattern_ids(
             rubric
@@ -8339,6 +8434,21 @@ class Bot:
                 min_count,
             )
             return None
+        filtered = self._filter_flower_assets_by_season(
+            assets,
+            min_count=min_count,
+            max_count=max_count,
+        )
+        if not filtered:
+            logging.warning(
+                "Unable to assemble seasonal-consistent flowers assets: have seasons %s",
+                sorted({
+                    self._resolve_asset_season(asset) or "unknown"
+                    for asset in assets
+                }),
+            )
+            return None
+        assets, asset_seasons = filtered
         file_ids: list[str] = []
         asset_kinds: list[str] = []
         conversion_map: dict[int, dict[str, Any]] = {}
@@ -8368,6 +8478,7 @@ class Bot:
             weather_block,
             channel_id=channel_id,
             instructions=instructions,
+            asset_seasons=asset_seasons,
         )
         greeting, hashtags, plan, plan_meta = await self._generate_flowers_copy(
             rubric,
@@ -10051,6 +10162,8 @@ class Bot:
                 flowers_list: list[str] = []
                 hints_list: list[str] = []
                 location_text = ""
+                season_code = ""
+                season_display = ""
                 if isinstance(entry, Mapping):
                     raw_flowers = entry.get("flowers")
                     if isinstance(raw_flowers, (list, tuple, set)):
@@ -10073,6 +10186,12 @@ class Bot:
                     location_value = entry.get("location")
                     if isinstance(location_value, str) and location_value.strip():
                         location_text = re.sub(r"\s+", " ", location_value.strip())
+                    raw_season = entry.get("season")
+                    if isinstance(raw_season, str) and raw_season.strip():
+                        season_code = re.sub(r"\s+", " ", raw_season.strip())
+                    raw_season_display = entry.get("season_display")
+                    if isinstance(raw_season_display, str) and raw_season_display.strip():
+                        season_display = re.sub(r"\s+", " ", raw_season_display.strip())
                 elif isinstance(entry, str) and entry.strip():
                     hints_list = [re.sub(r"\s+", " ", entry.strip())]
                 if hints_list and len(hints_list) > 5:
@@ -10083,6 +10202,8 @@ class Bot:
                         "flowers": flowers_list,
                         "hints": hints_list,
                         "location": location_text,
+                        "season": season_code,
+                        "season_display": season_display,
                     }
                 )
 
@@ -10208,6 +10329,11 @@ class Bot:
                 flowers = [str(value) for value in entry.get("flowers") or [] if str(value)]
                 if flowers:
                     parts.append("Цветы: " + ", ".join(flowers))
+                season_display = str(entry.get("season_display") or "").strip()
+                season_code = str(entry.get("season") or "").strip()
+                if season_display or season_code:
+                    season_label = season_display or season_code
+                    parts.append("Сезон: " + season_label)
                 if hints:
                     parts.append("Подсказки: " + "; ".join(hints))
                 location = str(entry.get("location") or "").strip()
@@ -10249,12 +10375,15 @@ class Bot:
                 context_sections.append("Фотографии:\n" + "\n".join(photos_lines))
 
             weather_payload_text = ""
-            if config.get("include_weather") and raw_weather_text_pretty:
-                weather_payload_text = (
-                    raw_weather_text_compact
-                    if config.get("use_compact_weather")
-                    else raw_weather_text_pretty
-                )
+            if config.get("include_weather") and raw_weather_payload:
+                if config.get("use_compact_weather") and raw_weather_text_compact:
+                    weather_payload_text = raw_weather_text_compact
+                else:
+                    weather_payload_text = (
+                        raw_weather_text_pretty
+                        or raw_weather_text_compact
+                        or json.dumps(raw_weather_payload, ensure_ascii=False, sort_keys=True)
+                    )
                 context_sections.append(
                     "Сырые данные погоды (JSON):\n" + weather_payload_text
                 )
@@ -10304,11 +10433,11 @@ class Bot:
                 "instructions_text": trimmed_instructions,
             }
 
-        prompt_limit = 2000
+        prompt_limit = 2200
         config: dict[str, Any] = {
             "photo_hint_limit": 4 if photo_entries else None,
             "use_compact_weather": False,
-            "include_weather": bool(raw_weather_text_pretty),
+            "include_weather": bool(raw_weather_payload),
             "include_flowers": bool(flower_names_text),
             "previous_limit": None,
             "instructions_limit": None,
@@ -10456,12 +10585,14 @@ class Bot:
         plan_meta: dict[str, Any] | None = None,
     ) -> tuple[str, list[str], dict[str, Any], dict[str, Any]]:
         if plan is None or not isinstance(plan, dict) or not isinstance(plan_meta, dict):
+            asset_seasons = self._collect_asset_seasons(assets)
             plan, plan_meta = self._build_flowers_plan(
                 rubric,
                 assets,
                 weather_block,
                 channel_id=channel_id,
                 instructions=instructions,
+                asset_seasons=asset_seasons if asset_seasons else None,
             )
         resolved_plan = plan
         resolved_meta = plan_meta or {}

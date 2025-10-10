@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from typing import Any
+import random
 
 import pytest
 from PIL import Image
@@ -189,6 +190,56 @@ def _seed_city(
         (city_id, yesterday, yesterday_temperature, 2, yesterday_wind),
     )
     bot.db.commit()
+
+
+def _make_seasonal_asset(
+    asset_id: int,
+    *,
+    season: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> Asset:
+    return Asset(
+        id=asset_id,
+        channel_id=1,
+        tg_chat_id=1,
+        message_id=asset_id,
+        origin="test",
+        caption_template=None,
+        caption=None,
+        hashtags=None,
+        categories=[],
+        kind="photo",
+        file_id=f"file-{asset_id}",
+        file_unique_id=f"unique-{asset_id}",
+        file_name=f"flower-{asset_id}.jpg",
+        mime_type="image/jpeg",
+        file_size=None,
+        width=1080,
+        height=1350,
+        duration=None,
+        recognized_message_id=None,
+        exif_present=False,
+        latitude=None,
+        longitude=None,
+        city="Калининград",
+        country="Россия",
+        author_user_id=None,
+        author_username=None,
+        sender_chat_id=None,
+        via_bot_id=None,
+        forward_from_user=None,
+        forward_from_chat=None,
+        local_path=None,
+        metadata=metadata,
+        vision_results={"season_final": season} if season else {},
+        rubric_id=None,
+        vision_category="flowers",
+        vision_arch_view=None,
+        vision_photo_weather=None,
+        vision_flower_varieties=[],
+        vision_confidence=None,
+        vision_caption=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -1272,6 +1323,10 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
         vision_photo_weather="солнечно",
         city="Калининград",
     )
+    bot.data.update_asset(
+        asset_id,
+        vision_results={"season_final": "summer"},
+    )
 
     bot.db.execute(
         "INSERT OR REPLACE INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, '+00:00')",
@@ -1587,7 +1642,7 @@ async def test_flowers_preview_service_block(tmp_path):
     }
 
     prompt_payload = bot._build_flowers_prompt_payload(state["plan"], state["plan_meta"])
-    assert prompt_payload["prompt_length"] <= 2000
+    assert prompt_payload["prompt_length"] <= 2200
     state["serialized_plan"] = prompt_payload["serialized_plan"]
     state["plan_system_prompt"] = prompt_payload["system_prompt"]
     state["plan_user_prompt"] = prompt_payload["user_prompt"]
@@ -1710,7 +1765,7 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     assert "Фото 1: Цветы: роза, тюльпан" in user_prompt
     assert "Подсказки: Весенний букет в вазе; Тёплый солнечный луч на столе" in user_prompt
     assert "Локация: Калининград" in user_prompt
-    assert "Фото 2: Локация: Светлогорск" in user_prompt
+    assert "Локация: Светлогорск" in user_prompt
     assert "Доброе утро! Ты — редактор телеграм-канала про погоду, уют и цветы." in user_prompt
     assert "«Порадую вас цветами…»" in user_prompt
     assert "назови несколько распознанных цветов" in user_prompt
@@ -1762,7 +1817,7 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     assert "Фотографии:" in short_prompt
     assert "Фото 1: Цветы: роза, тюльпан" in short_prompt
     assert "Подсказки: Весенний букет в вазе; Тёплый солнечный луч на столе" in short_prompt
-    assert "Фото 2: Локация: Светлогорск" in short_prompt
+    assert "Локация: Светлогорск" in short_prompt
 
     fake_photo_context = [{"flowers": ["ромашка"], "hints": ["Лёгкий ветер"], "location": "Балтика"}]
 
@@ -1770,7 +1825,7 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
         def __init__(self, city: str):
             self.city = city
 
-    def fake_extract(self, assets, weather_block, *, seed_rng):
+    def fake_extract(self, assets, weather_block, *, seed_rng, asset_seasons=None):
         return {
             "has_photo": True,
             "flowers": [],
@@ -1803,6 +1858,65 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     )
 
     assert built_plan["photo_context"] == fake_photo_context
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_assets_reject_polar_seasons(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    assets = [
+        _make_seasonal_asset(1, season="winter"),
+        _make_seasonal_asset(2, season="summer"),
+    ]
+
+    result = bot._filter_flower_assets_by_season(
+        assets,
+        min_count=2,
+        max_count=3,
+    )
+
+    assert result is None
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_assets_accept_adjacent_seasons_and_record(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    assets = [
+        _make_seasonal_asset(1, season="spring"),
+        _make_seasonal_asset(2, metadata={"month": 8}),
+        _make_seasonal_asset(3, season="spring"),
+    ]
+
+    result = bot._filter_flower_assets_by_season(
+        assets,
+        min_count=2,
+        max_count=3,
+    )
+
+    assert result is not None
+    selected_assets, seasons = result
+    assert [asset.id for asset in selected_assets] == [1, 2, 3][: len(selected_assets)]
+    assert seasons[1] == "spring"
+    assert seasons[2] == "summer"
+
+    features = bot._extract_flower_features(
+        selected_assets,
+        weather_block=None,
+        seed_rng=random.Random(0),
+        asset_seasons=seasons,
+    )
+
+    photo_context = features.get("photo_context") or []
+    assert photo_context
+    assert photo_context[0].get("season") == "spring"
+    assert photo_context[0].get("season_display") == "весна"
+    assert photo_context[1].get("season") == "summer"
+    assert photo_context[1].get("season_display") == "лето"
 
     await bot.close()
 

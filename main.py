@@ -7985,12 +7985,24 @@ class Bot:
         def _filter_metrics(payload: Mapping[str, Any] | None) -> dict[str, Any]:
             if not isinstance(payload, Mapping):
                 return {}
-            allowed_keys = ("temperature", "wind_speed", "condition")
+            allowed_scalar_keys = ("temperature", "wind_speed", "condition")
             filtered: dict[str, Any] = {}
-            for key in allowed_keys:
+            for key in allowed_scalar_keys:
                 value = payload.get(key)
                 if value is not None:
                     filtered[key] = value
+            parts_value = payload.get("parts")
+            if isinstance(parts_value, Mapping):
+                normalized_parts: dict[str, str] = {}
+                for part_name, part_condition in parts_value.items():
+                    if not isinstance(part_name, str):
+                        continue
+                    if isinstance(part_condition, str):
+                        trimmed = part_condition.strip()
+                        if trimmed:
+                            normalized_parts[part_name] = trimmed
+                if normalized_parts:
+                    filtered["parts"] = normalized_parts
             return filtered
 
         def _collect_trend_strings(city: Mapping[str, Any] | None) -> list[str]:
@@ -9950,6 +9962,18 @@ class Bot:
                         metrics[key] = trimmed
                     else:
                         metrics[key] = value
+                parts_value = payload.get("parts")
+                if isinstance(parts_value, Mapping):
+                    normalized_parts: dict[str, str] = {}
+                    for part_name, part_condition in parts_value.items():
+                        if not isinstance(part_name, str):
+                            continue
+                        if isinstance(part_condition, str):
+                            trimmed_part = part_condition.strip()
+                            if trimmed_part:
+                                normalized_parts[part_name] = trimmed_part
+                    if normalized_parts:
+                        metrics["parts"] = normalized_parts
                 return metrics
 
             today_metrics = _extract_metrics(weather_info.get("today"))
@@ -11271,6 +11295,25 @@ class Bot:
                 return None
             return WEATHER_TAG_TRANSLATIONS.get(weather_class, weather_class)
 
+        def _extract_part_conditions(day_payload: Any) -> dict[str, str]:
+            if not isinstance(day_payload, Mapping):
+                return {}
+            parts: dict[str, str] = {}
+            for segment_key in ("morning", "day", "evening"):
+                raw_segment = day_payload.get(segment_key)
+                if raw_segment is None:
+                    continue
+                condition = _extract_condition(raw_segment)
+                if not condition and isinstance(raw_segment, Mapping):
+                    segment_text = raw_segment.get("condition")
+                    if isinstance(segment_text, str):
+                        trimmed = segment_text.strip()
+                        if trimmed:
+                            condition = trimmed
+                if condition:
+                    parts[segment_key] = condition
+            return parts
+
         today_metrics: dict[str, Any] = {}
         yesterday_metrics: dict[str, Any] = {}
         if city_snapshot:
@@ -11282,16 +11325,24 @@ class Bot:
             yesterday_condition = _extract_condition(
                 (city_snapshot.get("yesterday_day") or {}).get("weather_code")
             )
+            today_parts = _extract_part_conditions(city_snapshot.get("day"))
+            yesterday_parts = _extract_part_conditions(
+                city_snapshot.get("yesterday_day")
+            )
             today_metrics = {
                 "temperature": city_snapshot.get("trend_temperature_value"),
                 "wind_speed": city_snapshot.get("trend_wind_value"),
                 "condition": today_condition,
             }
+            if today_parts:
+                today_metrics["parts"] = today_parts
             yesterday_metrics = {
                 "temperature": city_snapshot.get("trend_temperature_previous_value"),
                 "wind_speed": city_snapshot.get("trend_wind_previous_value"),
                 "condition": yesterday_condition,
             }
+            if yesterday_parts:
+                yesterday_metrics["parts"] = yesterday_parts
         def _drop_empty(metrics: dict[str, Any]) -> dict[str, Any]:
             return {
                 key: value

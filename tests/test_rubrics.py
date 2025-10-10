@@ -1375,11 +1375,21 @@ async def test_flowers_preview_service_block(tmp_path):
                     "temperature": 6.0,
                     "wind_speed": 3.2,
                     "condition": "переменная облачность",
+                    "parts": {
+                        "morning": "ясно",
+                        "day": "переменная облачность",
+                        "evening": "пасмурно",
+                    },
                 },
                 "yesterday": {
                     "temperature": 4.0,
                     "wind_speed": 5.1,
                     "condition": "пасмурно",
+                    "parts": {
+                        "morning": "морось",
+                        "day": "пасмурно",
+                        "evening": "дождь",
+                    },
                 },
                 "sea": {"temperature": 9.0, "wave": 0.4},
             },
@@ -1400,11 +1410,21 @@ async def test_flowers_preview_service_block(tmp_path):
                 "temperature": 6.0,
                 "wind_speed": 3.2,
                 "condition": "переменная облачность",
+                "parts": {
+                    "morning": "ясно",
+                    "day": "переменная облачность",
+                    "evening": "пасмурно",
+                },
             },
             "yesterday": {
                 "temperature": 4.0,
                 "wind_speed": 5.1,
                 "condition": "пасмурно",
+                "parts": {
+                    "morning": "морось",
+                    "day": "пасмурно",
+                    "evening": "дождь",
+                },
             },
         },
         "weather_details": {
@@ -1414,11 +1434,21 @@ async def test_flowers_preview_service_block(tmp_path):
                 "temperature": 6.0,
                 "wind_speed": 3.2,
                 "condition": "переменная облачность",
+                "parts": {
+                    "morning": "ясно",
+                    "day": "переменная облачность",
+                    "evening": "пасмурно",
+                },
             },
             "yesterday": {
                 "temperature": 4.0,
                 "wind_speed": 5.1,
                 "condition": "пасмурно",
+                "parts": {
+                    "morning": "морось",
+                    "day": "пасмурно",
+                    "evening": "дождь",
+                },
             },
         },
         "previous_main_post_text": "Вчерашний текст",
@@ -1481,11 +1511,21 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
                 "temperature": 6.0,
                 "wind_speed": 3.0,
                 "condition": "дождь",
+                "parts": {
+                    "morning": "солнечно",
+                    "day": "пасмурно",
+                    "evening": "туман",
+                },
             },
             "yesterday": {
                 "temperature": 4.0,
                 "wind_speed": 5.0,
                 "condition": "дождь",
+                "parts": {
+                    "morning": "ливень",
+                    "day": "снег",
+                    "evening": "ветер",
+                },
             },
             "trend_indicators": [
                 {
@@ -1530,6 +1570,9 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path):
     assert '"temperature": 6.0' in user_prompt
     assert '"yesterday"' in user_prompt
     assert '"condition": "дождь"' in user_prompt
+    assert '"parts"' in user_prompt
+    assert '"morning": "солнечно"' in user_prompt
+    assert '"evening": "ветер"' in user_prompt
     assert '"trend_indicators"' in user_prompt
     assert '"metric": "temperature"' in user_prompt
     assert '"delta": 2.0' in user_prompt

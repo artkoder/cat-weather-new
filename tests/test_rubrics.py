@@ -6,7 +6,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from typing import Any
+from typing import Any, Sequence
 import random
 
 import pytest
@@ -877,6 +877,125 @@ async def test_flowers_preview_notifies_when_not_enough_assets(tmp_path):
 
     ok = await bot.publish_rubric("flowers", channel_id=-500)
     assert not ok
+    assert all(method != "sendMediaGroup" for method, _ in calls)
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_prepare_flowers_drop_retries_with_lower_limit(tmp_path, monkeypatch):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "channel_id": -500,
+        "assets": {"min": 5, "max": 5},
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+
+    rubric = bot.data.get_rubric_by_code("flowers")
+    assert rubric is not None
+
+    assets = [
+        _make_seasonal_asset(1, season="spring"),
+        _make_seasonal_asset(2, season="summer"),
+        _make_seasonal_asset(3, season="winter"),
+        _make_seasonal_asset(4, season="autumn"),
+        _make_seasonal_asset(5, season="spring"),
+    ]
+
+    monkeypatch.setattr(
+        bot.data,
+        "fetch_assets_by_vision_category",
+        lambda *args, **kwargs: assets,
+    )
+
+    attempt_log: list[tuple[int, int]] = []
+
+    def fake_filter(
+        candidates: Sequence[Asset], *, desired_count: int, max_count: int
+    ) -> tuple[list[Asset], dict[int, str]] | None:
+        attempt_log.append((desired_count, max_count))
+        if desired_count > 3:
+            return None
+        selection = list(candidates)[:desired_count]
+        seasons = {asset.id: "spring" for asset in selection}
+        return selection, seasons
+
+    monkeypatch.setattr(bot, "_filter_flower_assets_by_season", fake_filter)
+    monkeypatch.setattr(bot, "_compose_flowers_weather_block", lambda *a, **k: {})
+    monkeypatch.setattr(bot, "_build_flowers_plan", lambda *a, **k: ({}, {}))
+
+    async def fake_generate_flowers_copy(self, *args, **kwargs):
+        plan = kwargs.get("plan") or {}
+        plan_meta = kwargs.get("plan_meta") or {}
+        return "Привет", ["#тест"], plan, plan_meta
+
+    monkeypatch.setattr(bot, "_generate_flowers_copy", fake_generate_flowers_copy)
+
+    prepared = await bot._prepare_flowers_drop(rubric)
+
+    assert prepared is not None
+    selected_assets = prepared[0]
+    assert len(selected_assets) == 3
+    assert attempt_log.count((5, 5)) == 10
+    assert attempt_log.count((4, 4)) == 10
+    assert attempt_log[-1] == (3, 3)
+    assert len(attempt_log) == 21
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_flowers_publish_succeeds_with_reduced_assets(tmp_path, monkeypatch):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    config = {
+        "enabled": True,
+        "channel_id": -500,
+        "assets": {"min": 5, "max": 5},
+    }
+    _insert_rubric(bot, "flowers", config, rubric_id=1)
+
+    rubric = bot.data.get_rubric_by_code("flowers")
+    assert rubric is not None
+
+    assets = [
+        _make_seasonal_asset(1, season="spring"),
+        _make_seasonal_asset(2, season="spring"),
+        _make_seasonal_asset(3, season="spring"),
+        _make_seasonal_asset(4),
+        _make_seasonal_asset(5),
+    ]
+
+    monkeypatch.setattr(
+        bot.data,
+        "fetch_assets_by_vision_category",
+        lambda *args, **kwargs: assets,
+    )
+
+    monkeypatch.setattr(bot, "_compose_flowers_weather_block", lambda *a, **k: {})
+    monkeypatch.setattr(bot, "_build_flowers_plan", lambda *a, **k: ({}, {}))
+
+    async def fake_generate_flowers_copy(self, *args, **kwargs):
+        plan = kwargs.get("plan") or {}
+        plan_meta = kwargs.get("plan_meta") or {}
+        return "Привет", ["#тест"], plan, plan_meta
+
+    monkeypatch.setattr(bot, "_generate_flowers_copy", fake_generate_flowers_copy)
+
+    preview_calls: list[list[Asset]] = []
+
+    async def fake_send_preview(rubric_obj, chat_id, **kwargs):
+        preview_calls.append(list(kwargs.get("assets") or []))
+        return None
+
+    monkeypatch.setattr(bot, "_send_flowers_preview", fake_send_preview)
+
+    ok = await bot.publish_rubric("flowers", channel_id=-500, initiator_id=777)
+
+    assert ok is True
+    assert preview_calls, "Expected preview to be prepared"
+    assert len(preview_calls[0]) == 3
+    assert sorted(asset.id for asset in preview_calls[0]) == [1, 2, 3]
 
     await bot.close()
 

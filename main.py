@@ -2868,10 +2868,10 @@ class Bot:
         self,
         assets: Sequence[Asset],
         *,
-        min_count: int,
+        desired_count: int,
         max_count: int,
     ) -> tuple[list[Asset], dict[int, str]] | None:
-        if not assets:
+        if not assets or desired_count <= 0:
             return None
         asset_seasons: dict[int, str] = {}
         filtered_assets: list[Asset] = []
@@ -2881,7 +2881,7 @@ class Bot:
                 continue
             asset_seasons[asset.id] = season
             filtered_assets.append(asset)
-        if len(filtered_assets) < min_count:
+        if len(filtered_assets) < desired_count:
             return None
 
         unique_seasons = {asset_seasons[asset.id] for asset in filtered_assets}
@@ -2900,7 +2900,7 @@ class Bot:
                 for asset in filtered_assets
                 if asset_seasons.get(asset.id) in allowed_seasons
             ]
-            if len(selection) < min_count:
+            if len(selection) < desired_count:
                 continue
             selection = selection[:max_count]
             if not best_selection or len(selection) > len(best_selection):
@@ -8427,28 +8427,66 @@ class Bot:
             limit=max_count,
             random_order=True,
         )
-        if len(assets) < min_count:
+        candidate_assets = list(assets)
+        if len(candidate_assets) < min_count:
             logging.warning(
                 "Not enough assets for flowers rubric: have %s, need %s",
-                len(assets),
+                len(candidate_assets),
                 min_count,
             )
+        if not candidate_assets:
+            logging.warning("No assets available for flowers rubric")
             return None
-        filtered = self._filter_flower_assets_by_season(
-            assets,
-            min_count=min_count,
-            max_count=max_count,
-        )
-        if not filtered:
+        max_candidate_count = min(len(candidate_assets), max_count)
+        if max_candidate_count <= 0:
+            logging.warning("Unable to select flowers assets: empty candidate list")
+            return None
+        attempt_limit = 10
+        selected_assets: list[Asset] | None = None
+        asset_seasons: dict[int, str] | None = None
+        selected_target: int | None = None
+        for target_count in range(max_candidate_count, 0, -1):
+            attempts = 0
+            while attempts < attempt_limit:
+                attempts += 1
+                if attempts == 1:
+                    combination = candidate_assets[:]
+                else:
+                    subset_size = min(len(candidate_assets), max_count)
+                    if subset_size <= 0:
+                        break
+                    if subset_size == len(candidate_assets):
+                        combination = candidate_assets[:]
+                        random.shuffle(combination)
+                    else:
+                        combination = random.sample(candidate_assets, k=subset_size)
+                filtered = self._filter_flower_assets_by_season(
+                    combination,
+                    desired_count=target_count,
+                    max_count=target_count,
+                )
+                if filtered:
+                    selected_assets, asset_seasons = filtered
+                    selected_target = target_count
+                    break
+            if selected_assets:
+                break
+        if not selected_assets or not asset_seasons:
             logging.warning(
                 "Unable to assemble seasonal-consistent flowers assets: have seasons %s",
                 sorted({
                     self._resolve_asset_season(asset) or "unknown"
-                    for asset in assets
+                    for asset in candidate_assets
                 }),
             )
             return None
-        assets, asset_seasons = filtered
+        if selected_target is not None and selected_target < min_count:
+            logging.info(
+                "Falling back to %s flowers assets below configured minimum %s",
+                selected_target,
+                min_count,
+            )
+        assets = selected_assets
         file_ids: list[str] = []
         asset_kinds: list[str] = []
         conversion_map: dict[int, dict[str, Any]] = {}

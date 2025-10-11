@@ -34,8 +34,9 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
         tables = _table_names(conn)
         assert {"devices", "pairing_tokens", "nonces", "uploads"}.issubset(tables)
         upload_indexes = _index_names(conn, "uploads")
-        assert "idx_uploads_content_sha256" in upload_indexes
-        assert "idx_uploads_device_id" in upload_indexes
+        assert "uq_uploads_device_idempotency" in upload_indexes
+        assert "idx_uploads_device" in upload_indexes
+        assert "idx_uploads_status" in upload_indexes
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row

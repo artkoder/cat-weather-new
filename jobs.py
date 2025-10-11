@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import time
@@ -10,6 +11,8 @@ from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Dict
 
 import sqlite3
+
+from data_access import UPLOAD_IDEMPOTENCY_TTL_SECONDS
 
 JobHandler = Callable[["Job"], Awaitable[None]]
 
@@ -61,6 +64,8 @@ class JobQueue:
         self._running = False
         self._inflight: set[int] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._periodic_specs: list[tuple[float, Callable[[], Any], str | None]] = []
+        self._periodic_tasks: list[asyncio.Task] = []
 
     def register_handler(self, name: str, handler: JobHandler) -> None:
         self.handlers[name] = handler
@@ -90,6 +95,12 @@ class JobQueue:
         self._loader = asyncio.create_task(self._loader_loop())
         for _ in range(self.concurrency):
             self._workers.append(asyncio.create_task(self._worker_loop()))
+        for interval, callback, name in self._periodic_specs:
+            self._periodic_tasks.append(
+                asyncio.create_task(
+                    self._periodic_loop(interval, callback, name=name)
+                )
+            )
 
     async def stop(self) -> None:
         if not self._running:
@@ -107,12 +118,38 @@ class JobQueue:
         self._workers.clear()
         self._loader = None
         self._inflight.clear()
+        for task in self._periodic_tasks:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self._periodic_tasks.clear()
 
     async def _loader_loop(self) -> None:
         try:
             while self._running:
                 await self._load_due_jobs()
                 await asyncio.sleep(self.poll_interval)
+        except asyncio.CancelledError:
+            pass
+
+    async def _periodic_loop(
+        self,
+        interval: float,
+        callback: Callable[[], Any],
+        *,
+        name: str | None = None,
+    ) -> None:
+        label = name or getattr(callback, "__name__", repr(callback))
+        sleep_interval = interval if interval > 0 else self.poll_interval
+        try:
+            while self._running:
+                try:
+                    result = callback()
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception:
+                    logging.exception("Periodic task %s failed", label)
+                await asyncio.sleep(sleep_interval)
         except asyncio.CancelledError:
             pass
 
@@ -339,3 +376,60 @@ class JobQueue:
                     "Dispatched job %s (%s) to worker queue", job.id, job.name
                 )
         return job_id
+
+    def add_periodic_task(
+        self,
+        interval: float,
+        callback: Callable[[], Any],
+        *,
+        name: str | None = None,
+    ) -> None:
+        """Register a coroutine or callable to run at a fixed interval."""
+
+        spec = (max(interval, 0.0), callback, name)
+        self._periodic_specs.append(spec)
+        if self._running:
+            interval_value, cb, cb_name = spec
+            self._periodic_tasks.append(
+                asyncio.create_task(
+                    self._periodic_loop(interval_value, cb, name=cb_name)
+                )
+            )
+
+
+async def cleanup_expired_records(
+    conn: sqlite3.Connection,
+) -> dict[str, int]:
+    """Remove expired pairing tokens, nonces and stale upload idempotency guards."""
+
+    now = datetime.utcnow()
+    iso_now = now.isoformat()
+    cutoff = (now - timedelta(seconds=UPLOAD_IDEMPOTENCY_TTL_SECONDS)).isoformat()
+    tokens_deleted = conn.execute(
+        "DELETE FROM pairing_tokens WHERE expires_at <= ?",
+        (iso_now,),
+    ).rowcount
+    nonces_deleted = conn.execute(
+        "DELETE FROM nonces WHERE expires_at <= ?",
+        (iso_now,),
+    ).rowcount
+    uploads_deleted = conn.execute(
+        """
+        DELETE FROM uploads
+        WHERE status IN ('done', 'failed')
+          AND updated_at <= ?
+        """,
+        (cutoff,),
+    ).rowcount
+    conn.commit()
+    logging.debug(
+        "Periodic cleanup removed %s pairing tokens, %s nonces and %s uploads",
+        tokens_deleted,
+        nonces_deleted,
+        uploads_deleted,
+    )
+    return {
+        "pairing_tokens": tokens_deleted,
+        "nonces": nonces_deleted,
+        "uploads": uploads_deleted,
+    }

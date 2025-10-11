@@ -40,7 +40,7 @@ from flowers_patterns import (
     FlowerPattern,
     load_flowers_knowledge,
 )
-from jobs import Job, JobDelayed, JobQueue
+from jobs import Job, JobDelayed, JobQueue, cleanup_expired_records
 from openai_client import OpenAIClient
 from supabase_client import SupabaseClient
 from weather_migration import migrate_weather_publish_channels
@@ -755,6 +755,11 @@ class Bot:
         self.jobs.register_handler("ingest", self._job_ingest)
         self.jobs.register_handler("vision", self._job_vision)
         self.jobs.register_handler("publish_rubric", self._job_publish_rubric)
+        self.jobs.add_periodic_task(
+            300,
+            lambda: cleanup_expired_records(self.db),
+            name="cleanup_expired_records",
+        )
         self.openai = OpenAIClient(os.getenv("4O_API_KEY"))
         self.supabase = SupabaseClient()
         self._model_limits = self._load_model_limits()

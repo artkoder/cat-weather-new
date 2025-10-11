@@ -13,6 +13,11 @@ _UNSET = object()
 import sqlite3
 
 
+PAIRING_TOKEN_TTL_SECONDS = 600
+NONCE_TTL_SECONDS = 600
+UPLOAD_IDEMPOTENCY_TTL_SECONDS = 24 * 3600
+
+
 @dataclass
 class Asset:
     id: int
@@ -1451,4 +1456,202 @@ class DataAccess:
             last_error=row["last_error"],
             created_at=created_at,
             updated_at=updated_at,
+        )
+
+
+def create_device(
+    conn: sqlite3.Connection,
+    *,
+    device_id: str,
+    user_id: int,
+    name: str,
+) -> None:
+    """Insert or update a device record."""
+
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """
+        INSERT INTO devices (id, user_id, name, created_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            user_id=excluded.user_id,
+            name=excluded.name,
+            revoked_at=NULL
+        """,
+        (device_id, user_id, name, now, now),
+    )
+
+
+def get_device(conn: sqlite3.Connection, *, device_id: str) -> sqlite3.Row | None:
+    """Return a device row or None if missing."""
+
+    cur = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,))
+    return cur.fetchone()
+
+
+def touch_device(conn: sqlite3.Connection, *, device_id: str) -> bool:
+    """Update the last_seen_at timestamp for a device."""
+
+    now = datetime.utcnow().isoformat()
+    cur = conn.execute(
+        "UPDATE devices SET last_seen_at=? WHERE id=?",
+        (now, device_id),
+    )
+    return cur.rowcount > 0
+
+
+def create_pairing_token(
+    conn: sqlite3.Connection,
+    *,
+    code: str,
+    user_id: int,
+    device_name: str,
+    ttl_sec: int = PAIRING_TOKEN_TTL_SECONDS,
+) -> None:
+    """Create or replace a pairing token for attaching a device."""
+
+    now = datetime.utcnow()
+    ttl = max(int(ttl_sec), 0)
+    expires_at = (now + timedelta(seconds=ttl)).isoformat()
+    conn.execute(
+        """
+        INSERT INTO pairing_tokens (code, user_id, device_name, created_at, expires_at, used_at)
+        VALUES (?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(code) DO UPDATE SET
+            user_id=excluded.user_id,
+            device_name=excluded.device_name,
+            created_at=excluded.created_at,
+            expires_at=excluded.expires_at,
+            used_at=NULL
+        """,
+        (code, user_id, device_name, now.isoformat(), expires_at),
+    )
+
+
+def consume_pairing_token(
+    conn: sqlite3.Connection,
+    *,
+    code: str,
+) -> tuple[int, str] | None:
+    """Mark a pairing token as used and return its payload."""
+
+    cur = conn.execute(
+        "SELECT user_id, device_name, expires_at, used_at FROM pairing_tokens WHERE code=?",
+        (code,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    if isinstance(row, sqlite3.Row):
+        user_id = int(row["user_id"])
+        device_name = str(row["device_name"])
+        expires_at_raw = row["expires_at"]
+        used_at_raw = row["used_at"]
+    else:
+        user_id = int(row[0])
+        device_name = str(row[1])
+        expires_at_raw = row[2]
+        used_at_raw = row[3]
+    if used_at_raw:
+        return None
+    now = datetime.utcnow()
+    try:
+        expires_at = datetime.fromisoformat(str(expires_at_raw))
+    except ValueError:
+        expires_at = now
+    if expires_at <= now:
+        return None
+    updated = conn.execute(
+        """
+        UPDATE pairing_tokens
+        SET used_at=?
+        WHERE code=? AND used_at IS NULL AND expires_at>?
+        """,
+        (now.isoformat(), code, now.isoformat()),
+    )
+    if updated.rowcount == 0:
+        return None
+    return user_id, device_name
+
+
+def insert_upload(
+    conn: sqlite3.Connection,
+    *,
+    id: str,
+    device_id: str,
+    idempotency_key: str,
+) -> str:
+    """Insert an upload row respecting idempotency."""
+
+    now = datetime.utcnow().isoformat()
+    try:
+        conn.execute(
+            """
+            INSERT INTO uploads (id, device_id, idempotency_key, status, error, file_ref, created_at, updated_at)
+            VALUES (?, ?, ?, 'queued', NULL, NULL, ?, ?)
+            """,
+            (id, device_id, idempotency_key, now, now),
+        )
+        return id
+    except sqlite3.IntegrityError as exc:
+        message = str(exc)
+        if (
+            "uploads.device_id" in message and "idempotency_key" in message
+        ) or "uq_uploads_device_idempotency" in message:
+            cur = conn.execute(
+                "SELECT id FROM uploads WHERE device_id=? AND idempotency_key=?",
+                (device_id, idempotency_key),
+            )
+            existing = cur.fetchone()
+            if not existing:
+                raise
+            if isinstance(existing, sqlite3.Row):
+                return str(existing["id"])
+            return str(existing[0])
+        raise
+
+
+def set_upload_status(
+    conn: sqlite3.Connection,
+    *,
+    id: str,
+    status: str,
+    error: str | None = None,
+) -> None:
+    """Update the status of an upload enforcing valid transitions."""
+
+    valid_statuses = {"queued", "processing", "failed", "done"}
+    if status not in valid_statuses:
+        raise ValueError(f"Unsupported upload status: {status}")
+    cur = conn.execute("SELECT status FROM uploads WHERE id=?", (id,))
+    row = cur.fetchone()
+    if not row:
+        raise ValueError(f"Upload {id} not found")
+    if isinstance(row, sqlite3.Row):
+        current = str(row["status"])
+    else:
+        current = str(row[0])
+    if current == status:
+        if status in {"done", "failed"}:
+            return
+        return
+    transitions = {
+        "queued": {"processing"},
+        "processing": {"done", "failed"},
+        "done": set(),
+        "failed": set(),
+    }
+    allowed = transitions.get(current)
+    if not allowed or status not in allowed:
+        raise ValueError(f"Invalid status transition {current!r} -> {status!r}")
+    now = datetime.utcnow().isoformat()
+    if status == "failed":
+        conn.execute(
+            "UPDATE uploads SET status=?, error=?, updated_at=? WHERE id=?",
+            (status, error, now, id),
+        )
+    else:
+        conn.execute(
+            "UPDATE uploads SET status=?, error=NULL, updated_at=? WHERE id=?",
+            (status, now, id),
         )

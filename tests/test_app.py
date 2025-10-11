@@ -193,6 +193,57 @@ async def test_channel_tracking(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pair_command_generates_token(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    calls = []
+
+    async def dummy(method, data=None):
+        calls.append((method, data))
+        return {"ok": True}
+
+    bot.api_request = dummy  # type: ignore
+    await bot.start()
+
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+    calls.clear()
+
+    await bot.handle_update({"message": {"text": "/pair", "from": {"id": 1}}})
+    assert calls[-1][0] == "sendMessage"
+    assert "Код для привязки" in calls[-1][1]["text"]
+
+    row = bot.db.execute(
+        "SELECT code, used_at FROM pairing_tokens WHERE user_id=?", (1,)
+    ).fetchone()
+    assert row is not None
+    assert row["used_at"] is None
+    initial_code = row["code"]
+
+    calls.clear()
+    await bot.handle_update({"message": {"text": "/pair", "from": {"id": 1}}})
+    assert calls[-1][0] == "sendMessage"
+    assert "Активный код" in calls[-1][1]["text"]
+    assert initial_code in calls[-1][1]["text"]
+
+    query = {
+        "id": "regen-1",
+        "from": {"id": 1},
+        "data": "pairing_regen",
+        "message": {"message_id": 42, "chat": {"id": 1}},
+    }
+    await bot.handle_callback(query)
+
+    assert any(method == "answerCallbackQuery" for method, _ in calls)
+    new_row = bot.db.execute(
+        "SELECT code FROM pairing_tokens WHERE user_id=?", (1,)
+    ).fetchone()
+    assert new_row is not None
+    assert new_row["code"] != initial_code
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_schedule_flow(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
 

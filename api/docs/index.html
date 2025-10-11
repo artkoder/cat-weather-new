@@ -49,9 +49,11 @@
     <header>
       <h1>Cat Weather Mobile API</h1>
       <p>
-        Requests must include HMAC headers (`X-Device-Id`, `X-Timestamp`, `X-Nonce`, `X-Content-SHA256`,
+        Signed requests must include the HMAC headers (`X-Device-Id`, `X-Timestamp`, `X-Nonce`,
         `X-Signature`) and respect the ±5 minute clock skew window. Nonces are single-use to prevent replay
-        attacks. The canonical string to sign is <code>method|path|timestamp|nonce|content_sha256</code>.
+        attacks. The canonical string to sign is <code>method|path|timestamp|nonce|content_sha256</code>. The
+        <code>POST /v1/devices/attach</code> onboarding endpoint is public and rate-limited because it issues the
+        device credentials used for subsequent signed calls.
       </p>
     </header>
     <main>

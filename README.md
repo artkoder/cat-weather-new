@@ -28,6 +28,17 @@ The backend consumes the public API contract via the `api/contract` git submodul
 - **Admin workflow**. Superadmins manage user access, asset channel binding and rubric schedules directly inside Telegram via commands and inline buttons. The admin interface also exposes manual approval queues and quick status messages for rubric runs.
 - **Operations guardrails**. OpenAI usage is rate-limited per model, reverse geocoding calls Nominatim with throttling, and each rubric publication is persisted with metadata for auditing through the admin tools.
 
+## Operations
+
+### Healthcheck
+
+- `GET /v1/health` returns the service status for Fly.io/Kubernetes probes, uptime monitoring and e2e tests.
+- A `200 OK` response means the SQLite connection, job queue metrics and Telegram `getMe` call all succeeded.
+- A `207 Multi-Status` response indicates the bot is running in dry-run mode (`TELEGRAM_BOT_TOKEN=dummy`); Telegram connectivity is skipped but database and queue checks must still pass.
+- A `503 Service Unavailable` response surfaces failures from any mandatory dependency and includes a short `error` string in the corresponding `checks` entry.
+- The payload includes the resolved `version` (from `APP_VERSION` or `CHANGELOG.md`), UTC timestamp (`now`), process uptime (`uptime_s`), per-check latencies and queue counters (`pending`, `active`, `failed`).
+- Each call emits a `HEALTH ... status=...` log line summarizing the probe so operators can trace latency regressions or dependency failures quickly.
+
 ## Operator Interface
 
 ### Access & governance

@@ -3,6 +3,10 @@
 ## Summary
 [Полную историю изменений см. в `CHANGELOG.md`](CHANGELOG.md).
 
+- [API reference](api/docs/index.html)
+
+Closes #123.
+
 - **Asset ingestion**. The bot listens to the dedicated recognition channel for new submissions while weather-ready assets live in a separate storage channel. Every photo must contain GPS EXIF data so the bot can resolve the city through Nominatim; authors without coordinates receive an automatic reminder. The pipeline also persists the original EXIF capture timestamp, reuses it when inferring seasonal context and surfaces the recorded date inside the operator info block.
 - **Recognition pipeline**. After ingestion the asynchronous job queue schedules a `vision` task that classifies the photo with OpenAI `gpt-4o-mini`, storing the rubric category alongside architectural style, framing notes, seasonal context, detailed weather and detected flowers while respecting per-model daily token quotas configured via environment variables. Before each OpenAI call the bot strictifies the JSON schema—enforcing `required` lists, propagating `null`-permitted types and setting `additionalProperties: false`—so `/v1/responses` stays happy when `strict: true` is enabled. Operators should expect nullable values in payload fields that were previously plain primitives. Document uploads are automatically rendered into photo assets before they reach the publishing queue.
 - **Rubric automation**. Two daily rubrics are supported out of the box: `flowers` builds its palette strictly from vision outputs, threads daypart weather context into the greeting, preserves per-photo descriptions, injects weather as numeric metrics plus plain-language conditions (no raw provider codes) and spells out the latest `gpt-4o` prompting rules directly in the request payload; `guess_arch` prepares a numbered architecture quiz with optional overlays and weather context. Both rubrics consume recognized assets and clean them up after publishing, auto-initialize on first run and are fully managed through the `/rubrics` inline dashboard.

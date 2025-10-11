@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Cat Weather Mobile API Reference</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        margin: 0;
+        font-family: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      header {
+        background: #111827;
+        color: #f9fafb;
+        padding: 1.5rem;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 1.75rem;
+        font-weight: 600;
+      }
+      header p {
+        margin: 0.5rem 0 0;
+        color: rgba(249, 250, 251, 0.8);
+        max-width: 60ch;
+      }
+      main {
+        height: calc(100vh - 140px);
+      }
+      .redoc-container {
+        height: 100%;
+      }
+      footer {
+        background: #1f2937;
+        color: rgba(229, 231, 235, 0.8);
+        padding: 1rem 1.5rem;
+        font-size: 0.875rem;
+      }
+      footer a {
+        color: #60a5fa;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Cat Weather Mobile API</h1>
+      <p>
+        Requests must include HMAC headers (`X-Device-Id`, `X-Timestamp`, `X-Nonce`, `X-Content-SHA256`,
+        `X-Signature`) and respect the ±5 minute clock skew window. Nonces are single-use to prevent replay
+        attacks. The canonical string to sign is <code>method|path|timestamp|nonce|content_sha256</code>.
+      </p>
+    </header>
+    <main>
+      <redoc spec-url="../openapi.yaml" class="redoc-container"></redoc>
+    </main>
+    <footer>
+      Generated with <a href="https://redocly.com/">Redoc</a>. Download the raw
+      <a href="../openapi.yaml">OpenAPI specification</a>.
+    </footer>
+    <script src="https://cdn.jsdelivr.net/npm/redoc@next/bundles/redoc.standalone.js"></script>
+  </body>
+</html>

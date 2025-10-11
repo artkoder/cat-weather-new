@@ -15,6 +15,7 @@ import re
 import sqlite3
 import tempfile
 import unicodedata
+from time import perf_counter
 from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone, time as dtime
 from pathlib import Path
@@ -48,6 +49,30 @@ if TYPE_CHECKING:
     from openai_client import OpenAIResponse
 
 logging.basicConfig(level=logging.INFO)
+
+
+def _read_version_from_changelog() -> str:
+    changelog_path = Path(__file__).resolve().parent / "CHANGELOG.md"
+    try:
+        with changelog_path.open("r", encoding="utf-8") as changelog:
+            for line in changelog:
+                line = line.strip()
+                if line.startswith("## ["):
+                    closing = line.find("]", 4)
+                    if closing == -1:
+                        continue
+                    version = line[4:closing].strip()
+                    if not version:
+                        continue
+                    if version.lower() == "unreleased":
+                        return "unreleased"
+                    return version
+    except FileNotFoundError:
+        logging.warning("CHANGELOG.md not found while resolving version")
+    return "dev"
+
+
+APP_VERSION = os.getenv("APP_VERSION") or _read_version_from_changelog()
 
 # Default database path points to /data which is mounted as a Fly.io volume.
 # This ensures information like registered channels and scheduled posts
@@ -92,6 +117,15 @@ WMO_EMOJI = {
     96: "\u26c8\ufe0f",
     99: "\u26c8\ufe0f",
 }
+
+
+def _isoformat_utc(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
 
 def weather_emoji(code: int, is_day: int | None) -> str:
     emoji = WMO_EMOJI.get(code, "")
@@ -12285,6 +12319,124 @@ class Bot:
             pass
 
 
+async def health_handler(request: web.Request) -> web.Response:
+    bot: Bot = request.app["bot"]
+    started_at: datetime = request.app["started_at"]
+    version = request.app.get("version", APP_VERSION)
+
+    checks: dict[str, dict[str, Any]] = {}
+    status = 200
+    warnings: list[str] = []
+
+    # Database check
+    t0 = perf_counter()
+    try:
+        bot.db.execute("SELECT 1").fetchone()
+        latency_ms = (perf_counter() - t0) * 1000.0
+        checks["db"] = {"ok": True, "latency_ms": latency_ms}
+    except Exception as exc:  # pragma: no cover - defensive
+        checks["db"] = {"ok": False, "error": str(exc)}
+        status = 503
+
+    # Queue metrics
+    t0 = perf_counter()
+    try:
+        metrics = bot.jobs.metrics()
+        latency_ms = (perf_counter() - t0) * 1000.0
+        checks["queue"] = {"ok": True, **metrics, "latency_ms": latency_ms}
+    except Exception as exc:
+        checks["queue"] = {"ok": False, "error": str(exc)}
+        status = 503
+
+    # Telegram connectivity
+    t0 = perf_counter()
+    skipped = getattr(bot, "dry_run", False)
+    if skipped:
+        checks["telegram"] = {
+            "ok": True,
+            "method": "getMe",
+            "latency_ms": 0.0,
+            "skipped": True,
+        }
+        warnings.append("telegram check skipped (dry_run)")
+        if status == 200:
+            status = 207
+    else:
+        try:
+            response = await bot.api_request("getMe")
+            latency_ms = (perf_counter() - t0) * 1000.0
+            ok = bool(response.get("ok"))
+            telegram_check: dict[str, Any] = {
+                "ok": ok,
+                "method": "getMe",
+                "latency_ms": latency_ms,
+                "skipped": False,
+            }
+            if not ok:
+                telegram_check["error"] = response.get(
+                    "description", "telegram api returned ok=false"
+                )
+                status = 503
+            checks["telegram"] = telegram_check
+        except Exception as exc:
+            latency_ms = (perf_counter() - t0) * 1000.0
+            checks["telegram"] = {
+                "ok": False,
+                "method": "getMe",
+                "latency_ms": latency_ms,
+                "error": str(exc),
+                "skipped": False,
+            }
+            status = 503
+
+    now_utc = datetime.now(timezone.utc)
+    started = started_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    uptime_s = max(0.0, (now_utc - started).total_seconds())
+
+    payload = {
+        "ok": status in (200, 207),
+        "version": version,
+        "now": _isoformat_utc(now_utc),
+        "uptime_s": uptime_s,
+        "checks": checks,
+        "warnings": warnings,
+    }
+
+    log_parts: list[str] = []
+    db_check = checks.get("db", {})
+    if db_check.get("ok"):
+        log_parts.append(f"db=ok({db_check['latency_ms']:.1f}ms)")
+    else:
+        log_parts.append(f"db=fail({db_check.get('error', 'unknown')})")
+
+    queue_check = checks.get("queue", {})
+    if queue_check.get("ok"):
+        log_parts.append(
+            "queue=ok(p={pending} a={active} f={failed},{latency:.1f}ms)".format(
+                pending=queue_check.get("pending", 0),
+                active=queue_check.get("active", 0),
+                failed=queue_check.get("failed", 0),
+                latency=queue_check.get("latency_ms", 0.0),
+            )
+        )
+    else:
+        log_parts.append(f"queue=fail({queue_check.get('error', 'unknown')})")
+
+    telegram_check = checks.get("telegram", {})
+    if telegram_check.get("skipped"):
+        log_parts.append("tg=skip")
+    elif telegram_check.get("ok"):
+        log_parts.append(f"tg=ok({telegram_check.get('latency_ms', 0.0):.1f}ms)")
+    else:
+        log_parts.append(f"tg=fail({telegram_check.get('error', 'unknown')})")
+
+    logging.info("HEALTH %s status=%s", " ".join(log_parts), status)
+
+    return web.json_response(payload, status=status)
+
+
 async def ensure_webhook(bot: Bot, base_url: str):
     expected = base_url.rstrip('/') + '/webhook'
     info = await bot.api_request('getWebhookInfo')
@@ -12323,8 +12475,11 @@ def create_app():
 
     bot = Bot(token, DB_PATH)
     app['bot'] = bot
+    app['started_at'] = datetime.now(timezone.utc)
+    app['version'] = APP_VERSION
 
     app.router.add_post('/webhook', handle_webhook)
+    app.router.add_get('/v1/health', health_handler)
 
     webhook_base = os.getenv("WEBHOOK_URL")
     if not webhook_base:

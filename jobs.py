@@ -65,6 +65,22 @@ class JobQueue:
     def register_handler(self, name: str, handler: JobHandler) -> None:
         self.handlers[name] = handler
 
+    def metrics(self) -> dict[str, int]:
+        """Return lightweight queue counters for health checks."""
+        rows = self.conn.execute(
+            """
+            SELECT status, COUNT(*) as count
+            FROM jobs_queue
+            WHERE status IN ('queued', 'delayed', 'running', 'failed')
+            GROUP BY status
+            """
+        ).fetchall()
+        counts = {str(row["status"]): int(row["count"]) for row in rows}
+        pending = counts.get("queued", 0) + counts.get("delayed", 0)
+        active = counts.get("running", 0)
+        failed = counts.get("failed", 0)
+        return {"pending": pending, "active": active, "failed": failed}
+
     async def start(self) -> None:
         if self._running:
             return

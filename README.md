@@ -39,6 +39,34 @@ The backend consumes the public API contract via the `api/contract` git submodul
 - The payload includes the resolved `version` (from `APP_VERSION` or `CHANGELOG.md`), UTC timestamp (`now`), process uptime (`uptime_s`), per-check latencies and queue counters (`pending`, `active`, `failed`).
 - Each call emits a `HEALTH ... status=...` log line summarizing the probe so operators can trace latency regressions or dependency failures quickly.
 
+### Storage schema
+
+- **devices** — stores hardware devices linked to Telegram users. Tracks creation time, optional last_seen timestamp and revocation markers.
+- **pairing_tokens** — short-lived attach codes that pair a device with a user-defined name. Tokens expire after 10 minutes and are burned on first use.
+- **nonces** — per-device anti-replay tokens with a 10-minute TTL. Old entries are automatically removed when they expire.
+- **uploads** — device upload ledger keyed by `(device_id, idempotency_key)` to enforce idempotency. Status transitions follow `queued → processing → done|failed`; failed rows keep the last error and completed entries remain for at most 24 hours to prevent duplicate retries.
+
+The job queue starts a periodic cleanup task that runs every five minutes. It purges expired pairing tokens and nonces and removes upload rows whose idempotency window (24 hours) has elapsed, keeping the database lean without manual intervention.
+
+### Running migrations
+
+Apply schema migrations whenever the service boots or before running tests:
+
+```bash
+python - <<'PY'
+import sqlite3
+from main import apply_migrations
+
+conn = sqlite3.connect("/data/bot.db")
+conn.row_factory = sqlite3.Row
+apply_migrations(conn)
+conn.commit()
+conn.close()
+PY
+```
+
+Replace `/data/bot.db` with the desired SQLite path (for local development you can keep it under `./data`). The same helper executes SQL and Python-based migrations in order and records their application in `schema_migrations`.
+
 ## Operator Interface
 
 ### Access & governance

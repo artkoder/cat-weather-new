@@ -9,6 +9,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Verify API contract submodule
+        run: |
+          if [ ! -f api/contract/openapi.yaml ]; then
+            echo "::error::api/contract/openapi.yaml is missing"
+            exit 1
+          fi
+          tag=$(git -C api/contract describe --tags --exact-match HEAD 2>/dev/null || true)
+          if [ "$tag" != "v1.0.0" ]; then
+            echo "::error::api/contract must be pinned to tag v1.0.0 (current: ${tag:-<none>})"
+            exit 1
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'

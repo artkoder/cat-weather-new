@@ -14,11 +14,13 @@ jobs:
           fetch-depth: 0
       - name: Verify API contract submodule
         run: |
-          if [ ! -f api/contract/openapi.yaml ]; then
-            echo "::error::api/contract/openapi.yaml is missing"
+          CONTRACT=api/contract/openapi/openapi.yaml
+          if [ ! -f "$CONTRACT" ]; then
+            echo "::error::${CONTRACT} is missing"
+            echo "Tree for debugging:" && ls -la api/contract && echo && ls -la api/contract/openapi || true
             exit 1
           fi
-          tag=$(git -C api/contract describe --tags --exact-match HEAD 2>/dev/null || true)
+          tag="$(git -C api/contract describe --tags --exact-match HEAD 2>/dev/null || true)"
           if [ "$tag" != "v1.0.0" ]; then
             echo "::error::api/contract must be pinned to tag v1.0.0 (current: ${tag:-<none>})"
             exit 1

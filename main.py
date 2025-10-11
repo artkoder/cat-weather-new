@@ -8445,10 +8445,13 @@ class Bot:
         selected_assets: list[Asset] | None = None
         asset_seasons: dict[int, str] | None = None
         selected_target: int | None = None
+        total_attempts = 0
+        recorded_attempts: int | None = None
         for target_count in range(max_candidate_count, 0, -1):
             attempts = 0
             while attempts < attempt_limit:
                 attempts += 1
+                total_attempts += 1
                 if attempts == 1:
                     combination = candidate_assets[:]
                 else:
@@ -8468,6 +8471,7 @@ class Bot:
                 if filtered:
                     selected_assets, asset_seasons = filtered
                     selected_target = target_count
+                    recorded_attempts = total_attempts
                     break
             if selected_assets:
                 break
@@ -8518,6 +8522,8 @@ class Bot:
             instructions=instructions,
             asset_seasons=asset_seasons,
         )
+        if isinstance(plan_meta, dict):
+            plan_meta["photo_selection_attempts"] = recorded_attempts or total_attempts
         greeting, hashtags, plan, plan_meta = await self._generate_flowers_copy(
             rubric,
             assets,
@@ -9151,6 +9157,20 @@ class Bot:
                 if fallback_block == instructions_block:
                     fallback_block = None
             _add_section(instructions_block, 2, fallback=fallback_block)
+        attempts_raw = state.get("photo_selection_attempts")
+        attempts_count: int | None = None
+        if isinstance(attempts_raw, int):
+            attempts_count = attempts_raw
+        elif isinstance(attempts_raw, float):
+            if math.isfinite(attempts_raw):
+                attempts_count = int(round(attempts_raw))
+        elif isinstance(attempts_raw, str):
+            try:
+                attempts_count = int(attempts_raw.strip())
+            except ValueError:
+                attempts_count = None
+        if attempts_count and attempts_count > 0:
+            _add_section(f"Попытки подбора фото: {attempts_count}", 2)
         channels: list[str] = []
         main_target = self._resolve_flowers_target(state, to_test=False)
         if main_target is not None:
@@ -9483,6 +9503,19 @@ class Bot:
         plan_request_text = str(prompt_payload.get("request_text") or "")
         plan_prompt_length = prompt_payload.get("prompt_length")
         plan_prompt_fallback = bool(prompt_payload.get("used_fallback"))
+        selection_attempts: int | None = None
+        if isinstance(plan_meta, Mapping):
+            attempts_raw = plan_meta.get("photo_selection_attempts")
+            if isinstance(attempts_raw, int):
+                if attempts_raw > 0:
+                    selection_attempts = attempts_raw
+            elif isinstance(attempts_raw, str):
+                try:
+                    parsed_attempts = int(attempts_raw.strip())
+                except ValueError:
+                    parsed_attempts = None
+                if parsed_attempts and parsed_attempts > 0:
+                    selection_attempts = parsed_attempts
         weather_details: dict[str, Any] | None = None
         if isinstance(weather_block, dict):
             weather_details = {
@@ -9582,6 +9615,7 @@ class Bot:
             "default_channel_id": int(default_channel),
             "default_channel_type": "test" if test_requested else "main",
             "plan_meta": plan_meta or {},
+            "photo_selection_attempts": selection_attempts,
         }
         normalized_caption = str(preview_caption or "")
         response, remaining_conversion = await self._send_flowers_media_bundle(

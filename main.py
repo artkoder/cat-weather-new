@@ -7,6 +7,7 @@ import contextlib
 import html
 import json
 import logging
+import base64
 import math
 import mimetypes
 import os
@@ -14,6 +15,7 @@ import random
 import re
 import sqlite3
 import tempfile
+import time
 import unicodedata
 from time import perf_counter
 from copy import deepcopy
@@ -23,6 +25,8 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from typing import Any, BinaryIO, Iterable, Mapping, Sequence, TYPE_CHECKING, Callable
+from collections import deque
+from uuid import uuid4
 
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -34,7 +38,14 @@ except Exception:  # pragma: no cover - fallback when LittleCMS is unavailable
     ImageCms = None  # type: ignore[assignment]
 import piexif
 
-from data_access import Asset, DataAccess, Rubric
+from data_access import (
+    Asset,
+    DataAccess,
+    Rubric,
+    create_device,
+    create_pairing_token,
+    consume_pairing_token,
+)
 from api.security import create_hmac_middleware
 from flowers_patterns import (
     FlowerKnowledgeBase,
@@ -193,6 +204,37 @@ WEATHER_ALLOWED_VALUES: set[str] = {
     "fog",
     "night",
 }
+
+_PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_PAIRING_DEFAULT_NAME = "Android"
+_ATTACH_RATE_LIMIT = 10
+_ATTACH_RATE_WINDOW_SECONDS = 60
+
+
+class SlidingWindowRateLimiter:
+    """Simple in-memory limiter using a sliding time window."""
+
+    def __init__(self, limit: int, window_seconds: int) -> None:
+        self._limit = max(0, int(limit))
+        self._window = max(0, int(window_seconds))
+        self._hits: dict[str, deque[float]] = {}
+        self._lock = asyncio.Lock()
+
+    async def allow(self, key: str) -> bool:
+        """Return True when the request should proceed for the given key."""
+
+        if self._limit == 0:
+            return False
+        now = time.monotonic()
+        window_start = now - self._window
+        async with self._lock:
+            bucket = self._hits.setdefault(key, deque())
+            while bucket and bucket[0] <= window_start:
+                bucket.popleft()
+            if len(bucket) >= self._limit:
+                return False
+            bucket.append(now)
+            return True
 
 MARINE_TAG_SYNONYMS: set[str] = {
     "sea",
@@ -747,6 +789,7 @@ class Bot:
         for stmt in CREATE_TABLES:
             self.db.execute(stmt)
         self.db.commit()
+        self._pairing_rng = random.SystemRandom()
         self.data = DataAccess(self.db)
         self._rubric_category_cache: dict[str, int] = {}
         self._ensure_default_rubrics()
@@ -844,6 +887,136 @@ class Bot:
             self.flowers_kb = load_flowers_knowledge()
         except Exception:
             logging.exception("Failed to load flowers knowledge base")
+
+    def _generate_pairing_code(self) -> str:
+        length = self._pairing_rng.randint(6, 8)
+        return "".join(self._pairing_rng.choice(_PAIRING_ALPHABET) for _ in range(length))
+
+    def _get_active_pairing_token(
+        self, user_id: int
+    ) -> tuple[str, datetime, str] | None:
+        now = datetime.utcnow()
+        cur = self.db.execute(
+            """
+            SELECT code, device_name, expires_at
+            FROM pairing_tokens
+            WHERE user_id=? AND used_at IS NULL
+            ORDER BY expires_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        if isinstance(row, sqlite3.Row):
+            code = str(row["code"])
+            device_name = str(row["device_name"])
+            expires_raw = row["expires_at"]
+        else:
+            code = str(row[0])
+            device_name = str(row[1])
+            expires_raw = row[2]
+        try:
+            expires_at = datetime.fromisoformat(str(expires_raw))
+        except (TypeError, ValueError):
+            return None
+        if expires_at <= now:
+            return None
+        return code, expires_at, device_name
+
+    def _issue_pairing_token(
+        self, user_id: int, device_name: str
+    ) -> tuple[str, datetime]:
+        normalized_name = (device_name or "").strip() or _PAIRING_DEFAULT_NAME
+        for _ in range(20):
+            code = self._generate_pairing_code()
+            cur = self.db.execute(
+                "SELECT user_id FROM pairing_tokens WHERE code=?",
+                (code,),
+            )
+            row = cur.fetchone()
+            if row:
+                existing_user = int(row["user_id"]) if isinstance(row, sqlite3.Row) else int(row[0])
+                if existing_user != user_id:
+                    continue
+            with self.db:
+                self.db.execute(
+                    "DELETE FROM pairing_tokens WHERE user_id=? AND used_at IS NULL",
+                    (user_id,),
+                )
+                create_pairing_token(
+                    self.db,
+                    code=code,
+                    user_id=user_id,
+                    device_name=normalized_name,
+                )
+            cur = self.db.execute(
+                "SELECT expires_at FROM pairing_tokens WHERE code=?",
+                (code,),
+            )
+            saved = cur.fetchone()
+            if saved:
+                expires_raw = saved["expires_at"] if isinstance(saved, sqlite3.Row) else saved[0]
+                try:
+                    expires_at = datetime.fromisoformat(str(expires_raw))
+                except (TypeError, ValueError):
+                    expires_at = datetime.utcnow() + timedelta(minutes=10)
+                logging.info(
+                    "PAIR code issued user=%s name=%s", user_id, normalized_name
+                )
+                return code, expires_at
+        raise RuntimeError("Failed to generate pairing token")
+
+    @staticmethod
+    def _format_pairing_message(
+        code: str, expires_at: datetime, existing: bool
+    ) -> str:
+        if existing:
+            remaining = max(0, int((expires_at - datetime.utcnow()).total_seconds()))
+            if remaining <= 60:
+                return (
+                    f"Активный код для привязки: {code}. Истекает менее чем через минуту. "
+                    "Введите код в приложении."
+                )
+            minutes = max(1, math.ceil(remaining / 60))
+            return (
+                f"Активный код для привязки: {code}. Истекает через {minutes} мин. "
+                "Введите код в приложении."
+            )
+        return (
+            f"Код для привязки: {code}. Действует 10 минут. Введите код в приложении."
+        )
+
+    async def _send_pairing_code_message(
+        self,
+        user_id: int,
+        code: str,
+        expires_at: datetime,
+        *,
+        existing: bool,
+        message: Mapping[str, Any] | None = None,
+    ) -> None:
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "Сгенерировать новый",
+                        "callback_data": "pairing_regen",
+                    }
+                ]
+            ]
+        }
+        payload = {
+            "chat_id": user_id,
+            "text": self._format_pairing_message(code, expires_at, existing),
+            "reply_markup": keyboard,
+        }
+        if message and message.get("message_id"):
+            payload["message_id"] = message["message_id"]
+            await self.api_request("editMessageText", payload)
+        else:
+            await self.api_request("sendMessage", payload)
 
     def _ensure_default_rubrics(self) -> None:
         created: list[str] = []
@@ -2908,10 +3081,15 @@ class Bot:
         self,
         assets: Sequence[Asset],
         *,
-        desired_count: int,
+        desired_count: int | None = None,
+        min_count: int | None = None,
         max_count: int,
     ) -> tuple[list[Asset], dict[int, str]] | None:
-        if not assets or desired_count <= 0:
+        target = desired_count if desired_count is not None else min_count
+        if target is None:
+            return None
+        required_count = int(target)
+        if not assets or required_count <= 0:
             return None
         asset_seasons: dict[int, str] = {}
         filtered_assets: list[Asset] = []
@@ -2921,7 +3099,7 @@ class Bot:
                 continue
             asset_seasons[asset.id] = season
             filtered_assets.append(asset)
-        if len(filtered_assets) < desired_count:
+        if len(filtered_assets) < required_count:
             return None
 
         unique_seasons = {asset_seasons[asset.id] for asset in filtered_assets}
@@ -2940,7 +3118,7 @@ class Bot:
                 for asset in filtered_assets
                 if asset_seasons.get(asset.id) in allowed_seasons
             ]
-            if len(selection) < desired_count:
+            if len(selection) < required_count:
                 continue
             selection = selection[:max_count]
             if not best_selection or len(selection) > len(best_selection):
@@ -4773,6 +4951,45 @@ class Bot:
             })
             return
 
+        if text.startswith('/pair') or text.startswith('/attach'):
+            if not self.is_authorized(user_id):
+                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Not authorized'})
+                return
+            parts = text.split(maxsplit=1)
+            requested_name = parts[1].strip() if len(parts) > 1 else ''
+            existing_token = self._get_active_pairing_token(user_id)
+            if existing_token and not requested_name:
+                code, expires_at, _ = existing_token
+                await self._send_pairing_code_message(
+                    user_id,
+                    code,
+                    expires_at,
+                    existing=True,
+                )
+                return
+            device_label = requested_name or (
+                existing_token[2] if existing_token else _PAIRING_DEFAULT_NAME
+            )
+            try:
+                code, expires_at = self._issue_pairing_token(user_id, device_label)
+            except RuntimeError:
+                logging.error('Failed to generate pairing code for user %s', user_id)
+                await self.api_request(
+                    'sendMessage',
+                    {
+                        'chat_id': user_id,
+                        'text': 'Не удалось сгенерировать код, попробуйте снова.',
+                    },
+                )
+                return
+            await self._send_pairing_code_message(
+                user_id,
+                code,
+                expires_at,
+                existing=False,
+            )
+            return
+
         if text.startswith('/add_user') and self.is_superadmin(user_id):
             parts = text.split()
             if len(parts) == 2:
@@ -5660,6 +5877,48 @@ class Bot:
     async def handle_callback(self, query):
         user_id = query['from']['id']
         data = query['data']
+        if data == 'pairing_regen':
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Недостаточно прав',
+                        'show_alert': True,
+                    },
+                )
+                return
+            message = query.get('message') or {}
+            existing = self._get_active_pairing_token(user_id)
+            device_label = existing[2] if existing else _PAIRING_DEFAULT_NAME
+            try:
+                code, expires_at = self._issue_pairing_token(user_id, device_label)
+            except RuntimeError:
+                logging.error('Failed to regenerate pairing code for user %s', user_id)
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Не удалось сгенерировать код',
+                        'show_alert': True,
+                    },
+                )
+                return
+            await self._send_pairing_code_message(
+                user_id,
+                code,
+                expires_at,
+                existing=False,
+                message=message,
+            )
+            await self.api_request(
+                'answerCallbackQuery',
+                {
+                    'callback_query_id': query['id'],
+                    'text': 'Новый код создан',
+                },
+            )
+            return
         if data.startswith('addch:') and user_id in self.pending:
             chat_id = int(data.split(':')[1])
             if 'selected' in self.pending[user_id]:
@@ -12457,6 +12716,90 @@ async def ensure_webhook(bot: Bot, base_url: str):
     else:
         logging.info('Webhook already registered at %s', current)
 
+
+async def attach_device(request: web.Request) -> web.Response:
+    app = request.app
+    bot: Bot = app['bot']
+    limiter: SlidingWindowRateLimiter = app['attach_rate_limiter']
+
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({'error': 'invalid_payload'}, status=400)
+
+    raw_code = payload.get('code')
+    code = str(raw_code or '').strip().upper()
+    raw_name = payload.get('name')
+    provided_name = str(raw_name).strip() if isinstance(raw_name, str) else ''
+
+    if not code or not re.fullmatch(r'[A-Z2-9]{6,8}', code):
+        logging.warning('DEVICE attach invalid format ip=%s', request.remote)
+        return web.json_response({'error': 'invalid_or_expired_code'}, status=400)
+
+    ip = request.remote or 'unknown'
+    if not await limiter.allow(f'ip:{ip}'):
+        logging.warning('DEVICE attach rate-limit ip=%s', ip)
+        return web.json_response(
+            {'error': 'rate_limited', 'message': 'Too many attempts. Try again later.'},
+            status=429,
+        )
+
+    conn = bot.db
+    now_iso = datetime.utcnow().isoformat()
+    cur = conn.execute(
+        """
+        SELECT user_id
+        FROM pairing_tokens
+        WHERE code=? AND used_at IS NULL AND expires_at>?
+        """,
+        (code, now_iso),
+    )
+    row = cur.fetchone()
+    if row:
+        user_for_limit = int(row['user_id']) if isinstance(row, sqlite3.Row) else int(row[0])
+        if not await limiter.allow(f'user:{user_for_limit}'):
+            logging.warning('DEVICE attach user rate-limit user=%s ip=%s', user_for_limit, ip)
+            return web.json_response(
+                {'error': 'rate_limited', 'message': 'Too many attempts. Try again later.'},
+                status=429,
+            )
+
+    with conn:
+        info = consume_pairing_token(conn, code=code)
+        if not info:
+            logging.warning('DEVICE attach invalid token ip=%s', ip)
+            return web.json_response({'error': 'invalid_or_expired_code'}, status=400)
+
+        user_id, default_name = info
+        effective_name = (
+            provided_name or str(default_name or '').strip() or _PAIRING_DEFAULT_NAME
+        )
+        device_id = str(uuid4())
+        secret = base64.urlsafe_b64encode(os.urandom(32)).decode('utf-8').rstrip('=')
+        create_device(
+            conn,
+            device_id=device_id,
+            user_id=user_id,
+            name=effective_name,
+            secret=secret,
+        )
+
+    logging.info(
+        'DEVICE attach success user=%s device=%s name=%s ip=%s',
+        user_id,
+        device_id,
+        effective_name,
+        ip,
+    )
+    return web.json_response(
+        {
+            'id': device_id,
+            'name': effective_name,
+            'secret': secret,
+        }
+    )
+
+
 async def handle_webhook(request):
     bot: Bot = request.app['bot']
     try:
@@ -12483,11 +12826,15 @@ def create_app():
     app['bot'] = bot
     app['started_at'] = datetime.now(timezone.utc)
     app['version'] = APP_VERSION
+    app['attach_rate_limiter'] = SlidingWindowRateLimiter(
+        _ATTACH_RATE_LIMIT, _ATTACH_RATE_WINDOW_SECONDS
+    )
 
     app.middlewares.append(create_hmac_middleware(bot.db))
 
     app.router.add_post('/webhook', handle_webhook)
     app.router.add_get('/v1/health', health_handler)
+    app.router.add_post('/v1/devices/attach', attach_device)
 
     webhook_base = os.getenv("WEBHOOK_URL")
     if not webhook_base:

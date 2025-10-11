@@ -116,52 +116,36 @@ components:
     DeviceAttachRequest:
       type: object
       properties:
-        pairingToken:
+        code:
           type: string
-          description: One-time token issued out of band (QR code, push or SMS) for device pairing.
-          example: 9c7998c8-c80d-476a-8b0f-410beee6ea50
-        deviceName:
+          description: One-time pairing code issued by the Telegram bot (`/pair`). Codes contain 6–8 characters from `A-Z2-9`.
+          example: ABC2DE
+        name:
           type: string
-          description: Human-friendly device name shown in the operator console.
-          example: iPhone 15 Pro
-        platform:
-          type: string
-          description: Mobile platform and version.
-          example: ios 17.5
-        pushToken:
-          type: string
-          description: Optional push notification token for downstream alerts.
-          example: f2df1bd4e7494264b0fc2ba73523c0c6
-        capabilities:
-          type: array
-          description: Optional list of feature flags supported by the client.
-          items:
-            type: string
-          example:
-            - uploads:v1
-            - status:live
+          description: Optional device name that will appear in the operator console. Defaults to `Android` when omitted.
+          example: Pixel 8
       required:
-        - pairingToken
-        - deviceName
-        - platform
-    DeviceAttachResponse:
+        - code
+    DeviceCredentials:
       type: object
+      description: Credentials returned after a successful device attach.
       properties:
-        deviceId:
+        id:
           type: string
+          format: uuid
           description: Identifier assigned to the device. Must be sent in the `X-Device-Id` header for signed requests.
-          example: dev_01hxr1qb4q9nm6z5q7aqzmkxa6
+          example: 3e3e5a28-5c5d-4f12-9e3c-4e4fa3f38d21
+        name:
+          type: string
+          description: Device name persisted by the backend.
+          example: Pixel 8
         secret:
           type: string
-          description: Lowercase hexadecimal shared secret (32 random bytes) used to compute request signatures.
-          example: NDZkNjRkNjQ2NDY0NjQ2NA==
-        expiresAt:
-          type: string
-          format: date-time
-          description: Expiration timestamp for the pairing secret if rotation is required.
-          example: 2025-01-31T12:00:00Z
+          description: Base64url-encoded shared secret (32 random bytes without padding) used to compute request signatures.
+          example: NzQ1Zl9nQ1Nmc0lWUWJtcm5nQ2xIZ0VjZTZhYzFYV0Q
       required:
-        - deviceId
+        - id
+        - name
         - secret
     DeviceRevokeRequest:
       type: object
@@ -380,7 +364,11 @@ paths:
     post:
       tags:
         - devices
-      summary: Attach a new device using a one-time pairing token
+      summary: Attach a new device using a Telegram pairing code
+      description: |
+        Exchanges a short code issued by the Telegram bot (`/pair`) for device credentials. The
+        endpoint is public (no HMAC headers required) but rate-limited to 10 requests per minute per
+        IP address and per Telegram user.
       operationId: attachDevice
       requestBody:
         required: true
@@ -392,52 +380,46 @@ paths:
               attach:
                 summary: Attach request
                 value:
-                  pairingToken: 9c7998c8-c80d-476a-8b0f-410beee6ea50
-                  deviceName: iPhone 15 Pro
-                  platform: ios 17.5
-                  pushToken: f2df1bd4e7494264b0fc2ba73523c0c6
-                  capabilities:
-                    - uploads:v1
+                  code: ABC2DE
+                  name: Pixel 8
       responses:
-        '201':
+        '200':
           description: Device paired successfully.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DeviceAttachResponse'
+                $ref: '#/components/schemas/DeviceCredentials'
               examples:
                 paired:
                   summary: Pairing response
                   value:
-                    deviceId: dev_01hxr1qb4q9nm6z5q7aqzmkxa6
-                    secret: NDZkNjRkNjQ2NDY0NjQ2NA==
-                    expiresAt: 2025-01-31T12:00:00Z
+                    id: 3e3e5a28-5c5d-4f12-9e3c-4e4fa3f38d21
+                    name: Pixel 8
+                    secret: NzQ1Zl9nQ1Nmc0lWUWJtcm5nQ2xIZ0VjZTZhYzFYV0Q
         '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          description: Pairing token invalid or expired.
+          description: Pairing code invalid, expired or already used.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               examples:
                 invalidPairing:
-                  summary: Token expired
+                  summary: Code invalid or expired
                   value:
-                    error: pairing_token_expired
-                    message: The provided pairing token has expired.
-        '409':
-          description: Device already attached.
+                    error: invalid_or_expired_code
+                    message: The pairing code is invalid, expired or already used.
+        '429':
+          description: Too many attempts from this IP or Telegram user.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
               examples:
-                alreadyAttached:
-                  summary: Device exists
+                throttled:
+                  summary: Rate limit exceeded
                   value:
-                    error: device_exists
-                    message: A device is already attached for this pairing token.
+                    error: rate_limited
+                    message: Too many attempts. Try again later.
         '500':
           description: Unexpected server error.
           content:

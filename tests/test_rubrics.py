@@ -1708,6 +1708,7 @@ async def test_flowers_preview_service_block(tmp_path):
             "banned_words": ["реклама"],
             "length": {"min": 420, "max": 520},
             "cities": ["Калининград"],
+            "photo_selection_attempts": 3,
         },
         "weather_block": {
             "city": {"name": "Калининград"},
@@ -1758,6 +1759,7 @@ async def test_flowers_preview_service_block(tmp_path):
             },
         },
         "previous_main_post_text": "Вчерашний текст",
+        "photo_selection_attempts": 3,
     }
 
     prompt_payload = bot._build_flowers_prompt_payload(state["plan"], state["plan_meta"])
@@ -1794,6 +1796,7 @@ async def test_flowers_preview_service_block(tmp_path):
     )
     assert "Море: вода 9°C, волна 0.4 м" in text
     assert "Предыдущая публикация: Вчерашний текст" in text
+    assert "Попытки подбора фото: 3" in text
 
     await bot.close()
 

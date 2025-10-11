@@ -1,0 +1,620 @@
+openapi: 3.1.0
+info:
+  title: Cat Weather Mobile API
+  version: 1.0.0
+  description: |
+    REST API used by the Cat Weather mobile application. Every signed request must include the
+    security headers described in the **Device signature** section. Timestamps are validated in
+    a ±5 minute window around the server clock and requests with a reused nonce are rejected to
+    protect against replay attacks.
+servers:
+  - url: https://api.example.com
+    description: Production
+  - url: https://staging.api.example.com
+    description: Staging
+tags:
+  - name: health
+    description: Service readiness endpoints.
+  - name: devices
+    description: Device onboarding and management.
+  - name: uploads
+    description: Asset upload workflow.
+components:
+  securitySchemes:
+    DeviceHMAC:
+      type: apiKey
+      in: header
+      name: X-Signature
+      description: |
+        HMAC-SHA256 signature produced with the shared device secret. Clients must also provide
+        the `X-Device-Id`, `X-Timestamp`, `X-Nonce` and `X-Content-SHA256` headers. The canonical
+        string to sign is `"method|path|timestamp|nonce|content_sha256"` (all lower-case HTTP
+        method, absolute path including path parameters, UNIX timestamp in seconds, nonce, and
+        lowercase hexadecimal SHA-256 digest of the request body). The signature is computed over
+        the canonical string using the shared secret and encoded as lowercase hexadecimal. Server
+        rejects signatures computed outside the ±5 minute timestamp window or with a reused nonce.
+  parameters:
+    XDeviceId:
+      name: X-Device-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        maxLength: 64
+      description: Unique identifier assigned to the device during the attach flow.
+    XTimestamp:
+      name: X-Timestamp
+      in: header
+      required: true
+      schema:
+        type: integer
+        format: int64
+      description: UNIX timestamp in seconds when the request was signed. Must be within ±5 minutes of the server clock.
+    XNonce:
+      name: X-Nonce
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 64
+      description: Per-request random nonce. Nonces cannot be reused within the ±5 minute timestamp window.
+    XContentSha:
+      name: X-Content-SHA256
+      in: header
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-f0-9]{64}$"
+      description: Lowercase hexadecimal SHA-256 digest of the UTF-8 encoded request body. Use the digest of an empty payload for GET requests.
+    XSignature:
+      name: X-Signature
+      in: header
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-f0-9]{64}$"
+      description: HMAC-SHA256 signature computed with the shared device secret.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        maxLength: 128
+      description: Unique key provided by the client to guarantee idempotent processing of upload requests. Keys are stored for 24 hours.
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        uptimeSeconds:
+          type: integer
+          format: int64
+          example: 86400
+      required:
+        - status
+    DeviceAttachRequest:
+      type: object
+      properties:
+        pairingToken:
+          type: string
+          description: One-time token issued out of band (QR code, push or SMS) for device pairing.
+          example: 9c7998c8-c80d-476a-8b0f-410beee6ea50
+        deviceName:
+          type: string
+          description: Human-friendly device name shown in the operator console.
+          example: iPhone 15 Pro
+        platform:
+          type: string
+          description: Mobile platform and version.
+          example: ios 17.5
+        pushToken:
+          type: string
+          description: Optional push notification token for downstream alerts.
+          example: f2df1bd4e7494264b0fc2ba73523c0c6
+        capabilities:
+          type: array
+          description: Optional list of feature flags supported by the client.
+          items:
+            type: string
+          example:
+            - uploads:v1
+            - status:live
+      required:
+        - pairingToken
+        - deviceName
+        - platform
+    DeviceAttachResponse:
+      type: object
+      properties:
+        deviceId:
+          type: string
+          description: Identifier assigned to the device. Must be sent in the `X-Device-Id` header for signed requests.
+          example: dev_01hxr1qb4q9nm6z5q7aqzmkxa6
+        secret:
+          type: string
+          description: Base64-encoded shared secret used to compute request signatures.
+          example: NDZkNjRkNjQ2NDY0NjQ2NA==
+        expiresAt:
+          type: string
+          format: date-time
+          description: Expiration timestamp for the pairing secret if rotation is required.
+          example: 2025-01-31T12:00:00Z
+      required:
+        - deviceId
+        - secret
+    DeviceRevokeRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: Free-form reason for revoking the device secret.
+          example: device reported lost by user
+      required:
+        - reason
+    UploadMetadata:
+      type: object
+      properties:
+        filename:
+          type: string
+          example: 2024-05-01_park.jpg
+        capturedAt:
+          type: string
+          format: date-time
+          description: Original capture timestamp from device or EXIF metadata.
+          example: 2024-05-01T07:45:33Z
+        location:
+          type: object
+          properties:
+            latitude:
+              type: number
+              format: double
+              example: 55.7558
+            longitude:
+              type: number
+              format: double
+              example: 37.6176
+        tags:
+          type: array
+          items:
+            type: string
+          example:
+            - overcast
+            - tulips
+      required:
+        - filename
+    UploadCreatedResponse:
+      type: object
+      properties:
+        uploadId:
+          type: string
+          example: upl_01hxr1r8v7ew1c3mzwmf8fa8c2
+        statusUrl:
+          type: string
+          format: uri
+          example: https://api.example.com/v1/uploads/upl_01hxr1r8v7ew1c3mzwmf8fa8c2/status
+      required:
+        - uploadId
+        - statusUrl
+    UploadStatusResponse:
+      type: object
+      properties:
+        uploadId:
+          type: string
+          example: upl_01hxr1r8v7ew1c3mzwmf8fa8c2
+        state:
+          type: string
+          enum:
+            - pending
+            - processing
+            - completed
+            - failed
+          example: completed
+        assetUrl:
+          type: string
+          format: uri
+          nullable: true
+          description: Public or signed URL of the processed asset, present when the state is `completed`.
+          example: https://cdn.example.com/assets/upl_01hxr1r8v7ew1c3mzwmf8fa8c2.jpg
+        failureCode:
+          type: string
+          nullable: true
+          description: Machine-readable failure reason (e.g., `upload.invalid_meta`).
+          example: upload.invalid_meta
+        failureMessage:
+          type: string
+          nullable: true
+          description: Human-readable error message.
+          example: EXIF timestamp is missing.
+        processedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp when processing finished.
+          example: 2024-05-01T08:02:10Z
+      required:
+        - uploadId
+        - state
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: invalid_signature
+        message:
+          type: string
+          example: Signature verification failed.
+        details:
+          type: object
+          nullable: true
+          additionalProperties: true
+      required:
+        - error
+        - message
+  responses:
+    UnauthorizedError:
+      description: Authentication failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalidSignature:
+              summary: Invalid signature
+              value:
+                error: invalid_signature
+                message: Signature verification failed.
+    ForbiddenError:
+      description: Authenticated but lacks permission.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            revoked:
+              summary: Device revoked
+              value:
+                error: device_revoked
+                message: Device secret has been revoked.
+    NotFoundError:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            missingUpload:
+              summary: Upload not found
+              value:
+                error: upload_not_found
+                message: Upload upl_01hxr1r8v7ew1c3mzwmf8fa8c2 does not exist.
+    ConflictError:
+      description: Resource conflict.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            reusedIdempotencyKey:
+              summary: Duplicate idempotency key
+              value:
+                error: idempotency_conflict
+                message: Request with the same Idempotency-Key already succeeded.
+    TooManyRequestsError:
+      description: Rate limit exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            throttled:
+              summary: Device throttled
+              value:
+                error: rate_limited
+                message: Too many requests, retry later.
+    ValidationError:
+      description: Request payload failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalidMeta:
+              summary: Invalid metadata
+              value:
+                error: validation_error
+                message: Field `capturedAt` must be an ISO-8601 string.
+paths:
+  /v1/health:
+    get:
+      tags:
+        - health
+      summary: Service health check
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                ok:
+                  summary: Healthy
+                  value:
+                    status: ok
+                    uptimeSeconds: 86400
+        '500':
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                outage:
+                  summary: Service unavailable
+                  value:
+                    error: internal_error
+                    message: Unable to read health metrics.
+  /v1/devices/attach:
+    post:
+      tags:
+        - devices
+      summary: Attach a new device using a one-time pairing token
+      operationId: attachDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceAttachRequest'
+            examples:
+              attach:
+                summary: Attach request
+                value:
+                  pairingToken: 9c7998c8-c80d-476a-8b0f-410beee6ea50
+                  deviceName: iPhone 15 Pro
+                  platform: ios 17.5
+                  pushToken: f2df1bd4e7494264b0fc2ba73523c0c6
+                  capabilities:
+                    - uploads:v1
+      responses:
+        '201':
+          description: Device paired successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceAttachResponse'
+              examples:
+                paired:
+                  summary: Pairing response
+                  value:
+                    deviceId: dev_01hxr1qb4q9nm6z5q7aqzmkxa6
+                    secret: NDZkNjRkNjQ2NDY0NjQ2NA==
+                    expiresAt: 2025-01-31T12:00:00Z
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          description: Pairing token invalid or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidPairing:
+                  summary: Token expired
+                  value:
+                    error: pairing_token_expired
+                    message: The provided pairing token has expired.
+        '409':
+          description: Device already attached.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                alreadyAttached:
+                  summary: Device exists
+                  value:
+                    error: device_exists
+                    message: A device is already attached for this pairing token.
+        '500':
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                outage:
+                  summary: Service unavailable
+                  value:
+                    error: internal_error
+                    message: Unable to attach device now.
+  /v1/devices/revoke:
+    post:
+      tags:
+        - devices
+      summary: Revoke the current device secret
+      operationId: revokeDevice
+      parameters:
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XContentSha'
+        - $ref: '#/components/parameters/XSignature'
+      security:
+        - DeviceHMAC: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceRevokeRequest'
+            examples:
+              revoke:
+                summary: Revoke request
+                value:
+                  reason: device reported lost by user
+      responses:
+        '204':
+          description: Device secret revoked. Client must re-attach before making signed requests.
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                outage:
+                  summary: Service unavailable
+                  value:
+                    error: internal_error
+                    message: Unable to revoke device now.
+  /v1/uploads:
+    post:
+      tags:
+        - uploads
+      summary: Upload a photo with metadata
+      operationId: createUpload
+      parameters:
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XContentSha'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      security:
+        - DeviceHMAC: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+                - meta
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Original photo file in JPEG or PNG format.
+                meta:
+                  type: string
+                  description: JSON-encoded metadata describing the asset.
+                  example: '{"filename":"2024-05-01_park.jpg","capturedAt":"2024-05-01T07:45:33Z"}'
+            encoding:
+              meta:
+                contentType: application/json
+            examples:
+              upload:
+                summary: Multipart upload
+                value:
+                  file: (binary)
+                  meta: '{"filename":"2024-05-01_park.jpg","capturedAt":"2024-05-01T07:45:33Z","tags":["overcast","tulips"]}'
+      responses:
+        '202':
+          description: Upload accepted for processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadCreatedResponse'
+              examples:
+                accepted:
+                  summary: Accepted
+                  value:
+                    uploadId: upl_01hxr1r8v7ew1c3mzwmf8fa8c2
+                    statusUrl: https://api.example.com/v1/uploads/upl_01hxr1r8v7ew1c3mzwmf8fa8c2/status
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                outage:
+                  summary: Service unavailable
+                  value:
+                    error: internal_error
+                    message: Unable to accept uploads right now.
+  /v1/uploads/{id}/status:
+    get:
+      tags:
+        - uploads
+      summary: Retrieve processing status for an upload
+      operationId: getUploadStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Upload identifier returned by the create upload endpoint.
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XContentSha'
+        - $ref: '#/components/parameters/XSignature'
+      security:
+        - DeviceHMAC: []
+      responses:
+        '200':
+          description: Upload status retrieved successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadStatusResponse'
+              examples:
+                completed:
+                  summary: Completed
+                  value:
+                    uploadId: upl_01hxr1r8v7ew1c3mzwmf8fa8c2
+                    state: completed
+                    assetUrl: https://cdn.example.com/assets/upl_01hxr1r8v7ew1c3mzwmf8fa8c2.jpg
+                    processedAt: 2024-05-01T08:02:10Z
+                processing:
+                  summary: In progress
+                  value:
+                    uploadId: upl_01hxr1r8v7ew1c3mzwmf8fa8c2
+                    state: processing
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/TooManyRequestsError'
+        '500':
+          description: Unexpected server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                outage:
+                  summary: Service unavailable
+                  value:
+                    error: internal_error
+                    message: Unable to retrieve upload status right now.

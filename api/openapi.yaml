@@ -5,8 +5,8 @@ info:
   description: |
     REST API used by the Cat Weather mobile application. Every signed request must include the
     security headers described in the **Device signature** section. Timestamps are validated in
-    a ±5 minute window around the server clock and requests with a reused nonce are rejected to
-    protect against replay attacks.
+    a ±5 minute window around the server clock and nonces are stored for 10 minutes to protect
+    against replay attacks.
 servers:
   - url: https://api.example.com
     description: Production
@@ -21,18 +21,43 @@ tags:
     description: Asset upload workflow.
 components:
   securitySchemes:
-    DeviceHMAC:
+    HmacSig:
       type: apiKey
       in: header
       name: X-Signature
       description: |
         HMAC-SHA256 signature produced with the shared device secret. Clients must also provide
-        the `X-Device-Id`, `X-Timestamp`, `X-Nonce` and `X-Content-SHA256` headers. The canonical
-        string to sign is `"method|path|timestamp|nonce|content_sha256"` (all lower-case HTTP
-        method, absolute path including path parameters, UNIX timestamp in seconds, nonce, and
-        lowercase hexadecimal SHA-256 digest of the request body). The signature is computed over
-        the canonical string using the shared secret and encoded as lowercase hexadecimal. Server
-        rejects signatures computed outside the ±5 minute timestamp window or with a reused nonce.
+        the `X-Device-Id`, `X-Timestamp` and `X-Nonce` headers. The canonical string to sign is
+        constructed as:
+
+        ```text
+        METHOD
+        PATH
+        QUERY
+        TIMESTAMP
+        NONCE
+        DEVICE_ID
+        BODY_SHA256
+        IDEMPOTENCY_KEY_OR_DASH
+        ```
+
+        where:
+
+        * `METHOD` is the upper-case HTTP verb.
+        * `PATH` is the absolute path without a trailing slash.
+        * `QUERY` is the percent-encoded query string with keys sorted lexicographically
+          (`-` when no query parameters are present).
+        * `TIMESTAMP` is the UNIX epoch seconds value sent in `X-Timestamp`.
+        * `NONCE` is the random value from `X-Nonce`.
+        * `DEVICE_ID` matches the value in `X-Device-Id`.
+        * `BODY_SHA256` is the lowercase hexadecimal SHA-256 digest of the raw request body
+          (hash of the empty string for empty bodies and multipart payloads included in full).
+        * `IDEMPOTENCY_KEY_OR_DASH` is the value of the `Idempotency-Key` header or `-` when the
+          header is absent.
+
+        The signature is computed over the canonical string using the shared secret and encoded as
+        lowercase hexadecimal. Requests must be received within a ±5 minute window from the
+        timestamp and nonces cannot be reused within a 10 minute TTL.
   parameters:
     XDeviceId:
       name: X-Device-Id
@@ -58,15 +83,7 @@ components:
         type: string
         minLength: 16
         maxLength: 64
-      description: Per-request random nonce. Nonces cannot be reused within the ±5 minute timestamp window.
-    XContentSha:
-      name: X-Content-SHA256
-      in: header
-      required: true
-      schema:
-        type: string
-        pattern: "^[a-f0-9]{64}$"
-      description: Lowercase hexadecimal SHA-256 digest of the UTF-8 encoded request body. Use the digest of an empty payload for GET requests.
+      description: Per-request random nonce. Nonces cannot be reused within the 10 minute nonce TTL enforced by the server.
     XSignature:
       name: X-Signature
       in: header
@@ -136,7 +153,7 @@ components:
           example: dev_01hxr1qb4q9nm6z5q7aqzmkxa6
         secret:
           type: string
-          description: Base64-encoded shared secret used to compute request signatures.
+          description: Lowercase hexadecimal shared secret (32 random bytes) used to compute request signatures.
           example: NDZkNjRkNjQ2NDY0NjQ2NA==
         expiresAt:
           type: string
@@ -443,10 +460,9 @@ paths:
         - $ref: '#/components/parameters/XDeviceId'
         - $ref: '#/components/parameters/XTimestamp'
         - $ref: '#/components/parameters/XNonce'
-        - $ref: '#/components/parameters/XContentSha'
         - $ref: '#/components/parameters/XSignature'
       security:
-        - DeviceHMAC: []
+        - HmacSig: []
       requestBody:
         required: true
         content:
@@ -491,11 +507,10 @@ paths:
         - $ref: '#/components/parameters/XDeviceId'
         - $ref: '#/components/parameters/XTimestamp'
         - $ref: '#/components/parameters/XNonce'
-        - $ref: '#/components/parameters/XContentSha'
         - $ref: '#/components/parameters/XSignature'
         - $ref: '#/components/parameters/IdempotencyKey'
       security:
-        - DeviceHMAC: []
+        - HmacSig: []
       requestBody:
         required: true
         content:
@@ -574,10 +589,9 @@ paths:
         - $ref: '#/components/parameters/XDeviceId'
         - $ref: '#/components/parameters/XTimestamp'
         - $ref: '#/components/parameters/XNonce'
-        - $ref: '#/components/parameters/XContentSha'
         - $ref: '#/components/parameters/XSignature'
       security:
-        - DeviceHMAC: []
+        - HmacSig: []
       responses:
         '200':
           description: Upload status retrieved successfully.

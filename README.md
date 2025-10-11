@@ -48,6 +48,12 @@ The backend consumes the public API contract via the `api/contract` git submodul
 
 The job queue starts a periodic cleanup task that runs every five minutes. It purges expired pairing tokens and nonces and removes upload rows whose idempotency window (24 hours) has elapsed, keeping the database lean without manual intervention.
 
+### Device secret lifecycle
+
+- **Generating secrets**. During `/v1/devices/attach` the backend issues a 32-byte random secret encoded as lowercase hex. For manual testing you can generate compatible values with `python -c "import secrets; print(secrets.token_hex(32))"`.
+- **Client storage**. Mobile clients must persist the `device.id` and `device.secret` pair inside an encrypted store (Android uses `EncryptedSharedPreferences`) and attach them to every signed request via the HMAC headers.
+- **Rotation and revoke**. Operators can call `POST /v1/devices/revoke` to invalidate the current secret. The backend immediately rejects signed calls with `device_revoked` forcing the client to repeat the attach flow and pick up the new secret. Secrets can also be proactively rotated by reissuing the attach flow and updating the persisted values on the device.
+
 ### Running migrations
 
 Apply schema migrations whenever the service boots or before running tests:

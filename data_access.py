@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Any, Iterable, Iterator, Sequence
@@ -1465,20 +1466,25 @@ def create_device(
     device_id: str,
     user_id: int,
     name: str,
+    secret: str,
 ) -> None:
     """Insert or update a device record."""
 
+    if not secret:
+        raise ValueError("Device secret must be a non-empty string")
     now = datetime.utcnow().isoformat()
     conn.execute(
         """
-        INSERT INTO devices (id, user_id, name, created_at, last_seen_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO devices (id, user_id, name, secret, created_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             user_id=excluded.user_id,
             name=excluded.name,
+            secret=excluded.secret,
+            last_seen_at=excluded.last_seen_at,
             revoked_at=NULL
         """,
-        (device_id, user_id, name, now, now),
+        (device_id, user_id, name, secret, now, now),
     )
 
 
@@ -1487,6 +1493,62 @@ def get_device(conn: sqlite3.Connection, *, device_id: str) -> sqlite3.Row | Non
 
     cur = conn.execute("SELECT * FROM devices WHERE id=?", (device_id,))
     return cur.fetchone()
+
+
+def get_device_secret(
+    conn: sqlite3.Connection, *, device_id: str
+) -> tuple[str, str | None] | None:
+    """Return the shared secret and revoked_at timestamp for a device."""
+
+    cur = conn.execute(
+        "SELECT secret, revoked_at FROM devices WHERE id=?",
+        (device_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    if isinstance(row, sqlite3.Row):
+        secret = str(row["secret"])
+        revoked = str(row["revoked_at"]) if row["revoked_at"] else None
+    else:
+        secret = str(row[0])
+        revoked = str(row[1]) if row[1] else None
+    return secret, revoked
+
+
+def register_nonce(
+    conn: sqlite3.Connection,
+    *,
+    device_id: str,
+    nonce: str,
+    ttl_seconds: int = NONCE_TTL_SECONDS,
+) -> bool:
+    """Persist a nonce for anti-replay checks.
+
+    Returns False if the nonce already exists for the device within the TTL window.
+    """
+
+    now = datetime.utcnow()
+    now_iso = now.isoformat()
+    cur = conn.execute(
+        """
+        SELECT 1 FROM nonces
+        WHERE device_id=? AND value=? AND expires_at>?""",
+        (device_id, nonce, now_iso),
+    )
+    if cur.fetchone():
+        return False
+
+    expires_at = (now + timedelta(seconds=max(ttl_seconds, 0))).isoformat()
+    conn.execute(
+        """
+        INSERT INTO nonces (id, device_id, value, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (secrets.token_hex(8), device_id, nonce, now_iso, expires_at),
+    )
+    conn.commit()
+    return True
 
 
 def touch_device(conn: sqlite3.Connection, *, device_id: str) -> bool:

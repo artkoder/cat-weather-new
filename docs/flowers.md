@@ -15,3 +15,8 @@
 - Keep greetings optimistic and conversational, reserving urgent alerts for severe weather notes from the scheduler.
 - Pair botanical details with sensory language (color, fragrance, scale) to maintain warmth without sounding flowery or exaggerated.
 - Close with a gentle call-to-action when relevant (e.g., encouraging submissions or tagging growers) while respecting channel guidelines.
+
+## Seasonal asset selection
+- Filter candidate assets by the requested season and permit neighbors (e.g., spring pulls late-winter and early-summer photos) only when the primary season queue is empty. The preview should call out when a fallback season photo appears so editors can double-check the vibe.
+- Attempt up to ten unique asset combinations before shrinking the media group. Each retry swaps in fresh photos that still pass the seasonal gate, so degradation happens only after the pool truly runs dry.
+- When the generator finally reduces the number of frames, expose an "Attempts" counter in the operator preview header (e.g., `Attempts: 7/10`) so staff understand how aggressively the system searched before downgrading.

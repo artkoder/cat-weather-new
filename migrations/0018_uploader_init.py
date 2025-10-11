@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS devices (
   id              TEXT PRIMARY KEY,
   user_id         INTEGER NOT NULL,
   name            TEXT NOT NULL,
+  secret          TEXT NOT NULL,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen_at    TEXT,
   revoked_at      TEXT
@@ -58,7 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_uploads_status ON uploads(status);
 """
 
 EXPECTED_COLUMNS = {
-    "devices": {"id", "user_id", "name", "created_at", "last_seen_at", "revoked_at"},
+    "devices": {"id", "user_id", "name", "secret", "created_at", "last_seen_at", "revoked_at"},
     "pairing_tokens": {"code", "user_id", "device_name", "created_at", "expires_at", "used_at"},
     "nonces": {"id", "device_id", "value", "created_at", "expires_at"},
     "uploads": {

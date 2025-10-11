@@ -35,6 +35,7 @@ except Exception:  # pragma: no cover - fallback when LittleCMS is unavailable
 import piexif
 
 from data_access import Asset, DataAccess, Rubric
+from api.security import create_hmac_middleware
 from flowers_patterns import (
     FlowerKnowledgeBase,
     FlowerPattern,
@@ -12482,6 +12483,8 @@ def create_app():
     app['bot'] = bot
     app['started_at'] = datetime.now(timezone.utc)
     app['version'] = APP_VERSION
+
+    app.middlewares.append(create_hmac_middleware(bot.db))
 
     app.router.add_post('/webhook', handle_webhook)
     app.router.add_get('/v1/health', health_handler)

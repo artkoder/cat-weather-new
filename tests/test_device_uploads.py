@@ -28,7 +28,13 @@ def conn():
 
 
 def _ensure_device(connection: sqlite3.Connection, device_id: str = "device-1") -> None:
-    create_device(connection, device_id=device_id, user_id=42, name="Front door")
+    create_device(
+        connection,
+        device_id=device_id,
+        user_id=42,
+        name="Front door",
+        secret="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    )
 
 
 def _get_upload(connection: sqlite3.Connection, upload_id: str) -> sqlite3.Row:

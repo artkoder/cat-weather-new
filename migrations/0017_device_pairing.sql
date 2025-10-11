@@ -2,7 +2,7 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS devices (
     device_id TEXT PRIMARY KEY,
-    secret_hash TEXT NOT NULL,
+    secret TEXT NOT NULL,
     created_at TEXT NOT NULL,
     last_seen_at TEXT,
     revoked_at TEXT

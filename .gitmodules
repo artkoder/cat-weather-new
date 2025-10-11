@@ -1,0 +1,4 @@
+[submodule "api/contract"]
+	path = api/contract
+	url = https://github.com/artkoder/kotopogoda-api-contract
+	branch = main

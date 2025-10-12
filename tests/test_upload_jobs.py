@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import hashlib
 import sqlite3
 import sys
@@ -67,6 +68,14 @@ def _patch_pillow_exif(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Image.Image, "getexif", _patched_getexif)
 
 
+class DummyStorage(StorageStub):
+    pass
+
+
+class DummyTelegram(TelegramStub):
+    pass
+
+
 class FailingTelegram(TelegramStub):
     def __init__(self, error: Exception) -> None:
         super().__init__()
@@ -131,7 +140,10 @@ async def test_extract_image_metadata_reads_jpeg_exif(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_process_upload_job_success_records_asset(tmp_path: Path) -> None:
+async def test_process_upload_job_success_records_asset(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
     conn = _setup_connection()
     data = DataAccess(conn)
     image_path = create_sample_image(tmp_path / "asset.jpg")
@@ -208,9 +220,21 @@ async def test_process_upload_job_success_records_asset(tmp_path: Path) -> None:
     assert metrics.counters.get("upload_process_fail_total", 0) == 0
     assert "process_upload_ms" in metrics.timings
 
+    mobile_done = next(
+        record for record in caplog.records if record.message == "MOBILE_UPLOAD_DONE"
+    )
+    assert mobile_done.upload_id == upload_id
+    assert mobile_done.device_id == "device-1"
+    assert mobile_done.source == "mobile"
+    assert mobile_done.size_bytes == image_path.stat().st_size
+    assert isinstance(mobile_done.timestamp, str) and mobile_done.timestamp
+
 
 @pytest.mark.asyncio
-async def test_process_upload_job_vision_failure_sets_failed_status(tmp_path: Path) -> None:
+async def test_process_upload_job_vision_failure_sets_failed_status(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
     conn = _setup_connection()
     data = DataAccess(conn)
     image_path = create_sample_image(tmp_path / "vision.jpg")
@@ -260,6 +284,16 @@ async def test_process_upload_job_vision_failure_sets_failed_status(tmp_path: Pa
     assert row["asset_id"] is None
     assert metrics.counters.get("upload_process_fail_total") == 1
     assert metrics.counters.get("assets_created_total", 0) == 0
+
+    failure_event = next(
+        record for record in caplog.records if record.message == "MOBILE_UPLOAD_FAILED"
+    )
+    assert failure_event.upload_id == upload_id
+    assert failure_event.device_id == "device-1"
+    assert failure_event.source == "mobile"
+    assert failure_event.size_bytes == image_path.stat().st_size
+    assert failure_event.error == "vision boom"
+    assert isinstance(failure_event.timestamp, str) and failure_event.timestamp
 
 
 @pytest.mark.asyncio

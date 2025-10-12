@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+import logging
 import os
 
 import pytest
@@ -25,7 +26,8 @@ async def _make_app(bot: Bot) -> web.Application:
 
 
 @pytest.mark.asyncio
-async def test_attach_device_success(tmp_path):
+async def test_attach_device_success(tmp_path, monkeypatch):
+    monkeypatch.setenv('ASSETS_CHANNEL_ID', '12345')
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
     await bot.start()
 
@@ -60,6 +62,41 @@ async def test_attach_device_success(tmp_path):
         'SELECT used_at FROM pairing_tokens WHERE code=?', ('CATPAA',)
     ).fetchone()
     assert token_row is not None and token_row['used_at'] is not None
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_attach_device_emits_mobile_log(tmp_path, caplog, monkeypatch):
+    monkeypatch.setenv('ASSETS_CHANNEL_ID', '12345')
+    caplog.set_level(logging.INFO)
+
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    await bot.start()
+
+    create_pairing_token(bot.db, code='CATPAA', user_id=101, device_name='Office Pixel')
+    bot.db.commit()
+
+    app = await _make_app(bot)
+
+    async with TestServer(app) as server:
+        async with TestClient(server) as client:
+            resp = await client.post(
+                '/v1/devices/attach',
+                json={'code': 'CATPAA', 'name': 'Pixel 8'},
+            )
+            payload = await resp.json()
+
+    assert resp.status == 200
+
+    attach_event = next(
+        record for record in caplog.records if record.message == 'MOBILE_ATTACH_OK'
+    )
+    assert attach_event.device_id == payload['id']
+    assert attach_event.user_id == 101
+    assert attach_event.device_name == 'Pixel 8'
+    assert attach_event.source == 'mobile'
+    assert isinstance(attach_event.timestamp, str) and attach_event.timestamp
 
     await bot.close()
 

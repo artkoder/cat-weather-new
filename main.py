@@ -62,6 +62,7 @@ from api.uploads import (
 from api.security import create_hmac_middleware
 from api.rate_limit import TokenBucketLimiter, create_rate_limit_middleware
 from observability import (
+    context,
     observe_health_latency,
     observability_middleware,
     record_mobile_photo_ingested,
@@ -13387,13 +13388,24 @@ async def attach_device(request: web.Request) -> web.Response:
             secret=secret,
         )
 
-    logging.info(
-        'DEVICE attach success user=%s device=%s name=%s ip=%s',
-        user_id,
-        device_id,
-        effective_name,
-        ip,
-    )
+    event_time = datetime.now(timezone.utc).isoformat()
+    with context(device_id=device_id, source="mobile"):
+        logging.info(
+            "MOBILE_ATTACH_OK",
+            extra={
+                "user_id": user_id,
+                "device_id": device_id,
+                "device_name": effective_name,
+                "timestamp": event_time,
+            },
+        )
+        logging.info(
+            'DEVICE attach success user=%s device=%s name=%s ip=%s',
+            user_id,
+            device_id,
+            effective_name,
+            ip,
+        )
     return web.json_response(
         {
             'id': device_id,

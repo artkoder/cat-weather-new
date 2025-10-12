@@ -51,6 +51,12 @@ contract stays single-sourced.
 - The payload includes the resolved `version` (from `APP_VERSION` or `CHANGELOG.md`), UTC timestamp (`now`), process uptime (`uptime_s`), per-check latencies and queue counters (`pending`, `active`, `failed`).
 - Each call emits a `HEALTH ... status=...` log line summarizing the probe so operators can trace latency regressions or dependency failures quickly.
 
+### Observability
+
+- Logs are structured JSON by default and include `ts`, `level`, `msg`, `request_id`, `route`, `method`, `status`, `duration_ms`, `device_id`, `job`, `upload_id` and `ip` when available. Set `LOG_FORMAT=pretty` locally to switch to a human-friendly formatter.
+- Sensitive tokens are redacted automatically (`X-Signature`, `secret`, `token`, `authorization` fields are replaced with `***`). Use `LOG_LEVEL` to increase verbosity during incident response.
+- The `/metrics` endpoint exposes Prometheus metrics (HTTP counters/histograms, HMAC failures, upload/job counters, queue depth, storage bytes and health timings) and default process/platform collectors. Access is rate-limited to 5 requests/second per IP; configure `METRICS_ALLOWLIST` with CIDR ranges to restrict exposure.
+
 ### E2E
 
 - `scripts/e2e_attach_upload.py` drives the staging attach → upload → processed smoke test used by CI.
@@ -150,6 +156,9 @@ Replace `/data/bot.db` with the desired SQLite path (for local development you c
 - `4O_API_KEY` – key used by the recognition pipeline and rubric copy generators; when missing, related jobs are skipped automatically.
 - `OPENAI_DAILY_TOKEN_LIMIT`, `OPENAI_DAILY_TOKEN_LIMIT_GPT_4O` (`OPENAI_DAILY_TOKEN_LIMIT_4O` legacy), `OPENAI_DAILY_TOKEN_LIMIT_GPT_4O_MINI` (`OPENAI_DAILY_TOKEN_LIMIT_4O_MINI` legacy) – optional per-model quotas that gate new OpenAI jobs until the next UTC reset.
 - `PORT` – HTTP port that `web.run_app` listens on (default `8080`). Ensure it matches the port exposed by your proxy or hosting platform (Fly.io, Docker, etc.) so inbound requests reach the app.
+- `LOG_LEVEL` – controls structured log severity (`DEBUG`, `INFO`, `WARN`, `ERROR`). Defaults to `INFO`.
+- `LOG_FORMAT` – `json` (default) for production log shippers or `pretty` for local development.
+- `METRICS_ALLOWLIST` – optional comma-separated CIDR ranges allowed to call `/metrics`. When unset the endpoint is world-readable, otherwise non-matching IPs receive `403`.
 - `SUPABASE_URL`, `SUPABASE_KEY` – optional credentials for the Supabase project that receives OpenAI token usage events. When configured the bot mirrors SQLite usage rows into the `token_usage` table for centralized analytics, storing `bot`, `model`, prompt/completion/total token counts, `request_id`, `endpoint` (`responses`), strictly JSON-serialized `meta` and timestamp `at` in UTC ISO8601. Each Supabase call also emits a structured `log_token_usage` record – identical for successes and failures – so log shippers can archive the same payloads even when Supabase is unreachable.
 
 ### External services

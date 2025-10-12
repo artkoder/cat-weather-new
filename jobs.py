@@ -13,6 +13,7 @@ from typing import Any, Awaitable, Callable, Dict
 import sqlite3
 
 from data_access import UPLOAD_IDEMPOTENCY_TTL_SECONDS
+from observability import context, log_exc, record_job_processed, set_queue_depth
 
 JobHandler = Callable[["Job"], Awaitable[None]]
 
@@ -66,6 +67,7 @@ class JobQueue:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._periodic_specs: list[tuple[float, Callable[[], Any], str | None]] = []
         self._periodic_tasks: list[asyncio.Task] = []
+        self._queue_label = "default"
 
     def register_handler(self, name: str, handler: JobHandler) -> None:
         self.handlers[name] = handler
@@ -85,6 +87,22 @@ class JobQueue:
         active = counts.get("running", 0)
         failed = counts.get("failed", 0)
         return {"pending": pending, "active": active, "failed": failed}
+
+    def _update_queue_depth_metric(self) -> None:
+        try:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM jobs_queue WHERE status IN ('queued', 'delayed')"
+            ).fetchone()
+        except Exception as exc:  # pragma: no cover - defensive
+            log_exc("queue_depth_metric", exc)
+            return
+        pending = 0
+        if row is not None:
+            if isinstance(row, sqlite3.Row):
+                pending = int(row[0])
+            else:
+                pending = int(row[0])
+        set_queue_depth(self._queue_label, pending)
 
     async def start(self) -> None:
         if self._running:
@@ -170,52 +188,55 @@ class JobQueue:
             logging.error("No handler registered for job %s", job.name)
             await self._mark_failed(job, "handler missing")
             self._inflight.discard(job.id)
+            self._update_queue_depth_metric()
             return
-        start = datetime.utcnow().isoformat()
-        self.conn.execute(
-            "UPDATE jobs_queue SET status=?, updated_at=? WHERE id=?",
-            ("running", start, job.id),
-        )
-        self.conn.commit()
-        start_time = time.perf_counter()
-        attempt_number = job.attempts + 1
-        logging.info(
-            "Starting job %s (%s) attempt %s", job.id, job.name, attempt_number
-        )
-        try:
-            await handler(job)
-        except JobDelayed as delayed:
-            now = datetime.utcnow().isoformat()
+        with context(job=job.name):
+            start = datetime.utcnow().isoformat()
             self.conn.execute(
-                """
-                UPDATE jobs_queue
-                SET status=?, available_at=?, last_error=?, updated_at=?
-                WHERE id=?
-                """,
-                (
-                    "delayed",
-                    delayed.available_at.isoformat(),
-                    delayed.reason,
-                    now,
-                    job.id,
-                ),
+                "UPDATE jobs_queue SET status=?, updated_at=? WHERE id=?",
+                ("running", start, job.id),
             )
             self.conn.commit()
-        except Exception as exc:  # pragma: no cover - defensive
-            logging.exception("Job %s failed", job.id)
-            await self._handle_failure(job, str(exc))
-        else:
-            self.conn.execute(
-                "UPDATE jobs_queue SET status=?, last_error=NULL, updated_at=? WHERE id=?",
-                ("done", datetime.utcnow().isoformat(), job.id),
-            )
-            self.conn.commit()
-            duration = time.perf_counter() - start_time
+            start_time = time.perf_counter()
+            attempt_number = job.attempts + 1
             logging.info(
-                "Completed job %s (%s) in %.3f seconds", job.id, job.name, duration
+                "Starting job %s (%s) attempt %s", job.id, job.name, attempt_number
             )
-        finally:
-            self._inflight.discard(job.id)
+            try:
+                await handler(job)
+            except JobDelayed as delayed:
+                now = datetime.utcnow().isoformat()
+                self.conn.execute(
+                    """
+                    UPDATE jobs_queue
+                    SET status=?, available_at=?, last_error=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        "delayed",
+                        delayed.available_at.isoformat(),
+                        delayed.reason,
+                        now,
+                        job.id,
+                    ),
+                )
+                self.conn.commit()
+                record_job_processed(job.name, "retry")
+            except Exception as exc:  # pragma: no cover - defensive
+                log_exc(f"Job {job.id} failed", exc)
+                await self._handle_failure(job, str(exc))
+            else:
+                self.conn.execute(
+                    "UPDATE jobs_queue SET status=?, last_error=NULL, updated_at=? WHERE id=?",
+                    ("done", datetime.utcnow().isoformat(), job.id),
+                )
+                self.conn.commit()
+                duration = time.perf_counter() - start_time
+                logging.info(
+                    "Completed job %s (%s) in %.3f seconds", job.id, job.name, duration
+                )
+        self._inflight.discard(job.id)
+        self._update_queue_depth_metric()
 
     async def _handle_failure(self, job: Job, error: str) -> None:
         attempts = job.attempts + 1
@@ -375,6 +396,7 @@ class JobQueue:
                 logging.debug(
                     "Dispatched job %s (%s) to worker queue", job.id, job.name
                 )
+        self._update_queue_depth_metric()
         return job_id
 
     def add_periodic_task(

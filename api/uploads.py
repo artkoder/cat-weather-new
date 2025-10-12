@@ -262,70 +262,80 @@ async def handle_create_upload(request: web.Request) -> web.Response:
     now = datetime.now(timezone.utc)
     storage_key = f"{now:%Y/%m}/{upload_id}"
 
-    created_id = insert_upload(
-        conn,
-        id=upload_id,
-        device_id=device_id,
-        idempotency_key=idempotency_key,
-        file_ref=storage_key,
-    )
-    conn.commit()
-
-    if created_id != upload_id:
-        logging.info("UPLOAD idempotent-return device=%s upload=%s", device_id, created_id)
-        await file_part.release()
-        return web.json_response({"id": created_id}, status=201)
-
-    record_upload_created()
-
-    storage = _ensure_storage(request.app)
-    jobs = _ensure_jobs(request.app)
-    hasher = hashlib.sha256()
-    stats = StreamStats()
-    stream = _iter_file(
-        file_part,
-        max_bytes=config.max_upload_bytes,
-        hasher=hasher,
-        stats=stats,
-    )
-
-    try:
-        await storage.put_stream(
-            key=storage_key,
-            stream=stream,
-            content_type=content_type,
+    with context(device_id=device_id, upload_id=upload_id, source="mobile"):
+        created_id = insert_upload(
+            conn,
+            id=upload_id,
+            device_id=device_id,
+            idempotency_key=idempotency_key,
+            file_ref=storage_key,
         )
-    except UploadTooLargeError:
-        logging.warning("UPLOAD too-large device=%s upload=%s", device_id, upload_id)
-        set_upload_status(conn, id=upload_id, status="failed", error="file_too_large")
-        record_upload_status_change()
         conn.commit()
-        await file_part.release()
-        return _json_error(
-            413,
-            "file_too_large",
-            f"Uploaded file exceeds the allowed size of {config.max_upload_mb:.1f} MB.",
-        )
-    except Exception:
-        logging.exception("UPLOAD storage-error device=%s upload=%s", device_id, upload_id)
-        set_upload_status(conn, id=upload_id, status="failed", error="storage_error")
-        record_upload_status_change()
-        conn.commit()
-        await file_part.release()
-        return _json_error(500, "storage_error", "Failed to persist uploaded file.")
 
-    digest = hasher.hexdigest()
-    await file_part.release()
-    record_storage_put_bytes(stats.size)
-    logging.info(
-        "UPLOAD stored device=%s upload=%s bytes=%s sha=%s",
-        device_id,
-        upload_id,
-        stats.size,
-        digest,
-    )
-    jobs.enqueue("process_upload", {"upload_id": upload_id})
-    return web.json_response({"id": upload_id}, status=201)
+        if created_id != upload_id:
+            logging.info("UPLOAD idempotent-return device=%s upload=%s", device_id, created_id)
+            await file_part.release()
+            return web.json_response({"id": created_id}, status=201)
+
+        record_upload_created()
+
+        storage = _ensure_storage(request.app)
+        jobs = _ensure_jobs(request.app)
+        hasher = hashlib.sha256()
+        stats = StreamStats()
+        stream = _iter_file(
+            file_part,
+            max_bytes=config.max_upload_bytes,
+            hasher=hasher,
+            stats=stats,
+        )
+
+        try:
+            await storage.put_stream(
+                key=storage_key,
+                stream=stream,
+                content_type=content_type,
+            )
+        except UploadTooLargeError:
+            logging.warning("UPLOAD too-large device=%s upload=%s", device_id, upload_id)
+            set_upload_status(conn, id=upload_id, status="failed", error="file_too_large")
+            record_upload_status_change()
+            conn.commit()
+            await file_part.release()
+            return _json_error(
+                413,
+                "file_too_large",
+                f"Uploaded file exceeds the allowed size of {config.max_upload_mb:.1f} MB.",
+            )
+        except Exception:
+            logging.exception("UPLOAD storage-error device=%s upload=%s", device_id, upload_id)
+            set_upload_status(conn, id=upload_id, status="failed", error="storage_error")
+            record_upload_status_change()
+            conn.commit()
+            await file_part.release()
+            return _json_error(500, "storage_error", "Failed to persist uploaded file.")
+
+        digest = hasher.hexdigest()
+        await file_part.release()
+        record_storage_put_bytes(stats.size)
+        logging.info(
+            "UPLOAD stored device=%s upload=%s bytes=%s sha=%s",
+            device_id,
+            upload_id,
+            stats.size,
+            digest,
+        )
+        jobs.enqueue("process_upload", {"upload_id": upload_id})
+        logging.info(
+            "MOBILE_UPLOAD_ACCEPTED",
+            extra={
+                "upload_id": upload_id,
+                "device_id": device_id,
+                "size_bytes": stats.size,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return web.json_response({"id": upload_id}, status=201)
 
 
 async def handle_get_upload_status(request: web.Request) -> web.Response:
@@ -379,9 +389,11 @@ def register_upload_jobs(
             logging.warning("UPLOAD job missing upload_id")
             return
 
-        with context(upload_id=upload_id, job=job.name):
+        with context(upload_id=upload_id, job=job.name, source="mobile"):
             with metrics_recorder.measure_process():
                 logging.info("UPLOAD job start upload=%s", upload_id)
+                device_id_str: str | None = None
+                size_bytes: int | None = None
                 try:
                     processed_path: Path | None = None
                     processed_cleanup = False
@@ -401,6 +413,8 @@ def register_upload_jobs(
                     download = await _download_from_storage(storage, key=str(file_ref))
                     try:
                         device_id_value = record.get("device_id")
+                        if device_id_value:
+                            device_id_str = str(device_id_value)
                         device_user_id: int | None = None
                         if device_id_value:
                             device_row = get_device(conn, device_id=str(device_id_value))
@@ -419,65 +433,91 @@ def register_upload_jobs(
                                     except (TypeError, ValueError):
                                         device_user_id = None
 
-                        ingestion_context = UploadIngestionContext(
-                            upload_id=upload_id,
-                            storage_key=str(file_ref),
-                            metrics=metrics_recorder,
-                            source="mobile",
-                            device_id=str(device_id_value) if device_id_value else None,
-                            user_id=device_user_id,
-                            job_id=job.id,
-                            job_name=job.name,
-                        )
+                        with context(device_id=device_id_str):
+                            if download and download.path.exists():
+                                with contextlib.suppress(OSError):
+                                    size_bytes = download.path.stat().st_size
 
-                        result = await ingest_photo(
-                            data=data,
-                            telegram=telegram,
-                            openai=openai,
-                            supabase=supabase,
-                            config=uploads_config,
-                            context=ingestion_context,
-                            file_path=download.path,
-                            cleanup_file=download.cleanup,
-                        )
+                            ingestion_context = UploadIngestionContext(
+                                upload_id=upload_id,
+                                storage_key=str(file_ref),
+                                metrics=metrics_recorder,
+                                source="mobile",
+                                device_id=device_id_str,
+                                user_id=device_user_id,
+                                job_id=job.id,
+                                job_name=job.name,
+                            )
 
-                        asset_id = result.asset_id
-                        if not asset_id:
-                            raise RuntimeError("asset creation failed for upload")
-                        link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)
-                        logging.info(
-                            "UPLOAD asset stored upload=%s asset=%s sha=%s mime=%s",
-                            upload_id,
-                            asset_id,
-                            result.sha256,
-                            result.mime_type,
-                        )
-                        if (
-                            cleanup_local_after_publish
-                            and storage_is_local
-                            and download
-                            and not download.cleanup
-                        ):
-                            should_cleanup_local_download = True
+                            result = await ingest_photo(
+                                data=data,
+                                telegram=telegram,
+                                openai=openai,
+                                supabase=supabase,
+                                config=uploads_config,
+                                context=ingestion_context,
+                                file_path=download.path,
+                                cleanup_file=download.cleanup,
+                            )
+
+                            asset_id = result.asset_id
+                            if not asset_id:
+                                raise RuntimeError("asset creation failed for upload")
+                            link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)
+                            logging.info(
+                                "UPLOAD asset stored upload=%s asset=%s sha=%s mime=%s",
+                                upload_id,
+                                asset_id,
+                                result.sha256,
+                                result.mime_type,
+                            )
+                            if (
+                                cleanup_local_after_publish
+                                and storage_is_local
+                                and download
+                                and not download.cleanup
+                            ):
+                                should_cleanup_local_download = True
                     finally:
                         if download and download.cleanup and download.path.exists():
                             with contextlib.suppress(Exception):
                                 download.path.unlink()
 
-                    set_upload_status(conn, id=upload_id, status="done")
-                    record_upload_status_change()
-                    conn.commit()
-                    if (
-                        should_cleanup_local_download
-                        and download
-                        and download.path.exists()
-                    ):
-                        with contextlib.suppress(Exception):
-                            download.path.unlink()
-                    logging.info("UPLOAD job done upload=%s", upload_id)
-                    record_job_processed("process_upload", "ok")
+                    with context(device_id=device_id_str):
+                        set_upload_status(conn, id=upload_id, status="done")
+                        record_upload_status_change()
+                        conn.commit()
+                        if (
+                            should_cleanup_local_download
+                            and download
+                            and download.path.exists()
+                        ):
+                            with contextlib.suppress(Exception):
+                                download.path.unlink()
+                        logging.info("UPLOAD job done upload=%s", upload_id)
+                        logging.info(
+                            "MOBILE_UPLOAD_DONE",
+                            extra={
+                                "upload_id": upload_id,
+                                "device_id": device_id_str,
+                                "size_bytes": size_bytes,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                        record_job_processed("process_upload", "ok")
                 except Exception as exc:
-                    logging.exception("UPLOAD job failed upload=%s", upload_id)
+                    with context(device_id=device_id_str):
+                        logging.exception("UPLOAD job failed upload=%s", upload_id)
+                        logging.error(
+                            "MOBILE_UPLOAD_FAILED",
+                            extra={
+                                "upload_id": upload_id,
+                                "device_id": device_id_str,
+                                "size_bytes": size_bytes,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "error": str(exc),
+                            },
+                        )
                     try:
                         set_upload_status(
                             conn,

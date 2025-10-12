@@ -9,11 +9,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Callable, Mapping, Protocol, TypedDict
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, TypedDict
 
 from PIL import ExifTags, Image, ImageOps
 
 from observability import context as telemetry_context
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from api.uploads import UploadsConfig
+    from data_access import DataAccess
 
 try:  # pragma: no cover - optional typing imports
     from openai_client import OpenAIClient, OpenAIResponse
@@ -92,6 +96,30 @@ class UploadMetricsRecorder:
     def record_vision_tokens(self, tokens: int | None) -> None:
         if tokens and tokens > 0:
             self.increment("vision_tokens_total", tokens)
+
+
+@dataclass(slots=True)
+class UploadIngestionContext:
+    upload_id: str
+    storage_key: str
+    metrics: UploadMetricsRecorder
+    source: str = "mobile"
+    device_id: str | None = None
+    user_id: int | None = None
+    job_id: int | None = None
+    job_name: str | None = None
+
+    def telemetry_payload(self) -> Mapping[str, Any] | None:
+        payload: dict[str, Any] = {"upload_id": self.upload_id}
+        if self.job_name:
+            payload["job"] = self.job_name
+        if self.job_id is not None:
+            payload["job_id"] = self.job_id
+        if self.device_id:
+            payload["device_id"] = self.device_id
+        if self.user_id is not None:
+            payload["user_id"] = self.user_id
+        return payload or None
 
 
 VISION_SYSTEM_PROMPT = (
@@ -390,7 +418,7 @@ def _ensure_telemetry(telemetry: Mapping[str, Any] | None):
     return contextlib.nullcontext()
 
 
-async def ingest_photo(
+async def _ingest_photo_internal(
     inputs: IngestionInputs,
     context: IngestionContext,
     callbacks: IngestionCallbacks,
@@ -498,7 +526,7 @@ async def ingest_photo(
         message_identifier = f"{inputs.channel_id}:{message_id}"
         asset_id: str | None = inputs.asset_id
 
-        if inputs.source == "upload" and callbacks.create_asset:
+        if inputs.source in {"upload", "mobile"} and callbacks.create_asset:
             if not inputs.upload_id or not inputs.file_ref:
                 raise RuntimeError("upload ingestion requires upload_id and file_ref")
             source_value = inputs.source if inputs.source in {"mobile", "telegram"} else "mobile"
@@ -560,4 +588,68 @@ async def ingest_photo(
         gps=gps_payload,
         vision=vision_payload,
         metrics=metrics,
+    )
+
+
+async def ingest_photo(
+    *,
+    data: "DataAccess",
+    telegram: TelegramClient,
+    openai: OpenAIClient | None,
+    supabase: SupabaseClient | None,
+    config: "UploadsConfig",
+    context: UploadIngestionContext,
+    file_path: Path,
+    cleanup_file: bool = False,
+) -> IngestionResult:
+    metrics = context.metrics
+    telemetry = context.telemetry_payload()
+
+    vision_config = IngestionVisionConfig(
+        enabled=config.vision_enabled,
+        model=config.openai_vision_model,
+    )
+
+    ingestion_inputs = IngestionInputs(
+        source=context.source,
+        channel_id=config.assets_channel_id,
+        file=IngestionFile(path=file_path, cleanup=cleanup_file),
+        upload_id=context.upload_id,
+        file_ref=context.storage_key,
+        job_id=context.job_id,
+        job_name=context.job_name,
+        telemetry=telemetry,
+        max_image_side=config.max_image_side,
+        vision=vision_config,
+    )
+
+    def _log_tokens(payload: TokenUsagePayload) -> None:
+        model = payload.get("model")
+        if not model:
+            return
+        data.log_token_usage(
+            model,
+            payload.get("prompt_tokens"),
+            payload.get("completion_tokens"),
+            payload.get("total_tokens"),
+            job_id=payload.get("job_id") or context.job_id,
+            request_id=payload.get("request_id"),
+        )
+
+    ingestion_context = IngestionContext(
+        telegram=telegram,
+        metrics=metrics,
+        openai=openai,
+        supabase=supabase,
+        token_logger=_log_tokens,
+    )
+
+    callbacks = IngestionCallbacks(
+        create_asset=lambda payload: data.create_asset(**payload),
+    )
+
+    return await _ingest_photo_internal(
+        ingestion_inputs,
+        ingestion_context,
+        callbacks,
     )

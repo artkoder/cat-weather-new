@@ -4,7 +4,7 @@ import json
 import logging
 import random
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from typing import Any, Iterable, Iterator, Sequence
 from uuid import uuid4
@@ -22,46 +22,399 @@ UPLOAD_IDEMPOTENCY_TTL_SECONDS = 24 * 3600
 
 @dataclass
 class Asset:
-    id: int
-    channel_id: int
-    tg_chat_id: int
-    message_id: int
-    origin: str
-    caption_template: str | None
-    caption: str | None
-    hashtags: str | None
-    categories: list[str]
-    kind: str | None
-    file_id: str | None
-    file_unique_id: str | None
-    file_name: str | None
-    mime_type: str | None
-    file_size: int | None
+    id: str
+    upload_id: str | None
+    file_ref: str | None
+    content_type: str | None
+    sha256: str | None
     width: int | None
     height: int | None
-    duration: int | None
-    recognized_message_id: int | None
-    exif_present: bool
-    latitude: float | None
-    longitude: float | None
-    city: str | None
-    country: str | None
-    author_user_id: int | None
-    author_username: str | None
-    sender_chat_id: int | None
-    via_bot_id: int | None
-    forward_from_user: int | None
-    forward_from_chat: int | None
-    local_path: str | None
-    metadata: dict[str, Any] | None
-    vision_results: dict[str, Any] | None
-    rubric_id: int | None
-    vision_category: str | None
-    vision_arch_view: str | None
-    vision_photo_weather: str | None
-    vision_flower_varieties: list[str] | None
-    vision_confidence: float | None
-    vision_caption: str | None
+    exif_json: str | None
+    labels_json: str | None
+    tg_message_id: str | None
+    payload_json: str | None
+    created_at: str
+    exif: dict[str, Any] | None = None
+    labels: Any | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+    legacy_values: dict[str, Any] = field(default_factory=dict)
+    _vision_results: dict[str, Any] | None = None
+    _vision_category: str | None = None
+    _vision_arch_view: str | None = None
+    _vision_photo_weather: str | None = None
+    _vision_flower_varieties: list[str] | None = None
+    _vision_confidence: float | None = None
+    _vision_caption: str | None = None
+    _local_path: str | None = None
+    _rubric_id: int | None = None
+
+    # ------------------------------------------------------------------
+    # Compatibility helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _to_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                return int(text)
+            except ValueError:
+                try:
+                    return int(float(text))
+                except ValueError:
+                    return None
+        return None
+
+    @staticmethod
+    def _to_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                return float(text)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _to_bool(value: Any) -> bool | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"", "none"}:
+                return None
+            if text in {"true", "1", "yes", "y"}:
+                return True
+            if text in {"false", "0", "no", "n"}:
+                return False
+        return None
+
+    @staticmethod
+    def _ensure_list(value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return [value]
+            if isinstance(parsed, list):
+                return parsed
+            return [parsed]
+        return [value]
+
+    def _resolve(self, key: str, default: Any | None = None) -> Any | None:
+        if key in self.legacy_values:
+            return self.legacy_values.get(key)
+        return self.payload.get(key, default)
+
+    def _tg_parts(self) -> tuple[int | None, int | None]:
+        chat = self._resolve("tg_chat_id")
+        msg = self._resolve("message_id")
+        chat_id = self._to_int(chat)
+        message_id = self._to_int(msg)
+        if chat_id is not None or message_id is not None:
+            return chat_id, message_id
+        if self.tg_message_id:
+            raw = str(self.tg_message_id)
+            if ":" in raw:
+                chat_text, message_text = raw.split(":", 1)
+                chat_id = self._to_int(chat_text)
+                message_id = self._to_int(message_text)
+            else:
+                chat_id = None
+                message_id = self._to_int(raw)
+        return chat_id, message_id
+
+    @property
+    def channel_id(self) -> int | None:
+        return self._to_int(self._resolve("channel_id"))
+
+    @property
+    def tg_chat_id(self) -> int | None:
+        chat, _ = self._tg_parts()
+        return chat
+
+    @property
+    def message_id(self) -> int | None:
+        _, message = self._tg_parts()
+        return message
+
+    @property
+    def origin(self) -> str | None:
+        value = self._resolve("origin")
+        if value is None:
+            return "weather"
+        return str(value)
+
+    @property
+    def caption_template(self) -> str | None:
+        value = self._resolve("caption_template")
+        return str(value) if value is not None else None
+
+    @property
+    def caption(self) -> str | None:
+        value = self._resolve("caption")
+        return str(value) if value is not None else None
+
+    @property
+    def hashtags(self) -> str | None:
+        value = self._resolve("hashtags")
+        return str(value) if value is not None else None
+
+    @property
+    def categories(self) -> list[str]:
+        labels_source = self.labels
+        values: list[Any] = []
+        if isinstance(labels_source, list):
+            values = labels_source
+        elif isinstance(labels_source, dict):
+            raw = labels_source.get("categories") or labels_source.get("labels")
+            if isinstance(raw, list):
+                values = raw
+            elif raw is not None:
+                values = [raw]
+        if not values:
+            raw_payload = self._resolve("categories")
+            if isinstance(raw_payload, list):
+                values = raw_payload
+            elif isinstance(raw_payload, str):
+                try:
+                    parsed = json.loads(raw_payload)
+                    if isinstance(parsed, list):
+                        values = parsed
+                    else:
+                        values = [raw_payload]
+                except json.JSONDecodeError:
+                    values = [v.strip() for v in raw_payload.split(",") if v.strip()]
+            elif raw_payload is not None:
+                values = [raw_payload]
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in values:
+            text = str(item).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return normalized
+
+    @property
+    def kind(self) -> str | None:
+        value = self._resolve("kind")
+        if value is not None:
+            return str(value)
+        return None
+
+    @property
+    def file_id(self) -> str | None:
+        value = self._resolve("file_id")
+        return str(value) if value is not None else None
+
+    @property
+    def file_unique_id(self) -> str | None:
+        value = self._resolve("file_unique_id")
+        return str(value) if value is not None else None
+
+    @property
+    def file_name(self) -> str | None:
+        value = self._resolve("file_name")
+        return str(value) if value is not None else None
+
+    @property
+    def mime_type(self) -> str | None:
+        value = self._resolve("mime_type") or self.content_type
+        return str(value) if value is not None else None
+
+    @property
+    def file_size(self) -> int | None:
+        return self._to_int(self._resolve("file_size"))
+
+    @property
+    def duration(self) -> int | None:
+        return self._to_int(self._resolve("duration"))
+
+    @property
+    def recognized_message_id(self) -> int | None:
+        value = self._resolve("recognized_message_id")
+        if value is None and self.payload:
+            value = self.payload.get("recognized_message_id")
+        return self._to_int(value)
+
+    @property
+    def exif_present(self) -> bool:
+        value = self._resolve("exif_present")
+        bool_value = self._to_bool(value)
+        if bool_value is not None:
+            return bool_value
+        return bool(self.exif)
+
+    @property
+    def latitude(self) -> float | None:
+        return self._to_float(self._resolve("latitude"))
+
+    @property
+    def longitude(self) -> float | None:
+        return self._to_float(self._resolve("longitude"))
+
+    @property
+    def city(self) -> str | None:
+        value = self._resolve("city")
+        return str(value) if value is not None else None
+
+    @property
+    def country(self) -> str | None:
+        value = self._resolve("country")
+        return str(value) if value is not None else None
+
+    @property
+    def author_user_id(self) -> int | None:
+        return self._to_int(self._resolve("author_user_id"))
+
+    @property
+    def author_username(self) -> str | None:
+        value = self._resolve("author_username")
+        return str(value) if value is not None else None
+
+    @property
+    def sender_chat_id(self) -> int | None:
+        return self._to_int(self._resolve("sender_chat_id"))
+
+    @property
+    def via_bot_id(self) -> int | None:
+        return self._to_int(self._resolve("via_bot_id"))
+
+    @property
+    def forward_from_user(self) -> int | None:
+        return self._to_int(self._resolve("forward_from_user"))
+
+    @property
+    def forward_from_chat(self) -> int | None:
+        return self._to_int(self._resolve("forward_from_chat"))
+
+    @property
+    def local_path(self) -> str | None:
+        if self._local_path is not None:
+            return self._local_path
+        value = self._resolve("local_path")
+        return str(value) if value is not None else None
+
+    @property
+    def metadata(self) -> dict[str, Any] | None:
+        value = self._resolve("metadata")
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return None
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    @property
+    def vision_results(self) -> dict[str, Any] | None:
+        if self._vision_results is not None:
+            return self._vision_results
+        value = self._resolve("vision_results")
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return None
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    @vision_results.setter
+    def vision_results(self, value: dict[str, Any] | None) -> None:
+        self._vision_results = value
+
+    @property
+    def rubric_id(self) -> int | None:
+        if self._rubric_id is not None:
+            return self._rubric_id
+        return self._to_int(self._resolve("rubric_id"))
+
+    @property
+    def vision_category(self) -> str | None:
+        if self._vision_category is not None:
+            return self._vision_category
+        value = self._resolve("vision_category")
+        return str(value) if value is not None else None
+
+    @property
+    def vision_arch_view(self) -> str | None:
+        if self._vision_arch_view is not None:
+            return self._vision_arch_view
+        value = self._resolve("vision_arch_view")
+        return str(value) if value is not None else None
+
+    @property
+    def vision_photo_weather(self) -> str | None:
+        if self._vision_photo_weather is not None:
+            return self._vision_photo_weather
+        value = self._resolve("vision_photo_weather")
+        return str(value) if value is not None else None
+
+    @property
+    def vision_flower_varieties(self) -> list[str] | None:
+        if self._vision_flower_varieties is not None:
+            return self._vision_flower_varieties
+        value = self._resolve("vision_flower_varieties")
+        if value is None:
+            return None
+        entries = self._ensure_list(value)
+        return [str(item) for item in entries]
+
+    @property
+    def vision_confidence(self) -> float | None:
+        if self._vision_confidence is not None:
+            return self._vision_confidence
+        return self._to_float(self._resolve("vision_confidence"))
+
+    @property
+    def vision_caption(self) -> str | None:
+        if self._vision_caption is not None:
+            return self._vision_caption
+        value = self._resolve("vision_caption")
+        return str(value) if value is not None else None
+
+    @vision_caption.setter
+    def vision_caption(self, value: str | None) -> None:
+        self._vision_caption = value
 
 
 @dataclass
@@ -374,20 +727,20 @@ class DataAccess:
         return row.id if row else 0
 
     def update_recognized_message(
-        self, asset_id: int, *, message_id: int | None
+        self, asset_id: str | int, *, message_id: int | None
     ) -> None:
         """Store the Telegram message that acknowledged the asset."""
 
         now = datetime.utcnow().isoformat()
         self.conn.execute(
             "UPDATE assets SET recognized_message_id=?, updated_at=? WHERE id=?",
-            (message_id, now, asset_id),
+            (message_id, now, str(asset_id)),
         )
         self.conn.commit()
 
     def update_asset(
         self,
-        asset_id: int,
+        asset_id: str | int,
         *,
         template: str | None = None,
         caption: str | None = None,
@@ -420,7 +773,7 @@ class DataAccess:
     ) -> None:
         """Update selected asset fields while preserving unset values."""
 
-        row = self.get_asset(asset_id)
+        row = self.get_asset(str(asset_id))
         if not row:
             logging.warning("Attempted to update missing asset %s", asset_id)
             return
@@ -498,7 +851,7 @@ class DataAccess:
         if values:
             assignments = ", ".join(f"{k} = ?" for k in values)
             params: list[Any] = list(values.values())
-            params.append(asset_id)
+            params.append(str(asset_id))
             sql = f"UPDATE assets SET {assignments}, updated_at=? WHERE id=?"
             params.insert(-1, datetime.utcnow().isoformat())
             self.conn.execute(sql, params)
@@ -509,8 +862,8 @@ class DataAccess:
         if performed_write:
             self.conn.commit()
 
-    def get_asset(self, asset_id: int) -> Asset | None:
-        return self._fetch_asset("a.id = ?", (asset_id,))
+    def get_asset(self, asset_id: str | int) -> Asset | None:
+        return self._fetch_asset("a.id = ?", (str(asset_id),))
 
     def get_asset_by_message(self, tg_chat_id: int, message_id: int) -> Asset | None:
         return self._fetch_asset(
@@ -550,78 +903,166 @@ class DataAccess:
     def _asset_from_row(self, row: sqlite3.Row | None) -> Asset | None:
         if not row:
             return None
-        categories = json.loads(row["categories"] or "[]")
-        metadata = json.loads(row["metadata"] or "null")
-        raw_vision: str | None
-        if "vision_payload" in row.keys():
-            raw_vision = row["vision_payload"]
-        else:
-            raw_vision = self._load_latest_vision_json(int(row["id"]))
-        vision = json.loads(raw_vision) if raw_vision else None
-        vision_category_raw = row["vision_category"] if "vision_category" in row.keys() else None
-        vision_category = self._normalize_vision_category(vision_category_raw)
-        vision_arch_view = row["vision_arch_view"] if "vision_arch_view" in row.keys() else None
-        vision_photo_weather = (
-            row["vision_photo_weather"] if "vision_photo_weather" in row.keys() else None
-        )
-        raw_flowers = (
-            row["vision_flower_varieties"] if "vision_flower_varieties" in row.keys() else None
-        )
-        flower_varieties = None
-        if raw_flowers:
+
+        keys = row.keys()
+        row_dict = {key: row[key] for key in keys}
+
+        def _parse_json(raw: Any) -> Any | None:
+            if raw is None:
+                return None
+            if isinstance(raw, (dict, list)):
+                return raw
+            if isinstance(raw, str):
+                text = raw.strip()
+                if not text:
+                    return None
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return None
+            return None
+
+        width = Asset._to_int(row_dict.get("width"))
+        height = Asset._to_int(row_dict.get("height"))
+        exif_json = row_dict.get("exif_json")
+        exif_data = _parse_json(exif_json)
+        if exif_data is not None and not isinstance(exif_data, dict):
+            exif_data = None
+        labels_json = row_dict.get("labels_json")
+        labels_data = _parse_json(labels_json)
+        if labels_data is None and isinstance(labels_json, str) and labels_json.strip():
             try:
-                flower_varieties = json.loads(raw_flowers)
+                labels_data = json.loads(labels_json)
             except json.JSONDecodeError:
-                flower_varieties = [raw_flowers]
-        vision_confidence = (
-            row["vision_confidence"] if "vision_confidence" in row.keys() else None
+                labels_data = labels_json
+        payload_json = row_dict.get("payload_json")
+        payload_data = _parse_json(payload_json)
+        if not isinstance(payload_data, dict):
+            payload_data = {}
+        created_at_raw = row_dict.get("created_at")
+        created_at = str(created_at_raw) if created_at_raw is not None else datetime.utcnow().isoformat()
+        raw_vision: str | None
+        if "vision_payload" in keys:
+            raw_payload_value = row_dict.get("vision_payload")
+            raw_vision = str(raw_payload_value) if raw_payload_value is not None else None
+        else:
+            raw_vision = self._load_latest_vision_json(row_dict.get("id"))
+        vision = None
+        if raw_vision:
+            try:
+                vision = json.loads(raw_vision)
+            except (TypeError, json.JSONDecodeError):
+                vision = None
+        vision_category_raw = row_dict.get("vision_category") if "vision_category" in keys else None
+        vision_category = self._normalize_vision_category(vision_category_raw)
+        vision_arch_view = row_dict.get("vision_arch_view") if "vision_arch_view" in keys else None
+        vision_photo_weather = (
+            row_dict.get("vision_photo_weather") if "vision_photo_weather" in keys else None
         )
-        raw_exif = row["exif_present"] if "exif_present" in row.keys() else 0
-        try:
-            exif_value = int(raw_exif)
-        except (TypeError, ValueError):
-            exif_value = 1 if str(raw_exif).lower() in {"true", "1"} else 0
+        raw_flowers = row_dict.get("vision_flower_varieties") if "vision_flower_varieties" in keys else None
+        flower_varieties: list[str] | None = None
+        if raw_flowers is not None:
+            if isinstance(raw_flowers, list):
+                flower_varieties = [str(item) for item in raw_flowers]
+            elif isinstance(raw_flowers, str):
+                text = raw_flowers.strip()
+                if text:
+                    try:
+                        parsed = json.loads(text)
+                    except json.JSONDecodeError:
+                        parsed = None
+                    if isinstance(parsed, list):
+                        flower_varieties = [str(item) for item in parsed]
+                    else:
+                        flower_varieties = [str(raw_flowers)]
+            else:
+                flower_varieties = [str(raw_flowers)]
+        vision_confidence_raw = row_dict.get("vision_confidence") if "vision_confidence" in keys else None
+        vision_confidence = Asset._to_float(vision_confidence_raw)
+        local_path = row_dict.get("local_path") if "local_path" in keys else None
+        rubric_id_raw = row_dict.get("rubric_id") if "rubric_id" in keys else None
+        rubric_id = Asset._to_int(rubric_id_raw)
+
+        compatibility_keys = {
+            "channel_id",
+            "tg_chat_id",
+            "message_id",
+            "origin",
+            "caption_template",
+            "caption",
+            "hashtags",
+            "categories",
+            "kind",
+            "file_id",
+            "file_unique_id",
+            "file_name",
+            "mime_type",
+            "file_size",
+            "duration",
+            "recognized_message_id",
+            "exif_present",
+            "latitude",
+            "longitude",
+            "city",
+            "country",
+            "author_user_id",
+            "author_username",
+            "sender_chat_id",
+            "via_bot_id",
+            "forward_from_user",
+            "forward_from_chat",
+            "local_path",
+            "metadata",
+            "vision_category",
+            "vision_arch_view",
+            "vision_photo_weather",
+            "vision_flower_varieties",
+            "vision_confidence",
+            "vision_caption",
+            "rubric_id",
+        }
+        legacy_values: dict[str, Any] = {}
+        for key in compatibility_keys:
+            if key in keys and row_dict.get(key) is not None:
+                legacy_values[key] = row_dict[key]
+
+        tg_message_id_raw = row_dict.get("tg_message_id")
+        tg_message_id = None
+        if tg_message_id_raw is not None:
+            tg_message_id = str(tg_message_id_raw)
+
+        payload_json_text: str | None
+        if payload_json is None or isinstance(payload_json, str):
+            payload_json_text = payload_json
+        else:
+            payload_json_text = json.dumps(payload_json, ensure_ascii=False)
+
         return Asset(
-            id=row["id"],
-            channel_id=row["channel_id"],
-            tg_chat_id=row["tg_chat_id"],
-            message_id=row["message_id"],
-            origin=row["origin"] if "origin" in row.keys() else "weather",
-            caption_template=row["caption_template"],
-            caption=row["caption"],
-            hashtags=row["hashtags"],
-            categories=categories,
-            kind=row["kind"],
-            file_id=row["file_id"],
-            file_unique_id=row["file_unique_id"],
-            file_name=row["file_name"],
-            mime_type=row["mime_type"],
-            file_size=row["file_size"],
-            width=row["width"],
-            height=row["height"],
-            duration=row["duration"],
-            recognized_message_id=row["recognized_message_id"],
-            exif_present=bool(exif_value),
-            latitude=row["latitude"],
-            longitude=row["longitude"],
-            city=row["city"],
-            country=row["country"],
-            author_user_id=row["author_user_id"],
-            author_username=row["author_username"],
-            sender_chat_id=row["sender_chat_id"],
-            via_bot_id=row["via_bot_id"],
-            forward_from_user=row["forward_from_user"],
-            forward_from_chat=row["forward_from_chat"],
-            local_path=row["local_path"],
-            metadata=metadata,
-            vision_results=vision,
-            rubric_id=row["rubric_id"] if "rubric_id" in row.keys() else None,
-            vision_category=vision_category,
-            vision_arch_view=vision_arch_view,
-            vision_photo_weather=vision_photo_weather,
-            vision_flower_varieties=flower_varieties,
-            vision_confidence=vision_confidence,
-            vision_caption=row["vision_caption"] if "vision_caption" in row.keys() else None,
+            id=str(row_dict.get("id")),
+            upload_id=row_dict.get("upload_id"),
+            file_ref=row_dict.get("file_ref"),
+            content_type=row_dict.get("content_type"),
+            sha256=row_dict.get("sha256"),
+            width=width,
+            height=height,
+            exif_json=exif_json,
+            labels_json=labels_json,
+            tg_message_id=tg_message_id,
+            payload_json=payload_json_text,
+            created_at=created_at,
+            exif=exif_data,
+            labels=labels_data,
+            payload=payload_data,
+            legacy_values=legacy_values,
+            _vision_results=vision,
+            _vision_category=vision_category,
+            _vision_arch_view=vision_arch_view,
+            _vision_photo_weather=vision_photo_weather,
+            _vision_flower_varieties=flower_varieties,
+            _vision_confidence=vision_confidence,
+            _vision_caption=(row_dict.get("vision_caption") if "vision_caption" in keys else None),
+            _local_path=str(local_path) if local_path is not None else None,
+            _rubric_id=rubric_id,
         )
 
     def iter_assets(self, *, rubric_id: int | None = None) -> Iterator[Asset]:
@@ -731,8 +1172,8 @@ class DataAccess:
             mark_used=mark_used,
         )
 
-    def mark_assets_used(self, asset_ids: Iterable[int]) -> None:
-        ids = [int(asset_id) for asset_id in asset_ids]
+    def mark_assets_used(self, asset_ids: Iterable[str | int]) -> None:
+        ids = [str(asset_id) for asset_id in asset_ids]
         if not ids:
             return
         now_iso = datetime.utcnow().isoformat()
@@ -742,11 +1183,11 @@ class DataAccess:
         )
         self.conn.commit()
 
-    def delete_assets(self, asset_ids: Sequence[int]) -> None:
+    def delete_assets(self, asset_ids: Sequence[str | int]) -> None:
         if not asset_ids:
             return
         placeholders = ",".join("?" for _ in asset_ids)
-        params = tuple(int(a) for a in asset_ids)
+        params = tuple(str(a) for a in asset_ids)
         self.conn.execute(
             f"DELETE FROM vision_results WHERE asset_id IN ({placeholders})",
             params,
@@ -793,7 +1234,7 @@ class DataAccess:
             return asset
         return None
 
-    def _store_vision_result(self, asset_id: int, result: Any) -> None:
+    def _store_vision_result(self, asset_id: str | int, result: Any) -> None:
         payload = json.dumps(result) if not isinstance(result, str) else result
         provider = result.get("provider") if isinstance(result, dict) else None
         status = result.get("status") if isinstance(result, dict) else None
@@ -906,7 +1347,7 @@ class DataAccess:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                asset_id,
+                str(asset_id),
                 provider,
                 status,
                 category,
@@ -920,7 +1361,9 @@ class DataAccess:
             ),
         )
 
-    def _load_latest_vision_json(self, asset_id: int) -> str | None:
+    def _load_latest_vision_json(self, asset_id: str | int | None) -> str | None:
+        if asset_id is None:
+            return None
         row = self.conn.execute(
             """
             SELECT result_json FROM vision_results
@@ -928,7 +1371,7 @@ class DataAccess:
             ORDER BY created_at DESC, id DESC
             LIMIT 1
             """,
-            (asset_id,),
+            (str(asset_id),),
         ).fetchone()
         if not row:
             return None
@@ -938,7 +1381,7 @@ class DataAccess:
         self,
         channel_id: int,
         message_id: int,
-        asset_id: int | None,
+        asset_id: str | int | None,
         rubric_id: int | None,
         metadata: dict[str, Any] | None,
     ) -> None:
@@ -948,6 +1391,7 @@ class DataAccess:
             asset = self.get_asset(asset_id)
             if asset:
                 resolved_rubric = asset.rubric_id
+        asset_id_value = str(asset_id) if asset_id is not None else None
         self.conn.execute(
             """
             INSERT INTO posts_history (
@@ -957,7 +1401,7 @@ class DataAccess:
             (
                 channel_id,
                 message_id,
-                asset_id,
+                asset_id_value,
                 resolved_rubric,
                 json.dumps(metadata) if metadata is not None else None,
                 now,

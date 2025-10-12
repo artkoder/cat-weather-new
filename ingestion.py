@@ -181,6 +181,7 @@ class IngestionInputs:
     upload_id: str | None = None
     asset_id: str | None = None
     file_ref: str | None = None
+    file_metadata: dict[str, Any] | None = None
     job_id: int | None = None
     job_name: str | None = None
     telemetry: Mapping[str, Any] | None = None
@@ -188,6 +189,21 @@ class IngestionInputs:
     exif: dict[str, Any] | None = None
     gps: dict[str, Any] | None = None
     vision: IngestionVisionConfig = field(default_factory=IngestionVisionConfig)
+    tg_chat_id: int | None = None
+    template: str | None = None
+    hashtags: str | None = None
+    caption: str | None = None
+    kind: str | None = None
+    metadata: dict[str, Any] | None = None
+    categories: list[str] | None = None
+    rubric_id: int | None = None
+    origin: str | None = None
+    author_user_id: int | None = None
+    author_username: str | None = None
+    sender_chat_id: int | None = None
+    via_bot_id: int | None = None
+    forward_from_user: int | None = None
+    forward_from_chat: int | None = None
 
 
 class CreateAssetPayload(TypedDict, total=False):
@@ -218,6 +234,15 @@ class SaveAssetPayload(TypedDict, total=False):
     rubric_id: int | None
     origin: str
     source: str
+    author_user_id: int | None
+    author_username: str | None
+    sender_chat_id: int | None
+    via_bot_id: int | None
+    forward_from_user: int | None
+    forward_from_chat: int | None
+    latitude: float | None
+    longitude: float | None
+    exif_present: bool | None
 
 
 @dataclass(slots=True)
@@ -523,7 +548,8 @@ async def _ingest_photo_internal(
         if message_id is None:
             raise RuntimeError("telegram response missing message_id")
 
-        message_identifier = f"{inputs.channel_id}:{message_id}"
+        tg_chat_id = inputs.tg_chat_id or inputs.channel_id
+        message_identifier = f"{tg_chat_id}:{message_id}"
         asset_id: str | None = inputs.asset_id
 
         if inputs.source in {"upload", "mobile"} and callbacks.create_asset:
@@ -546,23 +572,63 @@ async def _ingest_photo_internal(
                 }
             )
         elif inputs.source != "upload" and callbacks.save_asset:
-            asset_id = callbacks.save_asset(
-                {
-                    "channel_id": inputs.channel_id,
-                    "message_id": message_id,
-                    "tg_chat_id": inputs.channel_id,
-                    "caption": caption,
-                    "kind": None,
-                    "file_meta": None,
-                    "metadata": {
-                        "exif": exif_payload,
-                        "gps": gps_payload,
-                    },
-                    "categories": categories,
-                    "origin": inputs.source,
-                    "source": inputs.source,
-                }
-            )
+            combined_file_meta: dict[str, Any] = dict(inputs.file_metadata or {})
+            if inputs.file_ref:
+                combined_file_meta.setdefault("file_ref", inputs.file_ref)
+            if mime_type is not None:
+                combined_file_meta["mime_type"] = mime_type
+            combined_file_meta["sha256"] = sha256
+            if width is not None:
+                combined_file_meta["width"] = width
+            if height is not None:
+                combined_file_meta["height"] = height
+            if exif_payload:
+                combined_file_meta["exif"] = exif_payload
+            if vision_payload:
+                combined_file_meta["labels"] = vision_payload
+
+            metadata_payload: dict[str, Any] = dict(inputs.metadata or {})
+            metadata_payload["exif"] = exif_payload
+            metadata_payload["gps"] = gps_payload
+
+            combined_categories: list[str] = []
+            seen_categories: set[str] = set()
+            for value in (inputs.categories or []):
+                text = str(value).strip()
+                if text and text not in seen_categories:
+                    combined_categories.append(text)
+                    seen_categories.add(text)
+            for value in categories:
+                text = str(value).strip()
+                if text and text not in seen_categories:
+                    combined_categories.append(text)
+                    seen_categories.add(text)
+
+            save_payload: SaveAssetPayload = {
+                "channel_id": inputs.channel_id,
+                "message_id": message_id,
+                "template": inputs.template,
+                "hashtags": inputs.hashtags,
+                "tg_chat_id": tg_chat_id,
+                "caption": inputs.caption if inputs.caption is not None else caption,
+                "kind": inputs.kind,
+                "file_meta": combined_file_meta or None,
+                "metadata": metadata_payload or None,
+                "categories": combined_categories or None,
+                "rubric_id": inputs.rubric_id,
+                "origin": inputs.origin or inputs.source,
+                "source": inputs.source,
+                "author_user_id": inputs.author_user_id,
+                "author_username": inputs.author_username,
+                "sender_chat_id": inputs.sender_chat_id,
+                "via_bot_id": inputs.via_bot_id,
+                "forward_from_user": inputs.forward_from_user,
+                "forward_from_chat": inputs.forward_from_chat,
+                "latitude": gps_payload.get("latitude"),
+                "longitude": gps_payload.get("longitude"),
+                "exif_present": bool(gps_payload),
+            }
+            asset_id = callbacks.save_asset(save_payload)
 
         if asset_id and callbacks.link_upload_asset and inputs.upload_id:
             callbacks.link_upload_asset(asset_id)
@@ -601,6 +667,8 @@ async def ingest_photo(
     context: UploadIngestionContext,
     file_path: Path,
     cleanup_file: bool = False,
+    callbacks: IngestionCallbacks | None = None,
+    input_overrides: Mapping[str, Any] | None = None,
 ) -> IngestionResult:
     metrics = context.metrics
     telemetry = context.telemetry_payload()
@@ -623,6 +691,13 @@ async def ingest_photo(
         vision=vision_config,
     )
 
+    if input_overrides:
+        for key, value in input_overrides.items():
+            if hasattr(ingestion_inputs, key):
+                setattr(ingestion_inputs, key, value)
+            else:
+                logging.debug("Ignoring unknown ingestion override %s", key)
+
     def _log_tokens(payload: TokenUsagePayload) -> None:
         model = payload.get("model")
         if not model:
@@ -644,12 +719,12 @@ async def ingest_photo(
         token_logger=_log_tokens,
     )
 
-    callbacks = IngestionCallbacks(
-        create_asset=lambda payload: data.create_asset(**payload),
-    )
+    effective_callbacks = callbacks or IngestionCallbacks()
+    if effective_callbacks.create_asset is None and effective_callbacks.save_asset is None:
+        effective_callbacks.create_asset = lambda payload: data.create_asset(**payload)
 
     return await _ingest_photo_internal(
         ingestion_inputs,
         ingestion_context,
-        callbacks,
+        effective_callbacks,
     )

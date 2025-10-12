@@ -22,7 +22,7 @@ from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone, time as dtime
 from pathlib import Path
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from typing import Any, BinaryIO, Iterable, Mapping, Sequence, TYPE_CHECKING, Callable
 from uuid import uuid4
@@ -54,6 +54,7 @@ from data_access import (
 )
 from api.uploads import (
     UploadMetricsRecorder,
+    UploadsConfig,
     load_uploads_config,
     register_upload_jobs,
     setup_upload_routes,
@@ -78,6 +79,7 @@ from openai_client import OpenAIClient
 from supabase_client import SupabaseClient
 from storage import create_storage_from_env
 from weather_migration import migrate_weather_publish_channels
+from ingestion import IngestionCallbacks, UploadIngestionContext, ingest_photo
 
 if TYPE_CHECKING:
     from openai_client import OpenAIResponse
@@ -821,6 +823,8 @@ class Bot:
         )
         self.openai = OpenAIClient(os.getenv("4O_API_KEY"))
         self.supabase = SupabaseClient()
+        self.uploads_config: UploadsConfig = load_uploads_config()
+        self.upload_metrics: UploadMetricsRecorder | None = None
         self._model_limits = self._load_model_limits()
         asset_dir = os.getenv("ASSET_STORAGE_DIR")
         self.asset_storage = Path(asset_dir).expanduser() if asset_dir else Path("/tmp/bot_assets")
@@ -3731,46 +3735,206 @@ class Bot:
         downloaded_path = await self._download_file(file_id, target_path)
         if not downloaded_path:
             raise RuntimeError(f"Failed to download file for asset {asset_id}")
-        cleanup_path = str(downloaded_path)
+
+        metrics = self.upload_metrics or UploadMetricsRecorder(emitter=LoggingMetricsEmitter())
+
+        upload_id_value = str(asset.upload_id or asset_id)
+        storage_key_value = str(
+            asset.file_ref or asset.file_id or asset.file_unique_id or asset_id
+        )
+        ingestion_context = UploadIngestionContext(
+            upload_id=upload_id_value,
+            storage_key=storage_key_value,
+            metrics=metrics,
+            source="telegram",
+            device_id=None,
+            user_id=asset.author_user_id,
+            job_id=job.id,
+            job_name=job.name,
+        )
+
+        target_channel_id = asset.tg_chat_id or asset.channel_id or self.uploads_config.assets_channel_id
+        if target_channel_id is None:
+            raise RuntimeError(f"Asset {asset_id} missing channel for ingest")
+
+        base_metadata = dict(asset.metadata or {})
         exif_datetimes = self._extract_exif_datetimes(downloaded_path)
+        if exif_datetimes:
+            base_metadata.update(exif_datetimes)
+
+        file_metadata = {k: v for k, v in file_meta.items() if v is not None}
+        existing_categories = list(asset.categories)
+
+        overrides: dict[str, Any] = {
+            "asset_id": asset_id,
+            "channel_id": target_channel_id,
+            "tg_chat_id": asset.tg_chat_id or target_channel_id,
+            "template": asset.caption_template,
+            "hashtags": asset.hashtags,
+            "caption": asset.caption,
+            "kind": asset.kind,
+            "metadata": base_metadata,
+            "categories": existing_categories,
+            "rubric_id": asset.rubric_id,
+            "origin": asset.origin,
+            "author_user_id": asset.author_user_id,
+            "author_username": asset.author_username,
+            "sender_chat_id": asset.sender_chat_id,
+            "via_bot_id": asset.via_bot_id,
+            "forward_from_user": asset.forward_from_user,
+            "forward_from_chat": asset.forward_from_chat,
+            "file_metadata": file_metadata,
+        }
+
+        existing_metadata_for_callback = base_metadata.copy()
+
+        class _TelegramReuseAdapter:
+            def __init__(
+                self,
+                bot: "Bot",
+                *,
+                message_id: int | None,
+                chat_id: int | None,
+            ) -> None:
+                self._bot = bot
+                self._message_id = message_id
+                self._chat_id = chat_id
+
+            async def send_photo(
+                self,
+                *,
+                chat_id: int,
+                photo: Path,
+                caption: str | None = None,
+            ) -> dict[str, Any]:
+                if self._message_id and (self._chat_id is None or self._chat_id == chat_id):
+                    logging.debug(
+                        "Reusing existing Telegram message %s for asset %s",
+                        self._message_id,
+                        asset_id,
+                    )
+                    return {"message_id": self._message_id, "chat": {"id": self._chat_id or chat_id}}
+                response, _ = await self._bot._publish_as_photo(chat_id, str(photo), caption)
+                return response or {}
+
+        def _save_asset(payload: dict[str, Any]) -> str:
+            merged_metadata = existing_metadata_for_callback.copy()
+            incoming_metadata = payload.get("metadata") or {}
+            if incoming_metadata:
+                merged_metadata.update(incoming_metadata)
+            categories_payload = payload.get("categories") or existing_categories
+            result_id = self.data.save_asset(
+                payload["channel_id"],
+                payload["message_id"],
+                payload.get("template")
+                if payload.get("template") is not None
+                else asset.caption_template,
+                payload.get("hashtags")
+                if payload.get("hashtags") is not None
+                else asset.hashtags,
+                tg_chat_id=payload.get("tg_chat_id") or target_channel_id,
+                caption=payload.get("caption")
+                if payload.get("caption") is not None
+                else asset.caption,
+                kind=payload.get("kind") if payload.get("kind") is not None else asset.kind,
+                file_meta=payload.get("file_meta"),
+                metadata=merged_metadata or None,
+                categories=categories_payload or None,
+                rubric_id=payload.get("rubric_id")
+                if payload.get("rubric_id") is not None
+                else asset.rubric_id,
+                origin=payload.get("origin") or asset.origin or "telegram",
+                source=payload.get("source") or asset.source or "telegram",
+                author_user_id=payload.get("author_user_id")
+                if payload.get("author_user_id") is not None
+                else asset.author_user_id,
+                author_username=payload.get("author_username")
+                if payload.get("author_username") is not None
+                else asset.author_username,
+                sender_chat_id=payload.get("sender_chat_id")
+                if payload.get("sender_chat_id") is not None
+                else asset.sender_chat_id,
+                via_bot_id=payload.get("via_bot_id")
+                if payload.get("via_bot_id") is not None
+                else asset.via_bot_id,
+                forward_from_user=payload.get("forward_from_user")
+                if payload.get("forward_from_user") is not None
+                else asset.forward_from_user,
+                forward_from_chat=payload.get("forward_from_chat")
+                if payload.get("forward_from_chat") is not None
+                else asset.forward_from_chat,
+            )
+            update_kwargs: dict[str, Any] = {"local_path": None}
+            if payload.get("latitude") is not None:
+                update_kwargs["latitude"] = payload["latitude"]
+            if payload.get("longitude") is not None:
+                update_kwargs["longitude"] = payload["longitude"]
+            if payload.get("exif_present") is not None:
+                update_kwargs["exif_present"] = payload["exif_present"]
+            self.data.update_asset(result_id, **update_kwargs)
+            return result_id
+
+        telegram_adapter = _TelegramReuseAdapter(
+            self,
+            message_id=asset.message_id,
+            chat_id=asset.tg_chat_id,
+        )
+        telegram_config = replace(
+            self.uploads_config,
+            assets_channel_id=target_channel_id,
+            vision_enabled=False,
+        )
+
+        callbacks = IngestionCallbacks(save_asset=_save_asset)
+
         try:
-            gps = None
-            should_extract_gps = asset.kind == "photo" or self._is_convertible_image_document(asset)
-            if should_extract_gps:
-                gps = self._extract_gps(downloaded_path)
-                if not gps:
-                    author_id = asset.author_user_id
-                    if author_id:
-                        await self.api_request(
-                            "sendMessage",
-                            {
-                                "chat_id": author_id,
-                                "text": "В изображении отсутствуют EXIF-данные с координатами.",
-                            },
-                        )
-            update_kwargs: dict[str, Any] = {
-                "local_path": None,
-                "exif_present": bool(gps),
-            }
-            if exif_datetimes:
-                update_kwargs["metadata"] = exif_datetimes
-            if gps:
-                lat, lon = gps
-                update_kwargs["latitude"] = lat
-                update_kwargs["longitude"] = lon
-                address = await self._reverse_geocode(lat, lon)
-                if address:
-                    city = address.get("city") or address.get("town") or address.get("village")
-                    country = address.get("country")
-                    if city:
-                        update_kwargs["city"] = city
-                    if country:
-                        update_kwargs["country"] = country
-            self.data.update_asset(asset_id, **update_kwargs)
+            result = await ingest_photo(
+                data=self.data,
+                telegram=telegram_adapter,
+                openai=self.openai,
+                supabase=self.supabase,
+                config=telegram_config,
+                context=ingestion_context,
+                file_path=downloaded_path,
+                cleanup_file=False,
+                callbacks=callbacks,
+                input_overrides=overrides,
+            )
         finally:
-            self._remove_file(cleanup_path)
-            if asset.local_path and asset.local_path != cleanup_path:
-                self._remove_file(asset.local_path)
+            self._remove_file(str(downloaded_path))
+
+        if asset.local_path and asset.local_path != str(downloaded_path):
+            self._remove_file(asset.local_path)
+
+        should_extract_gps = asset.kind == "photo" or self._is_convertible_image_document(asset)
+        gps_payload = result.gps or {}
+        lat = gps_payload.get("latitude")
+        lon = gps_payload.get("longitude")
+        if should_extract_gps and (lat is None or lon is None):
+            author_id = asset.author_user_id
+            if author_id:
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": author_id,
+                        "text": "В изображении отсутствуют EXIF-данные с координатами.",
+                    },
+                )
+        update_kwargs: dict[str, Any] = {}
+        if lat is not None and lon is not None:
+            update_kwargs["latitude"] = lat
+            update_kwargs["longitude"] = lon
+            address = await self._reverse_geocode(lat, lon)
+            if address:
+                city = address.get("city") or address.get("town") or address.get("village")
+                country = address.get("country")
+                if city:
+                    update_kwargs["city"] = city
+                if country:
+                    update_kwargs["country"] = country
+        if update_kwargs:
+            self.data.update_asset(asset_id, **update_kwargs)
+
         if asset.source == "mobile":
             record_mobile_photo_ingested()
         tz_offset = self.get_tz_offset(asset.author_user_id) if asset.author_user_id else TZ_OFFSET
@@ -13270,7 +13434,7 @@ def create_app():
         _env_int('RL_ATTACH_USER_WINDOW_SEC', 60),
     )
 
-    uploads_config = load_uploads_config()
+    uploads_config = bot.uploads_config
     storage = create_storage_from_env(supabase=bot.supabase)
     upload_metrics = UploadMetricsRecorder(emitter=LoggingMetricsEmitter())
     bot.upload_metrics = upload_metrics

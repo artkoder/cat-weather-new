@@ -7,6 +7,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Any, Iterable, Iterator, Sequence
+from uuid import uuid4
 
 
 _UNSET = object()
@@ -115,7 +116,7 @@ class DataAccess:
         self.conn = connection
         self.conn.row_factory = sqlite3.Row
 
-    def insert_uploaded_asset(
+    def create_asset(
         self,
         *,
         upload_id: str,
@@ -128,8 +129,9 @@ class DataAccess:
         labels: dict[str, Any] | None = None,
         tg_message_id: int | None = None,
     ) -> str:
-        """Upsert an asset row produced from a device upload."""
+        """Create a new asset entry tied to an upload and return its UUID."""
 
+        asset_id = str(uuid4())
         now = datetime.utcnow().isoformat()
         exif_json = json.dumps(exif) if exif else None
         labels_json = json.dumps(labels) if labels else None
@@ -149,19 +151,9 @@ class DataAccess:
                 tg_message_id,
                 created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                upload_id=excluded.upload_id,
-                file_ref=excluded.file_ref,
-                content_type=excluded.content_type,
-                sha256=excluded.sha256,
-                width=excluded.width,
-                height=excluded.height,
-                exif_json=excluded.exif_json,
-                labels_json=excluded.labels_json,
-                tg_message_id=excluded.tg_message_id
             """,
             (
-                upload_id,
+                asset_id,
                 upload_id,
                 file_ref,
                 content_type,
@@ -175,7 +167,34 @@ class DataAccess:
             ),
         )
         self.conn.commit()
-        return upload_id
+        return asset_id
+
+    def insert_uploaded_asset(
+        self,
+        *,
+        upload_id: str,
+        file_ref: str,
+        content_type: str | None,
+        sha256: str,
+        width: int | None,
+        height: int | None,
+        exif: dict[str, Any] | None = None,
+        labels: dict[str, Any] | None = None,
+        tg_message_id: int | None = None,
+    ) -> str:
+        """Compatibility wrapper for legacy callers."""
+
+        return self.create_asset(
+            upload_id=upload_id,
+            file_ref=file_ref,
+            content_type=content_type,
+            sha256=sha256,
+            width=width,
+            height=height,
+            exif=exif,
+            labels=labels,
+            tg_message_id=tg_message_id,
+        )
 
     @staticmethod
     def _serialize_categories(hashtags: str | None, categories: Iterable[str] | None) -> str:
@@ -1712,8 +1731,18 @@ def insert_upload(
     try:
         conn.execute(
             """
-            INSERT INTO uploads (id, device_id, idempotency_key, status, error, file_ref, created_at, updated_at)
-            VALUES (?, ?, ?, 'queued', NULL, ?, ?, ?)
+            INSERT INTO uploads (
+                id,
+                device_id,
+                idempotency_key,
+                status,
+                error,
+                file_ref,
+                asset_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, 'queued', NULL, ?, NULL, ?, ?)
             """,
             (id, device_id, idempotency_key, file_ref, now, now),
         )
@@ -1744,7 +1773,7 @@ def get_upload(
 ) -> dict[str, str | None] | None:
     cur = conn.execute(
         """
-        SELECT id, status, error
+        SELECT id, status, error, asset_id
         FROM uploads
         WHERE id=? AND device_id=?
         """,
@@ -1760,13 +1789,17 @@ def get_upload(
             "id": str(row["id"]),
             "status": str(row["status"]),
             "error": error_text,
+            "asset_id": str(row["asset_id"]) if row["asset_id"] is not None else None,
         }
     error_value = row[2]
     error_text = str(error_value) if error_value is not None else None
+    asset_value = row[3] if len(row) > 3 else None
+    asset_text = str(asset_value) if asset_value is not None else None
     return {
         "id": str(row[0]),
         "status": str(row[1]),
         "error": error_text,
+        "asset_id": asset_text,
     }
 
 
@@ -1816,12 +1849,37 @@ def set_upload_status(
         )
 
 
+def link_upload_asset(
+    conn: sqlite3.Connection,
+    *,
+    upload_id: str,
+    asset_id: str,
+) -> None:
+    """Associate an upload row with a persisted asset."""
+
+    cur = conn.execute("SELECT asset_id FROM uploads WHERE id=?", (upload_id,))
+    row = cur.fetchone()
+    if not row:
+        raise ValueError(f"Upload {upload_id} not found")
+    if isinstance(row, sqlite3.Row):
+        existing = row["asset_id"]
+    else:
+        existing = row[0]
+    if existing and str(existing) != asset_id:
+        raise ValueError(f"Upload {upload_id} already linked to asset {existing}")
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        "UPDATE uploads SET asset_id=?, updated_at=? WHERE id=?",
+        (asset_id, now, upload_id),
+    )
+
+
 def fetch_upload_record(
     conn: sqlite3.Connection, *, upload_id: str
 ) -> dict[str, Any] | None:
     cur = conn.execute(
         """
-        SELECT id, device_id, status, error, file_ref, created_at, updated_at
+        SELECT id, device_id, status, error, file_ref, asset_id, created_at, updated_at
         FROM uploads
         WHERE id=?
         """,
@@ -1837,6 +1895,7 @@ def fetch_upload_record(
             "status": str(row["status"]),
             "error": row["error"],
             "file_ref": row["file_ref"],
+            "asset_id": str(row["asset_id"]) if row["asset_id"] is not None else None,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -1846,6 +1905,7 @@ def fetch_upload_record(
         "status": str(row[2]),
         "error": row[3],
         "file_ref": row[4],
-        "created_at": row[5],
-        "updated_at": row[6],
+        "asset_id": str(row[5]) if row[5] is not None else None,
+        "created_at": row[6],
+        "updated_at": row[7],
     }

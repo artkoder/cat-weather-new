@@ -24,6 +24,7 @@ from data_access import (
     fetch_upload_record,
     get_upload,
     insert_upload,
+    link_upload_asset,
     set_upload_status,
 )
 from jobs import Job, JobQueue
@@ -589,6 +590,7 @@ async def handle_get_upload_status(request: web.Request) -> web.Response:
         "id": record["id"],
         "status": record["status"],
         "error": record["error"],
+        "asset_id": record.get("asset_id"),
     }
     logging.info(
         "UPLOAD_STATUS id=%s status=%s 200",
@@ -743,7 +745,7 @@ def register_upload_jobs(
                         raise RuntimeError("telegram response missing message_id")
                     metrics_recorder.increment("upload.telegram.success")
 
-                    asset_id = data.insert_uploaded_asset(
+                    asset_id = data.create_asset(
                         upload_id=upload_id,
                         file_ref=str(file_ref),
                         content_type=mime_type,
@@ -754,6 +756,7 @@ def register_upload_jobs(
                         labels=vision_payload or None,
                         tg_message_id=message_id,
                     )
+                    link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)
                     logging.info(
                         "UPLOAD asset stored upload=%s asset=%s sha=%s mime=%s",
                         upload_id,

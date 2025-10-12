@@ -8,10 +8,12 @@ import pytest
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from data_access import (
+    DataAccess,
     create_device,
     create_pairing_token,
     consume_pairing_token,
     insert_upload,
+    link_upload_asset,
     set_upload_status,
 )
 from main import apply_migrations
@@ -121,3 +123,32 @@ def test_upload_status_transitions(conn: sqlite3.Connection) -> None:
     assert row["error"] == "boom"
     with pytest.raises(ValueError):
         set_upload_status(conn, id=failing_id, status="queued")
+
+
+def test_link_upload_asset_updates_row(conn: sqlite3.Connection) -> None:
+    _ensure_device(conn)
+    upload_id = insert_upload(
+        conn,
+        id="upload-asset",
+        device_id="device-1",
+        idempotency_key="key-asset",
+    )
+    row = _get_upload(conn, upload_id)
+    assert row["asset_id"] is None
+
+    data = DataAccess(conn)
+    asset_id = data.create_asset(
+        upload_id=upload_id,
+        file_ref="file:///tmp/test.jpg",
+        content_type="image/jpeg",
+        sha256="deadbeef",
+        width=10,
+        height=20,
+    )
+
+    link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)
+    row = _get_upload(conn, upload_id)
+    assert row["asset_id"] == asset_id
+
+    with pytest.raises(ValueError):
+        link_upload_asset(conn, upload_id=upload_id, asset_id="different")

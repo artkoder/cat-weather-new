@@ -377,6 +377,13 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
             (upload_id,),
         ).fetchone()
         assert row is not None
+        assert final_payload["asset_id"] == row["id"]
+        upload_row = env.conn.execute(
+            "SELECT asset_id FROM uploads WHERE id=?",
+            (upload_id,),
+        ).fetchone()
+        assert upload_row is not None
+        assert upload_row["asset_id"] == row["id"]
         expected_sha = hashlib.sha256(image_bytes).hexdigest()
         assert row["sha256"] == expected_sha
         assert row["content_type"] == "image/jpeg"
@@ -523,6 +530,7 @@ async def test_upload_status_returns_error_for_failed_upload(tmp_path: Path):
         assert status_resp == 200
         assert payload["status"] == "failed"
         assert payload["error"] == "boom"
+        assert payload["asset_id"] is None
     finally:
         await env.close()
 
@@ -584,10 +592,12 @@ async def test_upload_processing_with_vision(tmp_path: Path):
 
         assert env.conn is not None
         asset_row = env.conn.execute(
-            "SELECT labels_json, tg_message_id FROM assets WHERE upload_id=?",
+            "SELECT id, labels_json, tg_message_id FROM assets WHERE upload_id=?",
             (upload_id,),
         ).fetchone()
         assert asset_row is not None
+        assert final_payload["asset_id"] is not None
+        assert final_payload["asset_id"] == asset_row["id"]
         labels = json.loads(asset_row["labels_json"])
         assert labels.get("caption") == "Красный цветок"
         assert "flower" in labels.get("categories", [])

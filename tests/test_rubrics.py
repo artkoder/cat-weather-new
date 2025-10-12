@@ -1,5 +1,6 @@
 import html
 import json
+import json
 import os
 import sys
 from copy import deepcopy
@@ -192,53 +193,96 @@ def _seed_city(
     bot.db.commit()
 
 
+def _build_test_asset(
+    asset_id: int,
+    *,
+    payload_overrides: dict[str, Any] | None = None,
+    labels: list[str] | None = None,
+    vision_results: dict[str, Any] | None = None,
+    vision_category: str | None = "flowers",
+    vision_flower_varieties: list[str] | None = None,
+    width: int = 1080,
+    height: int = 1350,
+    sha256: str | None = None,
+) -> Asset:
+    payload: dict[str, Any] = {
+        "channel_id": 1,
+        "tg_chat_id": 1,
+        "message_id": asset_id,
+        "origin": "test",
+        "caption_template": None,
+        "caption": None,
+        "hashtags": None,
+        "kind": "photo",
+        "file_id": f"file-{asset_id}",
+        "file_unique_id": f"unique-{asset_id}",
+        "file_name": f"flower-{asset_id}.jpg",
+        "mime_type": "image/jpeg",
+        "file_size": None,
+        "duration": None,
+        "latitude": None,
+        "longitude": None,
+        "city": "Калининград",
+        "country": "Россия",
+        "metadata": None,
+    }
+    if payload_overrides:
+        payload.update(payload_overrides)
+    labels_list = [str(item) for item in (labels or [])]
+    labels_json = json.dumps(labels_list, ensure_ascii=False)
+    tg_chat_id = payload.get("tg_chat_id")
+    message_id = payload.get("message_id")
+    if tg_chat_id is not None and message_id is not None:
+        tg_message_id = f"{tg_chat_id}:{message_id}"
+    elif message_id is not None:
+        tg_message_id = str(message_id)
+    elif tg_chat_id is not None:
+        tg_message_id = str(tg_chat_id)
+    else:
+        tg_message_id = None
+    flower_varieties: list[str] | None
+    if vision_flower_varieties is None:
+        flower_varieties = None
+    else:
+        flower_varieties = [str(item) for item in vision_flower_varieties]
+    return Asset(
+        id=str(asset_id),
+        upload_id=None,
+        file_ref=payload.get("file_id"),
+        content_type=payload.get("mime_type"),
+        sha256=sha256 or f"sha-{asset_id}",
+        width=width,
+        height=height,
+        exif_json=None,
+        labels_json=labels_json,
+        tg_message_id=tg_message_id,
+        payload_json=json.dumps(payload, ensure_ascii=False),
+        created_at=datetime.utcnow().isoformat(),
+        exif=None,
+        labels=labels_list,
+        payload=payload,
+        legacy_values={},
+        _vision_results=vision_results,
+        _vision_category=vision_category,
+        _vision_flower_varieties=flower_varieties,
+    )
+
+
 def _make_seasonal_asset(
     asset_id: int,
     *,
     season: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> Asset:
-    return Asset(
-        id=asset_id,
-        channel_id=1,
-        tg_chat_id=1,
-        message_id=asset_id,
-        origin="test",
-        caption_template=None,
-        caption=None,
-        hashtags=None,
-        categories=[],
-        kind="photo",
-        file_id=f"file-{asset_id}",
-        file_unique_id=f"unique-{asset_id}",
-        file_name=f"flower-{asset_id}.jpg",
-        mime_type="image/jpeg",
-        file_size=None,
-        width=1080,
-        height=1350,
-        duration=None,
-        recognized_message_id=None,
-        exif_present=False,
-        latitude=None,
-        longitude=None,
-        city="Калининград",
-        country="Россия",
-        author_user_id=None,
-        author_username=None,
-        sender_chat_id=None,
-        via_bot_id=None,
-        forward_from_user=None,
-        forward_from_chat=None,
-        local_path=None,
-        metadata=metadata,
-        vision_results={"season_final": season} if season else {},
-        rubric_id=None,
+    overrides = {"metadata": metadata} if metadata is not None else None
+    vision_payload = {"season_final": season} if season else None
+    return _build_test_asset(
+        asset_id,
+        payload_overrides=overrides,
+        labels=[],
+        vision_results=vision_payload,
         vision_category="flowers",
-        vision_arch_view=None,
-        vision_photo_weather=None,
         vision_flower_varieties=[],
-        vision_confidence=None,
-        vision_caption=None,
     )
 
 
@@ -2745,47 +2789,13 @@ async def test_generate_flowers_uses_gpt_4o(tmp_path):
 
     bot.openai = DummyOpenAI()
 
-    asset = Asset(
-        id=1,
-        channel_id=1,
-        tg_chat_id=1,
-        message_id=1,
-        origin="test",
-        caption_template=None,
-        caption=None,
-        hashtags=None,
-        categories=[],
-        kind="photo",
-        file_id="file-1",
-        file_unique_id="uniq-1",
-        file_name="flower.jpg",
-        mime_type="image/jpeg",
-        file_size=None,
-        width=1080,
-        height=1350,
-        duration=None,
-        recognized_message_id=None,
-        exif_present=False,
-        latitude=None,
-        longitude=None,
-        city="Baltiisk",
-        country="Россия",
-        author_user_id=None,
-        author_username=None,
-        sender_chat_id=None,
-        via_bot_id=None,
-        forward_from_user=None,
-        forward_from_chat=None,
-        local_path=None,
-        metadata=None,
-        vision_results=None,
-        rubric_id=None,
-        vision_category="flowers",
-        vision_arch_view=None,
-        vision_photo_weather=None,
+    asset = _build_test_asset(
+        1,
+        payload_overrides={
+            "city": "Baltiisk",
+            "file_name": "flower.jpg",
+        },
         vision_flower_varieties=["rose"],
-        vision_confidence=None,
-        vision_caption=None,
     )
 
     greeting, hashtags, plan, plan_meta = await bot._generate_flowers_copy(
@@ -2829,47 +2839,12 @@ async def test_generate_flowers_retries_on_banned_cliches(tmp_path):
     rubric = bot.data.get_rubric_by_code("flowers")
     assert rubric is not None
 
-    asset = Asset(
-        id=3,
-        channel_id=1,
-        tg_chat_id=1,
-        message_id=3,
-        origin="test",
-        caption_template=None,
-        caption=None,
-        hashtags=None,
-        categories=[],
-        kind="photo",
-        file_id="file-3",
-        file_unique_id="uniq-3",
-        file_name="flower-3.jpg",
-        mime_type="image/jpeg",
-        file_size=None,
+    asset = _build_test_asset(
+        3,
+        payload_overrides={"file_name": "flower-3.jpg"},
         width=1024,
         height=1024,
-        duration=None,
-        recognized_message_id=None,
-        exif_present=False,
-        latitude=None,
-        longitude=None,
-        city="Калининград",
-        country="Россия",
-        author_user_id=None,
-        author_username=None,
-        sender_chat_id=None,
-        via_bot_id=None,
-        forward_from_user=None,
-        forward_from_chat=None,
-        local_path=None,
-        metadata=None,
-        vision_results=None,
-        rubric_id=None,
-        vision_category="flowers",
-        vision_arch_view=None,
-        vision_photo_weather=None,
         vision_flower_varieties=["rose"],
-        vision_confidence=None,
-        vision_caption=None,
     )
 
     calls: list[dict[str, Any]] = []
@@ -2980,47 +2955,12 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
 
     bot.openai = DummyOpenAI()
 
-    asset = Asset(
-        id=2,
-        channel_id=1,
-        tg_chat_id=1,
-        message_id=2,
-        origin="test",
-        caption_template=None,
-        caption=None,
-        hashtags=None,
-        categories=[],
-        kind="photo",
-        file_id="file-2",
-        file_unique_id="uniq-2",
-        file_name="flower2.jpg",
-        mime_type="image/jpeg",
-        file_size=None,
+    asset = _build_test_asset(
+        2,
+        payload_overrides={"file_name": "flower2.jpg"},
         width=1080,
         height=1080,
-        duration=None,
-        recognized_message_id=None,
-        exif_present=False,
-        latitude=None,
-        longitude=None,
-        city="Калининград",
-        country="Россия",
-        author_user_id=None,
-        author_username=None,
-        sender_chat_id=None,
-        via_bot_id=None,
-        forward_from_user=None,
-        forward_from_chat=None,
-        local_path=None,
-        metadata=None,
-        vision_results=None,
-        rubric_id=None,
-        vision_category="flowers",
-        vision_arch_view=None,
-        vision_photo_weather=None,
         vision_flower_varieties=["tulip"],
-        vision_confidence=None,
-        vision_caption=None,
     )
 
     greeting, hashtags, plan, plan_meta = await bot._generate_flowers_copy(

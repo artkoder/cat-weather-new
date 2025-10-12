@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,47 +15,47 @@ from openai_client import OpenAIResponse
 
 
 def _make_asset(asset_id: int, city: str, varieties: list[str]) -> Asset:
+    payload = {
+        "channel_id": 1,
+        "tg_chat_id": 1,
+        "message_id": asset_id,
+        "origin": "test",
+        "caption_template": None,
+        "caption": None,
+        "hashtags": None,
+        "kind": "photo",
+        "file_id": f"file-{asset_id}",
+        "file_unique_id": f"uniq-{asset_id}",
+        "file_name": f"flower-{asset_id}.jpg",
+        "mime_type": "image/jpeg",
+        "file_size": None,
+        "duration": None,
+        "latitude": None,
+        "longitude": None,
+        "city": city,
+        "country": "Россия",
+        "metadata": None,
+    }
+    labels_json = json.dumps([])
     return Asset(
-        id=asset_id,
-        channel_id=1,
-        tg_chat_id=1,
-        message_id=asset_id,
-        origin="test",
-        caption_template=None,
-        caption=None,
-        hashtags=None,
-        categories=[],
-        kind="photo",
-        file_id=f"file-{asset_id}",
-        file_unique_id=f"uniq-{asset_id}",
-        file_name=f"flower-{asset_id}.jpg",
-        mime_type="image/jpeg",
-        file_size=None,
+        id=str(asset_id),
+        upload_id=None,
+        file_ref=f"file-{asset_id}",
+        content_type="image/jpeg",
+        sha256=None,
         width=1080,
         height=1080,
-        duration=None,
-        recognized_message_id=None,
-        exif_present=False,
-        latitude=None,
-        longitude=None,
-        city=city,
-        country="Россия",
-        author_user_id=None,
-        author_username=None,
-        sender_chat_id=None,
-        via_bot_id=None,
-        forward_from_user=None,
-        forward_from_chat=None,
-        local_path=None,
-        metadata=None,
-        vision_results=None,
-        rubric_id=None,
-        vision_category="flowers",
-        vision_arch_view=None,
-        vision_photo_weather=None,
-        vision_flower_varieties=varieties,
-        vision_confidence=None,
-        vision_caption=None,
+        exif_json=None,
+        labels_json=labels_json,
+        tg_message_id=f"1:{asset_id}",
+        payload_json=json.dumps(payload, ensure_ascii=False),
+        created_at=datetime.utcnow().isoformat(),
+        exif=None,
+        labels=json.loads(labels_json),
+        payload=payload,
+        legacy_values={},
+        _vision_category="flowers",
+        _vision_flower_varieties=[str(v) for v in varieties] if varieties else [],
     )
 
 

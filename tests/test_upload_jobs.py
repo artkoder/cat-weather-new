@@ -22,6 +22,12 @@ from api.uploads import (
 from data_access import DataAccess, create_device, insert_upload
 from jobs import Job, JobQueue
 from main import apply_migrations
+from tests.fixtures.ingestion_utils import (
+    OpenAIStub,
+    StorageStub,
+    TelegramStub,
+    create_sample_image,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -61,41 +67,7 @@ def _patch_pillow_exif(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Image.Image, "getexif", _patched_getexif)
 
 
-class DummyStorage:
-    def __init__(self, mapping: dict[str, Path]) -> None:
-        self.mapping = mapping
-        self.get_calls: list[str] = []
-
-    async def put_stream(self, *, key: str, stream, content_type: str) -> str:  # pragma: no cover - not used
-        raise NotImplementedError
-
-    async def get_url(self, *, key: str) -> str:
-        self.get_calls.append(key)
-        try:
-            return self.mapping[key].as_uri()
-        except KeyError as exc:  # pragma: no cover - defensive
-            raise FileNotFoundError(key) from exc
-
-
-class DummyTelegram:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
-        self.next_message_id = 100
-
-    async def send_photo(self, *, chat_id: int, photo: Path, caption: str | None = None) -> dict[str, object]:
-        message_id = self.next_message_id
-        call = {
-            "chat_id": chat_id,
-            "photo": Path(photo),
-            "caption": caption,
-            "message_id": message_id,
-        }
-        self.calls.append(call)
-        self.next_message_id += 1
-        return {"message_id": message_id, "chat": {"id": chat_id}}
-
-
-class FailingTelegram(DummyTelegram):
+class FailingTelegram(TelegramStub):
     def __init__(self, error: Exception) -> None:
         super().__init__()
         self.error = error
@@ -104,7 +76,7 @@ class FailingTelegram(DummyTelegram):
         raise self.error
 
 
-class FlakyTelegram(DummyTelegram):
+class FlakyTelegram(TelegramStub):
     def __init__(self, *, failures: int = 1, error: Exception | None = None) -> None:
         super().__init__()
         self.failures = failures
@@ -115,43 +87,6 @@ class FlakyTelegram(DummyTelegram):
             self.failures -= 1
             raise self.error
         return await super().send_photo(chat_id=chat_id, photo=photo, caption=caption)
-
-
-class DummyOpenAI:
-    def __init__(self, *, error: Exception | None = None) -> None:
-        self.error = error
-        self.calls: list[dict[str, object]] = []
-
-    async def classify_image(self, **kwargs):
-        self.calls.append(kwargs)
-        if self.error:
-            raise self.error
-        return None
-
-
-def _create_sample_image(path: Path) -> Path:
-    image = Image.new("RGB", (640, 480), color=(10, 20, 30))
-    exif_dict = {
-        "0th": {
-            piexif.ImageIFD.Make: "UnitTest".encode("utf-8"),
-            piexif.ImageIFD.DateTime: "2023:12:24 15:30:45",
-        },
-        "Exif": {
-            piexif.ExifIFD.DateTimeOriginal: "2023:12:24 15:30:45",
-            piexif.ExifIFD.DateTimeDigitized: "2023:12:24 15:30:45",
-        },
-        "GPS": {
-            piexif.GPSIFD.GPSLatitudeRef: "N",
-            piexif.GPSIFD.GPSLatitude: [(55, 1), (30, 1), (0, 1)],
-            piexif.GPSIFD.GPSLongitudeRef: "E",
-            piexif.GPSIFD.GPSLongitude: [(37, 1), (36, 1), (0, 1)],
-        },
-        "1st": {},
-        "thumbnail": None,
-    }
-    exif_bytes = piexif.dump(exif_dict)
-    image.save(path, format="JPEG", exif=exif_bytes)
-    return path
 
 
 def _setup_connection() -> sqlite3.Connection:
@@ -182,7 +117,7 @@ def _prepare_upload(conn: sqlite3.Connection, *, file_key: str) -> str:
 
 @pytest.mark.asyncio
 async def test_extract_image_metadata_reads_jpeg_exif(tmp_path: Path) -> None:
-    image_path = _create_sample_image(tmp_path / "sample.jpg")
+    image_path = create_sample_image(tmp_path / "sample.jpg")
 
     mime_type, width, height, exif_payload, gps_payload = _extract_image_metadata(image_path)
 
@@ -199,10 +134,10 @@ async def test_extract_image_metadata_reads_jpeg_exif(tmp_path: Path) -> None:
 async def test_process_upload_job_success_records_asset(tmp_path: Path) -> None:
     conn = _setup_connection()
     data = DataAccess(conn)
-    image_path = _create_sample_image(tmp_path / "asset.jpg")
+    image_path = create_sample_image(tmp_path / "asset.jpg")
     file_key = "sample-key"
-    storage = DummyStorage({file_key: image_path})
-    telegram = DummyTelegram()
+    storage = StorageStub({file_key: image_path})
+    telegram = TelegramStub()
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn)
     config = UploadsConfig(assets_channel_id=-10001, vision_enabled=False)
@@ -278,7 +213,7 @@ async def test_process_upload_job_success_records_asset(tmp_path: Path) -> None:
 async def test_process_upload_job_vision_failure_sets_failed_status(tmp_path: Path) -> None:
     conn = _setup_connection()
     data = DataAccess(conn)
-    image_path = _create_sample_image(tmp_path / "vision.jpg")
+    image_path = create_sample_image(tmp_path / "vision.jpg")
     file_key = "vision-key"
     storage = DummyStorage({file_key: image_path})
     telegram = DummyTelegram()
@@ -289,7 +224,7 @@ async def test_process_upload_job_vision_failure_sets_failed_status(tmp_path: Pa
         vision_enabled=True,
         openai_vision_model="vision-test",
     )
-    openai_client = DummyOpenAI(error=RuntimeError("vision boom"))
+    openai_client = OpenAIStub(error=RuntimeError("vision boom"))
     register_upload_jobs(
         queue,
         conn,
@@ -331,9 +266,9 @@ async def test_process_upload_job_vision_failure_sets_failed_status(tmp_path: Pa
 async def test_process_upload_job_publish_failure_sets_failed_status(tmp_path: Path) -> None:
     conn = _setup_connection()
     data = DataAccess(conn)
-    image_path = _create_sample_image(tmp_path / "publish.jpg")
+    image_path = create_sample_image(tmp_path / "publish.jpg")
     file_key = "publish-key"
-    storage = DummyStorage({file_key: image_path})
+    storage = StorageStub({file_key: image_path})
     telegram = FailingTelegram(RuntimeError("telegram down"))
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn)
@@ -377,9 +312,9 @@ async def test_process_upload_job_publish_failure_sets_failed_status(tmp_path: P
 async def test_process_upload_job_retry_after_failure(tmp_path: Path) -> None:
     conn = _setup_connection()
     data = DataAccess(conn)
-    image_path = _create_sample_image(tmp_path / "retry.jpg")
+    image_path = create_sample_image(tmp_path / "retry.jpg")
     file_key = "retry-key"
-    storage = DummyStorage({file_key: image_path})
+    storage = StorageStub({file_key: image_path})
     telegram = FlakyTelegram(failures=1, error=RuntimeError("telegram glitch"))
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn)
@@ -449,9 +384,9 @@ async def test_process_upload_job_retry_after_failure(tmp_path: Path) -> None:
 async def test_register_upload_jobs_integration_flow(tmp_path: Path) -> None:
     conn = _setup_connection()
     data = DataAccess(conn)
-    image_path = _create_sample_image(tmp_path / "integration.jpg")
+    image_path = create_sample_image(tmp_path / "integration.jpg")
     file_key = "integration-key"
-    storage = DummyStorage({file_key: image_path})
+    storage = StorageStub({file_key: image_path})
     telegram = DummyTelegram()
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn, concurrency=1, poll_interval=0.01)

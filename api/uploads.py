@@ -27,6 +27,13 @@ from data_access import (
     link_upload_asset,
     set_upload_status,
 )
+from observability import (
+    context,
+    record_job_processed,
+    record_storage_put_bytes,
+    record_upload_created,
+    record_upload_status_change,
+)
 from jobs import Job, JobQueue
 from openai_client import OpenAIClient, OpenAIResponse
 from storage import Storage
@@ -547,6 +554,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
         return _json_error(400, "unsupported_media_type", "Unsupported file type.")
 
     upload_id = str(uuid4())
+    request["upload_id"] = upload_id
     now = datetime.now(timezone.utc)
     storage_key = f"{now:%Y/%m}/{upload_id}"
 
@@ -563,6 +571,8 @@ async def handle_create_upload(request: web.Request) -> web.Response:
         logging.info("UPLOAD idempotent-return device=%s upload=%s", device_id, created_id)
         await file_part.release()
         return web.json_response({"id": created_id}, status=201)
+
+    record_upload_created()
 
     storage = _ensure_storage(request.app)
     jobs = _ensure_jobs(request.app)
@@ -584,6 +594,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
     except UploadTooLargeError:
         logging.warning("UPLOAD too-large device=%s upload=%s", device_id, upload_id)
         set_upload_status(conn, id=upload_id, status="failed", error="file_too_large")
+        record_upload_status_change()
         conn.commit()
         await file_part.release()
         return _json_error(
@@ -594,12 +605,14 @@ async def handle_create_upload(request: web.Request) -> web.Response:
     except Exception:
         logging.exception("UPLOAD storage-error device=%s upload=%s", device_id, upload_id)
         set_upload_status(conn, id=upload_id, status="failed", error="storage_error")
+        record_upload_status_change()
         conn.commit()
         await file_part.release()
         return _json_error(500, "storage_error", "Failed to persist uploaded file.")
 
     digest = hasher.hexdigest()
     await file_part.release()
+    record_storage_put_bytes(stats.size)
     logging.info(
         "UPLOAD stored device=%s upload=%s bytes=%s sha=%s",
         device_id,
@@ -620,6 +633,8 @@ async def handle_get_upload_status(request: web.Request) -> web.Response:
         logging.warning("UPLOAD_STATUS rate-limit device=%s", device_id)
         return _json_error(429, "rate_limited", "Too many status checks. Try later.")
     upload_id = request.match_info.get("id")
+    if upload_id:
+        request["upload_id"] = str(upload_id)
     conn = _ensure_db(request.app)
     record = get_upload(conn, device_id=device_id, upload_id=str(upload_id))
     if not record:
@@ -662,175 +677,181 @@ def register_upload_jobs(
             logging.warning("UPLOAD job missing upload_id")
             return
 
-        with metrics_recorder.measure_process():
-            logging.info("UPLOAD job start upload=%s", upload_id)
-            try:
-                processed_path: Path | None = None
-                processed_cleanup = False
-                set_upload_status(conn, id=upload_id, status="processing")
-                conn.commit()
-                record = fetch_upload_record(conn, upload_id=upload_id)
-                if not record:
-                    logging.warning("UPLOAD missing record upload=%s", upload_id)
-                    return
-                file_ref = record.get("file_ref")
-                if not file_ref:
-                    raise RuntimeError("upload missing file_ref")
-
-                download = await _download_from_storage(storage, key=str(file_ref))
+        with context(upload_id=upload_id, job=job.name):
+            with metrics_recorder.measure_process():
+                logging.info("UPLOAD job start upload=%s", upload_id)
                 try:
-                    sha256 = _compute_sha256(download.path)
-                    with metrics_recorder.measure_exif():
-                        (
-                            mime_type,
-                            width,
-                            height,
-                            exif_payload,
-                            gps_payload,
-                        ) = _extract_image_metadata(download.path)
-
-                    vision_payload: dict[str, Any] | None = None
-                    if "captured_at" not in gps_payload:
-                        capture_candidate = _extract_capture_datetime(exif_payload)
-                        if capture_candidate:
-                            gps_payload["captured_at"] = capture_candidate
-
-                    processed_path = download.path
-                    if uploads_config.max_image_side:
-                        processed_path, processed_cleanup = _downscale_image_if_needed(
-                            download.path,
-                            max_side=uploads_config.max_image_side,
-                        )
-
-                    if (
-                        uploads_config.vision_enabled
-                        and openai
-                        and uploads_config.openai_vision_model
-                    ):
-                        model = uploads_config.openai_vision_model
-                        with metrics_recorder.measure_vision():
-                            response = await openai.classify_image(
-                                model=model,
-                                system_prompt=VISION_SYSTEM_PROMPT,
-                                user_prompt=VISION_USER_PROMPT,
-                                image_path=processed_path,
-                                schema=VISION_SCHEMA,
-                            )
-                        if isinstance(response, OpenAIResponse):
-                            vision_payload = response.content
-                            metrics_recorder.record_vision_tokens(response.total_tokens)
-                            data.log_token_usage(
-                                model=model,
-                                prompt_tokens=response.prompt_tokens,
-                                completion_tokens=response.completion_tokens,
-                                total_tokens=response.total_tokens,
-                                job_id=job.id,
-                                request_id=response.request_id,
-                            )
-                            if supabase:
-                                try:
-                                    await supabase.insert_token_usage(
-                                        bot="kotopogoda",
-                                        model=model,
-                                        prompt_tokens=response.prompt_tokens,
-                                        completion_tokens=response.completion_tokens,
-                                        total_tokens=response.total_tokens,
-                                        request_id=response.request_id,
-                                        endpoint=response.endpoint or "/v1/responses",
-                                        meta={
-                                            "upload_id": upload_id,
-                                            "job_id": job.id,
-                                        },
-                                    )
-                                except Exception:
-                                    logging.exception(
-                                        "UPLOAD vision token usage logging failed upload=%s",
-                                        upload_id,
-                                    )
-                    elif uploads_config.vision_enabled and not openai:
-                        logging.warning(
-                            "VISION_ENABLED is set but OpenAI client is unavailable; skipping vision"
-                        )
-                    elif (
-                        uploads_config.vision_enabled
-                        and not uploads_config.openai_vision_model
-                    ):
-                        logging.warning(
-                            "VISION_ENABLED but OPENAI_VISION_MODEL missing; skipping vision"
-                        )
-
-                    categories = _extract_categories(vision_payload)
-                    caption = _build_caption(
-                        gps=gps_payload,
-                        categories=categories,
-                        capture_iso=gps_payload.get("captured_at"),
-                    )
-
-                    chat_id = uploads_config.assets_channel_id
-                    with metrics_recorder.measure_telegram():
-                        telegram_response = await telegram.send_photo(
-                            chat_id=chat_id,
-                            photo=processed_path,
-                            caption=caption,
-                        )
-                    message_id = _extract_message_id(telegram_response)
-                    if message_id is None:
-                        raise RuntimeError("telegram response missing message_id")
-
-                    message_identifier = f"{chat_id}:{message_id}"
-                    asset_id = data.create_asset(
-                        upload_id=upload_id,
-                        file_ref=str(file_ref),
-                        content_type=mime_type,
-                        sha256=sha256,
-                        width=width,
-                        height=height,
-                        exif=exif_payload or None,
-                        labels=vision_payload or None,
-                        tg_message_id=message_identifier,
-                        tg_chat_id=chat_id,
-                    )
-                    link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)
-                    logging.info(
-                        "UPLOAD asset stored upload=%s asset=%s sha=%s mime=%s",
-                        upload_id,
-                        asset_id,
-                        sha256,
-                        mime_type,
-                    )
-                finally:
-                    if (
-                        processed_cleanup
-                        and processed_path is not None
-                        and processed_path != download.path
-                        and processed_path.exists()
-                    ):
-                        with contextlib.suppress(Exception):
-                            processed_path.unlink()
-                    if download.cleanup and download.path.exists():
-                        with contextlib.suppress(Exception):
-                            download.path.unlink()
-
-                set_upload_status(conn, id=upload_id, status="done")
-                conn.commit()
-                metrics_recorder.record_asset_created()
-                logging.info("UPLOAD job done upload=%s", upload_id)
-            except Exception as exc:
-                logging.exception("UPLOAD job failed upload=%s", upload_id)
-                try:
-                    set_upload_status(
-                        conn,
-                        id=upload_id,
-                        status="failed",
-                        error=str(exc)[:200],
-                    )
+                    processed_path: Path | None = None
+                    processed_cleanup = False
+                    set_upload_status(conn, id=upload_id, status="processing")
+                    record_upload_status_change()
                     conn.commit()
-                except Exception:
-                    logging.exception(
-                        "UPLOAD failed to persist error status upload=%s", upload_id
-                    )
-                metrics_recorder.record_process_failure()
-                raise
+                    record = fetch_upload_record(conn, upload_id=upload_id)
+                    if not record:
+                        logging.warning("UPLOAD missing record upload=%s", upload_id)
+                        return
+                    file_ref = record.get("file_ref")
+                    if not file_ref:
+                        raise RuntimeError("upload missing file_ref")
+
+                    download = await _download_from_storage(storage, key=str(file_ref))
+                    try:
+                        sha256 = _compute_sha256(download.path)
+                        with metrics_recorder.measure_exif():
+                            (
+                                mime_type,
+                                width,
+                                height,
+                                exif_payload,
+                                gps_payload,
+                            ) = _extract_image_metadata(download.path)
+
+                        vision_payload: dict[str, Any] | None = None
+                        if "captured_at" not in gps_payload:
+                            capture_candidate = _extract_capture_datetime(exif_payload)
+                            if capture_candidate:
+                                gps_payload["captured_at"] = capture_candidate
+
+                        processed_path = download.path
+                        if uploads_config.max_image_side:
+                            processed_path, processed_cleanup = _downscale_image_if_needed(
+                                download.path,
+                                max_side=uploads_config.max_image_side,
+                            )
+
+                        if (
+                            uploads_config.vision_enabled
+                            and openai
+                            and uploads_config.openai_vision_model
+                        ):
+                            model = uploads_config.openai_vision_model
+                            with metrics_recorder.measure_vision():
+                                response = await openai.classify_image(
+                                    model=model,
+                                    system_prompt=VISION_SYSTEM_PROMPT,
+                                    user_prompt=VISION_USER_PROMPT,
+                                    image_path=processed_path,
+                                    schema=VISION_SCHEMA,
+                                )
+                            if isinstance(response, OpenAIResponse):
+                                vision_payload = response.content
+                                metrics_recorder.record_vision_tokens(response.total_tokens)
+                                data.log_token_usage(
+                                    model=model,
+                                    prompt_tokens=response.prompt_tokens,
+                                    completion_tokens=response.completion_tokens,
+                                    total_tokens=response.total_tokens,
+                                    job_id=job.id,
+                                    request_id=response.request_id,
+                                )
+                                if supabase:
+                                    try:
+                                        await supabase.insert_token_usage(
+                                            bot="kotopogoda",
+                                            model=model,
+                                            prompt_tokens=response.prompt_tokens,
+                                            completion_tokens=response.completion_tokens,
+                                            total_tokens=response.total_tokens,
+                                            request_id=response.request_id,
+                                            endpoint=response.endpoint or "/v1/responses",
+                                            meta={
+                                                "upload_id": upload_id,
+                                                "job_id": job.id,
+                                            },
+                                        )
+                                    except Exception:
+                                        logging.exception(
+                                            "UPLOAD vision token usage logging failed upload=%s",
+                                            upload_id,
+                                        )
+                        elif uploads_config.vision_enabled and not openai:
+                            logging.warning(
+                                "VISION_ENABLED is set but OpenAI client is unavailable; skipping vision"
+                            )
+                        elif (
+                            uploads_config.vision_enabled
+                            and not uploads_config.openai_vision_model
+                        ):
+                            logging.warning(
+                                "VISION_ENABLED but OPENAI_VISION_MODEL missing; skipping vision"
+                            )
+
+                        categories = _extract_categories(vision_payload)
+                        caption = _build_caption(
+                            gps=gps_payload,
+                            categories=categories,
+                            capture_iso=gps_payload.get("captured_at"),
+                        )
+
+                        chat_id = uploads_config.assets_channel_id
+                        with metrics_recorder.measure_telegram():
+                            telegram_response = await telegram.send_photo(
+                                chat_id=chat_id,
+                                photo=processed_path,
+                                caption=caption,
+                            )
+                        message_id = _extract_message_id(telegram_response)
+                        if message_id is None:
+                            raise RuntimeError("telegram response missing message_id")
+
+                        message_identifier = f"{chat_id}:{message_id}"
+                        asset_id = data.create_asset(
+                            upload_id=upload_id,
+                            file_ref=str(file_ref),
+                            content_type=mime_type,
+                            sha256=sha256,
+                            width=width,
+                            height=height,
+                            exif=exif_payload or None,
+                            labels=vision_payload or None,
+                            tg_message_id=message_identifier,
+                            tg_chat_id=chat_id,
+                        )
+                        link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)
+                        logging.info(
+                            "UPLOAD asset stored upload=%s asset=%s sha=%s mime=%s",
+                            upload_id,
+                            asset_id,
+                            sha256,
+                            mime_type,
+                        )
+                    finally:
+                        if (
+                            processed_cleanup
+                            and processed_path is not None
+                            and processed_path != download.path
+                            and processed_path.exists()
+                        ):
+                            with contextlib.suppress(Exception):
+                                processed_path.unlink()
+                        if download.cleanup and download.path.exists():
+                            with contextlib.suppress(Exception):
+                                download.path.unlink()
+
+                    set_upload_status(conn, id=upload_id, status="done")
+                    record_upload_status_change()
+                    conn.commit()
+                    metrics_recorder.record_asset_created()
+                    logging.info("UPLOAD job done upload=%s", upload_id)
+                    record_job_processed("process_upload", "ok")
+                except Exception as exc:
+                    logging.exception("UPLOAD job failed upload=%s", upload_id)
+                    try:
+                        set_upload_status(
+                            conn,
+                            id=upload_id,
+                            status="failed",
+                            error=str(exc)[:200],
+                        )
+                        record_upload_status_change()
+                        conn.commit()
+                    except Exception:
+                        logging.exception(
+                            "UPLOAD failed to persist error status upload=%s", upload_id
+                        )
+                    metrics_recorder.record_process_failure()
+                    record_job_processed("process_upload", "failed")
+                    raise
 
     queue.register_handler("process_upload", process_upload)
 

@@ -53,6 +53,12 @@ from api.uploads import (
     setup_upload_routes,
 )
 from api.security import create_hmac_middleware
+from observability import (
+    observe_health_latency,
+    observability_middleware,
+    setup_logging,
+    metrics_handler,
+)
 from flowers_patterns import (
     FlowerKnowledgeBase,
     FlowerPattern,
@@ -67,7 +73,7 @@ from weather_migration import migrate_weather_publish_channels
 if TYPE_CHECKING:
     from openai_client import OpenAIResponse
 
-logging.basicConfig(level=logging.INFO)
+setup_logging()
 
 
 class LoggingMetricsEmitter:
@@ -12621,6 +12627,7 @@ async def health_handler(request: web.Request) -> web.Response:
     started_at: datetime = request.app["started_at"]
     version = request.app.get("version", APP_VERSION)
 
+    overall_start = perf_counter()
     checks: dict[str, dict[str, Any]] = {}
     status = 200
     warnings: list[str] = []
@@ -12730,6 +12737,7 @@ async def health_handler(request: web.Request) -> web.Response:
         log_parts.append(f"tg=fail({telegram_check.get('error', 'unknown')})")
 
     logging.info("HEALTH %s status=%s", " ".join(log_parts), status)
+    observe_health_latency(perf_counter() - overall_start)
 
     return web.json_response(payload, status=status)
 
@@ -12903,11 +12911,13 @@ def create_app():
         config=uploads_config,
     )
 
+    app.middlewares.append(observability_middleware)
     app.middlewares.append(create_hmac_middleware(bot.db))
 
     app.router.add_post('/webhook', handle_webhook)
     app.router.add_get('/v1/health', health_handler)
     app.router.add_post('/v1/devices/attach', attach_device)
+    app.router.add_get('/metrics', metrics_handler)
 
     webhook_base = os.getenv("WEBHOOK_URL")
     if not webhook_base:

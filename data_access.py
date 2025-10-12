@@ -104,6 +104,18 @@ class JobRecord:
     updated_at: datetime
 
 
+@dataclass
+class Upload:
+    id: str
+    device_id: str
+    idempotency_key: str
+    status: str
+    error: str | None
+    file_ref: str | None
+    created_at: str
+    updated_at: str
+
+
 class DataAccess:
     """High level helpers for working with the SQLite database."""
 
@@ -1642,6 +1654,7 @@ def insert_upload(
     id: str,
     device_id: str,
     idempotency_key: str,
+    file_ref: str | None = None,
 ) -> str:
     """Insert an upload row respecting idempotency."""
 
@@ -1650,9 +1663,9 @@ def insert_upload(
         conn.execute(
             """
             INSERT INTO uploads (id, device_id, idempotency_key, status, error, file_ref, created_at, updated_at)
-            VALUES (?, ?, ?, 'queued', NULL, NULL, ?, ?)
+            VALUES (?, ?, ?, 'queued', NULL, ?, ?, ?)
             """,
-            (id, device_id, idempotency_key, now, now),
+            (id, device_id, idempotency_key, file_ref, now, now),
         )
         return id
     except sqlite3.IntegrityError as exc:
@@ -1671,6 +1684,46 @@ def insert_upload(
                 return str(existing["id"])
             return str(existing[0])
         raise
+
+
+def get_upload(
+    conn: sqlite3.Connection,
+    *,
+    device_id: str,
+    id: str,
+) -> Upload | None:
+    cur = conn.execute(
+        """
+        SELECT id, device_id, idempotency_key, status, error, file_ref, created_at, updated_at
+        FROM uploads
+        WHERE id=? AND device_id=?
+        """,
+        (id, device_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    if isinstance(row, sqlite3.Row):
+        return Upload(
+            id=str(row["id"]),
+            device_id=str(row["device_id"]),
+            idempotency_key=str(row["idempotency_key"]),
+            status=str(row["status"]),
+            error=str(row["error"]) if row["error"] is not None else None,
+            file_ref=str(row["file_ref"]) if row["file_ref"] is not None else None,
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+    return Upload(
+        id=str(row[0]),
+        device_id=str(row[1]),
+        idempotency_key=str(row[2]),
+        status=str(row[3]),
+        error=str(row[4]) if row[4] is not None else None,
+        file_ref=str(row[5]) if row[5] is not None else None,
+        created_at=str(row[6]),
+        updated_at=str(row[7]),
+    )
 
 
 def set_upload_status(
@@ -1698,7 +1751,7 @@ def set_upload_status(
             return
         return
     transitions = {
-        "queued": {"processing"},
+        "queued": {"processing", "failed"},
         "processing": {"done", "failed"},
         "done": set(),
         "failed": set(),

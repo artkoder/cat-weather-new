@@ -4,7 +4,7 @@ import json
 import os
 import sys
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from typing import Any, Sequence
@@ -228,6 +228,12 @@ def _build_test_asset(
         "country": "Россия",
         "metadata": None,
     }
+    if vision_category is not None:
+        payload["vision_category"] = vision_category
+    if vision_flower_varieties is not None:
+        payload["vision_flower_varieties"] = [str(item) for item in vision_flower_varieties]
+    if vision_results is not None:
+        payload["vision_results"] = vision_results
     if payload_overrides:
         payload.update(payload_overrides)
     labels_list = [str(item) for item in (labels or [])]
@@ -242,11 +248,6 @@ def _build_test_asset(
         tg_message_id = str(tg_chat_id)
     else:
         tg_message_id = None
-    flower_varieties: list[str] | None
-    if vision_flower_varieties is None:
-        flower_varieties = None
-    else:
-        flower_varieties = [str(item) for item in vision_flower_varieties]
     return Asset(
         id=str(asset_id),
         upload_id=None,
@@ -259,14 +260,11 @@ def _build_test_asset(
         labels_json=labels_json,
         tg_message_id=tg_message_id,
         payload_json=json.dumps(payload, ensure_ascii=False),
-        created_at=datetime.utcnow().isoformat(),
+        created_at=datetime.now(timezone.utc).isoformat(),
         exif=None,
         labels=labels_list,
         payload=payload,
         legacy_values={},
-        _vision_results=vision_results,
-        _vision_category=vision_category,
-        _vision_flower_varieties=flower_varieties,
     )
 
 

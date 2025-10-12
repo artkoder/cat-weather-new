@@ -157,6 +157,7 @@ class UploadTestEnv:
         metrics: UploadMetricsRecorder | None = None,
         vision_enabled: bool | None = None,
         vision_model: str = "test-vision",
+        cleanup_local_after_publish: bool | None = None,
     ) -> "UploadTestEnv":
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
@@ -175,6 +176,7 @@ class UploadTestEnv:
             "VISION_ENABLED": os.getenv("VISION_ENABLED"),
             "OPENAI_VISION_MODEL": os.getenv("OPENAI_VISION_MODEL"),
             "MAX_IMAGE_SIDE": os.getenv("MAX_IMAGE_SIDE"),
+            "CLEANUP_LOCAL_AFTER_PUBLISH": os.getenv("CLEANUP_LOCAL_AFTER_PUBLISH"),
         }
         os.environ["ASSETS_CHANNEL_ID"] = str(assets_channel_id)
         if vision_flag:
@@ -183,6 +185,10 @@ class UploadTestEnv:
         else:
             os.environ["VISION_ENABLED"] = "0"
             os.environ.pop("OPENAI_VISION_MODEL", None)
+        if cleanup_local_after_publish is None:
+            os.environ.pop("CLEANUP_LOCAL_AFTER_PUBLISH", None)
+        else:
+            os.environ["CLEANUP_LOCAL_AFTER_PUBLISH"] = "1" if cleanup_local_after_publish else "0"
         self.assets_channel_id = assets_channel_id
         storage = LocalStorage(base_path=self.root / "uploads")
         self.storage = storage
@@ -410,6 +416,56 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
         assert env.metrics.counters.get("upload_process_fail_total", 0) == 0
         assert "process_upload_ms" in env.metrics.timings
         assert env.metrics.counters.get("vision_tokens_total", 0) == 0
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_flag", [False, True], ids=["retain", "cleanup"])
+async def test_process_upload_local_cleanup(tmp_path: Path, cleanup_flag: bool):
+    env = UploadTestEnv(tmp_path)
+    await env.start(cleanup_local_after_publish=cleanup_flag)
+    try:
+        env.create_device(device_id="device-1")
+
+        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
+        status, payload = await _signed_post(
+            env,
+            path="/v1/uploads",
+            body=body,
+            boundary=boundary,
+            device_id="device-1",
+            secret=DEVICE_SECRET,
+            idempotency_key=f"idem-clean-{cleanup_flag}",
+        )
+        assert status == 201
+        upload_id = payload["id"]
+
+        for _ in range(30):
+            status_check, status_payload = await _signed_get(
+                env,
+                path=f"/v1/uploads/{upload_id}/status",
+                device_id="device-1",
+                secret=DEVICE_SECRET,
+            )
+            assert status_check == 200
+            if status_payload["status"] == "done":
+                break
+            await asyncio.sleep(0.05)
+        else:  # pragma: no cover - defensive
+            pytest.fail("process_upload did not complete in time")
+
+        assert env.conn is not None
+        row = env.conn.execute(
+            "SELECT file_ref FROM uploads WHERE id=?",
+            (upload_id,),
+        ).fetchone()
+        assert row is not None
+        stored_path = env.root / "uploads" / row["file_ref"]
+        if cleanup_flag:
+            assert not stored_path.exists()
+        else:
+            assert stored_path.exists()
     finally:
         await env.close()
 

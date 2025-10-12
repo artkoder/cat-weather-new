@@ -36,7 +36,7 @@ from observability import (
 )
 from jobs import Job, JobQueue
 from openai_client import OpenAIClient, OpenAIResponse
-from storage import Storage
+from storage import LocalStorage, Storage
 from supabase_client import SupabaseClient
 
 
@@ -654,6 +654,8 @@ def register_upload_jobs(
 
     metrics_recorder = metrics or UploadMetricsRecorder()
     uploads_config = config or load_uploads_config()
+    cleanup_local_after_publish = _env_bool("CLEANUP_LOCAL_AFTER_PUBLISH", False)
+    storage_is_local = isinstance(storage, LocalStorage)
 
     async def process_upload(job: Job) -> None:
         upload_id = str(job.payload.get("upload_id") or "")
@@ -667,6 +669,8 @@ def register_upload_jobs(
                 try:
                     processed_path: Path | None = None
                     processed_cleanup = False
+                    download: DownloadedFile | None = None
+                    should_cleanup_local_download = False
                     set_upload_status(conn, id=upload_id, status="processing")
                     record_upload_status_change()
                     conn.commit()
@@ -774,6 +778,13 @@ def register_upload_jobs(
                                 photo=processed_path,
                                 caption=caption,
                             )
+                        if (
+                            cleanup_local_after_publish
+                            and storage_is_local
+                            and download
+                            and not download.cleanup
+                        ):
+                            should_cleanup_local_download = True
                         message_id = _extract_message_id(telegram_response)
                         if message_id is None:
                             raise RuntimeError("telegram response missing message_id")
@@ -803,18 +814,26 @@ def register_upload_jobs(
                         if (
                             processed_cleanup
                             and processed_path is not None
+                            and download
                             and processed_path != download.path
                             and processed_path.exists()
                         ):
                             with contextlib.suppress(Exception):
                                 processed_path.unlink()
-                        if download.cleanup and download.path.exists():
+                        if download and download.cleanup and download.path.exists():
                             with contextlib.suppress(Exception):
                                 download.path.unlink()
 
                     set_upload_status(conn, id=upload_id, status="done")
                     record_upload_status_change()
                     conn.commit()
+                    if (
+                        should_cleanup_local_download
+                        and download
+                        and download.path.exists()
+                    ):
+                        with contextlib.suppress(Exception):
+                            download.path.unlink()
                     metrics_recorder.record_asset_created()
                     logging.info("UPLOAD job done upload=%s", upload_id)
                     record_job_processed("process_upload", "ok")

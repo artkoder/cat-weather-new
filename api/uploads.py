@@ -215,14 +215,25 @@ async def handle_get_upload_status(request: web.Request) -> web.Response:
     device_id = request.get("device_id")
     if not device_id:
         return _json_error(401, "unauthorized", "Missing device context")
+    limiter = request.app.get("upload_status_rate_limiter")
+    if limiter and not await limiter.allow(f"upload-status:{device_id}"):
+        logging.warning("UPLOAD_STATUS rate-limit device=%s", device_id)
+        return _json_error(429, "rate_limited", "Too many status checks. Try later.")
     upload_id = request.match_info.get("id")
     conn = _ensure_db(request.app)
-    record = get_upload(conn, device_id=device_id, id=str(upload_id))
+    record = get_upload(conn, device_id=device_id, upload_id=str(upload_id))
     if not record:
         return _json_error(404, "not_found", "Upload not found.")
-    payload = {"id": record.id, "status": record.status}
-    if record.error:
-        payload["error"] = record.error
+    payload = {
+        "id": record["id"],
+        "status": record["status"],
+        "error": record["error"],
+    }
+    logging.info(
+        "UPLOAD_STATUS id=%s status=%s 200",
+        payload["id"],
+        payload["status"],
+    )
     return web.json_response(payload)
 
 

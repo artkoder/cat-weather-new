@@ -104,18 +104,6 @@ class JobRecord:
     updated_at: datetime
 
 
-@dataclass
-class Upload:
-    id: str
-    device_id: str
-    idempotency_key: str
-    status: str
-    error: str | None
-    file_ref: str | None
-    created_at: str
-    updated_at: str
-
-
 class DataAccess:
     """High level helpers for working with the SQLite database."""
 
@@ -1690,40 +1678,34 @@ def get_upload(
     conn: sqlite3.Connection,
     *,
     device_id: str,
-    id: str,
-) -> Upload | None:
+    upload_id: str,
+) -> dict[str, str | None] | None:
     cur = conn.execute(
         """
-        SELECT id, device_id, idempotency_key, status, error, file_ref, created_at, updated_at
+        SELECT id, status, error
         FROM uploads
         WHERE id=? AND device_id=?
         """,
-        (id, device_id),
+        (upload_id, device_id),
     )
     row = cur.fetchone()
     if not row:
         return None
     if isinstance(row, sqlite3.Row):
-        return Upload(
-            id=str(row["id"]),
-            device_id=str(row["device_id"]),
-            idempotency_key=str(row["idempotency_key"]),
-            status=str(row["status"]),
-            error=str(row["error"]) if row["error"] is not None else None,
-            file_ref=str(row["file_ref"]) if row["file_ref"] is not None else None,
-            created_at=str(row["created_at"]),
-            updated_at=str(row["updated_at"]),
-        )
-    return Upload(
-        id=str(row[0]),
-        device_id=str(row[1]),
-        idempotency_key=str(row[2]),
-        status=str(row[3]),
-        error=str(row[4]) if row[4] is not None else None,
-        file_ref=str(row[5]) if row[5] is not None else None,
-        created_at=str(row[6]),
-        updated_at=str(row[7]),
-    )
+        error_value = row["error"]
+        error_text = str(error_value) if error_value is not None else None
+        return {
+            "id": str(row["id"]),
+            "status": str(row["status"]),
+            "error": error_text,
+        }
+    error_value = row[2]
+    error_text = str(error_value) if error_value is not None else None
+    return {
+        "id": str(row[0]),
+        "status": str(row[1]),
+        "error": error_text,
+    }
 
 
 def set_upload_status(

@@ -12832,6 +12832,7 @@ def create_app():
         _ATTACH_RATE_LIMIT, _ATTACH_RATE_WINDOW_SECONDS
     )
     app['upload_rate_limiter'] = SlidingWindowRateLimiter(20, 60)
+    app['upload_status_rate_limiter'] = SlidingWindowRateLimiter(5, 1)
 
     uploads_config = load_uploads_config()
     storage = create_storage_from_env(supabase=bot.supabase)

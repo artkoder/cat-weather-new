@@ -111,8 +111,9 @@ def _insert_nonces(conn: sqlite3.Connection, device_ids: Iterable[str]) -> None:
         )
 
 
-def _insert_uploads(conn: sqlite3.Connection, device_ids: Iterable[str]) -> None:
+def _insert_uploads(conn: sqlite3.Connection, device_ids: Iterable[str]) -> list[str]:
     now = datetime.utcnow()
+    upload_ids: list[str] = []
     for idx, device_id in enumerate(device_ids, start=1):
         conn.execute(
             """
@@ -146,6 +147,54 @@ def _insert_uploads(conn: sqlite3.Connection, device_ids: Iterable[str]) -> None
                 (now - timedelta(minutes=idx * 3)).isoformat(),
             ),
         )
+        upload_ids.append(f"upload-{idx}")
+    return upload_ids
+
+
+def _insert_assets(conn: sqlite3.Connection, upload_ids: Iterable[str]) -> None:
+    now = datetime.utcnow()
+    for idx, upload_id in enumerate(upload_ids, start=1):
+        conn.execute(
+            """
+            INSERT INTO assets (
+                id,
+                upload_id,
+                file_ref,
+                content_type,
+                sha256,
+                width,
+                height,
+                exif_json,
+                labels_json,
+                tg_message_id,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                upload_id=excluded.upload_id,
+                file_ref=excluded.file_ref,
+                content_type=excluded.content_type,
+                sha256=excluded.sha256,
+                width=excluded.width,
+                height=excluded.height,
+                exif_json=excluded.exif_json,
+                labels_json=excluded.labels_json,
+                tg_message_id=excluded.tg_message_id,
+                created_at=excluded.created_at
+            """,
+            (
+                f"asset-{idx}",
+                upload_id,
+                f"file-{idx}",
+                "image/jpeg",
+                f"sha256-{idx:02d}",
+                1024 + idx,
+                768 + idx,
+                None,
+                None,
+                f"{1000 + idx}",
+                (now - timedelta(minutes=idx)).isoformat(),
+            ),
+        )
 
 
 def seed(path: Path) -> None:
@@ -155,7 +204,8 @@ def seed(path: Path) -> None:
         device_ids = _insert_devices(conn)
         _insert_pairing_tokens(conn, device_ids)
         _insert_nonces(conn, device_ids)
-        _insert_uploads(conn, device_ids)
+        upload_ids = _insert_uploads(conn, device_ids)
+        _insert_assets(conn, upload_ids)
         conn.commit()
 
 

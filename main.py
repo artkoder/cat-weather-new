@@ -30,6 +30,10 @@ from uuid import uuid4
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import psutil
+try:  # pragma: no cover - optional dependency fallback
+    import qrcode  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - fallback to text image
+    qrcode = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - optional dependency
     from PIL import ImageCms  # type: ignore
@@ -44,6 +48,9 @@ from data_access import (
     create_device,
     create_pairing_token,
     consume_pairing_token,
+    list_user_devices,
+    revoke_device,
+    rotate_device_secret,
 )
 from api.uploads import (
     UploadMetricsRecorder,
@@ -1024,6 +1031,182 @@ class Bot:
             await self.api_request("editMessageText", payload)
         else:
             await self.api_request("sendMessage", payload)
+
+    def _render_pairing_qr(self, code: str) -> io.BytesIO:
+        payload_text = f"PAIR:{code}"
+        if qrcode is not None:
+            qr_image = qrcode.make(payload_text)
+        else:
+            size = 320
+            qr_image = Image.new("RGB", (size, size), color="white")
+            draw = ImageDraw.Draw(qr_image)
+            try:
+                font = ImageFont.truetype("DejaVuSans.ttf", 36)
+            except Exception:  # pragma: no cover - fallback when font missing
+                font = ImageFont.load_default()
+            bbox = draw.textbbox((0, 0), payload_text, font=font)
+            width = bbox[2] - bbox[0]
+            height = bbox[3] - bbox[1]
+            position = ((size - width) // 2, (size - height) // 2)
+            draw.rectangle((0, 0, size - 1, size - 1), outline="black", width=4)
+            draw.text(position, payload_text, fill="black", font=font)
+        buffer = io.BytesIO()
+        qr_image.save(buffer, format="PNG")
+        buffer.seek(0)
+        return buffer
+
+    def _format_mobile_caption(
+        self,
+        code: str,
+        expires_at: datetime,
+        devices: Sequence[Mapping[str, Any]],
+    ) -> str:
+        now = datetime.utcnow()
+        remaining = int((expires_at - now).total_seconds())
+        if remaining <= 0:
+            ttl_line = "Срок действия истёк — сгенерируйте новый код."
+        else:
+            if remaining <= 60:
+                ttl_text = "менее минуты"
+            else:
+                minutes, seconds = divmod(remaining, 60)
+                if minutes < 60:
+                    ttl_text = f"{minutes} мин"
+                else:
+                    hours, minutes = divmod(minutes, 60)
+                    if hours < 24:
+                        ttl_text = f"{hours} ч {minutes} мин"
+                    else:
+                        days, hours = divmod(hours, 24)
+                        ttl_text = f"{days} дн {hours} ч"
+            expiry_dt = expires_at
+            if expiry_dt.tzinfo is None:
+                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+            else:
+                expiry_dt = expiry_dt.astimezone(timezone.utc)
+            expires_text = expiry_dt.strftime("%Y-%m-%d %H:%M UTC")
+            ttl_line = f"Действует ещё {ttl_text} (до {expires_text})."
+
+        caption_lines = [
+            "<b>Привязка мобильного приложения</b>",
+            f"Код: <code>{html.escape(code)}</code>",
+            ttl_line,
+        ]
+
+        def _format_timestamp(raw: str | None) -> str | None:
+            if not raw:
+                return None
+            value = str(raw).strip()
+            if not value:
+                return None
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        if devices:
+            caption_lines.append("")
+            caption_lines.append("<b>Устройства</b>:")
+            for device in devices:
+                name = html.escape(str(device.get("name") or _PAIRING_DEFAULT_NAME))
+                revoked_raw = device.get("revoked_at") or ""
+                status = "отозван" if str(revoked_raw).strip() else "активен"
+                last_seen = _format_timestamp(device.get("last_seen_at"))
+                entry = f"• {name} — {status}"
+                if last_seen:
+                    entry += f" (последнее событие {last_seen})"
+                caption_lines.append(entry)
+        else:
+            caption_lines.append("")
+            caption_lines.append("Нет активных устройств.")
+
+        return "\n".join(caption_lines)
+
+    def _build_mobile_keyboard(
+        self, devices: Sequence[Mapping[str, Any]]
+    ) -> dict[str, list[list[dict[str, str]]]]:
+        keyboard: list[list[dict[str, str]]] = []
+        for device in devices:
+            device_id = str(device.get("id"))
+            name = str(device.get("name") or _PAIRING_DEFAULT_NAME)
+            label = name if len(name) <= 24 else f"{name[:21]}…"
+            revoked_raw = str(device.get("revoked_at") or "").strip()
+            buttons: list[dict[str, str]] = []
+            if not revoked_raw:
+                buttons.append(
+                    {
+                        "text": f"🔁 {label}",
+                        "callback_data": f"dev:rotate:{device_id}",
+                    }
+                )
+            buttons.append(
+                {
+                    "text": f"🛑 {label}",
+                    "callback_data": f"dev:revoke:{device_id}",
+                }
+            )
+            keyboard.append(buttons)
+        keyboard.append([
+            {"text": "🔄 Новый код", "callback_data": "pair:new"}
+        ])
+        return {"inline_keyboard": keyboard}
+
+    async def _send_mobile_pairing_card(
+        self,
+        user_id: int,
+        code: str,
+        expires_at: datetime,
+        devices: Sequence[Mapping[str, Any]],
+        *,
+        message: Mapping[str, Any] | None = None,
+        replace_photo: bool = False,
+    ) -> None:
+        caption = self._format_mobile_caption(code, expires_at, devices)
+        keyboard = self._build_mobile_keyboard(devices)
+        if message and message.get("message_id"):
+            message_id = message["message_id"]
+            if replace_photo:
+                buffer = self._render_pairing_qr(code)
+                media = {
+                    "type": "photo",
+                    "media": "attach://photo",
+                    "caption": caption,
+                    "parse_mode": "HTML",
+                }
+                payload = {
+                    "chat_id": user_id,
+                    "message_id": message_id,
+                    "media": media,
+                    "reply_markup": keyboard,
+                }
+                files = {"photo": ("pairing.png", buffer, "image/png")}
+                await self.api_request_multipart(
+                    "editMessageMedia",
+                    payload,
+                    files=files,
+                )
+            else:
+                payload = {
+                    "chat_id": user_id,
+                    "message_id": message_id,
+                    "caption": caption,
+                    "parse_mode": "HTML",
+                    "reply_markup": keyboard,
+                }
+                await self.api_request("editMessageCaption", payload)
+            return
+        buffer = self._render_pairing_qr(code)
+        payload = {
+            "chat_id": user_id,
+            "caption": caption,
+            "parse_mode": "HTML",
+            "reply_markup": keyboard,
+        }
+        files = {"photo": ("pairing.png", buffer, "image/png")}
+        await self.api_request_multipart("sendPhoto", payload, files=files)
 
     def _ensure_default_rubrics(self) -> None:
         created: list[str] = []
@@ -5006,6 +5189,30 @@ class Bot:
             )
             return
 
+        if text.startswith('/mobile'):
+            if not self.is_authorized(user_id):
+                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Not authorized'})
+                return
+            existing_token = self._get_active_pairing_token(user_id)
+            if existing_token:
+                code, expires_at, _ = existing_token
+            else:
+                try:
+                    code, expires_at = self._issue_pairing_token(user_id, _PAIRING_DEFAULT_NAME)
+                except RuntimeError:
+                    logging.error('Failed to generate pairing code for user %s', user_id)
+                    await self.api_request(
+                        'sendMessage',
+                        {
+                            'chat_id': user_id,
+                            'text': 'Не удалось сгенерировать код, попробуйте снова.',
+                        },
+                    )
+                    return
+            devices = list_user_devices(self.db, user_id=user_id)
+            await self._send_mobile_pairing_card(user_id, code, expires_at, devices)
+            return
+
         if text.startswith('/add_user') and self.is_superadmin(user_id):
             parts = text.split()
             if len(parts) == 2:
@@ -5893,6 +6100,185 @@ class Bot:
     async def handle_callback(self, query):
         user_id = query['from']['id']
         data = query['data']
+        if data == 'pair:new':
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Недостаточно прав',
+                        'show_alert': True,
+                    },
+                )
+                return
+            message = query.get('message') or {}
+            existing = self._get_active_pairing_token(user_id)
+            device_label = existing[2] if existing else _PAIRING_DEFAULT_NAME
+            try:
+                code, expires_at = self._issue_pairing_token(user_id, device_label)
+            except RuntimeError:
+                logging.error('Failed to regenerate pairing code for user %s', user_id)
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Не удалось сгенерировать код',
+                        'show_alert': True,
+                    },
+                )
+                return
+            devices = list_user_devices(self.db, user_id=user_id)
+            await self._send_mobile_pairing_card(
+                user_id,
+                code,
+                expires_at,
+                devices,
+                message=message,
+                replace_photo=True,
+            )
+            await self.api_request(
+                'answerCallbackQuery',
+                {
+                    'callback_query_id': query['id'],
+                    'text': 'Новый код создан',
+                },
+            )
+            return
+        if data.startswith('dev:revoke:'):
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Недостаточно прав',
+                        'show_alert': True,
+                    },
+                )
+                return
+            device_id = data.split(':', 2)[2]
+            message = query.get('message') or {}
+            revoked = False
+            with self.db:
+                revoked = revoke_device(
+                    self.db, device_id=device_id, expected_user_id=user_id
+                )
+            if not revoked:
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Устройство не найдено',
+                        'show_alert': True,
+                    },
+                )
+                return
+            existing = self._get_active_pairing_token(user_id)
+            replace_photo = False
+            if existing:
+                code, expires_at, _ = existing
+            else:
+                try:
+                    code, expires_at = self._issue_pairing_token(
+                        user_id, _PAIRING_DEFAULT_NAME
+                    )
+                    replace_photo = True
+                except RuntimeError:
+                    logging.error('Failed to regenerate pairing code for user %s', user_id)
+                    await self.api_request(
+                        'answerCallbackQuery',
+                        {
+                            'callback_query_id': query['id'],
+                            'text': 'Не удалось обновить код',
+                            'show_alert': True,
+                        },
+                    )
+                    return
+            devices = list_user_devices(self.db, user_id=user_id)
+            await self._send_mobile_pairing_card(
+                user_id,
+                code,
+                expires_at,
+                devices,
+                message=message,
+                replace_photo=replace_photo,
+            )
+            await self.api_request(
+                'answerCallbackQuery',
+                {
+                    'callback_query_id': query['id'],
+                    'text': 'Устройство отозвано',
+                },
+            )
+            return
+        if data.startswith('dev:rotate:'):
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Недостаточно прав',
+                        'show_alert': True,
+                    },
+                )
+                return
+            device_id = data.split(':', 2)[2]
+            message = query.get('message') or {}
+            with self.db:
+                rotated = rotate_device_secret(
+                    self.db,
+                    device_id=device_id,
+                    expected_user_id=user_id,
+                )
+            if not rotated:
+                await self.api_request(
+                    'answerCallbackQuery',
+                    {
+                        'callback_query_id': query['id'],
+                        'text': 'Устройство не найдено',
+                        'show_alert': True,
+                    },
+                )
+                return
+            secret, _, device_name = rotated
+            existing = self._get_active_pairing_token(user_id)
+            replace_photo = False
+            if existing:
+                code, expires_at, _ = existing
+            else:
+                try:
+                    code, expires_at = self._issue_pairing_token(
+                        user_id, device_name or _PAIRING_DEFAULT_NAME
+                    )
+                    replace_photo = True
+                except RuntimeError:
+                    logging.error('Failed to regenerate pairing code for user %s', user_id)
+                    await self.api_request(
+                        'answerCallbackQuery',
+                        {
+                            'callback_query_id': query['id'],
+                            'text': 'Не удалось обновить код',
+                            'show_alert': True,
+                        },
+                    )
+                    return
+            devices = list_user_devices(self.db, user_id=user_id)
+            await self._send_mobile_pairing_card(
+                user_id,
+                code,
+                expires_at,
+                devices,
+                message=message,
+                replace_photo=replace_photo,
+            )
+            await self.api_request(
+                'answerCallbackQuery',
+                {
+                    'callback_query_id': query['id'],
+                    'text': f'Новый секрет: {secret}',
+                    'show_alert': True,
+                },
+            )
+            return
         if data == 'pairing_regen':
             if not self.is_authorized(user_id):
                 await self.api_request(

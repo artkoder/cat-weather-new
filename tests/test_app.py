@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from main import create_app, Bot
+from data_access import create_device
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 os.environ.setdefault("WEBHOOK_URL", "https://example.com")
@@ -240,6 +241,132 @@ async def test_pair_command_generates_token(tmp_path):
     ).fetchone()
     assert new_row is not None
     assert new_row["code"] != initial_code
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_mobile_command_and_callbacks(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    calls: list[tuple[str, Any]] = []
+    multipart_calls: list[tuple[str, Any, Any]] = []
+
+    async def dummy_api(method, data=None):
+        calls.append((method, data))
+        return {"ok": True, "result": {}}
+
+    async def dummy_multipart(method, data=None, *, files=None):
+        multipart_calls.append((method, data, files))
+        return {"ok": True, "result": {"message_id": 77}}
+
+    bot.api_request = dummy_api  # type: ignore
+    bot.api_request_multipart = dummy_multipart  # type: ignore
+    await bot.start()
+
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+
+    with bot.db:
+        create_device(
+            bot.db,
+            device_id="dev-1",
+            user_id=1,
+            name="Office Pixel",
+            secret="secret-1",
+        )
+        create_device(
+            bot.db,
+            device_id="dev-2",
+            user_id=1,
+            name="Backup Phone",
+            secret="secret-2",
+        )
+
+    calls.clear()
+    multipart_calls.clear()
+
+    await bot.handle_update({"message": {"text": "/mobile", "from": {"id": 1}}})
+
+    assert multipart_calls, "sendPhoto should be used for the QR card"
+    method, payload, files = multipart_calls[-1]
+    assert method == "sendPhoto"
+    assert payload["chat_id"] == 1
+    assert "Код" in payload["caption"]
+    keyboard = payload["reply_markup"]["inline_keyboard"]
+    callbacks = [btn["callback_data"] for row in keyboard for btn in row]
+    assert "pair:new" in callbacks
+    assert any(cb == "dev:revoke:dev-1" for cb in callbacks)
+    assert any(cb == "dev:rotate:dev-1" for cb in callbacks)
+    assert "photo" in files
+    photo_entry = files["photo"]
+    assert hasattr(photo_entry[1], "read")
+
+    row = bot.db.execute(
+        "SELECT code FROM pairing_tokens WHERE user_id=?", (1,)
+    ).fetchone()
+    assert row is not None
+    initial_code = row["code"]
+
+    multipart_calls.clear()
+    await bot.handle_callback(
+        {
+            "id": "cb-new",
+            "from": {"id": 1},
+            "data": "pair:new",
+            "message": {"message_id": 77, "chat": {"id": 1}},
+        }
+    )
+    assert multipart_calls and multipart_calls[-1][0] == "editMessageMedia"
+    row = bot.db.execute(
+        "SELECT code FROM pairing_tokens WHERE user_id=?", (1,)
+    ).fetchone()
+    assert row and row["code"] != initial_code
+
+    calls.clear()
+    multipart_calls.clear()
+    await bot.handle_callback(
+        {
+            "id": "cb-revoke",
+            "from": {"id": 1},
+            "data": "dev:revoke:dev-1",
+            "message": {"message_id": 77, "chat": {"id": 1}},
+        }
+    )
+    assert any(
+        method == "answerCallbackQuery" and data["text"] == "Устройство отозвано"
+        for method, data in calls
+    )
+    revoked_row = bot.db.execute(
+        "SELECT revoked_at FROM devices WHERE id=?",
+        ("dev-1",),
+    ).fetchone()
+    assert revoked_row and revoked_row["revoked_at"]
+
+    old_secret = bot.db.execute(
+        "SELECT secret FROM devices WHERE id=?",
+        ("dev-2",),
+    ).fetchone()["secret"]
+
+    calls.clear()
+    multipart_calls.clear()
+    await bot.handle_callback(
+        {
+            "id": "cb-rotate",
+            "from": {"id": 1},
+            "data": "dev:rotate:dev-2",
+            "message": {"message_id": 77, "chat": {"id": 1}},
+        }
+    )
+    assert any(
+        method == "answerCallbackQuery"
+        and data["text"].startswith("Новый секрет")
+        for method, data in calls
+    )
+    new_secret = bot.db.execute(
+        "SELECT secret FROM devices WHERE id=?",
+        ("dev-2",),
+    ).fetchone()["secret"]
+    assert new_secret != old_secret
 
     await bot.close()
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import logging
+import os
 import random
 import secrets
 from dataclasses import dataclass, field
@@ -2241,6 +2243,114 @@ def create_device(
         """,
         (device_id, user_id, name, secret, now, now),
     )
+
+
+def list_user_devices(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+) -> list[dict[str, Any]]:
+    """Return devices attached to the user ordered by creation time."""
+
+    rows = conn.execute(
+        """
+        SELECT id, name, created_at, last_seen_at, revoked_at
+        FROM devices
+        WHERE user_id=?
+        ORDER BY created_at DESC, id
+        """,
+        (user_id,),
+    ).fetchall()
+    devices: list[dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            entry = {
+                "id": str(row["id"]),
+                "name": str(row["name"] or ""),
+                "created_at": str(row["created_at"] or ""),
+                "last_seen_at": str(row["last_seen_at"] or ""),
+                "revoked_at": str(row["revoked_at"] or ""),
+            }
+        else:
+            created_at = row[2] if len(row) > 2 else None
+            last_seen_at = row[3] if len(row) > 3 else None
+            revoked_at = row[4] if len(row) > 4 else None
+            entry = {
+                "id": str(row[0]),
+                "name": str(row[1] or ""),
+                "created_at": str(created_at or ""),
+                "last_seen_at": str(last_seen_at or ""),
+                "revoked_at": str(revoked_at or ""),
+            }
+        devices.append(entry)
+    return devices
+
+
+def revoke_device(
+    conn: sqlite3.Connection,
+    *,
+    device_id: str,
+    expected_user_id: int | None = None,
+) -> bool:
+    """Mark the device secret as revoked."""
+
+    if expected_user_id is not None:
+        row = conn.execute(
+            "SELECT user_id FROM devices WHERE id=?", (device_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if isinstance(row, sqlite3.Row):
+            owner = int(row["user_id"])
+        else:
+            owner = int(row[0])
+        if owner != expected_user_id:
+            return False
+    now = datetime.utcnow().isoformat()
+    updated = conn.execute(
+        """
+        UPDATE devices
+        SET revoked_at=?
+        WHERE id=? AND revoked_at IS NULL
+        """,
+        (now, device_id),
+    )
+    return updated.rowcount > 0
+
+
+def rotate_device_secret(
+    conn: sqlite3.Connection,
+    *,
+    device_id: str,
+    expected_user_id: int | None = None,
+) -> tuple[str, int, str] | None:
+    """Generate a new secret for the device and clear revoked status."""
+
+    row = conn.execute(
+        "SELECT user_id, name FROM devices WHERE id=?",
+        (device_id,),
+    ).fetchone()
+    if not row:
+        return None
+    if isinstance(row, sqlite3.Row):
+        user_id = int(row["user_id"])
+        name = str(row["name"] or "")
+    else:
+        user_id = int(row[0])
+        name = str(row[1] or "")
+    if expected_user_id is not None and user_id != expected_user_id:
+        return None
+    secret = (
+        base64.urlsafe_b64encode(os.urandom(32)).decode("utf-8").rstrip("=")
+    )
+    create_device(
+        conn,
+        device_id=device_id,
+        user_id=user_id,
+        name=name,
+        secret=secret,
+    )
+    return secret, user_id, name
 
 
 def get_device(conn: sqlite3.Connection, *, device_id: str) -> sqlite3.Row | None:

@@ -36,6 +36,8 @@ def _make_asset(asset_id: int | str, city: str, varieties: list[str]) -> Asset:
         "city": city,
         "country": "Россия",
         "metadata": None,
+        "vision_category": "flowers",
+        "vision_flower_varieties": [str(v) for v in varieties] if varieties else [],
     }
     labels_json = json.dumps([])
     return Asset(
@@ -50,13 +52,11 @@ def _make_asset(asset_id: int | str, city: str, varieties: list[str]) -> Asset:
         labels_json=labels_json,
         tg_message_id=f"1:{payload['message_id']}",
         payload_json=json.dumps(payload, ensure_ascii=False),
-        created_at=datetime.utcnow().isoformat(),
+        created_at=datetime.now(timezone.utc).isoformat(),
         exif=None,
         labels=json.loads(labels_json),
         payload=payload,
         legacy_values={},
-        _vision_category="flowers",
-        _vision_flower_varieties=[str(v) for v in varieties] if varieties else [],
     )
 
 

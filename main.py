@@ -12858,6 +12858,7 @@ def create_app():
         telegram=_UploadTelegramAdapter(bot),
         openai=bot.openai,
         supabase=bot.supabase,
+        config=uploads_config,
     )
     setup_upload_routes(
         app,

@@ -14,10 +14,10 @@ jobs:
           fetch-depth: 0
       - name: Verify API contract submodule
         run: |
-          CONTRACT=api/contract/openapi.yaml
+          CONTRACT=api/contract/openapi/openapi.yaml
           if [ ! -f "$CONTRACT" ]; then
             echo "::error::${CONTRACT} is missing"
-            echo "Tree for debugging:" && ls -la api/contract || true
+            echo "Tree for debugging:" && ls -la api/contract && echo && ls -la api/contract/openapi || true
             exit 1
           fi
           tag="$(git -C api/contract describe --tags --exact-match HEAD 2>/dev/null || true)"

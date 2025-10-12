@@ -10,7 +10,7 @@ Closes #123.
 ## API Contract
 
 The backend consumes the public API contract via the `api/contract` git submodule pinned to the release tag `v1.0.0`. The
-canonical OpenAPI document lives at `api/contract/openapi.yaml`; keep the repository free from alternative copies so the
+canonical OpenAPI document lives at `api/contract/openapi/openapi.yaml`; keep the repository free from alternative copies so the
 contract stays single-sourced.
 
 ### Bumping the contract version
@@ -27,9 +27,9 @@ contract stays single-sourced.
 ### Working with the OpenAPI spec
 
 - **Render HTML docs**. Bundle the latest contract into `api/docs/index.html` with
-  `npx @redocly/cli build-docs api/contract/openapi.yaml -o api/docs/index.html` and open the resulting file locally or serve
+  `npx @redocly/cli build-docs api/contract/openapi/openapi.yaml -o api/docs/index.html` and open the resulting file locally or serve
   it from `/api/docs`. The HTML shell references the submodule path directly, so no copy of the YAML is required.
-- **Lint**. Run `npx @redocly/cli lint api/contract/openapi.yaml` (or an equivalent Spectral command) to validate changes before
+- **Lint**. Run `npx @redocly/cli lint api/contract/openapi/openapi.yaml` (or an equivalent Spectral command) to validate changes before
   publishing a new contract version.
 - **CI guard**. The automation fails fast if a local OpenAPI spec appears outside `api/contract/`; adjust CI only when the
   contract repository layout changes.

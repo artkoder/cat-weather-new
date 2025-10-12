@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import sqlite3
 import sys
 from pathlib import Path
@@ -55,6 +56,13 @@ def _load_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(schema_path.read_text(encoding="utf-8"))
     upgrade_path = Path(__file__).resolve().parents[1] / "migrations" / "0014_split_asset_channels.sql"
     conn.executescript(upgrade_path.read_text(encoding="utf-8"))
+    uploader_path = Path(__file__).resolve().parents[1] / "migrations" / "0018_uploader_init.py"
+    spec = importlib.util.spec_from_file_location("_migration_0018_uploader_init", uploader_path)
+    if spec and spec.loader:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if hasattr(module, "run"):
+            module.run(conn)
 
 
 @pytest.fixture

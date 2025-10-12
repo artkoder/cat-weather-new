@@ -202,6 +202,136 @@ def _copy_legacy_assets(conn: sqlite3.Connection) -> None:
         )
 
 
+def _column_type(columns: list[sqlite3.Row], name: str) -> str | None:
+    for column in columns:
+        try:
+            column_name = column["name"]  # type: ignore[index]
+            column_type = column["type"]  # type: ignore[index]
+        except (KeyError, TypeError):
+            column_name = column[1]
+            column_type = column[2]
+        if str(column_name) == name:
+            return str(column_type or "")
+    return None
+
+
+def _rebuild_vision_results(conn: sqlite3.Connection) -> None:
+    columns = _table_info(conn, "vision_results")
+    if not columns:
+        return
+    fk_list = conn.execute("PRAGMA foreign_key_list('vision_results')").fetchall()
+    needs_fk_update = any(str(row[2]) == "assets_legacy" for row in fk_list)
+    asset_type = (_column_type(columns, "asset_id") or "").upper()
+    if not needs_fk_update and asset_type == "TEXT":
+        return
+    conn.execute("ALTER TABLE vision_results RENAME TO vision_results_legacy")
+    conn.execute(
+        """
+        CREATE TABLE vision_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+            provider TEXT,
+            status TEXT,
+            category TEXT,
+            arch_view TEXT,
+            photo_weather TEXT,
+            flower_varieties TEXT,
+            confidence REAL,
+            result_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """,
+    )
+    conn.execute(
+        """
+        INSERT INTO vision_results (
+            id,
+            asset_id,
+            provider,
+            status,
+            category,
+            arch_view,
+            photo_weather,
+            flower_varieties,
+            confidence,
+            result_json,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            CAST(asset_id AS TEXT) AS asset_id,
+            provider,
+            status,
+            category,
+            arch_view,
+            photo_weather,
+            flower_varieties,
+            confidence,
+            result_json,
+            created_at,
+            updated_at
+        FROM vision_results_legacy
+        """,
+    )
+    conn.execute("DROP TABLE vision_results_legacy")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vision_results_asset ON vision_results(asset_id)")
+
+
+def _rebuild_posts_history(conn: sqlite3.Connection) -> None:
+    columns = _table_info(conn, "posts_history")
+    if not columns:
+        return
+    fk_list = conn.execute("PRAGMA foreign_key_list('posts_history')").fetchall()
+    needs_fk_update = any(str(row[2]) == "assets_legacy" for row in fk_list)
+    asset_type = (_column_type(columns, "asset_id") or "").upper()
+    if not needs_fk_update and asset_type == "TEXT":
+        return
+    conn.execute("ALTER TABLE posts_history RENAME TO posts_history_legacy")
+    conn.execute(
+        """
+        CREATE TABLE posts_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            asset_id TEXT,
+            rubric_id INTEGER,
+            metadata TEXT,
+            published_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE SET NULL,
+            FOREIGN KEY(rubric_id) REFERENCES rubrics(id) ON DELETE SET NULL
+        )
+        """,
+    )
+    conn.execute(
+        """
+        INSERT INTO posts_history (
+            id,
+            channel_id,
+            message_id,
+            asset_id,
+            rubric_id,
+            metadata,
+            published_at,
+            created_at
+        )
+        SELECT
+            id,
+            channel_id,
+            message_id,
+            CASE WHEN asset_id IS NULL THEN NULL ELSE CAST(asset_id AS TEXT) END,
+            rubric_id,
+            metadata,
+            published_at,
+            created_at
+        FROM posts_history_legacy
+        """,
+    )
+    conn.execute("DROP TABLE posts_history_legacy")
+
+
 def run(conn: sqlite3.Connection) -> None:
     columns = _table_info(conn, "assets")
     if _has_target_layout(columns):
@@ -213,15 +343,23 @@ def run(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_assets_created_at ON assets(created_at)"
             )
+            _rebuild_vision_results(conn)
+            _rebuild_posts_history(conn)
         return
 
     if not columns:
         with conn:
             conn.execute("PRAGMA foreign_keys=ON")
             _ensure_new_assets_table(conn)
+            _rebuild_vision_results(conn)
+            _rebuild_posts_history(conn)
         return
 
     if not _looks_like_legacy(columns):
+        with conn:
+            conn.execute("PRAGMA foreign_keys=ON")
+            _rebuild_vision_results(conn)
+            _rebuild_posts_history(conn)
         return
 
     old_factory = conn.row_factory
@@ -233,5 +371,7 @@ def run(conn: sqlite3.Connection) -> None:
             _ensure_new_assets_table(conn)
             _copy_legacy_assets(conn)
             conn.execute("DROP TABLE assets_legacy")
+            _rebuild_vision_results(conn)
+            _rebuild_posts_history(conn)
     finally:
         conn.row_factory = old_factory

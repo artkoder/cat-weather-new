@@ -612,15 +612,11 @@ async def test_publish_weather_uses_migrated_legacy_assets(tmp_path):
 
     bot.api_request = fake_api_request  # type: ignore[assignment]
 
-    pre_row = bot.db.execute(
-        "SELECT hashtags, categories, channel_id, tg_chat_id FROM assets WHERE message_id=?",
-        (101,),
-    ).fetchone()
-    assert pre_row is not None
-    pre_categories = json.loads(pre_row['categories'])
-    assert '#дождь' in pre_categories and '#котопогода' in pre_categories
-    assert pre_row['channel_id'] == -100123
-    assert pre_row['tg_chat_id'] == -100123
+    pre_asset = bot.data.get_asset_by_message(-100123, 101)
+    assert pre_asset is not None
+    assert '#дождь' in pre_asset.categories and '#котопогода' in pre_asset.categories
+    assert pre_asset.channel_id == -100123
+    assert pre_asset.tg_chat_id == -100123
 
     ok = await bot.publish_weather(-100500, {'#дождь'}, record=False)
     assert ok
@@ -639,11 +635,7 @@ async def test_publish_weather_uses_migrated_legacy_assets(tmp_path):
     ).fetchone()
     assert legacy_table is None
 
-    row = bot.db.execute(
-        "SELECT hashtags, categories, channel_id, tg_chat_id FROM assets WHERE message_id=?",
-        (101,),
-    ).fetchone()
-    assert row is None
+    assert bot.data.get_asset_by_message(-100123, 101) is None
 
     await bot.close()
 
@@ -1204,18 +1196,12 @@ async def test_weather_and_recognition_channels_do_not_mix(tmp_path):
     await bot.handle_message(recognition_message)
     await bot.handle_message(weather_message)
 
-    row = bot.db.execute(
-        "SELECT origin FROM assets WHERE tg_chat_id=? AND message_id=?",
-        (-300001, 11),
-    ).fetchone()
-    assert row is not None and row['origin'] == 'recognition'
+    recognition_asset = bot.data.get_asset_by_message(-300001, 11)
+    assert recognition_asset is not None and recognition_asset.origin == 'recognition'
 
-    weather_asset_row = bot.db.execute(
-        "SELECT id FROM assets WHERE tg_chat_id=? AND message_id=?",
-        (-200001, 22),
-    ).fetchone()
-    assert weather_asset_row is not None
-    weather_asset_id = weather_asset_row['id']
+    weather_asset = bot.data.get_asset_by_message(-200001, 22)
+    assert weather_asset is not None
+    weather_asset_id = weather_asset.id
 
     ok = await bot.publish_weather(-400001, None, record=False)
     assert ok
@@ -1253,12 +1239,9 @@ async def test_weather_publish_survives_shared_channel_then_splits(tmp_path):
 
     await bot.handle_message(weather_message)
 
-    weather_row = bot.db.execute(
-        "SELECT origin, id FROM assets WHERE tg_chat_id=? AND message_id=?",
-        (-200001, 33),
-    ).fetchone()
-    assert weather_row is not None and weather_row['origin'] == 'weather'
-    weather_asset_id = weather_row['id']
+    weather_asset = bot.data.get_asset_by_message(-200001, 33)
+    assert weather_asset is not None and weather_asset.origin == 'weather'
+    weather_asset_id = weather_asset.id
 
     ok = await bot.publish_weather(-400001, None, record=False)
     assert ok
@@ -1297,11 +1280,8 @@ async def test_weather_publish_survives_shared_channel_then_splits(tmp_path):
 
     await bot.handle_message(recognition_message)
 
-    recognition_row = bot.db.execute(
-        "SELECT origin FROM assets WHERE tg_chat_id=? AND message_id=?",
-        (-300001, 44),
-    ).fetchone()
-    assert recognition_row is not None and recognition_row['origin'] == 'recognition'
+    recognition_asset = bot.data.get_asset_by_message(-300001, 44)
+    assert recognition_asset is not None and recognition_asset.origin == 'recognition'
 
     ingest_jobs = bot.db.execute(
         "SELECT COUNT(*) FROM jobs_queue WHERE name='ingest'",

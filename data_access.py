@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import random
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
+from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 from uuid import uuid4
 
@@ -468,6 +470,49 @@ class DataAccess:
     def __init__(self, connection: sqlite3.Connection):
         self.conn = connection
         self.conn.row_factory = sqlite3.Row
+        self._ensure_assets_payload_schema()
+        self.conn.row_factory = sqlite3.Row
+
+    def _table_info(self, table: str) -> list[sqlite3.Row]:
+        try:
+            cursor = self.conn.execute(f"PRAGMA table_info('{table}')")
+        except sqlite3.OperationalError:
+            return []
+        return cursor.fetchall()
+
+    @staticmethod
+    def _column_name(column: sqlite3.Row) -> str:
+        try:
+            return str(column["name"])  # type: ignore[index]
+        except (KeyError, TypeError):
+            return str(column[1])
+
+    def _has_column(self, table: str, column: str) -> bool:
+        for entry in self._table_info(table):
+            if self._column_name(entry) == column:
+                return True
+        return False
+
+    def _ensure_assets_payload_schema(self) -> None:
+        columns = self._table_info("assets")
+        if not columns:
+            return
+        column_names = {self._column_name(col) for col in columns}
+        if {"payload_json", "tg_message_id"}.issubset(column_names):
+            return
+        migration_path = Path(__file__).resolve().parent / "migrations" / "0020_assets_uploads.py"
+        if not migration_path.exists():
+            return
+        spec = importlib.util.spec_from_file_location(
+            "_migration_0020_assets_uploads", migration_path
+        )
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if hasattr(module, "run"):
+            module.run(self.conn)
+            self.conn.commit()
 
     def create_asset(
         self,
@@ -550,14 +595,80 @@ class DataAccess:
         )
 
     @staticmethod
-    def _serialize_categories(hashtags: str | None, categories: Iterable[str] | None) -> str:
+    def _collect_categories(
+        hashtags: str | None, categories: Iterable[str] | None
+    ) -> list[str]:
         if categories is not None:
-            cats = list(dict.fromkeys(categories))
+            candidates = list(dict.fromkeys(categories))
         elif hashtags:
-            cats = [tag.strip() for tag in hashtags.split() if tag.strip()]
+            candidates = [tag.strip() for tag in hashtags.split() if tag.strip()]
         else:
-            cats = []
-        return json.dumps(cats)
+            candidates = []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in candidates:
+            text = str(item).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return normalized
+
+    @staticmethod
+    def _decode_payload_blob(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return dict(raw)
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return {}
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return {}
+            if isinstance(parsed, dict):
+                return dict(parsed)
+        return {}
+
+    @staticmethod
+    def _encode_payload_blob(payload: dict[str, Any]) -> str | None:
+        if not payload:
+            return None
+        try:
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            safe_payload: dict[str, Any] = {}
+            for key, value in payload.items():
+                try:
+                    json.dumps(value)
+                    safe_payload[key] = value
+                except TypeError:
+                    safe_payload[key] = str(value)
+            return json.dumps(safe_payload, ensure_ascii=False, sort_keys=True)
+
+    @staticmethod
+    def _update_payload_map(
+        payload: dict[str, Any], updates: dict[str, Any | object]
+    ) -> dict[str, Any]:
+        for key, value in updates.items():
+            if value is _UNSET:
+                continue
+            if value is None:
+                payload.pop(key, None)
+            else:
+                payload[key] = value
+        return payload
+
+    @staticmethod
+    def _build_tg_message_identifier(
+        tg_chat_id: int | None, message_id: int | None
+    ) -> str | None:
+        if tg_chat_id is None and message_id is None:
+            return None
+        if tg_chat_id is not None and message_id is not None:
+            return f"{tg_chat_id}:{message_id}"
+        value = tg_chat_id if tg_chat_id is not None else message_id
+        return str(value) if value is not None else None
 
     @staticmethod
     def _prepare_metadata(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -625,116 +736,176 @@ class DataAccess:
         categories: Iterable[str] | None = None,
         rubric_id: int | None = None,
         origin: str = "weather",
-    ) -> int:
+    ) -> str:
         """Insert or update asset metadata."""
 
         now = datetime.utcnow().isoformat()
-        cats_json = self._serialize_categories(hashtags, categories)
+        categories_list = self._collect_categories(hashtags, categories)
+        labels_json = json.dumps(categories_list, ensure_ascii=False)
         cleaned_metadata = self._prepare_metadata(metadata)
-        metadata_json = json.dumps(cleaned_metadata) if cleaned_metadata else None
         file_meta = file_meta or {}
-        cur = self.conn.execute(
+
+        existing = self.get_asset_by_message(tg_chat_id, message_id)
+        payload = dict(existing.payload) if existing else {}
+        if "created_at" not in payload:
+            payload["created_at"] = existing.created_at if existing else now
+        payload_updates: dict[str, Any | object] = {
+            "channel_id": channel_id,
+            "tg_chat_id": tg_chat_id,
+            "message_id": message_id,
+            "origin": origin,
+            "caption_template": template,
+            "caption": caption,
+            "hashtags": hashtags,
+            "categories": categories_list,
+            "kind": kind,
+            "author_user_id": author_user_id,
+            "author_username": author_username,
+            "sender_chat_id": sender_chat_id,
+            "via_bot_id": via_bot_id,
+            "forward_from_user": forward_from_user,
+            "forward_from_chat": forward_from_chat,
+            "rubric_id": rubric_id,
+            "updated_at": now,
+        }
+        payload = self._update_payload_map(payload, payload_updates)
+        if cleaned_metadata is not None:
+            payload["metadata"] = cleaned_metadata
+        else:
+            payload.pop("metadata", None)
+
+        file_size = Asset._to_int(file_meta.get("file_size"))
+        duration = Asset._to_int(file_meta.get("duration"))
+        file_meta_updates: dict[str, Any | object] = {}
+        if "file_id" in file_meta:
+            file_meta_updates["file_id"] = file_meta.get("file_id")
+        if "file_unique_id" in file_meta:
+            file_meta_updates["file_unique_id"] = file_meta.get("file_unique_id")
+        if "file_name" in file_meta:
+            file_meta_updates["file_name"] = file_meta.get("file_name")
+        if "mime_type" in file_meta:
+            file_meta_updates["mime_type"] = file_meta.get("mime_type")
+        if "file_size" in file_meta:
+            file_meta_updates["file_size"] = file_size
+        if "duration" in file_meta:
+            file_meta_updates["duration"] = duration
+        if file_meta_updates:
+            payload = self._update_payload_map(payload, file_meta_updates)
+
+        payload_json = self._encode_payload_blob(payload)
+
+        file_ref = (
+            file_meta.get("file_ref")
+            or file_meta.get("file_id")
+            or (existing.file_ref if existing else None)
+        )
+        content_type = file_meta.get("mime_type") or (existing.content_type if existing else None)
+        sha256 = file_meta.get("sha256") or (existing.sha256 if existing else None)
+        width = Asset._to_int(file_meta.get("width"))
+        if width is None and existing:
+            width = existing.width
+        height = Asset._to_int(file_meta.get("height"))
+        if height is None and existing:
+            height = existing.height
+
+        exif_json_value = file_meta.get("exif_json")
+        if exif_json_value is None and "exif" in file_meta:
+            try:
+                exif_json_value = json.dumps(file_meta["exif"])
+            except TypeError:
+                exif_json_value = None
+        if exif_json_value is None and existing:
+            exif_json_value = existing.exif_json
+
+        tg_identifier = self._build_tg_message_identifier(tg_chat_id, message_id)
+
+        if existing:
+            self.conn.execute(
+                """
+                UPDATE assets
+                   SET file_ref=?,
+                       content_type=?,
+                       sha256=?,
+                       width=?,
+                       height=?,
+                       exif_json=?,
+                       labels_json=?,
+                       tg_message_id=?,
+                       payload_json=?
+                 WHERE id=?
+                """,
+                (
+                    file_ref,
+                    content_type,
+                    sha256,
+                    width,
+                    height,
+                    exif_json_value,
+                    labels_json,
+                    tg_identifier,
+                    payload_json,
+                    existing.id,
+                ),
+            )
+            self.conn.commit()
+            return existing.id
+
+        asset_id = str(uuid4())
+        payload["created_at"] = payload.get("created_at", now)
+        payload_json = self._encode_payload_blob(payload)
+        self.conn.execute(
             """
             INSERT INTO assets (
-                channel_id,
-                tg_chat_id,
-                message_id,
-                origin,
-                caption_template,
-                caption,
-                hashtags,
-                categories,
-                kind,
-                file_id,
-                file_unique_id,
-                file_name,
-                mime_type,
-                file_size,
+                id,
+                upload_id,
+                file_ref,
+                content_type,
+                sha256,
                 width,
                 height,
-                duration,
-                author_user_id,
-                author_username,
-                sender_chat_id,
-                via_bot_id,
-                forward_from_user,
-                forward_from_chat,
-                metadata,
-                rubric_id,
-                created_at,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(tg_chat_id, message_id) DO UPDATE SET
-                channel_id=excluded.channel_id,
-                caption_template=excluded.caption_template,
-                caption=excluded.caption,
-                hashtags=excluded.hashtags,
-                categories=excluded.categories,
-                kind=excluded.kind,
-                file_id=excluded.file_id,
-                file_unique_id=excluded.file_unique_id,
-                file_name=excluded.file_name,
-                mime_type=excluded.mime_type,
-                file_size=excluded.file_size,
-                width=excluded.width,
-                height=excluded.height,
-                duration=excluded.duration,
-                author_user_id=excluded.author_user_id,
-                author_username=excluded.author_username,
-                sender_chat_id=excluded.sender_chat_id,
-                via_bot_id=excluded.via_bot_id,
-                forward_from_user=excluded.forward_from_user,
-                forward_from_chat=excluded.forward_from_chat,
-                metadata=COALESCE(excluded.metadata, assets.metadata),
-                rubric_id=COALESCE(excluded.rubric_id, assets.rubric_id),
-                origin=excluded.origin,
-                updated_at=excluded.updated_at
+                exif_json,
+                labels_json,
+                tg_message_id,
+                payload_json,
+                created_at
+            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                channel_id,
-                tg_chat_id,
-                message_id,
-                origin,
-                template,
-                caption,
-                hashtags,
-                cats_json,
-                kind,
-                file_meta.get("file_id"),
-                file_meta.get("file_unique_id"),
-                file_meta.get("file_name"),
-                file_meta.get("mime_type"),
-                file_meta.get("file_size"),
-                file_meta.get("width"),
-                file_meta.get("height"),
-                file_meta.get("duration"),
-                author_user_id,
-                author_username,
-                sender_chat_id,
-                via_bot_id,
-                forward_from_user,
-                forward_from_chat,
-                metadata_json,
-                rubric_id,
-                now,
+                asset_id,
+                file_ref,
+                content_type,
+                sha256,
+                width,
+                height,
+                exif_json_value,
+                labels_json,
+                tg_identifier,
+                payload_json,
                 now,
             ),
         )
         self.conn.commit()
-        if cur.lastrowid:
-            return int(cur.lastrowid)
-        row = self.get_asset_by_message(tg_chat_id, message_id)
-        return row.id if row else 0
+        return asset_id
 
     def update_recognized_message(
         self, asset_id: str | int, *, message_id: int | None
     ) -> None:
         """Store the Telegram message that acknowledged the asset."""
 
-        now = datetime.utcnow().isoformat()
+        asset = self.get_asset(str(asset_id))
+        if not asset:
+            logging.warning("Attempted to update missing asset %s", asset_id)
+            return
+        payload = dict(asset.payload)
+        if message_id is None:
+            payload.pop("recognized_message_id", None)
+        else:
+            payload["recognized_message_id"] = int(message_id)
+        payload["updated_at"] = datetime.utcnow().isoformat()
+        payload_json = self._encode_payload_blob(payload)
         self.conn.execute(
-            "UPDATE assets SET recognized_message_id=?, updated_at=? WHERE id=?",
-            (message_id, now, str(asset_id)),
+            "UPDATE assets SET payload_json=? WHERE id=?",
+            (payload_json, asset.id),
         )
         self.conn.commit()
 
@@ -777,84 +948,134 @@ class DataAccess:
         if not row:
             logging.warning("Attempted to update missing asset %s", asset_id)
             return
-        values: dict[str, Any] = {}
+        payload = dict(row.payload)
+        payload_updates: dict[str, Any | object] = {}
+        columns: dict[str, Any] = {}
+        column_dirty = False
+
         if template is not None:
-            values["caption_template"] = template
+            payload_updates["caption_template"] = template
         if caption is not None:
-            values["caption"] = caption
+            payload_updates["caption"] = caption
         if hashtags is not None:
-            values["hashtags"] = hashtags
-            values["categories"] = self._serialize_categories(hashtags, None)
+            categories_list = self._collect_categories(hashtags, None)
+            payload_updates["hashtags"] = hashtags
+            payload_updates["categories"] = categories_list
+            columns["labels_json"] = json.dumps(categories_list, ensure_ascii=False)
+            column_dirty = True
         if kind is not None:
-            values["kind"] = kind
+            payload_updates["kind"] = kind
         if file_meta is not None:
-            values["file_id"] = file_meta.get("file_id")
-            values["file_unique_id"] = file_meta.get("file_unique_id")
-            values["file_name"] = file_meta.get("file_name")
-            values["mime_type"] = file_meta.get("mime_type")
-            values["file_size"] = file_meta.get("file_size")
-            values["width"] = file_meta.get("width")
-            values["height"] = file_meta.get("height")
-            values["duration"] = file_meta.get("duration")
+            fm = file_meta or {}
+            file_ref_value = fm.get("file_ref") or fm.get("file_id") or row.file_ref
+            columns["file_ref"] = file_ref_value
+            content_type_value = fm.get("mime_type") or row.content_type
+            columns["content_type"] = content_type_value
+            sha256_value = fm.get("sha256") or row.sha256
+            columns["sha256"] = sha256_value
+            width_value = Asset._to_int(fm.get("width"))
+            if width_value is None:
+                width_value = row.width
+            columns["width"] = width_value
+            height_value = Asset._to_int(fm.get("height"))
+            if height_value is None:
+                height_value = row.height
+            columns["height"] = height_value
+            exif_json_value = fm.get("exif_json")
+            if exif_json_value is None and "exif" in fm:
+                try:
+                    exif_json_value = json.dumps(fm["exif"])
+                except TypeError:
+                    exif_json_value = None
+            if exif_json_value is None:
+                exif_json_value = row.exif_json
+            columns["exif_json"] = exif_json_value
+            column_dirty = True
+            file_size_value = Asset._to_int(fm.get("file_size"))
+            duration_value = Asset._to_int(fm.get("duration"))
+            if "file_id" in fm:
+                payload_updates["file_id"] = fm.get("file_id")
+            if "file_unique_id" in fm:
+                payload_updates["file_unique_id"] = fm.get("file_unique_id")
+            if "file_name" in fm:
+                payload_updates["file_name"] = fm.get("file_name")
+            if "mime_type" in fm:
+                payload_updates["mime_type"] = fm.get("mime_type")
+            if "file_size" in fm:
+                payload_updates["file_size"] = file_size_value
+            if "duration" in fm:
+                payload_updates["duration"] = duration_value
         if author_user_id is not None:
-            values["author_user_id"] = author_user_id
+            payload_updates["author_user_id"] = author_user_id
         if author_username is not None:
-            values["author_username"] = author_username
+            payload_updates["author_username"] = author_username
         if sender_chat_id is not None:
-            values["sender_chat_id"] = sender_chat_id
+            payload_updates["sender_chat_id"] = sender_chat_id
         if via_bot_id is not None:
-            values["via_bot_id"] = via_bot_id
+            payload_updates["via_bot_id"] = via_bot_id
         if forward_from_user is not None:
-            values["forward_from_user"] = forward_from_user
+            payload_updates["forward_from_user"] = forward_from_user
         if forward_from_chat is not None:
-            values["forward_from_chat"] = forward_from_chat
+            payload_updates["forward_from_chat"] = forward_from_chat
         if metadata is not None:
             existing = row.metadata or {}
             merged = existing.copy()
             merged.update(metadata)
             cleaned = self._prepare_metadata(merged)
-            if cleaned is not None:
-                values["metadata"] = json.dumps(cleaned)
-            elif row.metadata is not None:
-                values["metadata"] = None
+            payload_updates["metadata"] = cleaned
         if recognized_message_id is not None:
-            values["recognized_message_id"] = recognized_message_id
+            payload_updates["recognized_message_id"] = recognized_message_id
         if rubric_id is not None:
-            values["rubric_id"] = rubric_id
+            payload_updates["rubric_id"] = rubric_id
         if latitude is not None:
-            values["latitude"] = latitude
+            payload_updates["latitude"] = latitude
         if longitude is not None:
-            values["longitude"] = longitude
+            payload_updates["longitude"] = longitude
         if city is not None:
-            values["city"] = city
+            payload_updates["city"] = city
         if country is not None:
-            values["country"] = country
+            payload_updates["country"] = country
         if exif_present is not None:
-            values["exif_present"] = int(bool(exif_present))
+            payload_updates["exif_present"] = bool(exif_present)
         if local_path is not _UNSET:
-            values["local_path"] = local_path
+            payload_updates["local_path"] = (
+                str(local_path) if local_path is not None else None
+            )
         if vision_category is not None:
-            values["vision_category"] = self._normalize_vision_category(vision_category)
+            payload_updates["vision_category"] = self._normalize_vision_category(
+                vision_category
+            )
         if vision_arch_view is not None:
-            values["vision_arch_view"] = vision_arch_view
+            payload_updates["vision_arch_view"] = vision_arch_view
         if vision_photo_weather is not None:
-            values["vision_photo_weather"] = vision_photo_weather
+            payload_updates["vision_photo_weather"] = vision_photo_weather
         if vision_flower_varieties is not None:
-            values["vision_flower_varieties"] = json.dumps(vision_flower_varieties)
+            payload_updates["vision_flower_varieties"] = [
+                str(item) for item in vision_flower_varieties
+            ]
         if vision_confidence is not None:
-            values["vision_confidence"] = vision_confidence
+            payload_updates["vision_confidence"] = vision_confidence
         if vision_caption is not None:
-            values["vision_caption"] = vision_caption
+            payload_updates["vision_caption"] = vision_caption
         if origin is not None:
-            values["origin"] = origin
+            payload_updates["origin"] = origin
+
+        payload_dirty = bool(payload_updates)
+        if column_dirty or payload_dirty:
+            payload_updates["updated_at"] = datetime.utcnow().isoformat()
+            payload = self._update_payload_map(payload, payload_updates)
+            columns["payload_json"] = self._encode_payload_blob(payload)
+            column_dirty = True
+
         performed_write = False
-        if values:
-            assignments = ", ".join(f"{k} = ?" for k in values)
-            params: list[Any] = list(values.values())
-            params.append(str(asset_id))
-            sql = f"UPDATE assets SET {assignments}, updated_at=? WHERE id=?"
-            params.insert(-1, datetime.utcnow().isoformat())
-            self.conn.execute(sql, params)
+        if column_dirty:
+            assignments = ", ".join(f"{k} = ?" for k in columns)
+            params: list[Any] = list(columns.values())
+            params.append(row.id)
+            self.conn.execute(
+                f"UPDATE assets SET {assignments} WHERE id=?",
+                params,
+            )
             performed_write = True
         if vision_results is not None:
             self._store_vision_result(row.id, vision_results)
@@ -866,19 +1087,28 @@ class DataAccess:
         return self._fetch_asset("a.id = ?", (str(asset_id),))
 
     def get_asset_by_message(self, tg_chat_id: int, message_id: int) -> Asset | None:
-        return self._fetch_asset(
-            "a.tg_chat_id = ? AND a.message_id = ?",
-            (tg_chat_id, message_id),
-        )
+        identifier = self._build_tg_message_identifier(tg_chat_id, message_id)
+        if identifier is None:
+            return None
+        return self._fetch_asset("a.tg_message_id = ?", (identifier,))
 
     def is_recognized_message(self, tg_chat_id: int | None, message_id: int | None) -> bool:
         """Check if the pair matches a previously recognized asset message."""
 
-        if not tg_chat_id or not message_id:
+        if tg_chat_id is None or message_id is None:
             return False
         row = self.conn.execute(
-            "SELECT 1 FROM assets WHERE tg_chat_id=? AND recognized_message_id=? LIMIT 1",
-            (tg_chat_id, message_id),
+            """
+            SELECT 1
+              FROM assets
+             WHERE json_extract(payload_json, '$.recognized_message_id') = ?
+               AND COALESCE(
+                       json_extract(payload_json, '$.tg_chat_id'),
+                       json_extract(payload_json, '$.channel_id')
+                   ) = ?
+             LIMIT 1
+            """,
+            (int(message_id), int(tg_chat_id)),
         ).fetchone()
         return row is not None
 
@@ -936,9 +1166,7 @@ class DataAccess:
             except json.JSONDecodeError:
                 labels_data = labels_json
         payload_json = row_dict.get("payload_json")
-        payload_data = _parse_json(payload_json)
-        if not isinstance(payload_data, dict):
-            payload_data = {}
+        payload_data = self._decode_payload_blob(payload_json)
         created_at_raw = row_dict.get("created_at")
         created_at = str(created_at_raw) if created_at_raw is not None else datetime.utcnow().isoformat()
         raw_vision: str | None
@@ -953,78 +1181,25 @@ class DataAccess:
                 vision = json.loads(raw_vision)
             except (TypeError, json.JSONDecodeError):
                 vision = None
-        vision_category_raw = row_dict.get("vision_category") if "vision_category" in keys else None
-        vision_category = self._normalize_vision_category(vision_category_raw)
-        vision_arch_view = row_dict.get("vision_arch_view") if "vision_arch_view" in keys else None
-        vision_photo_weather = (
-            row_dict.get("vision_photo_weather") if "vision_photo_weather" in keys else None
-        )
-        raw_flowers = row_dict.get("vision_flower_varieties") if "vision_flower_varieties" in keys else None
+        vision_category_raw = payload_data.get("vision_category")
+        vision_category = None
+        if vision_category_raw is not None:
+            vision_category = self._normalize_vision_category(str(vision_category_raw))
+        vision_arch_view = payload_data.get("vision_arch_view")
+        if vision_arch_view is not None:
+            vision_arch_view = str(vision_arch_view)
+        vision_photo_weather = payload_data.get("vision_photo_weather")
+        if vision_photo_weather is not None:
+            vision_photo_weather = str(vision_photo_weather)
         flower_varieties: list[str] | None = None
+        raw_flowers = payload_data.get("vision_flower_varieties")
         if raw_flowers is not None:
-            if isinstance(raw_flowers, list):
-                flower_varieties = [str(item) for item in raw_flowers]
-            elif isinstance(raw_flowers, str):
-                text = raw_flowers.strip()
-                if text:
-                    try:
-                        parsed = json.loads(text)
-                    except json.JSONDecodeError:
-                        parsed = None
-                    if isinstance(parsed, list):
-                        flower_varieties = [str(item) for item in parsed]
-                    else:
-                        flower_varieties = [str(raw_flowers)]
-            else:
-                flower_varieties = [str(raw_flowers)]
-        vision_confidence_raw = row_dict.get("vision_confidence") if "vision_confidence" in keys else None
-        vision_confidence = Asset._to_float(vision_confidence_raw)
-        local_path = row_dict.get("local_path") if "local_path" in keys else None
-        rubric_id_raw = row_dict.get("rubric_id") if "rubric_id" in keys else None
-        rubric_id = Asset._to_int(rubric_id_raw)
-
-        compatibility_keys = {
-            "channel_id",
-            "tg_chat_id",
-            "message_id",
-            "origin",
-            "caption_template",
-            "caption",
-            "hashtags",
-            "categories",
-            "kind",
-            "file_id",
-            "file_unique_id",
-            "file_name",
-            "mime_type",
-            "file_size",
-            "duration",
-            "recognized_message_id",
-            "exif_present",
-            "latitude",
-            "longitude",
-            "city",
-            "country",
-            "author_user_id",
-            "author_username",
-            "sender_chat_id",
-            "via_bot_id",
-            "forward_from_user",
-            "forward_from_chat",
-            "local_path",
-            "metadata",
-            "vision_category",
-            "vision_arch_view",
-            "vision_photo_weather",
-            "vision_flower_varieties",
-            "vision_confidence",
-            "vision_caption",
-            "rubric_id",
-        }
-        legacy_values: dict[str, Any] = {}
-        for key in compatibility_keys:
-            if key in keys and row_dict.get(key) is not None:
-                legacy_values[key] = row_dict[key]
+            entries = Asset._ensure_list(raw_flowers)
+            flower_varieties = [str(item) for item in entries]
+        vision_confidence = Asset._to_float(payload_data.get("vision_confidence"))
+        local_path_value = payload_data.get("local_path")
+        local_path = str(local_path_value) if local_path_value is not None else None
+        rubric_id = Asset._to_int(payload_data.get("rubric_id"))
 
         tg_message_id_raw = row_dict.get("tg_message_id")
         tg_message_id = None
@@ -1053,15 +1228,19 @@ class DataAccess:
             exif=exif_data,
             labels=labels_data,
             payload=payload_data,
-            legacy_values=legacy_values,
+            legacy_values={},
             _vision_results=vision,
             _vision_category=vision_category,
             _vision_arch_view=vision_arch_view,
             _vision_photo_weather=vision_photo_weather,
             _vision_flower_varieties=flower_varieties,
             _vision_confidence=vision_confidence,
-            _vision_caption=(row_dict.get("vision_caption") if "vision_caption" in keys else None),
-            _local_path=str(local_path) if local_path is not None else None,
+            _vision_caption=(
+                str(payload_data.get("vision_caption"))
+                if payload_data.get("vision_caption") is not None
+                else None
+            ),
+            _local_path=local_path,
             _rubric_id=rubric_id,
         )
 
@@ -1078,7 +1257,7 @@ class DataAccess:
                  ORDER BY created_at DESC, id DESC
                  LIMIT 1
              )
-            ORDER BY COALESCE(a.last_used_at, a.created_at) ASC, a.id ASC
+            ORDER BY COALESCE(json_extract(a.payload_json, '$.last_used_at'), a.created_at) ASC, a.id ASC
             """
         ).fetchall()
         for row in rows:
@@ -1102,7 +1281,7 @@ class DataAccess:
         conditions = list(where or [])
         query_params: list[Any] = list(params or [])
         if rubric_id is not None:
-            conditions.append("a.rubric_id = ?")
+            conditions.append("json_extract(a.payload_json, '$.rubric_id') = ?")
             query_params.append(rubric_id)
         sql = (
             """
@@ -1120,7 +1299,7 @@ class DataAccess:
         )
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
-        sql += " ORDER BY COALESCE(a.last_used_at, a.created_at) ASC, a.id ASC"
+        sql += " ORDER BY COALESCE(json_extract(a.payload_json, '$.last_used_at'), a.created_at) ASC, a.id ASC"
         apply_limit = limit if limit is not None and not random_order else None
         if apply_limit is not None:
             sql += " LIMIT ?"
@@ -1159,10 +1338,14 @@ class DataAccess:
                 return []
             variants = [normalized]
         placeholders = ",".join("?" for _ in variants)
-        where = [f"LOWER(COALESCE(a.vision_category, '')) IN ({placeholders})"]
+        where = [
+            f"LOWER(COALESCE(json_extract(a.payload_json, '$.vision_category'), '')) IN ({placeholders})"
+        ]
         params: list[Any] = [variant.lower() for variant in variants]
         if require_arch_view:
-            where.append("TRIM(COALESCE(a.vision_arch_view, '')) != ''")
+            where.append(
+                "TRIM(COALESCE(json_extract(a.payload_json, '$.vision_arch_view'), '')) != ''"
+            )
         return self._fetch_assets(
             rubric_id=rubric_id,
             limit=limit,
@@ -1176,11 +1359,23 @@ class DataAccess:
         ids = [str(asset_id) for asset_id in asset_ids]
         if not ids:
             return
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.conn.execute(
+            f"SELECT id, payload_json FROM assets WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        if not rows:
+            return
         now_iso = datetime.utcnow().isoformat()
-        self.conn.executemany(
-            "UPDATE assets SET last_used_at=?, updated_at=? WHERE id=?",
-            [(now_iso, now_iso, asset_id) for asset_id in ids],
-        )
+        for row in rows:
+            payload = self._decode_payload_blob(row["payload_json"])
+            payload["last_used_at"] = now_iso
+            payload["updated_at"] = now_iso
+            payload_json = self._encode_payload_blob(payload)
+            self.conn.execute(
+                "UPDATE assets SET payload_json=? WHERE id=?",
+                (payload_json, row["id"]),
+            )
         self.conn.commit()
 
     def delete_assets(self, asset_ids: Sequence[str | int]) -> None:
@@ -1199,7 +1394,6 @@ class DataAccess:
         self.conn.commit()
 
     def get_next_asset(self, tags: set[str] | None) -> Asset | None:
-        now_iso = datetime.utcnow().isoformat()
         rows = self.conn.execute(
             """
             SELECT a.*, vr.result_json AS vision_payload
@@ -1212,7 +1406,7 @@ class DataAccess:
                  ORDER BY created_at DESC, id DESC
                  LIMIT 1
              )
-            ORDER BY COALESCE(a.last_used_at, a.created_at) ASC, a.id ASC
+            ORDER BY COALESCE(json_extract(a.payload_json, '$.last_used_at'), a.created_at) ASC, a.id ASC
             """
         ).fetchall()
         normalized = {t.lower() for t in tags} if tags else None
@@ -1226,11 +1420,10 @@ class DataAccess:
                 asset_tags = {t.lower() for t in asset.categories}
                 if not asset_tags.intersection(normalized):
                     continue
-            self.conn.execute(
-                "UPDATE assets SET last_used_at=?, updated_at=? WHERE id=?",
-                (now_iso, now_iso, asset.id),
-            )
-            self.conn.commit()
+            now_iso = datetime.utcnow().isoformat()
+            asset.payload["last_used_at"] = now_iso
+            asset.payload["updated_at"] = now_iso
+            self.mark_assets_used([asset.id])
             return asset
         return None
 

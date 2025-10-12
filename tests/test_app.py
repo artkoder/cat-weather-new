@@ -12,6 +12,7 @@ from main import create_app, Bot
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 os.environ.setdefault("WEBHOOK_URL", "https://example.com")
+os.environ.setdefault("ASSETS_CHANNEL_ID", "-100")
 
 @pytest.mark.asyncio
 async def test_startup_cleanup():

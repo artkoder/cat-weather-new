@@ -194,7 +194,7 @@ def _seed_city(
 
 
 def _build_test_asset(
-    asset_id: int,
+    asset_id: int | str,
     *,
     payload_overrides: dict[str, Any] | None = None,
     labels: list[str] | None = None,
@@ -205,18 +205,20 @@ def _build_test_asset(
     height: int = 1350,
     sha256: str | None = None,
 ) -> Asset:
+    asset_id_str = str(asset_id)
+    message_id = int(asset_id)
     payload: dict[str, Any] = {
         "channel_id": 1,
         "tg_chat_id": 1,
-        "message_id": asset_id,
+        "message_id": message_id,
         "origin": "test",
         "caption_template": None,
         "caption": None,
         "hashtags": None,
         "kind": "photo",
-        "file_id": f"file-{asset_id}",
-        "file_unique_id": f"unique-{asset_id}",
-        "file_name": f"flower-{asset_id}.jpg",
+        "file_id": f"file-{asset_id_str}",
+        "file_unique_id": f"unique-{asset_id_str}",
+        "file_name": f"flower-{asset_id_str}.jpg",
         "mime_type": "image/jpeg",
         "file_size": None,
         "duration": None,
@@ -250,7 +252,7 @@ def _build_test_asset(
         upload_id=None,
         file_ref=payload.get("file_id"),
         content_type=payload.get("mime_type"),
-        sha256=sha256 or f"sha-{asset_id}",
+        sha256=sha256 or f"sha-{asset_id_str}",
         width=width,
         height=height,
         exif_json=None,
@@ -734,11 +736,11 @@ async def test_fetch_assets_includes_singular_flower_category(tmp_path):
         categories=["flowers"],
     )
 
-    bot.db.execute(
-        "UPDATE assets SET vision_category=?, vision_flower_varieties=?, updated_at=? WHERE id=?",
-        ("flower", json.dumps(["rose"]), datetime.utcnow().isoformat(), asset_id),
+    bot.data.update_asset(
+        asset_id,
+        vision_category="flower",
+        vision_flower_varieties=["rose"],
     )
-    bot.db.commit()
 
     assets = bot.data.fetch_assets_by_vision_category("flowers")
     assert any(asset.id == asset_id for asset in assets)
@@ -1039,7 +1041,7 @@ async def test_flowers_publish_succeeds_with_reduced_assets(tmp_path, monkeypatc
     assert ok is True
     assert preview_calls, "Expected preview to be prepared"
     assert len(preview_calls[0]) == 3
-    assert sorted(asset.id for asset in preview_calls[0]) == [1, 2, 3]
+    assert sorted(asset.id for asset in preview_calls[0]) == ["1", "2", "3"]
 
     await bot.close()
 
@@ -2066,9 +2068,9 @@ async def test_flowers_assets_accept_adjacent_seasons_and_record(tmp_path):
 
     assert result is not None
     selected_assets, seasons = result
-    assert [asset.id for asset in selected_assets] == [1, 2, 3][: len(selected_assets)]
-    assert seasons[1] == "spring"
-    assert seasons[2] == "summer"
+    assert [asset.id for asset in selected_assets] == ["1", "2", "3"][: len(selected_assets)]
+    assert seasons["1"] == "spring"
+    assert seasons["2"] == "summer"
 
     features = bot._extract_flower_features(
         selected_assets,
@@ -3292,47 +3294,17 @@ async def test_overlay_offset_respects_safe_zone(tmp_path, monkeypatch):
     def make_asset(idx: int, size: tuple[int, int]) -> Asset:
         path = tmp_path / f"base_{idx}.png"
         Image.new("RGB", size, (255, 255, 255)).save(path)
-        return Asset(
-            id=idx,
-            channel_id=1,
-            tg_chat_id=1,
-            message_id=idx,
-            origin="test",
-            caption_template=None,
-            caption=None,
-            hashtags=None,
-            categories=[],
-            kind="photo",
-            file_id=f"file-{idx}",
-            file_unique_id=f"unique-{idx}",
-            file_name=path.name,
-            mime_type="image/png",
-            file_size=None,
+        return _build_test_asset(
+            idx,
+            payload_overrides={
+                "file_name": path.name,
+                "mime_type": "image/png",
+                "local_path": str(path),
+            },
+            labels=[],
             width=size[0],
             height=size[1],
-            duration=None,
-            recognized_message_id=None,
-            exif_present=False,
-            latitude=None,
-            longitude=None,
-            city=None,
-            country=None,
-            author_user_id=None,
-            author_username=None,
-            sender_chat_id=None,
-            via_bot_id=None,
-            forward_from_user=None,
-            forward_from_chat=None,
-            local_path=str(path),
-            metadata=None,
-            vision_results=None,
-            rubric_id=None,
-            vision_category=None,
-            vision_arch_view=None,
-            vision_photo_weather=None,
-            vision_flower_varieties=None,
-            vision_confidence=None,
-            vision_caption=None,
+            sha256=f"sha-{idx}",
         )
 
     large_asset = make_asset(1, (1280, 720))

@@ -14,19 +14,20 @@ from main import Bot
 from openai_client import OpenAIResponse
 
 
-def _make_asset(asset_id: int, city: str, varieties: list[str]) -> Asset:
+def _make_asset(asset_id: int | str, city: str, varieties: list[str]) -> Asset:
+    asset_id_str = str(asset_id)
     payload = {
         "channel_id": 1,
         "tg_chat_id": 1,
-        "message_id": asset_id,
+        "message_id": int(asset_id),
         "origin": "test",
         "caption_template": None,
         "caption": None,
         "hashtags": None,
         "kind": "photo",
-        "file_id": f"file-{asset_id}",
-        "file_unique_id": f"uniq-{asset_id}",
-        "file_name": f"flower-{asset_id}.jpg",
+        "file_id": f"file-{asset_id_str}",
+        "file_unique_id": f"uniq-{asset_id_str}",
+        "file_name": f"flower-{asset_id_str}.jpg",
         "mime_type": "image/jpeg",
         "file_size": None,
         "duration": None,
@@ -38,16 +39,16 @@ def _make_asset(asset_id: int, city: str, varieties: list[str]) -> Asset:
     }
     labels_json = json.dumps([])
     return Asset(
-        id=str(asset_id),
+        id=asset_id_str,
         upload_id=None,
-        file_ref=f"file-{asset_id}",
+        file_ref=f"file-{asset_id_str}",
         content_type="image/jpeg",
         sha256=None,
         width=1080,
         height=1080,
         exif_json=None,
         labels_json=labels_json,
-        tg_message_id=f"1:{asset_id}",
+        tg_message_id=f"1:{payload['message_id']}",
         payload_json=json.dumps(payload, ensure_ascii=False),
         created_at=datetime.utcnow().isoformat(),
         exif=None,

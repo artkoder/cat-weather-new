@@ -2504,8 +2504,8 @@ def set_upload_status(
     transitions = {
         "queued": {"processing", "failed"},
         "processing": {"done", "failed"},
-        "done": set(),
-        "failed": set(),
+        "done": {"processing"},
+        "failed": {"processing"},
     }
     allowed = transitions.get(current)
     if not allowed or status not in allowed:

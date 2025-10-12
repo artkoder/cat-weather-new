@@ -454,13 +454,6 @@ def _json_error(status: int, error: str, message: str) -> web.Response:
     return web.json_response({"error": error, "message": message}, status=status)
 
 
-def _ensure_limiter(app: web.Application):
-    limiter = app.get("upload_rate_limiter")
-    if not limiter:
-        raise RuntimeError("Upload rate limiter is not configured")
-    return limiter
-
-
 def _ensure_storage(app: web.Application) -> Storage:
     storage = app.get("storage")
     if not storage:
@@ -524,11 +517,6 @@ async def handle_create_upload(request: web.Request) -> web.Response:
     device_id = request.get("device_id")
     if not device_id:
         return _json_error(401, "unauthorized", "Missing device context")
-    limiter = _ensure_limiter(request.app)
-    if not await limiter.allow(f"upload:{device_id}"):
-        logging.warning("UPLOAD rate-limit device=%s", device_id)
-        return _json_error(429, "rate_limited", "Too many uploads. Try later.")
-
     idempotency_key = request.headers.get("Idempotency-Key")
     if not idempotency_key or not (1 <= len(idempotency_key) <= 128):
         return _json_error(400, "invalid_idempotency_key", "Idempotency-Key header is required.")
@@ -628,10 +616,6 @@ async def handle_get_upload_status(request: web.Request) -> web.Response:
     device_id = request.get("device_id")
     if not device_id:
         return _json_error(401, "unauthorized", "Missing device context")
-    limiter = request.app.get("upload_status_rate_limiter")
-    if limiter and not await limiter.allow(f"upload-status:{device_id}"):
-        logging.warning("UPLOAD_STATUS rate-limit device=%s", device_id)
-        return _json_error(429, "rate_limited", "Too many status checks. Try later.")
     upload_id = request.match_info.get("id")
     if upload_id:
         request["upload_id"] = str(upload_id)
@@ -869,7 +853,5 @@ def setup_upload_routes(
     app["jobs"] = jobs
     if config:
         app["uploads_config"] = config
-    if "upload_rate_limiter" not in app:
-        raise RuntimeError("Upload rate limiter must be configured on the app")
     app.router.add_post("/v1/uploads", handle_create_upload)
     app.router.add_get("/v1/uploads/{id}/status", handle_get_upload_status)

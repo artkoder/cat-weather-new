@@ -10,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+from api.rate_limit import create_rate_limit_middleware
 from observability import metrics_handler, observability_middleware, setup_logging
 
 
@@ -45,14 +46,29 @@ def test_logging_redacts_sensitive_values(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_metrics_endpoint_serves_prometheus_text(monkeypatch):
-    monkeypatch.delenv("METRICS_ALLOWLIST", raising=False)
-    app = web.Application()
+async def test_metrics_endpoint_forbidden_without_allowlist(monkeypatch):
+    monkeypatch.delenv("ALLOWLIST_CIDR", raising=False)
+    app = web.Application(middlewares=[create_rate_limit_middleware()])
     app.router.add_get("/metrics", metrics_handler)
 
     async with TestServer(app) as server:
         async with TestClient(server) as client:
             response = await client.get("/metrics")
+            assert response.status == 403
+
+
+@pytest.mark.asyncio
+async def test_metrics_endpoint_allowed_for_allowlisted_ip(monkeypatch):
+    monkeypatch.setenv("ALLOWLIST_CIDR", "127.0.0.1/32")
+    monkeypatch.setenv("RL_METRICS_PER_MIN", "10")
+    app = web.Application(middlewares=[create_rate_limit_middleware()])
+    app.router.add_get("/metrics", metrics_handler)
+
+    async with TestServer(app) as server:
+        async with TestClient(server) as client:
+            response = await client.get(
+                "/metrics", headers={"X-Forwarded-For": "127.0.0.1"}
+            )
             text = await response.text()
             assert response.status == 200
             assert response.headers["Content-Type"].startswith("text/plain")

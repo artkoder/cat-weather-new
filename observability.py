@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-import ipaddress
 import json
 import logging
 import os
@@ -113,6 +112,11 @@ class ContextFilter(logging.Filter):
             "ip",
             "job",
             "upload_id",
+            "rl",
+            "rl_limit",
+            "rl_window",
+            "rl_key",
+            "rl_scope",
         ):
             if not hasattr(record, key):
                 setattr(record, key, None)
@@ -137,6 +141,11 @@ class JsonFormatter(logging.Formatter):
             "ip",
             "job",
             "upload_id",
+            "rl",
+            "rl_limit",
+            "rl_window",
+            "rl_key",
+            "rl_scope",
         ):
             value = getattr(record, key, None)
             if value is not None:
@@ -198,6 +207,11 @@ class PrettyFormatter(logging.Formatter):
             "ip",
             "job",
             "upload_id",
+            "rl",
+            "rl_limit",
+            "rl_window",
+            "rl_key",
+            "rl_scope",
         ):
             value = getattr(record, key, None)
             if value:
@@ -284,6 +298,12 @@ _HEALTH_LATENCY_SECONDS = Histogram(
     "Latency of health check internal probes",
 )
 
+_RATE_LIMIT_DROPPED_TOTAL = Counter(
+    "rate_limit_dropped_total",
+    "Requests rejected due to rate limiting",
+    labelnames=("route", "key"),
+)
+
 
 _METRICS_INITIALIZED = False
 
@@ -301,48 +321,6 @@ def _ensure_runtime_collectors() -> None:
     _METRICS_INITIALIZED = True
 
 
-@dataclass(slots=True)
-class _MetricsRateLimiter:
-    max_per_second: int = 5
-    window_seconds: float = 1.0
-    _hits: MutableMapping[str, Deque[float]] = field(default_factory=dict, init=False)
-
-    def allow(self, ip: str) -> bool:
-        now = time.monotonic()
-        bucket = self._hits.setdefault(ip, deque())
-        window_start = now - self.window_seconds
-        while bucket and bucket[0] < window_start:
-            bucket.popleft()
-        if len(bucket) >= self.max_per_second:
-            return False
-        bucket.append(now)
-        return True
-
-
-_ALLOWLIST: tuple[ipaddress._BaseNetwork, ...] = ()
-_METRICS_LIMITER = _MetricsRateLimiter()
-
-
-def _parse_allowlist(raw: str | None) -> tuple[ipaddress._BaseNetwork, ...]:
-    if not raw:
-        return ()
-    networks: list[ipaddress._BaseNetwork] = []
-    for item in raw.split(","):
-        candidate = item.strip()
-        if not candidate:
-            continue
-        try:
-            networks.append(ipaddress.ip_network(candidate, strict=False))
-        except ValueError:
-            logging.warning("Invalid CIDR in METRICS_ALLOWLIST: %s", candidate)
-    return tuple(networks)
-
-
-def configure_metrics_access() -> None:
-    global _ALLOWLIST
-    _ALLOWLIST = _parse_allowlist(os.getenv("METRICS_ALLOWLIST"))
-
-
 def _client_ip(request: web.Request) -> str | None:
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
@@ -350,28 +328,8 @@ def _client_ip(request: web.Request) -> str | None:
     return request.remote
 
 
-def _is_ip_allowed(ip: str | None) -> bool:
-    if not _ALLOWLIST:
-        return True
-    if not ip:
-        return False
-    try:
-        address = ipaddress.ip_address(ip)
-    except ValueError:
-        return False
-    return any(address in network for network in _ALLOWLIST)
-
-
 async def metrics_handler(request: web.Request) -> web.Response:
     _ensure_runtime_collectors()
-    configure_metrics_access()
-    ip = _client_ip(request)
-    if not _is_ip_allowed(ip):
-        return web.Response(status=403, text="forbidden")
-    if not ip:
-        ip = "unknown"
-    if not _METRICS_LIMITER.allow(ip):
-        return web.Response(status=429, text="rate limited")
     payload = generate_latest()
     return web.Response(body=payload, headers={"Content-Type": CONTENT_TYPE_LATEST})
 
@@ -436,6 +394,7 @@ async def observability_middleware(request: web.Request, handler):
                 status=str(status),
             ).inc()
             _HTTP_REQUEST_DURATION.labels(route=route_label).observe(duration)
+            rl_info = request.get("rate_limit_log") or {}
             logging.getLogger("aiohttp.access").info(
                 "request_completed",
                 extra={
@@ -448,9 +407,18 @@ async def observability_middleware(request: web.Request, handler):
                     "ip": ip,
                     "upload_id": upload_id,
                     "job": job_name,
+                    "rl": rl_info.get("result"),
+                    "rl_limit": rl_info.get("limit"),
+                    "rl_window": rl_info.get("window"),
+                    "rl_key": rl_info.get("key"),
+                    "rl_scope": rl_info.get("scope"),
                 },
             )
         _LOG_CONTEXT.reset(token)
+
+
+def record_rate_limit_drop(route: str, key: str) -> None:
+    _RATE_LIMIT_DROPPED_TOTAL.labels(route=route, key=key).inc()
 
 
 def record_hmac_failure(reason: str) -> None:
@@ -491,6 +459,7 @@ __all__ = [
     "log_exc",
     "metrics_handler",
     "observability_middleware",
+    "record_rate_limit_drop",
     "record_hmac_failure",
     "record_job_processed",
     "record_storage_put_bytes",

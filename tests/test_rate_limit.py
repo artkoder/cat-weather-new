@@ -1,0 +1,39 @@
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+from api.rate_limit import TokenBucketLimiter, create_rate_limit_middleware
+
+
+@pytest.mark.asyncio
+async def test_token_bucket_limiter_blocks_after_capacity():
+    limiter = TokenBucketLimiter(2, 60)
+    assert await limiter.allow("key") is True
+    assert await limiter.allow("key") is True
+    assert await limiter.allow("key") is False
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_middleware_returns_429(monkeypatch):
+    monkeypatch.setenv("RL_HEALTH_PER_MIN", "1")
+    monkeypatch.setenv("RL_HEALTH_WINDOW_SEC", "60")
+    app = web.Application(middlewares=[create_rate_limit_middleware()])
+
+    async def handler(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app.router.add_get("/v1/health", handler)
+
+    async with TestServer(app) as server:
+        async with TestClient(server) as client:
+            first = await client.get("/v1/health")
+            assert first.status == 200
+            second = await client.get("/v1/health")
+            assert second.status == 429
+            payload = await second.json()
+            assert payload == {"error": "rate_limited"}

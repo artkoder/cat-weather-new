@@ -11,6 +11,7 @@ from typing import Mapping, Sequence
 from urllib.parse import quote
 
 from aiohttp import web
+from aiohttp.streams import StreamReader
 from multidict import MultiMapping
 
 from data_access import get_device_secret, register_nonce
@@ -116,6 +117,16 @@ def _json_error(status: int, error: str, message: str) -> web.Response:
 async def _read_body(request: web.Request) -> bytes:
     body = await request.read()
     request._read_bytes = body  # type: ignore[attr-defined]
+    payload = getattr(request, "_payload", None)
+    if payload is not None:
+        protocol = getattr(payload, "_protocol", None)
+        if protocol is not None:
+            loop = getattr(payload, "_loop", None)
+            limit = getattr(payload, "_limit", None) or 2**16
+            reader = StreamReader(protocol, limit, loop=loop)
+            reader.feed_data(body)
+            reader.feed_eof()
+            request._payload = reader  # type: ignore[attr-defined]
     return body
 
 

@@ -46,6 +46,7 @@ from data_access import (
     create_pairing_token,
     consume_pairing_token,
 )
+from api.uploads import load_uploads_config, register_upload_jobs, setup_upload_routes
 from api.security import create_hmac_middleware
 from flowers_patterns import (
     FlowerKnowledgeBase,
@@ -55,6 +56,7 @@ from flowers_patterns import (
 from jobs import Job, JobDelayed, JobQueue, cleanup_expired_records
 from openai_client import OpenAIClient
 from supabase_client import SupabaseClient
+from storage import create_storage_from_env
 from weather_migration import migrate_weather_publish_channels
 
 if TYPE_CHECKING:
@@ -12828,6 +12830,18 @@ def create_app():
     app['version'] = APP_VERSION
     app['attach_rate_limiter'] = SlidingWindowRateLimiter(
         _ATTACH_RATE_LIMIT, _ATTACH_RATE_WINDOW_SECONDS
+    )
+    app['upload_rate_limiter'] = SlidingWindowRateLimiter(20, 60)
+
+    uploads_config = load_uploads_config()
+    storage = create_storage_from_env(supabase=bot.supabase)
+    register_upload_jobs(bot.jobs, bot.db)
+    setup_upload_routes(
+        app,
+        storage=storage,
+        conn=bot.db,
+        jobs=bot.jobs,
+        config=uploads_config,
     )
 
     app.middlewares.append(create_hmac_middleware(bot.db))

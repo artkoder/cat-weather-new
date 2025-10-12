@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
@@ -40,17 +41,29 @@ class SupabaseClient:
         *,
         timeout: float = 10.0,
     ) -> None:
-        config = SupabaseConfig(url or os.getenv("SUPABASE_URL"), key or os.getenv("SUPABASE_KEY"))
+        env_key = (
+            key
+            or os.getenv("SUPABASE_KEY")
+            or os.getenv("SUPABASE_ANON_KEY")
+        )
+        config = SupabaseConfig(url or os.getenv("SUPABASE_URL"), env_key)
         self._enabled = bool(config.url and config.key)
         self._client: httpx.AsyncClient | None = None
+        self._api_base: str | None = None
+        self._storage_base: str | None = None
         if self._enabled:
-            base_url = config.url.rstrip("/") + "/rest/v1"
+            api_base = config.url.rstrip("/")
+            rest_base = api_base + "/rest/v1"
             headers = {
                 "apikey": config.key,
                 "Authorization": f"Bearer {config.key}",
                 "Content-Type": "application/json",
             }
-            self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout, headers=headers)
+            self._client = httpx.AsyncClient(
+                base_url=rest_base, timeout=timeout, headers=headers
+            )
+            self._api_base = api_base
+            self._storage_base = api_base + "/storage/v1"
 
     @property
     def enabled(self) -> bool:
@@ -100,3 +113,32 @@ class SupabaseClient:
             return True, payload, None
         except httpx.HTTPError as exc:
             return False, payload, str(exc)
+
+    async def upload_object(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        stream: AsyncIterator[bytes],
+        content_type: str,
+    ) -> str:
+        if not self._client or not self._storage_base:
+            raise RuntimeError("Supabase client is disabled")
+        normalized_key = key.lstrip("/")
+        url = f"{self._storage_base}/object/{bucket}/{normalized_key}"
+        headers = {
+            "Content-Type": content_type,
+            "x-upsert": "true",
+        }
+        byte_stream = httpx.AsyncIteratorByteStream(stream)
+        response = await self._client.post(url, content=byte_stream, headers=headers)
+        if response.status_code not in (200, 201, 204):
+            message = response.text.strip() or response.reason_phrase or "upload_failed"
+            raise RuntimeError(f"Supabase upload failed: {response.status_code} {message}")
+        return normalized_key
+
+    def public_url(self, *, bucket: str, key: str) -> str:
+        if not self._api_base:
+            raise RuntimeError("Supabase client is disabled")
+        normalized_key = key.lstrip("/")
+        return f"{self._api_base}/storage/v1/object/public/{bucket}/{normalized_key}"

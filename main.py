@@ -2505,7 +2505,7 @@ class Bot:
         forward_from_user: int | None = None,
         forward_from_chat: int | None = None,
         origin: str = "weather",
-    ) -> int:
+    ) -> str:
         source_channel = channel_id or self.weather_assets_channel_id or 0
         asset_id = self.data.save_asset(
             source_channel,
@@ -2560,7 +2560,7 @@ class Bot:
             },
         )
 
-    def _schedule_ingest_job(self, asset_id: int, *, reason: str) -> None:
+    def _schedule_ingest_job(self, asset_id: str | None, *, reason: str) -> None:
         if not asset_id:
             logging.warning("Skipping ingest scheduling with missing asset id (%s)", reason)
             return
@@ -3086,14 +3086,14 @@ class Bot:
         desired_count: int | None = None,
         min_count: int | None = None,
         max_count: int,
-    ) -> tuple[list[Asset], dict[int, str]] | None:
+    ) -> tuple[list[Asset], dict[str, str]] | None:
         target = desired_count if desired_count is not None else min_count
         if target is None:
             return None
         required_count = int(target)
         if not assets or required_count <= 0:
             return None
-        asset_seasons: dict[int, str] = {}
+        asset_seasons: dict[str, str] = {}
         filtered_assets: list[Asset] = []
         for asset in assets:
             season = self._resolve_asset_season(asset)
@@ -3481,7 +3481,7 @@ class Bot:
 
         return caption_line, dedupe_values, has_osm_components
 
-    def _build_local_file_path(self, asset_id: int, file_meta: dict[str, Any]) -> Path:
+    def _build_local_file_path(self, asset_id: str, file_meta: dict[str, Any]) -> Path:
         suffix = ""
         file_name = file_meta.get("file_name")
         if file_name:
@@ -3493,7 +3493,7 @@ class Bot:
         filename = f"{asset_id}_{unique}{suffix}" if suffix else f"{asset_id}_{unique}"
         return self.asset_storage / filename
 
-    def _store_local_file(self, asset_id: int, file_meta: dict[str, Any], data: bytes) -> str:
+    def _store_local_file(self, asset_id: str, file_meta: dict[str, Any], data: bytes) -> str:
         path = self._build_local_file_path(asset_id, file_meta)
         try:
             path.write_bytes(data)
@@ -4351,13 +4351,22 @@ class Bot:
                             metadata={"original_document_file_id": file_id},
                         )
                         new_file_id = photo_meta.get("file_id")
-                        asset.kind = "photo"
-                        asset.file_id = new_file_id
-                        asset.file_unique_id = photo_meta.get("file_unique_id")
-                        asset.mime_type = photo_meta.get("mime_type")
-                        asset.file_size = photo_meta.get("file_size")
-                        asset.width = photo_meta.get("width")
-                        asset.height = photo_meta.get("height")
+                        asset.payload["kind"] = "photo"
+                        if new_file_id is not None:
+                            asset.payload["file_id"] = new_file_id
+                        file_unique = photo_meta.get("file_unique_id")
+                        if file_unique is not None:
+                            asset.payload["file_unique_id"] = file_unique
+                        mime_type = photo_meta.get("mime_type")
+                        if mime_type is not None:
+                            asset.payload["mime_type"] = mime_type
+                        file_size = photo_meta.get("file_size")
+                        if file_size is not None:
+                            asset.payload["file_size"] = file_size
+                        width_value = photo_meta.get("width")
+                        height_value = photo_meta.get("height")
+                        asset.width = Asset._to_int(width_value)
+                        asset.height = Asset._to_int(height_value)
                     else:
                         logging.warning(
                             "Vision job %s missing photo metadata in response for asset %s: %s",
@@ -8886,13 +8895,19 @@ class Bot:
                 file_meta=photo_meta,
                 metadata={"original_document_file_id": original_file_id},
             )
-            asset.kind = "photo"
-            asset.file_id = new_file_id
-            asset.file_unique_id = photo_meta.get("file_unique_id")
-            asset.mime_type = photo_meta.get("mime_type")
-            asset.file_size = photo_meta.get("file_size")
-            asset.width = photo_meta.get("width")
-            asset.height = photo_meta.get("height")
+            asset.payload["kind"] = "photo"
+            asset.payload["file_id"] = new_file_id
+            file_unique = photo_meta.get("file_unique_id")
+            if file_unique is not None:
+                asset.payload["file_unique_id"] = file_unique
+            mime_type = photo_meta.get("mime_type")
+            if mime_type is not None:
+                asset.payload["mime_type"] = mime_type
+            file_size = photo_meta.get("file_size")
+            if file_size is not None:
+                asset.payload["file_size"] = file_size
+            asset.width = Asset._to_int(photo_meta.get("width"))
+            asset.height = Asset._to_int(photo_meta.get("height"))
             return new_file_id
 
         try:
@@ -9765,7 +9780,7 @@ class Bot:
         default_channel: int,
         test_requested: bool,
         assets: list[Asset],
-        asset_ids: list[int],
+        asset_ids: list[str],
         file_ids: list[str],
         asset_kinds: list[str],
         conversion_map: dict[int, dict[str, Any]],

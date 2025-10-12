@@ -46,7 +46,12 @@ from data_access import (
     create_pairing_token,
     consume_pairing_token,
 )
-from api.uploads import load_uploads_config, register_upload_jobs, setup_upload_routes
+from api.uploads import (
+    UploadMetricsRecorder,
+    load_uploads_config,
+    register_upload_jobs,
+    setup_upload_routes,
+)
 from api.security import create_hmac_middleware
 from flowers_patterns import (
     FlowerKnowledgeBase,
@@ -63,6 +68,16 @@ if TYPE_CHECKING:
     from openai_client import OpenAIResponse
 
 logging.basicConfig(level=logging.INFO)
+
+
+class LoggingMetricsEmitter:
+    """Lightweight metrics sink that logs counter and timer updates."""
+
+    def increment(self, name: str, value: float = 1.0) -> None:
+        logging.debug("METRIC counter %s += %s", name, value)
+
+    def observe(self, name: str, value: float) -> None:
+        logging.debug("METRIC timer %s=%.3fms", name, value)
 
 
 def _read_version_from_changelog() -> str:
@@ -12851,6 +12866,10 @@ def create_app():
 
     uploads_config = load_uploads_config()
     storage = create_storage_from_env(supabase=bot.supabase)
+    upload_metrics = UploadMetricsRecorder(emitter=LoggingMetricsEmitter())
+    bot.upload_metrics = upload_metrics
+    app['upload_metrics'] = upload_metrics
+
     class _UploadTelegramAdapter:
         def __init__(self, bot: Bot):
             self._bot = bot
@@ -12873,6 +12892,7 @@ def create_app():
         telegram=_UploadTelegramAdapter(bot),
         openai=bot.openai,
         supabase=bot.supabase,
+        metrics=upload_metrics,
         config=uploads_config,
     )
     setup_upload_routes(

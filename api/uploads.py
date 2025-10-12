@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Protocol
+from typing import Any, ContextManager, Protocol
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
@@ -44,13 +44,25 @@ class TelegramClient(Protocol):
         ...
 
 
+class MetricsEmitter(Protocol):
+    def increment(self, name: str, value: float = 1.0) -> None:
+        ...
+
+    def observe(self, name: str, value: float) -> None:
+        ...
+
+
 @dataclass(slots=True)
 class UploadMetricsRecorder:
-    counters: dict[str, int] = field(default_factory=dict)
+    counters: dict[str, float] = field(default_factory=dict)
     timings: dict[str, list[float]] = field(default_factory=dict)
+    emitter: MetricsEmitter | None = None
 
-    def increment(self, name: str) -> None:
-        self.counters[name] = self.counters.get(name, 0) + 1
+    def increment(self, name: str, value: float = 1.0) -> None:
+        self.counters[name] = self.counters.get(name, 0.0) + value
+        if self.emitter:
+            with contextlib.suppress(Exception):
+                self.emitter.increment(name, value)
 
     @contextlib.contextmanager
     def timer(self, name: str) -> Iterator[None]:
@@ -58,8 +70,34 @@ class UploadMetricsRecorder:
         try:
             yield
         finally:
-            duration = perf_counter() - start
-            self.timings.setdefault(name, []).append(duration)
+            duration_ms = (perf_counter() - start) * 1000.0
+            self.timings.setdefault(name, []).append(duration_ms)
+            if self.emitter:
+                with contextlib.suppress(Exception):
+                    self.emitter.observe(name, duration_ms)
+
+    def measure_process(self) -> ContextManager[None]:
+        return self.timer("process_upload_ms")
+
+    def measure_exif(self) -> ContextManager[None]:
+        return self.timer("exif_ms")
+
+    def measure_vision(self) -> ContextManager[None]:
+        return self.timer("vision_ms")
+
+    def measure_telegram(self) -> ContextManager[None]:
+        return self.timer("tg_ms")
+
+    def record_asset_created(self, count: int = 1) -> None:
+        if count > 0:
+            self.increment("assets_created_total", count)
+
+    def record_process_failure(self) -> None:
+        self.increment("upload_process_fail_total")
+
+    def record_vision_tokens(self, tokens: int | None) -> None:
+        if tokens and tokens > 0:
+            self.increment("vision_tokens_total", tokens)
 
 
 @dataclass(slots=True)
@@ -624,8 +662,7 @@ def register_upload_jobs(
             logging.warning("UPLOAD job missing upload_id")
             return
 
-        metrics_recorder.increment("upload.process.attempts")
-        with metrics_recorder.timer("upload.process.duration"):
+        with metrics_recorder.measure_process():
             logging.info("UPLOAD job start upload=%s", upload_id)
             try:
                 processed_path: Path | None = None
@@ -643,8 +680,7 @@ def register_upload_jobs(
                 download = await _download_from_storage(storage, key=str(file_ref))
                 try:
                     sha256 = _compute_sha256(download.path)
-                    metrics_recorder.increment("upload.exif.attempts")
-                    with metrics_recorder.timer("upload.exif.duration"):
+                    with metrics_recorder.measure_exif():
                         (
                             mime_type,
                             width,
@@ -652,7 +688,6 @@ def register_upload_jobs(
                             exif_payload,
                             gps_payload,
                         ) = _extract_image_metadata(download.path)
-                    metrics_recorder.increment("upload.exif.success")
 
                     vision_payload: dict[str, Any] | None = None
                     if "captured_at" not in gps_payload:
@@ -673,8 +708,7 @@ def register_upload_jobs(
                         and uploads_config.openai_vision_model
                     ):
                         model = uploads_config.openai_vision_model
-                        metrics_recorder.increment("upload.vision.attempts")
-                        with metrics_recorder.timer("upload.vision.duration"):
+                        with metrics_recorder.measure_vision():
                             response = await openai.classify_image(
                                 model=model,
                                 system_prompt=VISION_SYSTEM_PROMPT,
@@ -684,7 +718,7 @@ def register_upload_jobs(
                             )
                         if isinstance(response, OpenAIResponse):
                             vision_payload = response.content
-                            metrics_recorder.increment("upload.vision.success")
+                            metrics_recorder.record_vision_tokens(response.total_tokens)
                             data.log_token_usage(
                                 model=model,
                                 prompt_tokens=response.prompt_tokens,
@@ -733,8 +767,7 @@ def register_upload_jobs(
                     )
 
                     chat_id = uploads_config.assets_channel_id
-                    metrics_recorder.increment("upload.telegram.attempts")
-                    with metrics_recorder.timer("upload.telegram.duration"):
+                    with metrics_recorder.measure_telegram():
                         telegram_response = await telegram.send_photo(
                             chat_id=chat_id,
                             photo=processed_path,
@@ -743,7 +776,6 @@ def register_upload_jobs(
                     message_id = _extract_message_id(telegram_response)
                     if message_id is None:
                         raise RuntimeError("telegram response missing message_id")
-                    metrics_recorder.increment("upload.telegram.success")
 
                     message_identifier = f"{chat_id}:{message_id}"
                     asset_id = data.create_asset(
@@ -781,7 +813,7 @@ def register_upload_jobs(
 
                 set_upload_status(conn, id=upload_id, status="done")
                 conn.commit()
-                metrics_recorder.increment("upload.process.success")
+                metrics_recorder.record_asset_created()
                 logging.info("UPLOAD job done upload=%s", upload_id)
             except Exception as exc:
                 logging.exception("UPLOAD job failed upload=%s", upload_id)
@@ -797,7 +829,7 @@ def register_upload_jobs(
                     logging.exception(
                         "UPLOAD failed to persist error status upload=%s", upload_id
                     )
-                metrics_recorder.increment("upload.process.failed")
+                metrics_recorder.record_process_failure()
                 raise
 
     queue.register_handler("process_upload", process_upload)

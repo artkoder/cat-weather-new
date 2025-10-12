@@ -268,6 +268,10 @@ async def test_process_upload_job_success_records_asset(tmp_path: Path) -> None:
     assert fetched is not None
     assert fetched.id == asset.id
 
+    assert metrics.counters.get("assets_created_total") == 1
+    assert metrics.counters.get("upload_process_fail_total", 0) == 0
+    assert "process_upload_ms" in metrics.timings
+
 
 @pytest.mark.asyncio
 async def test_process_upload_job_vision_failure_sets_failed_status(tmp_path: Path) -> None:
@@ -318,6 +322,8 @@ async def test_process_upload_job_vision_failure_sets_failed_status(tmp_path: Pa
     assert row["status"] == "failed"
     assert "vision boom" in (row["error"] or "")
     assert row["asset_id"] is None
+    assert metrics.counters.get("upload_process_fail_total") == 1
+    assert metrics.counters.get("assets_created_total", 0) == 0
 
 
 @pytest.mark.asyncio
@@ -363,6 +369,7 @@ async def test_process_upload_job_publish_failure_sets_failed_status(tmp_path: P
     assert row["status"] == "failed"
     assert "telegram down" in (row["error"] or "")
     assert row["asset_id"] is None
+    assert metrics.counters.get("upload_process_fail_total") == 1
 
 
 @pytest.mark.asyncio
@@ -432,9 +439,9 @@ async def test_process_upload_job_retry_after_failure(tmp_path: Path) -> None:
     assert row["error"] is None
     assert row["asset_id"] is not None
 
-    assert metrics.counters.get("upload.process.attempts") == 2
-    assert metrics.counters.get("upload.process.failed") == 1
-    assert metrics.counters.get("upload.process.success") == 1
+    assert metrics.counters.get("upload_process_fail_total") == 1
+    assert metrics.counters.get("assets_created_total") == 1
+    assert len(metrics.timings.get("process_upload_ms", [])) == 2
 
 
 @pytest.mark.asyncio
@@ -476,7 +483,8 @@ async def test_register_upload_jobs_integration_flow(tmp_path: Path) -> None:
         await queue.stop()
 
     assert len(telegram.calls) == 1
-    assert metrics.counters.get("upload.process.success") == 1
+    assert metrics.counters.get("assets_created_total") == 1
+    assert metrics.counters.get("upload_process_fail_total", 0) == 0
     job_row = conn.execute(
         "SELECT status, last_error FROM jobs_queue WHERE name='process_upload'"
     ).fetchone()

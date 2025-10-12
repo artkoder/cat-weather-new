@@ -405,9 +405,10 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
         assert telegram_call["photo"].exists()
         assert "Новая загрузка" in (telegram_call["caption"] or "")
         assert env.metrics is not None
-        assert env.metrics.counters.get("upload.process.success") == 1
-        assert "upload.process.duration" in env.metrics.timings
-        assert env.metrics.counters.get("upload.vision.attempts", 0) == 0
+        assert env.metrics.counters.get("assets_created_total") == 1
+        assert env.metrics.counters.get("upload_process_fail_total", 0) == 0
+        assert "process_upload_ms" in env.metrics.timings
+        assert env.metrics.counters.get("vision_tokens_total", 0) == 0
     finally:
         await env.close()
 
@@ -621,10 +622,11 @@ async def test_upload_processing_with_vision(tmp_path: Path):
         assert usage_row["model"] == "vision-test"
         assert usage_row["total_tokens"] == 17
         assert env.metrics is not None
-        assert env.metrics.counters.get("upload.process.success") == 1
-        assert env.metrics.counters.get("upload.vision.success") == 1
-        assert "upload.vision.duration" in env.metrics.timings
-        assert env.metrics.counters.get("upload.telegram.success") == 1
+        assert env.metrics.counters.get("assets_created_total") == 1
+        assert env.metrics.counters.get("vision_tokens_total") == 17
+        assert env.metrics.counters.get("upload_process_fail_total", 0) == 0
+        assert "vision_ms" in env.metrics.timings
+        assert "tg_ms" in env.metrics.timings
         assert env.telegram is not None
         assert env.telegram.calls
         caption = env.telegram.calls[0]["caption"] or ""

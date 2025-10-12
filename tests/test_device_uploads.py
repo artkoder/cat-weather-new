@@ -106,8 +106,10 @@ def test_upload_status_transitions(conn: sqlite3.Connection) -> None:
     )
     set_upload_status(conn, id=upload_id, status="processing")
     set_upload_status(conn, id=upload_id, status="done")
-    with pytest.raises(ValueError):
-        set_upload_status(conn, id=upload_id, status="processing")
+    set_upload_status(conn, id=upload_id, status="processing")
+    row = _get_upload(conn, upload_id)
+    assert row["status"] == "processing"
+    assert row["error"] is None
     set_upload_status(conn, id=upload_id, status="done")
 
     failing_id = insert_upload(
@@ -121,6 +123,10 @@ def test_upload_status_transitions(conn: sqlite3.Connection) -> None:
     row = _get_upload(conn, failing_id)
     assert row["status"] == "failed"
     assert row["error"] == "boom"
+    set_upload_status(conn, id=failing_id, status="processing")
+    row = _get_upload(conn, failing_id)
+    assert row["status"] == "processing"
+    assert row["error"] is None
     with pytest.raises(ValueError):
         set_upload_status(conn, id=failing_id, status="queued")
 

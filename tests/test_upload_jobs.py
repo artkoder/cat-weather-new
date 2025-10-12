@@ -104,6 +104,19 @@ class FailingTelegram(DummyTelegram):
         raise self.error
 
 
+class FlakyTelegram(DummyTelegram):
+    def __init__(self, *, failures: int = 1, error: Exception | None = None) -> None:
+        super().__init__()
+        self.failures = failures
+        self.error = error or RuntimeError("transient error")
+
+    async def send_photo(self, *, chat_id: int, photo: Path, caption: str | None = None) -> dict[str, object]:
+        if self.failures > 0:
+            self.failures -= 1
+            raise self.error
+        return await super().send_photo(chat_id=chat_id, photo=photo, caption=caption)
+
+
 class DummyOpenAI:
     def __init__(self, *, error: Exception | None = None) -> None:
         self.error = error
@@ -350,6 +363,78 @@ async def test_process_upload_job_publish_failure_sets_failed_status(tmp_path: P
     assert row["status"] == "failed"
     assert "telegram down" in (row["error"] or "")
     assert row["asset_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_process_upload_job_retry_after_failure(tmp_path: Path) -> None:
+    conn = _setup_connection()
+    data = DataAccess(conn)
+    image_path = _create_sample_image(tmp_path / "retry.jpg")
+    file_key = "retry-key"
+    storage = DummyStorage({file_key: image_path})
+    telegram = FlakyTelegram(failures=1, error=RuntimeError("telegram glitch"))
+    metrics = UploadMetricsRecorder()
+    queue = JobQueue(conn)
+    config = UploadsConfig(assets_channel_id=-10005, vision_enabled=False)
+    register_upload_jobs(
+        queue,
+        conn,
+        storage=storage,
+        data=data,
+        telegram=telegram,
+        metrics=metrics,
+        config=config,
+    )
+
+    upload_id = _prepare_upload(conn, file_key=file_key)
+    first_job = Job(
+        id=4,
+        name="process_upload",
+        payload={"upload_id": upload_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    with pytest.raises(RuntimeError, match="telegram glitch"):
+        await queue.handlers["process_upload"](first_job)
+
+    row = conn.execute(
+        "SELECT status, error, asset_id FROM uploads WHERE id=?",
+        (upload_id,),
+    ).fetchone()
+    assert row["status"] == "failed"
+    assert "telegram glitch" in (row["error"] or "")
+    assert row["asset_id"] is None
+
+    retry_job = Job(
+        id=5,
+        name="process_upload",
+        payload={"upload_id": upload_id},
+        status="queued",
+        attempts=1,
+        available_at=None,
+        last_error="telegram glitch",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await queue.handlers["process_upload"](retry_job)
+
+    row = conn.execute(
+        "SELECT status, error, asset_id FROM uploads WHERE id=?",
+        (upload_id,),
+    ).fetchone()
+    assert row["status"] == "done"
+    assert row["error"] is None
+    assert row["asset_id"] is not None
+
+    assert metrics.counters.get("upload.process.attempts") == 2
+    assert metrics.counters.get("upload.process.failed") == 1
+    assert metrics.counters.get("upload.process.success") == 1
 
 
 @pytest.mark.asyncio

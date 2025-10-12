@@ -235,6 +235,8 @@ class Asset:
     @property
     def file_id(self) -> str | None:
         value = self._resolve("file_id")
+        if value is None and self.file_ref is not None:
+            return str(self.file_ref)
         return str(value) if value is not None else None
 
     @property

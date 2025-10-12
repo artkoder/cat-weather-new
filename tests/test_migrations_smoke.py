@@ -32,14 +32,19 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
         conn.row_factory = sqlite3.Row
         apply_migrations(conn)
         tables = _table_names(conn)
-        assert {"devices", "pairing_tokens", "nonces", "uploads"}.issubset(tables)
+        expected_tables = {"devices", "pairing_tokens", "nonces", "uploads", "assets"}
+        assert expected_tables.issubset(tables)
         upload_indexes = _index_names(conn, "uploads")
         assert "uq_uploads_device_idempotency" in upload_indexes
         assert "idx_uploads_device" in upload_indexes
         assert "idx_uploads_status" in upload_indexes
+        asset_indexes = _index_names(conn, "assets")
+        assert "idx_assets_upload_id" in asset_indexes
+        assert "idx_assets_created_at" in asset_indexes
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         apply_migrations(conn)
         tables = _table_names(conn)
-        assert {"devices", "pairing_tokens", "nonces", "uploads"}.issubset(tables)
+        expected_tables = {"devices", "pairing_tokens", "nonces", "uploads", "assets"}
+        assert expected_tables.issubset(tables)

@@ -9,7 +9,9 @@ Closes #123.
 
 ## API Contract
 
-The backend consumes the public API contract via the `api/contract` git submodule pinned to the release tag `v1.0.0`.
+The backend consumes the public API contract via the `api/contract` git submodule pinned to the release tag `v1.0.0`. The
+canonical OpenAPI document lives at `api/contract/openapi.yaml`; keep the repository free from alternative copies so the
+contract stays single-sourced.
 
 ### Bumping the contract version
 
@@ -21,6 +23,16 @@ The backend consumes the public API contract via the `api/contract` git submodul
 6. Stage the updated submodule pointer: `git add api/contract`.
 7. Update any documentation or CI checks that reference the previous tag.
 8. Commit the change with a message that includes the new contract version.
+
+### Working with the OpenAPI spec
+
+- **Render HTML docs**. Bundle the latest contract into `api/docs/index.html` with
+  `npx @redocly/cli build-docs api/contract/openapi.yaml -o api/docs/index.html` and open the resulting file locally or serve
+  it from `/api/docs`. The HTML shell references the submodule path directly, so no copy of the YAML is required.
+- **Lint**. Run `npx @redocly/cli lint api/contract/openapi.yaml` (or an equivalent Spectral command) to validate changes before
+  publishing a new contract version.
+- **CI guard**. The automation fails fast if a local OpenAPI spec appears outside `api/contract/`; adjust CI only when the
+  contract repository layout changes.
 
 - **Asset ingestion**. The bot listens to the dedicated recognition channel for new submissions while weather-ready assets live in a separate storage channel. Every photo must contain GPS EXIF data so the bot can resolve the city through Nominatim; authors without coordinates receive an automatic reminder. The pipeline also persists the original EXIF capture timestamp, reuses it when inferring seasonal context and surfaces the recorded date inside the operator info block.
 - **Recognition pipeline**. After ingestion the asynchronous job queue schedules a `vision` task that classifies the photo with OpenAI `gpt-4o-mini`, storing the rubric category alongside architectural style, framing notes, seasonal context, detailed weather and detected flowers while respecting per-model daily token quotas configured via environment variables. Before each OpenAI call the bot strictifies the JSON schema—enforcing `required` lists, propagating `null`-permitted types and setting `additionalProperties: false`—so `/v1/responses` stays happy when `strict: true` is enabled. Operators should expect nullable values in payload fields that were previously plain primitives. Document uploads are automatically rendered into photo assets before they reach the publishing queue.

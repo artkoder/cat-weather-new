@@ -1,0 +1,22 @@
+# .github/workflows/openapi-guard.yml
+name: Guard OpenAPI source of truth
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+jobs:
+  forbid-local-openapi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+      - name: Ensure specs live only in api/contract
+        run: |
+          matches="$(git ls-files | grep -E '(^|/)(api|src)/.*openapi.*\.ya?ml$' | grep -v '^api/contract/' || true)"
+          if [ -n "$matches" ]; then
+            echo "::error:: local OpenAPI spec detected outside api/contract/"
+            echo "$matches"
+            exit 1
+          fi

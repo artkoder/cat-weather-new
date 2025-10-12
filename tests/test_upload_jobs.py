@@ -261,6 +261,7 @@ async def test_process_upload_job_success_records_asset(tmp_path: Path) -> None:
     assert asset.message_id == telegram.calls[0]["message_id"]
     assert asset.payload.get("tg_chat_id") == config.assets_channel_id
     assert asset.payload.get("message_id") == telegram.calls[0]["message_id"]
+    assert asset.source == "mobile"
 
     fetched = data.get_asset_by_message(
         config.assets_channel_id, telegram.calls[0]["message_id"]

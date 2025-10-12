@@ -63,6 +63,7 @@ from api.rate_limit import TokenBucketLimiter, create_rate_limit_middleware
 from observability import (
     observe_health_latency,
     observability_middleware,
+    record_mobile_photo_ingested,
     record_rate_limit_drop,
     setup_logging,
     metrics_handler,
@@ -3770,6 +3771,8 @@ class Bot:
             self._remove_file(cleanup_path)
             if asset.local_path and asset.local_path != cleanup_path:
                 self._remove_file(asset.local_path)
+        if asset.source == "mobile":
+            record_mobile_photo_ingested()
         tz_offset = self.get_tz_offset(asset.author_user_id) if asset.author_user_id else TZ_OFFSET
         vision_job = self.jobs.enqueue(
             "vision", {"asset_id": asset_id, "tz_offset": tz_offset}
@@ -5186,6 +5189,33 @@ class Bot:
                 code,
                 expires_at,
                 existing=False,
+            )
+            return
+
+        if text.startswith('/mobile_stats'):
+            if not self.is_authorized(user_id):
+                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Not authorized'})
+                return
+            stats = self.data.get_mobile_upload_stats()
+            lines = [
+                '📱 Mobile uploads',
+                f'Total: {stats.total}',
+                f"Today: {stats.today}",
+                f"7d: {stats.seven_days}",
+                f"30d: {stats.thirty_days}",
+            ]
+            if stats.top_devices:
+                lines.append('')
+                lines.append('Top devices:')
+                for device in stats.top_devices:
+                    label = device.name or device.device_id
+                    lines.append(f"• {label} — {device.count}")
+            await self.api_request(
+                'sendMessage',
+                {
+                    'chat_id': user_id,
+                    'text': '\n'.join(lines),
+                },
             )
             return
 

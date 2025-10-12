@@ -38,6 +38,7 @@ class Asset:
     tg_message_id: str | None
     payload_json: str | None
     created_at: str
+    source: str | None
     exif: dict[str, Any] | None = None
     labels: Any | None = None
     payload: dict[str, Any] = field(default_factory=dict)
@@ -51,6 +52,7 @@ class Asset:
     _vision_caption: str | None = None
     _local_path: str | None = None
     _rubric_id: int | None = None
+
 
     # ------------------------------------------------------------------
     # Compatibility helpers
@@ -424,6 +426,22 @@ class Asset:
 
 
 @dataclass
+class DeviceUploadStats:
+    device_id: str
+    name: str | None
+    count: int
+
+
+@dataclass(frozen=True)
+class MobileUploadStats:
+    total: int
+    today: int
+    seven_days: int
+    thirty_days: int
+    top_devices: list[DeviceUploadStats]
+
+
+@dataclass
 class WeatherJob:
     id: int
     channel_id: int
@@ -531,6 +549,7 @@ class DataAccess:
         labels: dict[str, Any] | None = None,
         tg_message_id: str | int | None = None,
         tg_chat_id: int | None = None,
+        source: str = "mobile",
     ) -> str:
         """Create a new asset entry tied to an upload and return its UUID."""
 
@@ -583,8 +602,9 @@ class DataAccess:
                 labels_json,
                 tg_message_id,
                 payload_json,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at,
+                source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -599,6 +619,7 @@ class DataAccess:
                 identifier,
                 payload_json,
                 now,
+                source,
             ),
         )
         self.conn.commit()
@@ -617,6 +638,7 @@ class DataAccess:
         labels: dict[str, Any] | None = None,
         tg_message_id: str | int | None = None,
         tg_chat_id: int | None = None,
+        source: str = "mobile",
     ) -> str:
         """Compatibility wrapper for legacy callers."""
 
@@ -631,6 +653,88 @@ class DataAccess:
             labels=labels,
             tg_message_id=tg_message_id,
             tg_chat_id=tg_chat_id,
+            source=source,
+        )
+
+    def get_mobile_upload_stats(self, *, limit: int = 5) -> MobileUploadStats:
+        """Return aggregate counters for mobile uploads."""
+
+        counters = self.conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN datetime(created_at) >= datetime('now', 'start of day') THEN 1 ELSE 0 END) AS today,
+                SUM(CASE WHEN datetime(created_at) >= datetime('now', '-6 days', 'start of day') THEN 1 ELSE 0 END) AS seven_days,
+                SUM(CASE WHEN datetime(created_at) >= datetime('now', '-29 days', 'start of day') THEN 1 ELSE 0 END) AS thirty_days
+            FROM uploads
+            WHERE source='mobile' AND status='done'
+            """
+        ).fetchone()
+
+        def _value(row: sqlite3.Row | tuple[Any, ...] | None, key: str | int) -> int:
+            if not row:
+                return 0
+            try:
+                if isinstance(row, sqlite3.Row):
+                    raw = row[key]  # type: ignore[index]
+                else:
+                    raw = row[key]  # type: ignore[index]
+            except (KeyError, TypeError, IndexError):
+                return 0
+            if raw is None:
+                return 0
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return 0
+
+        total = _value(counters, "total")
+        today = _value(counters, "today")
+        seven = _value(counters, "seven_days")
+        thirty = _value(counters, "thirty_days")
+
+        device_rows = self.conn.execute(
+            """
+            SELECT u.device_id, d.name, COUNT(*) AS uploads
+            FROM uploads u
+            LEFT JOIN devices d ON d.id = u.device_id
+            WHERE u.source='mobile' AND u.status='done'
+            GROUP BY u.device_id
+            ORDER BY uploads DESC, u.device_id
+            LIMIT ?
+            """,
+            (max(0, int(limit)),),
+        ).fetchall()
+
+        devices: list[DeviceUploadStats] = []
+        for row in device_rows:
+            device_id = str(row["device_id"]) if isinstance(row, sqlite3.Row) else str(row[0])
+            name_value: str | None
+            if isinstance(row, sqlite3.Row):
+                raw_name = row["name"]
+                uploads_count = row["uploads"]
+            else:
+                raw_name = row[1]
+                uploads_count = row[2]
+            name_value = str(raw_name) if raw_name is not None else None
+            try:
+                count_value = int(uploads_count)
+            except (TypeError, ValueError):
+                count_value = 0
+            devices.append(
+                DeviceUploadStats(
+                    device_id=device_id,
+                    name=name_value,
+                    count=count_value,
+                )
+            )
+
+        return MobileUploadStats(
+            total=total,
+            today=today,
+            seven_days=seven,
+            thirty_days=thirty,
+            top_devices=devices,
         )
 
     @staticmethod
@@ -775,6 +879,7 @@ class DataAccess:
         categories: Iterable[str] | None = None,
         rubric_id: int | None = None,
         origin: str = "weather",
+        source: str = "telegram",
     ) -> str:
         """Insert or update asset metadata."""
 
@@ -906,8 +1011,9 @@ class DataAccess:
                 labels_json,
                 tg_message_id,
                 payload_json,
-                created_at
-            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at,
+                source
+            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -921,6 +1027,7 @@ class DataAccess:
                 tg_identifier,
                 payload_json,
                 now,
+                source,
             ),
         )
         self.conn.commit()
@@ -1264,6 +1371,11 @@ class DataAccess:
             tg_message_id=tg_message_id,
             payload_json=payload_json_text,
             created_at=created_at,
+            source=(
+                str(row_dict.get("source"))
+                if row_dict.get("source") is not None
+                else None
+            ),
             exif=exif_data,
             labels=labels_data,
             payload=payload_data,
@@ -2508,6 +2620,7 @@ def insert_upload(
     device_id: str,
     idempotency_key: str,
     file_ref: str | None = None,
+    source: str = "mobile",
 ) -> str:
     """Insert an upload row respecting idempotency."""
 
@@ -2523,12 +2636,13 @@ def insert_upload(
                 error,
                 file_ref,
                 asset_id,
+                source,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, 'queued', NULL, ?, NULL, ?, ?)
+            VALUES (?, ?, ?, 'queued', NULL, ?, NULL, ?, ?, ?)
             """,
-            (id, device_id, idempotency_key, file_ref, now, now),
+            (id, device_id, idempotency_key, file_ref, source, now, now),
         )
         return id
     except sqlite3.IntegrityError as exc:
@@ -2663,7 +2777,7 @@ def fetch_upload_record(
 ) -> dict[str, Any] | None:
     cur = conn.execute(
         """
-        SELECT id, device_id, status, error, file_ref, asset_id, created_at, updated_at
+        SELECT id, device_id, status, error, file_ref, asset_id, source, created_at, updated_at
         FROM uploads
         WHERE id=?
         """,
@@ -2680,6 +2794,7 @@ def fetch_upload_record(
             "error": row["error"],
             "file_ref": row["file_ref"],
             "asset_id": str(row["asset_id"]) if row["asset_id"] is not None else None,
+            "source": str(row["source"]) if row["source"] is not None else None,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -2690,6 +2805,7 @@ def fetch_upload_record(
         "error": row[3],
         "file_ref": row[4],
         "asset_id": str(row[5]) if row[5] is not None else None,
-        "created_at": row[6],
-        "updated_at": row[7],
+        "source": str(row[6]) if row[6] is not None else None,
+        "created_at": row[7],
+        "updated_at": row[8],
     }

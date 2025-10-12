@@ -279,6 +279,10 @@ _UPLOADS_TOTAL = Counter(
     "Upload lifecycle events",
     labelnames=("action",),
 )
+_MOBILE_PHOTOS_TOTAL = Counter(
+    "mobile_photos_total",
+    "Total mobile photos ingested",
+)
 _JOBS_PROCESSED_TOTAL = Counter(
     "jobs_processed_total",
     "Jobs processed outcomes",
@@ -437,6 +441,10 @@ def record_job_processed(job: str, status: str) -> None:
     _JOBS_PROCESSED_TOTAL.labels(job=job, status=status).inc()
 
 
+def record_mobile_photo_ingested() -> None:
+    _MOBILE_PHOTOS_TOTAL.inc()
+
+
 def set_queue_depth(queue: str, depth: int) -> None:
     _QUEUE_DEPTH.labels(queue=queue).set(depth)
 
@@ -462,6 +470,7 @@ __all__ = [
     "record_rate_limit_drop",
     "record_hmac_failure",
     "record_job_processed",
+    "record_mobile_photo_ingested",
     "record_storage_put_bytes",
     "record_upload_created",
     "record_upload_status_change",

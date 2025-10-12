@@ -12836,7 +12836,29 @@ def create_app():
 
     uploads_config = load_uploads_config()
     storage = create_storage_from_env(supabase=bot.supabase)
-    register_upload_jobs(bot.jobs, bot.db)
+    class _UploadTelegramAdapter:
+        def __init__(self, bot: Bot):
+            self._bot = bot
+
+        async def send_photo(
+            self,
+            *,
+            chat_id: int,
+            photo: Path,
+            caption: str | None = None,
+        ) -> dict[str, Any]:
+            response, _ = await self._bot._publish_as_photo(chat_id, str(photo), caption)
+            return response or {}
+
+    register_upload_jobs(
+        bot.jobs,
+        bot.db,
+        storage=storage,
+        data=bot.data,
+        telegram=_UploadTelegramAdapter(bot),
+        openai=bot.openai,
+        supabase=bot.supabase,
+    )
     setup_upload_routes(
         app,
         storage=storage,

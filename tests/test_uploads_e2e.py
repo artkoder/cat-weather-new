@@ -3,16 +3,23 @@ from __future__ import annotations
 import asyncio
 import hmac
 import hashlib
+import asyncio
+import hashlib
+import hmac
+import json
+import os
 import sqlite3
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from PIL import Image
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -24,14 +31,75 @@ from api.security import (
     _normalize_path,
     create_hmac_middleware,
 )
-from api.uploads import UploadsConfig, register_upload_jobs, setup_upload_routes
-from data_access import create_device, insert_upload, set_upload_status
+from api.uploads import (
+    UploadMetricsRecorder,
+    UploadsConfig,
+    register_upload_jobs,
+    setup_upload_routes,
+)
+from data_access import DataAccess, create_device, insert_upload, set_upload_status
 from main import SlidingWindowRateLimiter, apply_migrations
 from jobs import JobQueue
+from openai_client import OpenAIResponse
 from storage import LocalStorage
 
 
 DEVICE_SECRET = "ab" * 32
+
+
+class FakeTelegramClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.next_message_id = 1000
+
+    async def send_photo(
+        self,
+        *,
+        chat_id: int,
+        photo: Path,
+        caption: str | None = None,
+    ) -> dict[str, Any]:
+        call = {
+            "chat_id": chat_id,
+            "photo": Path(photo),
+            "caption": caption,
+            "message_id": self.next_message_id,
+        }
+        self.calls.append(call)
+        message_id = self.next_message_id
+        self.next_message_id += 1
+        return {"message_id": message_id, "chat": {"id": chat_id}}
+
+
+class FakeOpenAIClient:
+    def __init__(self, response: OpenAIResponse | None = None) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
+
+    async def classify_image(self, **kwargs: Any) -> OpenAIResponse | None:
+        self.calls.append(kwargs)
+        return self.response
+
+
+class FakeSupabaseClient:
+    def __init__(self, succeed: bool = True) -> None:
+        self.succeed = succeed
+        self.calls: list[dict[str, Any]] = []
+
+    async def insert_token_usage(self, **kwargs: Any) -> tuple[bool, dict[str, Any], str | None]:
+        self.calls.append(kwargs)
+        if self.succeed:
+            return True, kwargs, None
+        return False, kwargs, "error"
+
+
+def _make_test_image_bytes(*, size: tuple[int, int] = (32, 24), color: tuple[int, int, int] = (255, 0, 0)) -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", size, color=color).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+DEFAULT_IMAGE_BYTES = _make_test_image_bytes()
 
 
 def _sign(
@@ -69,25 +137,71 @@ class UploadTestEnv:
     server: TestServer | None = None
     storage: LocalStorage | None = None
     config: UploadsConfig | None = None
+    data_access: DataAccess | None = None
+    telegram: FakeTelegramClient | None = None
+    metrics: UploadMetricsRecorder | None = None
+    openai_client: FakeOpenAIClient | None = None
+    supabase_client: FakeSupabaseClient | None = None
+    assets_channel_id: int = -100123
+    _env_backup: dict[str, str | None] = field(default_factory=dict)
 
-    async def start(self, *, max_upload_mb: float = 10.0) -> "UploadTestEnv":
+    async def start(
+        self,
+        *,
+        max_upload_mb: float = 10.0,
+        assets_channel_id: int = -100123,
+        telegram_client: FakeTelegramClient | None = None,
+        openai_client: FakeOpenAIClient | None = None,
+        supabase_client: FakeSupabaseClient | None = None,
+        metrics: UploadMetricsRecorder | None = None,
+        vision_enabled: bool | None = None,
+        vision_model: str = "test-vision",
+    ) -> "UploadTestEnv":
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         apply_migrations(conn)
         self.conn = conn
         jobs = JobQueue(conn, concurrency=1)
-        register_upload_jobs(jobs, conn)
+        self.data_access = DataAccess(conn)
+        self.telegram = telegram_client or FakeTelegramClient()
+        self.metrics = metrics or UploadMetricsRecorder()
+        self.openai_client = openai_client
+        self.supabase_client = supabase_client
+        vision_flag = vision_enabled if vision_enabled is not None else openai_client is not None
+        self._env_backup = {
+            "ASSETS_CHANNEL_ID": os.getenv("ASSETS_CHANNEL_ID"),
+            "VISION_ENABLED": os.getenv("VISION_ENABLED"),
+            "OPENAI_VISION_MODEL": os.getenv("OPENAI_VISION_MODEL"),
+        }
+        os.environ["ASSETS_CHANNEL_ID"] = str(assets_channel_id)
+        if vision_flag:
+            os.environ["VISION_ENABLED"] = "1"
+            os.environ["OPENAI_VISION_MODEL"] = vision_model
+        else:
+            os.environ["VISION_ENABLED"] = "0"
+            os.environ.pop("OPENAI_VISION_MODEL", None)
+        self.assets_channel_id = assets_channel_id
+        storage = LocalStorage(base_path=self.root / "uploads")
+        self.storage = storage
+        register_upload_jobs(
+            jobs,
+            conn,
+            storage=storage,
+            data=self.data_access,
+            telegram=self.telegram,
+            openai=self.openai_client,
+            supabase=self.supabase_client,
+            metrics=self.metrics,
+        )
         await jobs.start()
         self.jobs = jobs
 
         app = web.Application(middlewares=[create_hmac_middleware(conn)])
         app['upload_rate_limiter'] = SlidingWindowRateLimiter(20, 60)
         app['upload_status_rate_limiter'] = SlidingWindowRateLimiter(5, 1)
-        storage = LocalStorage(base_path=self.root / "uploads")
         config = UploadsConfig(max_upload_mb=max_upload_mb)
         setup_upload_routes(app, storage=storage, conn=conn, jobs=jobs, config=config)
-        self.storage = storage
         self.config = config
 
         server = TestServer(app)
@@ -107,6 +221,12 @@ class UploadTestEnv:
             await self.jobs.stop()
         if self.conn:
             self.conn.close()
+        for key, value in self._env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self._env_backup.clear()
 
     def create_device(self, *, device_id: str, secret: str = DEVICE_SECRET) -> None:
         assert self.conn is not None
@@ -209,7 +329,8 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
     try:
         env.create_device(device_id="device-1")
 
-        body, boundary = _multipart_body(b"hello cat")
+        image_bytes = DEFAULT_IMAGE_BYTES
+        body, boundary = _multipart_body(image_bytes)
         status, payload = await _signed_post(
             env,
             path="/v1/uploads",
@@ -243,6 +364,30 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
 
         stored_files = list((env.root / "uploads").rglob("*"))
         assert any(path.is_file() for path in stored_files)
+        assert env.conn is not None
+        row = env.conn.execute(
+            "SELECT * FROM assets WHERE upload_id=?",
+            (upload_id,),
+        ).fetchone()
+        assert row is not None
+        expected_sha = hashlib.sha256(image_bytes).hexdigest()
+        assert row["sha256"] == expected_sha
+        assert row["content_type"] == "image/jpeg"
+        assert row["width"] == 32
+        assert row["height"] == 24
+        assert row["labels_json"] is None
+        assert row["exif_json"] is None
+        assert env.telegram is not None
+        assert env.telegram.calls
+        telegram_call = env.telegram.calls[0]
+        assert row["tg_message_id"] == str(telegram_call["message_id"])
+        assert telegram_call["chat_id"] == env.assets_channel_id
+        assert telegram_call["photo"].exists()
+        assert "Новая загрузка" in (telegram_call["caption"] or "")
+        assert env.metrics is not None
+        assert env.metrics.counters.get("upload.process.success") == 1
+        assert "upload.process.duration" in env.metrics.timings
+        assert env.metrics.counters.get("upload.vision.attempts", 0) == 0
     finally:
         await env.close()
 
@@ -254,7 +399,7 @@ async def test_uploads_idempotency_returns_same_id(tmp_path: Path):
     try:
         env.create_device(device_id="device-1")
 
-        body, boundary = _multipart_body(b"meow")
+        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
         status1, payload1 = await _signed_post(
             env,
             path="/v1/uploads",
@@ -314,7 +459,7 @@ async def test_upload_status_for_other_device_not_found(tmp_path: Path):
         env.create_device(device_id="device-1")
         env.create_device(device_id="device-2", secret="cd" * 32)
 
-        body, boundary = _multipart_body(b"cat")
+        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
         status, payload = await _signed_post(
             env,
             path="/v1/uploads",
@@ -365,5 +510,93 @@ async def test_upload_status_returns_error_for_failed_upload(tmp_path: Path):
         assert status_resp == 200
         assert payload["status"] == "failed"
         assert payload["error"] == "boom"
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_upload_processing_with_vision(tmp_path: Path):
+    env = UploadTestEnv(tmp_path)
+    vision_response = OpenAIResponse(
+        content={"caption": "Красный цветок", "categories": ["flower", "outdoor"]},
+        usage={
+            "prompt_tokens": 12,
+            "completion_tokens": 5,
+            "total_tokens": 17,
+            "request_id": "req-vision",
+            "endpoint": "/v1/responses",
+        },
+        meta=None,
+    )
+    openai_client = FakeOpenAIClient(vision_response)
+    supabase_client = FakeSupabaseClient()
+    await env.start(
+        openai_client=openai_client,
+        supabase_client=supabase_client,
+        vision_enabled=True,
+        vision_model="vision-test",
+    )
+    try:
+        env.create_device(device_id="device-vision")
+
+        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
+        status, payload = await _signed_post(
+            env,
+            path="/v1/uploads",
+            body=body,
+            boundary=boundary,
+            device_id="device-vision",
+            secret=DEVICE_SECRET,
+            idempotency_key="idem-vision",
+        )
+        assert status == 201
+        upload_id = payload["id"]
+
+        deadline = time.time() + 5
+        final_payload: dict[str, Any] | None = None
+        while time.time() < deadline:
+            status_resp, status_payload = await _signed_get(
+                env,
+                path=f"/v1/uploads/{upload_id}/status",
+                device_id="device-vision",
+                secret=DEVICE_SECRET,
+            )
+            assert status_resp == 200
+            if status_payload.get("status") in {"done", "failed"}:
+                final_payload = status_payload
+                break
+            await asyncio.sleep(0.2)
+        assert final_payload is not None
+        assert final_payload["status"] == "done"
+
+        assert env.conn is not None
+        asset_row = env.conn.execute(
+            "SELECT labels_json, tg_message_id FROM assets WHERE upload_id=?",
+            (upload_id,),
+        ).fetchone()
+        assert asset_row is not None
+        labels = json.loads(asset_row["labels_json"])
+        assert labels.get("caption") == "Красный цветок"
+        assert "flower" in labels.get("categories", [])
+        assert asset_row["tg_message_id"] == str(env.telegram.calls[0]["message_id"])
+        usage_row = env.conn.execute("SELECT model, total_tokens FROM token_usage").fetchone()
+        assert usage_row is not None
+        assert usage_row["model"] == "vision-test"
+        assert usage_row["total_tokens"] == 17
+        assert env.metrics is not None
+        assert env.metrics.counters.get("upload.process.success") == 1
+        assert env.metrics.counters.get("upload.vision.success") == 1
+        assert "upload.vision.duration" in env.metrics.timings
+        assert env.metrics.counters.get("upload.telegram.success") == 1
+        assert env.telegram is not None
+        assert env.telegram.calls
+        caption = env.telegram.calls[0]["caption"] or ""
+        assert "Категории" in caption
+        assert openai_client.calls
+        assert openai_client.calls[0]["model"] == "vision-test"
+        assert supabase_client.calls
+        supabase_meta = supabase_client.calls[0]["meta"]
+        assert supabase_meta["upload_id"] == upload_id
+        assert supabase_client.calls[0]["model"] == "vision-test"
     finally:
         await env.close()

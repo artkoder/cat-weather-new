@@ -115,6 +115,68 @@ class DataAccess:
         self.conn = connection
         self.conn.row_factory = sqlite3.Row
 
+    def insert_uploaded_asset(
+        self,
+        *,
+        upload_id: str,
+        file_ref: str,
+        content_type: str | None,
+        sha256: str,
+        width: int | None,
+        height: int | None,
+        exif: dict[str, Any] | None = None,
+        labels: dict[str, Any] | None = None,
+        tg_message_id: int | None = None,
+    ) -> str:
+        """Upsert an asset row produced from a device upload."""
+
+        now = datetime.utcnow().isoformat()
+        exif_json = json.dumps(exif) if exif else None
+        labels_json = json.dumps(labels) if labels else None
+        tg_id_value = str(tg_message_id) if tg_message_id is not None else None
+        self.conn.execute(
+            """
+            INSERT INTO assets (
+                id,
+                upload_id,
+                file_ref,
+                content_type,
+                sha256,
+                width,
+                height,
+                exif_json,
+                labels_json,
+                tg_message_id,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                upload_id=excluded.upload_id,
+                file_ref=excluded.file_ref,
+                content_type=excluded.content_type,
+                sha256=excluded.sha256,
+                width=excluded.width,
+                height=excluded.height,
+                exif_json=excluded.exif_json,
+                labels_json=excluded.labels_json,
+                tg_message_id=excluded.tg_message_id
+            """,
+            (
+                upload_id,
+                upload_id,
+                file_ref,
+                content_type,
+                sha256,
+                width,
+                height,
+                exif_json,
+                labels_json,
+                tg_id_value,
+                now,
+            ),
+        )
+        self.conn.commit()
+        return upload_id
+
     @staticmethod
     def _serialize_categories(hashtags: str | None, categories: Iterable[str] | None) -> str:
         if categories is not None:
@@ -1752,3 +1814,38 @@ def set_upload_status(
             "UPDATE uploads SET status=?, error=NULL, updated_at=? WHERE id=?",
             (status, now, id),
         )
+
+
+def fetch_upload_record(
+    conn: sqlite3.Connection, *, upload_id: str
+) -> dict[str, Any] | None:
+    cur = conn.execute(
+        """
+        SELECT id, device_id, status, error, file_ref, created_at, updated_at
+        FROM uploads
+        WHERE id=?
+        """,
+        (upload_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    if isinstance(row, sqlite3.Row):
+        return {
+            "id": str(row["id"]),
+            "device_id": str(row["device_id"]),
+            "status": str(row["status"]),
+            "error": row["error"],
+            "file_ref": row["file_ref"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    return {
+        "id": str(row[0]),
+        "device_id": str(row[1]),
+        "status": str(row[2]),
+        "error": row[3],
+        "file_ref": row[4],
+        "created_at": row[5],
+        "updated_at": row[6],
+    }

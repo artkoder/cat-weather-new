@@ -1,19 +1,319 @@
 from __future__ import annotations
 
-import asyncio
+import contextlib
 import hashlib
+import json
 import logging
 import os
-from dataclasses import dataclass
+import tempfile
+from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import AsyncIterator
+from pathlib import Path
+from time import perf_counter
+from typing import Any, Protocol
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
+import httpx
 from aiohttp import web
+from PIL import ExifTags, Image, ImageOps
 
-from data_access import get_upload, insert_upload, set_upload_status
+from data_access import (
+    DataAccess,
+    fetch_upload_record,
+    get_upload,
+    insert_upload,
+    set_upload_status,
+)
 from jobs import Job, JobQueue
+from openai_client import OpenAIClient, OpenAIResponse
 from storage import Storage
+from supabase_client import SupabaseClient
+
+
+class TelegramClient(Protocol):
+    async def send_photo(
+        self,
+        *,
+        chat_id: int,
+        photo: Path,
+        caption: str | None = None,
+    ) -> Any:
+        ...
+
+
+@dataclass(slots=True)
+class UploadMetricsRecorder:
+    counters: dict[str, int] = field(default_factory=dict)
+    timings: dict[str, list[float]] = field(default_factory=dict)
+
+    def increment(self, name: str) -> None:
+        self.counters[name] = self.counters.get(name, 0) + 1
+
+    @contextlib.contextmanager
+    def timer(self, name: str) -> Iterator[None]:
+        start = perf_counter()
+        try:
+            yield
+        finally:
+            duration = perf_counter() - start
+            self.timings.setdefault(name, []).append(duration)
+
+
+@dataclass(slots=True)
+class UploadJobDependencies:
+    storage: Storage
+    data: DataAccess
+    telegram: TelegramClient
+    openai: OpenAIClient | None = None
+    supabase: SupabaseClient | None = None
+    metrics: UploadMetricsRecorder | None = None
+
+
+@dataclass(slots=True)
+class DownloadedFile:
+    path: Path
+    cleanup: bool = False
+
+
+VISION_SYSTEM_PROMPT = (
+    "Ты ассистент проекта Котопогода. Проанализируй изображение и верни JSON, "
+    "строго соответствующий схеме asset_vision_v1."
+)
+
+VISION_USER_PROMPT = (
+    "Опиши главный сюжет, перечисли заметные категории и объекты."
+    " Используй краткие формулировки."
+)
+
+VISION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "title": "asset_vision_v1",
+    "additionalProperties": False,
+    "properties": {
+        "caption": {"type": ["string", "null"]},
+        "categories": {
+            "type": "array",
+            "items": {"type": "string"},
+            "default": [],
+        },
+        "objects": {
+            "type": "array",
+            "items": {"type": "string"},
+            "default": [],
+        },
+    },
+}
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    logging.warning("Invalid boolean env %s=%s, using %s", name, raw, default)
+    return default
+
+
+def _assets_channel_id() -> int:
+    raw = os.getenv("ASSETS_CHANNEL_ID")
+    if not raw:
+        raise RuntimeError("ASSETS_CHANNEL_ID is not configured")
+    try:
+        return int(raw)
+    except ValueError as exc:  # pragma: no cover - defensive
+        raise RuntimeError(f"Invalid ASSETS_CHANNEL_ID={raw}") from exc
+
+
+async def _download_from_storage(storage: Storage, *, key: str) -> DownloadedFile:
+    url = await storage.get_url(key=key)
+    parsed = urlparse(url)
+    if parsed.scheme in {"", "file"}:
+        path = Path(unquote(parsed.path))
+        if not path.exists():
+            raise FileNotFoundError(f"Stored file missing at {path}")
+        return DownloadedFile(path=path, cleanup=False)
+
+    tmp_fd, tmp_name = tempfile.mkstemp(prefix="upload-", suffix=Path(key).suffix or "")
+    os.close(tmp_fd)
+    destination = Path(tmp_name)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        with destination.open("wb") as handle:
+            async for chunk in response.aiter_bytes():
+                handle.write(chunk)
+    return DownloadedFile(path=destination, cleanup=True)
+
+
+def _compute_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _normalize_exif_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8", errors="ignore")
+        except Exception:
+            return value.hex()
+    if isinstance(value, (str, int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_normalize_exif_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _normalize_exif_value(v) for k, v in value.items()}
+    try:
+        return float(value)
+    except Exception:
+        return str(value)
+
+
+def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float | None]:
+    def _to_decimal(values: list[Any], ref: str | None) -> float | None:
+        if not values:
+            return None
+        try:
+            degrees = [_normalize_exif_value(part) for part in values]
+            parts = [float(part) for part in degrees]
+            while len(parts) < 3:
+                parts.append(0.0)
+        except Exception:
+            return None
+        decimal = parts[0] + parts[1] / 60.0 + parts[2] / 3600.0
+        if ref and ref.upper() in {"S", "W"}:
+            decimal *= -1.0
+        return decimal
+
+    lat = _to_decimal(
+        gps_info.get("GPSLatitude") or [],
+        str(gps_info.get("GPSLatitudeRef") or "") or None,
+    )
+    lon = _to_decimal(
+        gps_info.get("GPSLongitude") or [],
+        str(gps_info.get("GPSLongitudeRef") or "") or None,
+    )
+    return lat, lon
+
+
+def _extract_capture_datetime(exif: dict[str, Any]) -> str | None:
+    candidates = [
+        "DateTimeOriginal",
+        "DateTimeDigitized",
+        "DateTime",
+    ]
+    for key in candidates:
+        raw = exif.get(key)
+        if not raw:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+            try:
+                dt = datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+            return dt.replace(tzinfo=timezone.utc).isoformat()
+        return text
+    return None
+
+
+def _extract_image_metadata(path: Path) -> tuple[str | None, int | None, int | None, dict[str, Any], dict[str, Any]]:
+    exif_payload: dict[str, Any] = {}
+    gps_payload: dict[str, Any] = {}
+    mime_type: str | None = None
+    width: int | None = None
+    height: int | None = None
+
+    with Image.open(path) as raw_image:
+        original_format = raw_image.format
+        image = ImageOps.exif_transpose(raw_image)
+        try:
+            width, height = image.size
+            format_name = image.format or original_format
+            if format_name and format_name in Image.MIME:
+                mime_type = Image.MIME[format_name]
+            exif_data = image.getexif() if hasattr(image, "getexif") else None
+            if exif_data:
+                for tag_id, value in exif_data.items():
+                    tag_name = ExifTags.TAGS.get(tag_id, str(tag_id))
+                    if tag_name == "GPSInfo" and isinstance(value, dict):
+                        gps_info = {
+                            ExifTags.GPSTAGS.get(sub_id, str(sub_id)): _normalize_exif_value(sub_val)
+                            for sub_id, sub_val in value.items()
+                        }
+                        exif_payload["GPSInfo"] = gps_info
+                        lat, lon = _extract_gps_decimal(gps_info)
+                        if lat is not None:
+                            gps_payload["latitude"] = lat
+                        if lon is not None:
+                            gps_payload["longitude"] = lon
+                    else:
+                        exif_payload[tag_name] = _normalize_exif_value(value)
+        finally:
+            if image is not raw_image:
+                with contextlib.suppress(Exception):
+                    image.close()
+
+    capture = _extract_capture_datetime(exif_payload)
+    if capture:
+        gps_payload.setdefault("captured_at", capture)
+    return mime_type, width, height, exif_payload, gps_payload
+
+
+def _extract_categories(vision: dict[str, Any] | None) -> list[str]:
+    if not vision:
+        return []
+    categories: list[str] = []
+    for key in ("categories", "objects", "labels"):
+        value = vision.get(key)
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                text = str(item).strip()
+                if text and text not in categories:
+                    categories.append(text)
+    return categories
+
+
+def _build_caption(
+    *,
+    gps: dict[str, Any],
+    categories: list[str],
+    capture_iso: str | None,
+) -> str:
+    parts: list[str] = []
+    if capture_iso:
+        parts.append(f"Дата съёмки: {capture_iso}")
+    lat = gps.get("latitude")
+    lon = gps.get("longitude")
+    if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+        parts.append(f"Координаты: {lat:.5f}, {lon:.5f}")
+    if categories:
+        parts.append("Категории: " + ", ".join(categories[:6]))
+    if not parts:
+        parts.append("Новая загрузка готова к обработке.")
+    return "\n".join(parts)
+
+
+def _extract_message_id(response: Any) -> int | None:
+    if isinstance(response, dict):
+        if "result" in response:
+            return _extract_message_id(response.get("result"))
+        message_id = response.get("message_id")
+        if isinstance(message_id, int):
+            return message_id
+        if isinstance(message_id, str) and message_id.isdigit():
+            return int(message_id)
+    return None
 
 
 class UploadTooLargeError(Exception):
@@ -237,22 +537,178 @@ async def handle_get_upload_status(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
-def register_upload_jobs(queue: JobQueue, conn) -> None:
+def register_upload_jobs(
+    queue: JobQueue,
+    conn,
+    *,
+    storage: Storage,
+    data: DataAccess,
+    telegram: TelegramClient,
+    openai: OpenAIClient | None = None,
+    supabase: SupabaseClient | None = None,
+    metrics: UploadMetricsRecorder | None = None,
+) -> None:
     if "process_upload" in queue.handlers:
         return
 
+    metrics_recorder = metrics or UploadMetricsRecorder()
+
     async def process_upload(job: Job) -> None:
-        upload_id = str(job.payload.get("upload_id"))
+        upload_id = str(job.payload.get("upload_id") or "")
         if not upload_id:
             logging.warning("UPLOAD job missing upload_id")
             return
-        logging.info("UPLOAD job start upload=%s", upload_id)
-        set_upload_status(conn, id=upload_id, status="processing")
-        conn.commit()
-        await asyncio.sleep(0.5)
-        set_upload_status(conn, id=upload_id, status="done")
-        conn.commit()
-        logging.info("UPLOAD job done upload=%s", upload_id)
+
+        metrics_recorder.increment("upload.process.attempts")
+        with metrics_recorder.timer("upload.process.duration"):
+            logging.info("UPLOAD job start upload=%s", upload_id)
+            try:
+                set_upload_status(conn, id=upload_id, status="processing")
+                conn.commit()
+                record = fetch_upload_record(conn, upload_id=upload_id)
+                if not record:
+                    logging.warning("UPLOAD missing record upload=%s", upload_id)
+                    return
+                file_ref = record.get("file_ref")
+                if not file_ref:
+                    raise RuntimeError("upload missing file_ref")
+
+                download = await _download_from_storage(storage, key=str(file_ref))
+                try:
+                    sha256 = _compute_sha256(download.path)
+                    metrics_recorder.increment("upload.exif.attempts")
+                    with metrics_recorder.timer("upload.exif.duration"):
+                        (
+                            mime_type,
+                            width,
+                            height,
+                            exif_payload,
+                            gps_payload,
+                        ) = _extract_image_metadata(download.path)
+                    metrics_recorder.increment("upload.exif.success")
+
+                    vision_payload: dict[str, Any] | None = None
+                    if "captured_at" not in gps_payload:
+                        capture_candidate = _extract_capture_datetime(exif_payload)
+                        if capture_candidate:
+                            gps_payload["captured_at"] = capture_candidate
+
+                    vision_enabled = _env_bool("VISION_ENABLED", False)
+                    if vision_enabled and openai:
+                        model = os.getenv("OPENAI_VISION_MODEL")
+                        if model:
+                            metrics_recorder.increment("upload.vision.attempts")
+                            with metrics_recorder.timer("upload.vision.duration"):
+                                response = await openai.classify_image(
+                                    model=model,
+                                    system_prompt=VISION_SYSTEM_PROMPT,
+                                    user_prompt=VISION_USER_PROMPT,
+                                    image_path=download.path,
+                                    schema=VISION_SCHEMA,
+                                )
+                            if isinstance(response, OpenAIResponse):
+                                vision_payload = response.content
+                                metrics_recorder.increment("upload.vision.success")
+                                data.log_token_usage(
+                                    model=model,
+                                    prompt_tokens=response.prompt_tokens,
+                                    completion_tokens=response.completion_tokens,
+                                    total_tokens=response.total_tokens,
+                                    job_id=job.id,
+                                    request_id=response.request_id,
+                                )
+                                if supabase:
+                                    try:
+                                        await supabase.insert_token_usage(
+                                            bot="kotopogoda",
+                                            model=model,
+                                            prompt_tokens=response.prompt_tokens,
+                                            completion_tokens=response.completion_tokens,
+                                            total_tokens=response.total_tokens,
+                                            request_id=response.request_id,
+                                            endpoint=response.endpoint or "/v1/responses",
+                                            meta={
+                                                "upload_id": upload_id,
+                                                "job_id": job.id,
+                                            },
+                                        )
+                                    except Exception:
+                                        logging.exception(
+                                            "UPLOAD vision token usage logging failed upload=%s",
+                                            upload_id,
+                                        )
+                        else:
+                            logging.warning(
+                                "VISION_ENABLED but OPENAI_VISION_MODEL missing; skipping vision"
+                            )
+                    elif vision_enabled and not openai:
+                        logging.warning(
+                            "VISION_ENABLED is set but OpenAI client is unavailable; skipping vision"
+                        )
+
+                    categories = _extract_categories(vision_payload)
+                    caption = _build_caption(
+                        gps=gps_payload,
+                        categories=categories,
+                        capture_iso=gps_payload.get("captured_at"),
+                    )
+
+                    chat_id = _assets_channel_id()
+                    metrics_recorder.increment("upload.telegram.attempts")
+                    with metrics_recorder.timer("upload.telegram.duration"):
+                        telegram_response = await telegram.send_photo(
+                            chat_id=chat_id,
+                            photo=download.path,
+                            caption=caption,
+                        )
+                    message_id = _extract_message_id(telegram_response)
+                    if message_id is None:
+                        raise RuntimeError("telegram response missing message_id")
+                    metrics_recorder.increment("upload.telegram.success")
+
+                    asset_id = data.insert_uploaded_asset(
+                        upload_id=upload_id,
+                        file_ref=str(file_ref),
+                        content_type=mime_type,
+                        sha256=sha256,
+                        width=width,
+                        height=height,
+                        exif=exif_payload or None,
+                        labels=vision_payload or None,
+                        tg_message_id=message_id,
+                    )
+                    logging.info(
+                        "UPLOAD asset stored upload=%s asset=%s sha=%s mime=%s",
+                        upload_id,
+                        asset_id,
+                        sha256,
+                        mime_type,
+                    )
+                finally:
+                    if download.cleanup and download.path.exists():
+                        with contextlib.suppress(Exception):
+                            download.path.unlink()
+
+                set_upload_status(conn, id=upload_id, status="done")
+                conn.commit()
+                metrics_recorder.increment("upload.process.success")
+                logging.info("UPLOAD job done upload=%s", upload_id)
+            except Exception as exc:
+                logging.exception("UPLOAD job failed upload=%s", upload_id)
+                try:
+                    set_upload_status(
+                        conn,
+                        id=upload_id,
+                        status="failed",
+                        error=str(exc)[:200],
+                    )
+                    conn.commit()
+                except Exception:
+                    logging.exception(
+                        "UPLOAD failed to persist error status upload=%s", upload_id
+                    )
+                metrics_recorder.increment("upload.process.failed")
+                raise
 
     queue.register_handler("process_upload", process_upload)
 

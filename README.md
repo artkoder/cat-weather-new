@@ -51,6 +51,13 @@ contract stays single-sourced.
 - The payload includes the resolved `version` (from `APP_VERSION` or `CHANGELOG.md`), UTC timestamp (`now`), process uptime (`uptime_s`), per-check latencies and queue counters (`pending`, `active`, `failed`).
 - Each call emits a `HEALTH ... status=...` log line summarizing the probe so operators can trace latency regressions or dependency failures quickly.
 
+### E2E
+
+- `scripts/e2e_attach_upload.py` drives the staging attach → upload → processed smoke test used by CI.
+- The helper CLI (`python -m tools.e2e create-pairing`) mints a pairing code when `E2E_MODE=true` so the end-to-end workflow never depends on Telegram.
+- The script synthesizes a 1×1 PNG image at runtime (no binary fixtures) and reuses the exact multipart payload for both HMAC signing and the upload request.
+- `tests/test_e2e.py` wraps the script for pytest and is marked with `@pytest.mark.e2e`; it skips automatically unless the `E2E_*` variables are configured.
+
 ### Storage schema
 
 - **devices** — stores hardware devices linked to Telegram users. Tracks creation time, optional last_seen timestamp and revocation markers.

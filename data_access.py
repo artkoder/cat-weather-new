@@ -527,7 +527,8 @@ class DataAccess:
         height: int | None,
         exif: dict[str, Any] | None = None,
         labels: dict[str, Any] | None = None,
-        tg_message_id: int | None = None,
+        tg_message_id: str | int | None = None,
+        tg_chat_id: int | None = None,
     ) -> str:
         """Create a new asset entry tied to an upload and return its UUID."""
 
@@ -535,7 +536,37 @@ class DataAccess:
         now = datetime.utcnow().isoformat()
         exif_json = json.dumps(exif) if exif else None
         labels_json = json.dumps(labels) if labels else None
-        tg_id_value = str(tg_message_id) if tg_message_id is not None else None
+        chat_id_value = Asset._to_int(tg_chat_id)
+        message_id_value: int | None = None
+        identifier: str | None = None
+
+        if isinstance(tg_message_id, str):
+            text = tg_message_id.strip()
+            if text:
+                identifier = text
+                if ":" in text:
+                    chat_text, message_text = text.split(":", 1)
+                    if chat_id_value is None:
+                        chat_id_value = Asset._to_int(chat_text)
+                    message_id_value = Asset._to_int(message_text)
+                else:
+                    message_id_value = Asset._to_int(text)
+        elif tg_message_id is not None:
+            message_id_value = Asset._to_int(tg_message_id)
+            identifier = str(tg_message_id)
+
+        if chat_id_value is not None and message_id_value is not None:
+            identifier = self._build_tg_message_identifier(chat_id_value, message_id_value)
+        elif identifier is None and message_id_value is not None:
+            identifier = str(message_id_value)
+
+        payload_map: dict[str, Any] = {}
+        if chat_id_value is not None:
+            payload_map["tg_chat_id"] = chat_id_value
+        if message_id_value is not None:
+            payload_map["message_id"] = message_id_value
+        payload_json = json.dumps(payload_map, ensure_ascii=False) if payload_map else None
+
         self.conn.execute(
             """
             INSERT INTO assets (
@@ -549,8 +580,9 @@ class DataAccess:
                 exif_json,
                 labels_json,
                 tg_message_id,
+                payload_json,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -562,7 +594,8 @@ class DataAccess:
                 height,
                 exif_json,
                 labels_json,
-                tg_id_value,
+                identifier,
+                payload_json,
                 now,
             ),
         )
@@ -580,7 +613,8 @@ class DataAccess:
         height: int | None,
         exif: dict[str, Any] | None = None,
         labels: dict[str, Any] | None = None,
-        tg_message_id: int | None = None,
+        tg_message_id: str | int | None = None,
+        tg_chat_id: int | None = None,
     ) -> str:
         """Compatibility wrapper for legacy callers."""
 
@@ -594,6 +628,7 @@ class DataAccess:
             exif=exif,
             labels=labels,
             tg_message_id=tg_message_id,
+            tg_chat_id=tg_chat_id,
         )
 
     @staticmethod

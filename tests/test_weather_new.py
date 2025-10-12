@@ -14,6 +14,7 @@ import sqlite3
 from PIL import Image
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from data_access import create_device, insert_upload
 from main import Bot, Job
 from openai_client import OpenAIResponse
 
@@ -742,6 +743,81 @@ async def test_edit_asset(tmp_path):
     await bot.handle_edited_message(edit)
     a = bot.next_asset({'#новый'})
     assert a and a['message_id'] == 11
+    await bot.close()
+
+
+@pytest.mark.asyncio
+
+async def test_uploaded_asset_edit_and_delete(tmp_path):
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    channel_id = -100555
+    message_id = 4242
+    bot.set_weather_assets_channel(channel_id)
+
+    create_device(
+        bot.db,
+        device_id='device-1',
+        user_id=1,
+        name='Test device',
+        secret='secret',
+    )
+    insert_upload(
+        bot.db,
+        id='upload-edit',
+        device_id='device-1',
+        idempotency_key='key-edit',
+    )
+    bot.db.commit()
+
+    asset_id = bot.data.create_asset(
+        upload_id='upload-edit',
+        file_ref='file:///tmp/upload-edit.jpg',
+        content_type='image/jpeg',
+        sha256='deadbeef',
+        width=640,
+        height=480,
+        tg_message_id=f"{channel_id}:{message_id}",
+        tg_chat_id=channel_id,
+    )
+
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.tg_chat_id == channel_id
+    assert asset.message_id == message_id
+
+    edit_message = {
+        'message_id': message_id,
+        'chat': {'id': channel_id},
+        'caption': '#котопогода обновлено',
+    }
+
+    await bot.handle_edited_message(edit_message)
+
+    updated_asset = bot.data.get_asset(asset_id)
+    assert updated_asset is not None
+    assert updated_asset.caption == '#котопогода обновлено'
+    assert updated_asset.hashtags is not None and '#котопогода' in updated_asset.hashtags
+
+    fetched = bot.data.get_asset_by_message(channel_id, message_id)
+    assert fetched is not None
+    assert fetched.id == asset_id
+
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
+        calls.append((method, data))
+        return {'ok': True}
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+
+    await bot._delete_asset_message(updated_asset)
+
+    assert calls
+    assert calls[0][0] == 'deleteMessage'
+    assert calls[0][1] is not None
+    assert calls[0][1]['chat_id'] == channel_id
+    assert calls[0][1]['message_id'] == message_id
+
     await bot.close()
 
 

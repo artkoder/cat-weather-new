@@ -83,9 +83,14 @@ class DummyTelegram:
         self.next_message_id = 100
 
     async def send_photo(self, *, chat_id: int, photo: Path, caption: str | None = None) -> dict[str, object]:
-        call = {"chat_id": chat_id, "photo": Path(photo), "caption": caption}
-        self.calls.append(call)
         message_id = self.next_message_id
+        call = {
+            "chat_id": chat_id,
+            "photo": Path(photo),
+            "caption": caption,
+            "message_id": message_id,
+        }
+        self.calls.append(call)
         self.next_message_id += 1
         return {"message_id": message_id, "chat": {"id": chat_id}}
 
@@ -221,7 +226,7 @@ async def test_process_upload_job_success_records_asset(tmp_path: Path) -> None:
     assert row["asset_id"] is not None
 
     asset_row = conn.execute(
-        "SELECT sha256, width, height, exif_json FROM assets WHERE id=?",
+        "SELECT sha256, width, height, exif_json, tg_message_id, payload_json FROM assets WHERE id=?",
         (row["asset_id"],),
     ).fetchone()
     assert asset_row is not None
@@ -230,10 +235,25 @@ async def test_process_upload_job_success_records_asset(tmp_path: Path) -> None:
     assert asset_row["width"] == 640
     assert asset_row["height"] == 480
     assert "GPSInfo" in (asset_row["exif_json"] or "")
+    expected_identifier = f"{config.assets_channel_id}:{telegram.calls[0]['message_id']}"
+    assert asset_row["tg_message_id"] == expected_identifier
 
     assert len(telegram.calls) == 1
     assert telegram.calls[0]["chat_id"] == config.assets_channel_id
     assert storage.get_calls == [file_key]
+
+    asset = data.get_asset(row["asset_id"])
+    assert asset is not None
+    assert asset.tg_chat_id == config.assets_channel_id
+    assert asset.message_id == telegram.calls[0]["message_id"]
+    assert asset.payload.get("tg_chat_id") == config.assets_channel_id
+    assert asset.payload.get("message_id") == telegram.calls[0]["message_id"]
+
+    fetched = data.get_asset_by_message(
+        config.assets_channel_id, telegram.calls[0]["message_id"]
+    )
+    assert fetched is not None
+    assert fetched.id == asset.id
 
 
 @pytest.mark.asyncio

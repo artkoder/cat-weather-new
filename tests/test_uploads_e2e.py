@@ -394,7 +394,13 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
         assert env.telegram is not None
         assert env.telegram.calls
         telegram_call = env.telegram.calls[0]
-        assert row["tg_message_id"] == str(telegram_call["message_id"])
+        expected_identifier = f"{env.assets_channel_id}:{telegram_call['message_id']}"
+        assert row["tg_message_id"] == expected_identifier
+        payload_blob = row["payload_json"]
+        assert payload_blob
+        payload_map = json.loads(payload_blob)
+        assert payload_map["tg_chat_id"] == env.assets_channel_id
+        assert payload_map["message_id"] == telegram_call["message_id"]
         assert telegram_call["chat_id"] == env.assets_channel_id
         assert telegram_call["photo"].exists()
         assert "Новая загрузка" in (telegram_call["caption"] or "")
@@ -592,7 +598,7 @@ async def test_upload_processing_with_vision(tmp_path: Path):
 
         assert env.conn is not None
         asset_row = env.conn.execute(
-            "SELECT id, labels_json, tg_message_id FROM assets WHERE upload_id=?",
+            "SELECT id, labels_json, tg_message_id, payload_json FROM assets WHERE upload_id=?",
             (upload_id,),
         ).fetchone()
         assert asset_row is not None
@@ -601,7 +607,15 @@ async def test_upload_processing_with_vision(tmp_path: Path):
         labels = json.loads(asset_row["labels_json"])
         assert labels.get("caption") == "Красный цветок"
         assert "flower" in labels.get("categories", [])
-        assert asset_row["tg_message_id"] == str(env.telegram.calls[0]["message_id"])
+        expected_identifier = (
+            f"{env.assets_channel_id}:{env.telegram.calls[0]['message_id']}"
+        )
+        assert asset_row["tg_message_id"] == expected_identifier
+        payload_blob = asset_row["payload_json"]
+        assert payload_blob
+        payload_map = json.loads(payload_blob)
+        assert payload_map["tg_chat_id"] == env.assets_channel_id
+        assert payload_map["message_id"] == env.telegram.calls[0]["message_id"]
         usage_row = env.conn.execute("SELECT model, total_tokens FROM token_usage").fetchone()
         assert usage_row is not None
         assert usage_row["model"] == "vision-test"

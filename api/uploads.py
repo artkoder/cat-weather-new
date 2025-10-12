@@ -120,16 +120,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
-def _assets_channel_id() -> int:
-    raw = os.getenv("ASSETS_CHANNEL_ID")
-    if not raw:
-        raise RuntimeError("ASSETS_CHANNEL_ID is not configured")
-    try:
-        return int(raw)
-    except ValueError as exc:  # pragma: no cover - defensive
-        raise RuntimeError(f"Invalid ASSETS_CHANNEL_ID={raw}") from exc
-
-
 async def _download_from_storage(storage: Storage, *, key: str) -> DownloadedFile:
     url = await storage.get_url(key=key)
     parsed = urlparse(url)
@@ -157,6 +147,36 @@ def _compute_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(65536), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
+
+
+def _downscale_image_if_needed(source: Path, *, max_side: int) -> tuple[Path, bool]:
+    """Return path to a file respecting ``max_side`` and a cleanup flag."""
+
+    with Image.open(source) as original:
+        width, height = original.size
+        if max(width, height) <= max_side:
+            return source, False
+
+        if hasattr(Image, "Resampling"):
+            resample = Image.Resampling.LANCZOS
+        else:  # pragma: no cover - Pillow < 9 compatibility
+            resample = Image.LANCZOS  # type: ignore[attr-defined]
+
+        scale = max_side / float(max(width, height))
+        new_width = max(1, int(round(width * scale)))
+        new_height = max(1, int(round(height * scale)))
+
+        resized = original.resize((new_width, new_height), resample)
+        suffix = source.suffix or ".jpg"
+        fd, name = tempfile.mkstemp(prefix="upload-resized-", suffix=suffix)
+        os.close(fd)
+        temp_path = Path(name)
+        format_name = original.format or suffix.lstrip(".").upper()
+        try:
+            resized.save(temp_path, format=format_name)
+        finally:
+            resized.close()
+    return temp_path, True
 
 
 def _normalize_exif_value(value: Any) -> Any:
@@ -325,6 +345,10 @@ class UploadsConfig:
     max_upload_mb: float = 10.0
     allowed_prefixes: tuple[str, ...] = ("image/",)
     allowed_exact: tuple[str, ...] = ("application/pdf",)
+    assets_channel_id: int = 0
+    vision_enabled: bool = False
+    openai_vision_model: str | None = None
+    max_image_side: int | None = None
 
     @property
     def max_upload_bytes(self) -> int:
@@ -332,15 +356,52 @@ class UploadsConfig:
 
 
 def load_uploads_config() -> UploadsConfig:
-    raw = os.getenv("MAX_UPLOAD_MB", "10")
+    raw_max_upload = os.getenv("MAX_UPLOAD_MB", "10")
     try:
-        value = float(raw)
-        if value <= 0:
+        max_upload_mb = float(raw_max_upload)
+        if max_upload_mb <= 0:
             raise ValueError
     except ValueError:
-        logging.warning("Invalid MAX_UPLOAD_MB=%s, defaulting to 10 MB", raw)
-        value = 10.0
-    return UploadsConfig(max_upload_mb=value)
+        logging.warning("Invalid MAX_UPLOAD_MB=%s, defaulting to 10 MB", raw_max_upload)
+        max_upload_mb = 10.0
+
+    channel_raw = os.getenv("ASSETS_CHANNEL_ID")
+    if not channel_raw:
+        raise RuntimeError("ASSETS_CHANNEL_ID is not configured")
+    try:
+        assets_channel_id = int(channel_raw)
+    except ValueError as exc:  # pragma: no cover - defensive
+        raise RuntimeError(f"Invalid ASSETS_CHANNEL_ID={channel_raw}") from exc
+
+    vision_enabled = _env_bool("VISION_ENABLED", False)
+    model_raw = os.getenv("OPENAI_VISION_MODEL")
+    openai_vision_model = model_raw.strip() if model_raw else None
+    if openai_vision_model == "":
+        openai_vision_model = None
+    if vision_enabled and not openai_vision_model:
+        logging.warning(
+            "VISION_ENABLED is set but OPENAI_VISION_MODEL is missing; recognition will be skipped"
+        )
+
+    max_image_side_raw = os.getenv("MAX_IMAGE_SIDE")
+    max_image_side: int | None = None
+    if max_image_side_raw:
+        try:
+            parsed = int(max_image_side_raw)
+            if parsed <= 0:
+                raise ValueError
+        except ValueError:
+            logging.warning("Invalid MAX_IMAGE_SIDE=%s; ignoring downscale override", max_image_side_raw)
+        else:
+            max_image_side = parsed
+
+    return UploadsConfig(
+        max_upload_mb=max_upload_mb,
+        assets_channel_id=assets_channel_id,
+        vision_enabled=vision_enabled,
+        openai_vision_model=openai_vision_model,
+        max_image_side=max_image_side,
+    )
 
 
 def _json_error(status: int, error: str, message: str) -> web.Response:
@@ -547,11 +608,13 @@ def register_upload_jobs(
     openai: OpenAIClient | None = None,
     supabase: SupabaseClient | None = None,
     metrics: UploadMetricsRecorder | None = None,
+    config: UploadsConfig | None = None,
 ) -> None:
     if "process_upload" in queue.handlers:
         return
 
     metrics_recorder = metrics or UploadMetricsRecorder()
+    uploads_config = config or load_uploads_config()
 
     async def process_upload(job: Job) -> None:
         upload_id = str(job.payload.get("upload_id") or "")
@@ -563,6 +626,8 @@ def register_upload_jobs(
         with metrics_recorder.timer("upload.process.duration"):
             logging.info("UPLOAD job start upload=%s", upload_id)
             try:
+                processed_path: Path | None = None
+                processed_cleanup = False
                 set_upload_status(conn, id=upload_id, status="processing")
                 conn.commit()
                 record = fetch_upload_record(conn, upload_id=upload_id)
@@ -593,57 +658,69 @@ def register_upload_jobs(
                         if capture_candidate:
                             gps_payload["captured_at"] = capture_candidate
 
-                    vision_enabled = _env_bool("VISION_ENABLED", False)
-                    if vision_enabled and openai:
-                        model = os.getenv("OPENAI_VISION_MODEL")
-                        if model:
-                            metrics_recorder.increment("upload.vision.attempts")
-                            with metrics_recorder.timer("upload.vision.duration"):
-                                response = await openai.classify_image(
-                                    model=model,
-                                    system_prompt=VISION_SYSTEM_PROMPT,
-                                    user_prompt=VISION_USER_PROMPT,
-                                    image_path=download.path,
-                                    schema=VISION_SCHEMA,
-                                )
-                            if isinstance(response, OpenAIResponse):
-                                vision_payload = response.content
-                                metrics_recorder.increment("upload.vision.success")
-                                data.log_token_usage(
-                                    model=model,
-                                    prompt_tokens=response.prompt_tokens,
-                                    completion_tokens=response.completion_tokens,
-                                    total_tokens=response.total_tokens,
-                                    job_id=job.id,
-                                    request_id=response.request_id,
-                                )
-                                if supabase:
-                                    try:
-                                        await supabase.insert_token_usage(
-                                            bot="kotopogoda",
-                                            model=model,
-                                            prompt_tokens=response.prompt_tokens,
-                                            completion_tokens=response.completion_tokens,
-                                            total_tokens=response.total_tokens,
-                                            request_id=response.request_id,
-                                            endpoint=response.endpoint or "/v1/responses",
-                                            meta={
-                                                "upload_id": upload_id,
-                                                "job_id": job.id,
-                                            },
-                                        )
-                                    except Exception:
-                                        logging.exception(
-                                            "UPLOAD vision token usage logging failed upload=%s",
-                                            upload_id,
-                                        )
-                        else:
-                            logging.warning(
-                                "VISION_ENABLED but OPENAI_VISION_MODEL missing; skipping vision"
+                    processed_path = download.path
+                    if uploads_config.max_image_side:
+                        processed_path, processed_cleanup = _downscale_image_if_needed(
+                            download.path,
+                            max_side=uploads_config.max_image_side,
+                        )
+
+                    if (
+                        uploads_config.vision_enabled
+                        and openai
+                        and uploads_config.openai_vision_model
+                    ):
+                        model = uploads_config.openai_vision_model
+                        metrics_recorder.increment("upload.vision.attempts")
+                        with metrics_recorder.timer("upload.vision.duration"):
+                            response = await openai.classify_image(
+                                model=model,
+                                system_prompt=VISION_SYSTEM_PROMPT,
+                                user_prompt=VISION_USER_PROMPT,
+                                image_path=processed_path,
+                                schema=VISION_SCHEMA,
                             )
-                    elif vision_enabled and not openai:
+                        if isinstance(response, OpenAIResponse):
+                            vision_payload = response.content
+                            metrics_recorder.increment("upload.vision.success")
+                            data.log_token_usage(
+                                model=model,
+                                prompt_tokens=response.prompt_tokens,
+                                completion_tokens=response.completion_tokens,
+                                total_tokens=response.total_tokens,
+                                job_id=job.id,
+                                request_id=response.request_id,
+                            )
+                            if supabase:
+                                try:
+                                    await supabase.insert_token_usage(
+                                        bot="kotopogoda",
+                                        model=model,
+                                        prompt_tokens=response.prompt_tokens,
+                                        completion_tokens=response.completion_tokens,
+                                        total_tokens=response.total_tokens,
+                                        request_id=response.request_id,
+                                        endpoint=response.endpoint or "/v1/responses",
+                                        meta={
+                                            "upload_id": upload_id,
+                                            "job_id": job.id,
+                                        },
+                                    )
+                                except Exception:
+                                    logging.exception(
+                                        "UPLOAD vision token usage logging failed upload=%s",
+                                        upload_id,
+                                    )
+                    elif uploads_config.vision_enabled and not openai:
                         logging.warning(
                             "VISION_ENABLED is set but OpenAI client is unavailable; skipping vision"
+                        )
+                    elif (
+                        uploads_config.vision_enabled
+                        and not uploads_config.openai_vision_model
+                    ):
+                        logging.warning(
+                            "VISION_ENABLED but OPENAI_VISION_MODEL missing; skipping vision"
                         )
 
                     categories = _extract_categories(vision_payload)
@@ -653,12 +730,12 @@ def register_upload_jobs(
                         capture_iso=gps_payload.get("captured_at"),
                     )
 
-                    chat_id = _assets_channel_id()
+                    chat_id = uploads_config.assets_channel_id
                     metrics_recorder.increment("upload.telegram.attempts")
                     with metrics_recorder.timer("upload.telegram.duration"):
                         telegram_response = await telegram.send_photo(
                             chat_id=chat_id,
-                            photo=download.path,
+                            photo=processed_path,
                             caption=caption,
                         )
                     message_id = _extract_message_id(telegram_response)
@@ -685,6 +762,14 @@ def register_upload_jobs(
                         mime_type,
                     )
                 finally:
+                    if (
+                        processed_cleanup
+                        and processed_path is not None
+                        and processed_path != download.path
+                        and processed_path.exists()
+                    ):
+                        with contextlib.suppress(Exception):
+                            processed_path.unlink()
                     if download.cleanup and download.path.exists():
                         with contextlib.suppress(Exception):
                             download.path.unlink()

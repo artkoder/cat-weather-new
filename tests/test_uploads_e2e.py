@@ -173,6 +173,7 @@ class UploadTestEnv:
             "ASSETS_CHANNEL_ID": os.getenv("ASSETS_CHANNEL_ID"),
             "VISION_ENABLED": os.getenv("VISION_ENABLED"),
             "OPENAI_VISION_MODEL": os.getenv("OPENAI_VISION_MODEL"),
+            "MAX_IMAGE_SIDE": os.getenv("MAX_IMAGE_SIDE"),
         }
         os.environ["ASSETS_CHANNEL_ID"] = str(assets_channel_id)
         if vision_flag:
@@ -200,7 +201,13 @@ class UploadTestEnv:
         app = web.Application(middlewares=[create_hmac_middleware(conn)])
         app['upload_rate_limiter'] = SlidingWindowRateLimiter(20, 60)
         app['upload_status_rate_limiter'] = SlidingWindowRateLimiter(5, 1)
-        config = UploadsConfig(max_upload_mb=max_upload_mb)
+        config = UploadsConfig(
+            max_upload_mb=max_upload_mb,
+            assets_channel_id=assets_channel_id,
+            vision_enabled=vision_flag,
+            openai_vision_model=vision_model if vision_flag else None,
+            max_image_side=None,
+        )
         setup_upload_routes(app, storage=storage, conn=conn, jobs=jobs, config=config)
         self.config = config
 
@@ -431,7 +438,13 @@ async def test_uploads_reject_large_file(tmp_path: Path):
     await env.start()
     try:
         env.create_device(device_id="device-1")
-        env.config = UploadsConfig(max_upload_mb=0.001)
+        env.config = UploadsConfig(
+            max_upload_mb=0.001,
+            assets_channel_id=env.assets_channel_id,
+            vision_enabled=False,
+            openai_vision_model=None,
+            max_image_side=None,
+        )
         assert env.server is not None
         env.server.app['uploads_config'] = env.config  # type: ignore[index]
 

@@ -745,6 +745,7 @@ def register_upload_jobs(
                         raise RuntimeError("telegram response missing message_id")
                     metrics_recorder.increment("upload.telegram.success")
 
+                    message_identifier = f"{chat_id}:{message_id}"
                     asset_id = data.create_asset(
                         upload_id=upload_id,
                         file_ref=str(file_ref),
@@ -754,7 +755,8 @@ def register_upload_jobs(
                         height=height,
                         exif=exif_payload or None,
                         labels=vision_payload or None,
-                        tg_message_id=message_id,
+                        tg_message_id=message_identifier,
+                        tg_chat_id=chat_id,
                     )
                     link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)
                     logging.info(

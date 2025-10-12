@@ -152,3 +152,30 @@ def test_link_upload_asset_updates_row(conn: sqlite3.Connection) -> None:
 
     with pytest.raises(ValueError):
         link_upload_asset(conn, upload_id=upload_id, asset_id="different")
+
+
+def test_asset_file_id_falls_back_to_file_ref(conn: sqlite3.Connection) -> None:
+    _ensure_device(conn)
+    upload_id = insert_upload(
+        conn,
+        id="upload-file-ref",
+        device_id="device-1",
+        idempotency_key="key-file-ref",
+    )
+
+    data = DataAccess(conn)
+    file_ref = "file:///tmp/file-ref.jpg"
+    asset_id = data.create_asset(
+        upload_id=upload_id,
+        file_ref=file_ref,
+        content_type="image/jpeg",
+        sha256="c0ffee",
+        width=100,
+        height=200,
+    )
+
+    asset = data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.payload == {}
+    assert asset.file_ref == file_ref
+    assert asset.file_id == file_ref

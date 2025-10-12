@@ -1,0 +1,35 @@
+name: E2E (staging)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Guard: no binary files in repo
+        run: |
+          BIN=$(git ls-files | xargs -I{} file -i "{}" | grep 'charset=binary' || true)
+          if [ -n "$BIN" ]; then
+            echo "::error::Binary files detected in the tree:"
+            echo "$BIN"
+            exit 1
+          fi
+      - run: pip install -r requirements.txt
+      - name: Run E2E
+        env:
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          E2E_USER_ID: ${{ secrets.E2E_USER_ID }}
+          E2E_DB_PATH: ${{ secrets.E2E_DB_PATH }}
+          STORAGE_BACKEND: ${{ secrets.E2E_STORAGE_BACKEND }}
+          SUPABASE_URL: ${{ secrets.E2E_SUPABASE_URL }}
+          SUPABASE_BUCKET: ${{ secrets.E2E_SUPABASE_BUCKET }}
+        run: python scripts/e2e_attach_upload.py

@@ -25,7 +25,7 @@ from api.security import (
     create_hmac_middleware,
 )
 from api.uploads import UploadsConfig, register_upload_jobs, setup_upload_routes
-from data_access import create_device
+from data_access import create_device, insert_upload, set_upload_status
 from main import SlidingWindowRateLimiter, apply_migrations
 from jobs import JobQueue
 from storage import LocalStorage
@@ -83,6 +83,7 @@ class UploadTestEnv:
 
         app = web.Application(middlewares=[create_hmac_middleware(conn)])
         app['upload_rate_limiter'] = SlidingWindowRateLimiter(20, 60)
+        app['upload_status_rate_limiter'] = SlidingWindowRateLimiter(5, 1)
         storage = LocalStorage(base_path=self.root / "uploads")
         config = UploadsConfig(max_upload_mb=max_upload_mb)
         setup_upload_routes(app, storage=storage, conn=conn, jobs=jobs, config=config)
@@ -237,6 +238,8 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
             await asyncio.sleep(0.2)
         assert final_payload is not None
         assert final_payload["status"] == "done"
+        assert "error" in final_payload
+        assert final_payload["error"] is None
 
         stored_files = list((env.root / "uploads").rglob("*"))
         assert any(path.is_file() for path in stored_files)
@@ -332,5 +335,35 @@ async def test_upload_status_for_other_device_not_found(tmp_path: Path):
         )
         assert status_resp == 404
         assert payload_resp["error"] == "not_found"
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_upload_status_returns_error_for_failed_upload(tmp_path: Path):
+    env = UploadTestEnv(tmp_path)
+    await env.start()
+    try:
+        env.create_device(device_id="device-1")
+        assert env.conn is not None
+        upload_id = insert_upload(
+            env.conn,
+            id="upload-error",
+            device_id="device-1",
+            idempotency_key="idem-error",
+        )
+        set_upload_status(env.conn, id=upload_id, status="processing")
+        set_upload_status(env.conn, id=upload_id, status="failed", error="boom")
+        env.conn.commit()
+
+        status_resp, payload = await _signed_get(
+            env,
+            path=f"/v1/uploads/{upload_id}/status",
+            device_id="device-1",
+            secret=DEVICE_SECRET,
+        )
+        assert status_resp == 200
+        assert payload["status"] == "failed"
+        assert payload["error"] == "boom"
     finally:
         await env.close()

@@ -55,7 +55,7 @@ contract stays single-sourced.
 
 - Logs are structured JSON by default and include `ts`, `level`, `msg`, `request_id`, `route`, `method`, `status`, `duration_ms`, `device_id`, `job`, `upload_id` and `ip` when available. Set `LOG_FORMAT=pretty` locally to switch to a human-friendly formatter.
 - Sensitive tokens are redacted automatically (`X-Signature`, `secret`, `token`, `authorization` fields are replaced with `***`). Use `LOG_LEVEL` to increase verbosity during incident response.
-- The `/metrics` endpoint exposes Prometheus metrics (HTTP counters/histograms, HMAC failures, upload/job counters, queue depth, storage bytes and health timings) and default process/platform collectors. Access is rate-limited to 5 requests/second per IP; configure `METRICS_ALLOWLIST` with CIDR ranges to restrict exposure.
+- The `/metrics` endpoint exposes Prometheus metrics (HTTP counters/histograms, HMAC failures, upload/job counters, queue depth, storage bytes and health timings) and default process/platform collectors. Access is guarded by the rate-limit middleware (default 5 requests/minute per IP) and requires `ALLOWLIST_CIDR` to include the caller address.
 
 ### E2E
 
@@ -158,7 +158,8 @@ Replace `/data/bot.db` with the desired SQLite path (for local development you c
 - `PORT` – HTTP port that `web.run_app` listens on (default `8080`). Ensure it matches the port exposed by your proxy or hosting platform (Fly.io, Docker, etc.) so inbound requests reach the app.
 - `LOG_LEVEL` – controls structured log severity (`DEBUG`, `INFO`, `WARN`, `ERROR`). Defaults to `INFO`.
 - `LOG_FORMAT` – `json` (default) for production log shippers or `pretty` for local development.
-- `METRICS_ALLOWLIST` – optional comma-separated CIDR ranges allowed to call `/metrics`. When unset the endpoint is world-readable, otherwise non-matching IPs receive `403`.
+- `ALLOWLIST_CIDR` – comma-separated CIDR ranges allowed to call `/metrics` (and `/_admin` endpoints when present). Requests from outside the allow-list receive `403`.
+- `RL_ATTACH_IP_PER_MIN`, `RL_ATTACH_USER_PER_MIN`, `RL_UPLOADS_PER_MIN`, `RL_UPLOAD_STATUS_PER_MIN`, `RL_HEALTH_PER_MIN`, `RL_METRICS_PER_MIN` – per-minute request ceilings enforced by the in-memory token bucket. Pair each limit with the corresponding `*_WINDOW_SEC` variable to tune the refill window (defaults to 60 seconds).
 - `SUPABASE_URL`, `SUPABASE_KEY` – optional credentials for the Supabase project that receives OpenAI token usage events. When configured the bot mirrors SQLite usage rows into the `token_usage` table for centralized analytics, storing `bot`, `model`, prompt/completion/total token counts, `request_id`, `endpoint` (`responses`), strictly JSON-serialized `meta` and timestamp `at` in UTC ISO8601. Each Supabase call also emits a structured `log_token_usage` record – identical for successes and failures – so log shippers can archive the same payloads even when Supabase is unreachable.
 
 ### External services

@@ -31,6 +31,7 @@ from api.security import (
     _normalize_path,
     create_hmac_middleware,
 )
+from api.rate_limit import create_rate_limit_middleware
 from api.uploads import (
     UploadMetricsRecorder,
     UploadsConfig,
@@ -38,7 +39,7 @@ from api.uploads import (
     setup_upload_routes,
 )
 from data_access import DataAccess, create_device, insert_upload, set_upload_status
-from main import SlidingWindowRateLimiter, apply_migrations
+from main import apply_migrations
 from jobs import JobQueue
 from openai_client import OpenAIResponse
 from storage import LocalStorage
@@ -198,9 +199,9 @@ class UploadTestEnv:
         await jobs.start()
         self.jobs = jobs
 
-        app = web.Application(middlewares=[create_hmac_middleware(conn)])
-        app['upload_rate_limiter'] = SlidingWindowRateLimiter(20, 60)
-        app['upload_status_rate_limiter'] = SlidingWindowRateLimiter(5, 1)
+        app = web.Application(
+            middlewares=[create_hmac_middleware(conn), create_rate_limit_middleware()]
+        )
         config = UploadsConfig(
             max_upload_mb=max_upload_mb,
             assets_channel_id=assets_channel_id,

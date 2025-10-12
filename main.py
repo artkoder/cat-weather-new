@@ -25,7 +25,6 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from typing import Any, BinaryIO, Iterable, Mapping, Sequence, TYPE_CHECKING, Callable
-from collections import deque
 from uuid import uuid4
 
 from aiohttp import web, ClientSession, FormData
@@ -53,9 +52,11 @@ from api.uploads import (
     setup_upload_routes,
 )
 from api.security import create_hmac_middleware
+from api.rate_limit import TokenBucketLimiter, create_rate_limit_middleware
 from observability import (
     observe_health_latency,
     observability_middleware,
+    record_rate_limit_drop,
     setup_logging,
     metrics_handler,
 )
@@ -114,6 +115,17 @@ APP_VERSION = os.getenv("APP_VERSION") or _read_version_from_changelog()
 # persists across deployments unless DB_PATH is explicitly overridden.
 def _env_flag(value: str) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.warning("Invalid %s=%s, defaulting to %s", name, raw, default)
+        return default
 
 
 DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
@@ -230,34 +242,6 @@ WEATHER_ALLOWED_VALUES: set[str] = {
 
 _PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _PAIRING_DEFAULT_NAME = "Android"
-_ATTACH_RATE_LIMIT = 10
-_ATTACH_RATE_WINDOW_SECONDS = 60
-
-
-class SlidingWindowRateLimiter:
-    """Simple in-memory limiter using a sliding time window."""
-
-    def __init__(self, limit: int, window_seconds: int) -> None:
-        self._limit = max(0, int(limit))
-        self._window = max(0, int(window_seconds))
-        self._hits: dict[str, deque[float]] = {}
-        self._lock = asyncio.Lock()
-
-    async def allow(self, key: str) -> bool:
-        """Return True when the request should proceed for the given key."""
-
-        if self._limit == 0:
-            return False
-        now = time.monotonic()
-        window_start = now - self._window
-        async with self._lock:
-            bucket = self._hits.setdefault(key, deque())
-            while bucket and bucket[0] <= window_start:
-                bucket.popleft()
-            if len(bucket) >= self._limit:
-                return False
-            bucket.append(now)
-            return True
 
 MARINE_TAG_SYNONYMS: set[str] = {
     "sea",
@@ -12760,7 +12744,7 @@ async def ensure_webhook(bot: Bot, base_url: str):
 async def attach_device(request: web.Request) -> web.Response:
     app = request.app
     bot: Bot = app['bot']
-    limiter: SlidingWindowRateLimiter = app['attach_rate_limiter']
+    user_limiter: TokenBucketLimiter = app['attach_user_rate_limiter']
 
     try:
         payload = await request.json()
@@ -12777,12 +12761,6 @@ async def attach_device(request: web.Request) -> web.Response:
         return web.json_response({'error': 'invalid_or_expired_code'}, status=400)
 
     ip = request.remote or 'unknown'
-    if not await limiter.allow(f'ip:{ip}'):
-        logging.warning('DEVICE attach rate-limit ip=%s', ip)
-        return web.json_response(
-            {'error': 'rate_limited', 'message': 'Too many attempts. Try again later.'},
-            status=429,
-        )
 
     conn = bot.db
     now_iso = datetime.utcnow().isoformat()
@@ -12797,12 +12775,17 @@ async def attach_device(request: web.Request) -> web.Response:
     row = cur.fetchone()
     if row:
         user_for_limit = int(row['user_id']) if isinstance(row, sqlite3.Row) else int(row[0])
-        if not await limiter.allow(f'user:{user_for_limit}'):
+        if not await user_limiter.allow(f'user:{user_for_limit}'):
             logging.warning('DEVICE attach user rate-limit user=%s ip=%s', user_for_limit, ip)
-            return web.json_response(
-                {'error': 'rate_limited', 'message': 'Too many attempts. Try again later.'},
-                status=429,
-            )
+            request['rate_limit_log'] = {
+                'result': 'hit',
+                'scope': 'user',
+                'limit': user_limiter.capacity,
+                'window': user_limiter.window,
+                'key': f'user:{user_for_limit}',
+            }
+            record_rate_limit_drop('/v1/devices/attach', 'user')
+            return web.json_response({'error': 'rate_limited'}, status=429)
 
     with conn:
         info = consume_pairing_token(conn, code=code)
@@ -12866,11 +12849,10 @@ def create_app():
     app['bot'] = bot
     app['started_at'] = datetime.now(timezone.utc)
     app['version'] = APP_VERSION
-    app['attach_rate_limiter'] = SlidingWindowRateLimiter(
-        _ATTACH_RATE_LIMIT, _ATTACH_RATE_WINDOW_SECONDS
+    app['attach_user_rate_limiter'] = TokenBucketLimiter(
+        _env_int('RL_ATTACH_USER_PER_MIN', 3),
+        _env_int('RL_ATTACH_USER_WINDOW_SEC', 60),
     )
-    app['upload_rate_limiter'] = SlidingWindowRateLimiter(20, 60)
-    app['upload_status_rate_limiter'] = SlidingWindowRateLimiter(5, 1)
 
     uploads_config = load_uploads_config()
     storage = create_storage_from_env(supabase=bot.supabase)
@@ -12913,6 +12895,7 @@ def create_app():
 
     app.middlewares.append(observability_middleware)
     app.middlewares.append(create_hmac_middleware(bot.db))
+    app.middlewares.append(create_rate_limit_middleware())
 
     app.router.add_post('/webhook', handle_webhook)
     app.router.add_get('/v1/health', health_handler)

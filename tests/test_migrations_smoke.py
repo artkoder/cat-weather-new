@@ -38,9 +38,21 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
         assert "uq_uploads_device_idempotency" in upload_indexes
         assert "idx_uploads_device" in upload_indexes
         assert "idx_uploads_status" in upload_indexes
+        upload_columns = conn.execute("PRAGMA table_info('uploads')").fetchall()
+        assert any(row[1] == "source" for row in upload_columns)
+        upload_sql_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='uploads'"
+        ).fetchone()
+        assert upload_sql_row is not None and "CHECK (source IN ('mobile','telegram'))" in upload_sql_row[0]
         asset_indexes = _index_names(conn, "assets")
         assert "idx_assets_upload_id" in asset_indexes
         assert "idx_assets_created_at" in asset_indexes
+        asset_columns = conn.execute("PRAGMA table_info('assets')").fetchall()
+        assert any(row[1] == "source" for row in asset_columns)
+        asset_sql_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='assets'"
+        ).fetchone()
+        assert asset_sql_row is not None and "CHECK (source IN ('mobile','telegram'))" in asset_sql_row[0]
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row

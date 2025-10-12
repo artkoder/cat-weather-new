@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from main import create_app, Bot
-from data_access import create_device
+from data_access import create_device, insert_upload, set_upload_status
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 os.environ.setdefault("WEBHOOK_URL", "https://example.com")
@@ -367,6 +367,76 @@ async def test_mobile_command_and_callbacks(tmp_path):
         ("dev-2",),
     ).fetchone()["secret"]
     assert new_secret != old_secret
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_mobile_stats_command(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    calls: list[tuple[str, Any]] = []
+
+    async def dummy_api(method, data=None):
+        calls.append((method, data))
+        return {"ok": True, "result": {}}
+
+    bot.api_request = dummy_api  # type: ignore
+    await bot.start()
+
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+
+    with bot.db:
+        create_device(
+            bot.db,
+            device_id="dev-1",
+            user_id=1,
+            name="Primary Phone",
+            secret="secret-1",
+        )
+        create_device(
+            bot.db,
+            device_id="dev-2",
+            user_id=1,
+            name="Backup",
+            secret="secret-2",
+        )
+
+        def _record(device_id: str, key: str, days: int) -> None:
+            upload_id = insert_upload(
+                bot.db,
+                id=f"{device_id}-{key}",
+                device_id=device_id,
+                idempotency_key=f"key-{device_id}-{key}",
+                file_ref=f"file-{key}",
+            )
+            set_upload_status(bot.db, id=upload_id, status="processing")
+            set_upload_status(bot.db, id=upload_id, status="done")
+            stamp = (datetime.utcnow() - timedelta(days=days)).isoformat()
+            bot.db.execute(
+                "UPDATE uploads SET created_at=?, updated_at=? WHERE id=?",
+                (stamp, stamp, upload_id),
+            )
+
+        _record("dev-1", "today", 0)
+        _record("dev-1", "recent", 3)
+        _record("dev-1", "month", 20)
+        _record("dev-2", "old", 40)
+
+    calls.clear()
+    await bot.handle_update({"message": {"text": "/mobile_stats", "from": {"id": 1}}})
+
+    assert calls, "mobile stats should send a message"
+    method, payload = calls[-1]
+    assert method == "sendMessage"
+    text = payload["text"]
+    assert "Total: 4" in text
+    assert "Today: 1" in text
+    assert "7d: 2" in text
+    assert "30d: 3" in text
+    assert "Top devices" in text
+    assert "Primary Phone" in text and "— 3" in text
+    assert "Backup" in text and "— 1" in text
 
     await bot.close()
 

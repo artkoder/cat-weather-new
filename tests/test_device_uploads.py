@@ -64,6 +64,8 @@ def test_insert_upload_enforces_idempotency_per_device(conn: sqlite3.Connection)
     assert second == "upload-1"
     count = conn.execute("SELECT COUNT(*) FROM uploads").fetchone()[0]
     assert count == 1
+    row = conn.execute("SELECT source FROM uploads WHERE id=?", (first,)).fetchone()
+    assert row is not None and row["source"] == "mobile"
 
 
 def test_pairing_token_expires(conn: sqlite3.Connection) -> None:
@@ -152,6 +154,9 @@ def test_link_upload_asset_updates_row(conn: sqlite3.Connection) -> None:
         height=20,
     )
 
+    asset = data.get_asset(asset_id)
+    assert asset is not None and asset.source == "mobile"
+
     link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)
     row = _get_upload(conn, upload_id)
     assert row["asset_id"] == asset_id
@@ -185,3 +190,20 @@ def test_asset_file_id_falls_back_to_file_ref(conn: sqlite3.Connection) -> None:
     assert asset.payload == {}
     assert asset.file_ref == file_ref
     assert asset.file_id == file_ref
+    assert asset.source == "mobile"
+
+
+def test_save_asset_defaults_to_telegram_source(conn: sqlite3.Connection) -> None:
+    data = DataAccess(conn)
+    asset_id = data.save_asset(
+        channel_id=-100,
+        message_id=42,
+        template=None,
+        hashtags="#cats",
+        tg_chat_id=-100,
+        caption="test",
+        kind="photo",
+    )
+    asset = data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.source == "telegram"

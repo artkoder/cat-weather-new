@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import Any
 
 import copy
+import hashlib
 import piexif
 import pytest
 import sqlite3
 from PIL import Image
+
+import observability
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from data_access import create_device, insert_upload
@@ -878,6 +881,81 @@ async def test_photo_triggers_ingest_and_vision(tmp_path, caplog):
     vision_log = any('queued for vision job' in rec.message for rec in caplog.records)
     assert ingest_log and vision_log
     assert any('reason=new_message' in msg for msg in ingest_messages)
+    await bot.close()
+
+
+@pytest.mark.asyncio
+
+async def test_mobile_ingest_increments_metric(tmp_path):
+    bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
+
+    async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
+        return {'ok': True, 'result': {}}
+
+    bot.api_request = fake_api  # type: ignore[assignment]
+
+    image_path = tmp_path / 'mobile.jpg'
+    img = Image.new('RGB', (32, 32), color='blue')
+    img.save(image_path, format='JPEG')
+    file_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()
+
+    with bot.db:
+        create_device(
+            bot.db,
+            device_id='dev-1',
+            user_id=1,
+            name='Test Device',
+            secret='secret',
+        )
+        upload_id = insert_upload(
+            bot.db,
+            id='upload-1',
+            device_id='dev-1',
+            idempotency_key='key-1',
+            file_ref='mobile-file',
+        )
+
+    asset_id = bot.data.create_asset(
+        upload_id=upload_id,
+        file_ref='mobile-file',
+        content_type='image/jpeg',
+        sha256=file_hash,
+        width=32,
+        height=32,
+    )
+    bot.data.update_asset(asset_id, kind='photo')
+
+    async def fake_download(self, file_id, dest_path=None):  # type: ignore[override]
+        assert dest_path is not None
+        destination = Path(dest_path)
+        destination.write_bytes(image_path.read_bytes())
+        return destination
+
+    bot._download_file = types.MethodType(fake_download, bot)  # type: ignore[attr-defined]
+
+    def _metric_value() -> float:
+        sample = observability._MOBILE_PHOTOS_TOTAL._samples.get(())
+        return float(sample.value) if sample is not None else 0.0
+
+    initial = _metric_value()
+
+    job = Job(
+        id=1,
+        name='ingest',
+        payload={'asset_id': asset_id},
+        status='queued',
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_ingest(job)
+
+    final = _metric_value()
+    assert final == initial + 1
+
     await bot.close()
 
 

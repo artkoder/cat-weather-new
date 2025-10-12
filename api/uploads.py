@@ -20,6 +20,7 @@ from aiohttp import web
 from data_access import (
     DataAccess,
     fetch_upload_record,
+    get_device,
     get_upload,
     insert_upload,
     link_upload_asset,
@@ -39,16 +40,10 @@ from supabase_client import SupabaseClient
 
 
 from ingestion import (
-    IngestionCallbacks,
-    IngestionContext,
-    IngestionFile,
-    IngestionInputs,
-    IngestionVisionConfig,
-    MetricsEmitter,
-    extract_image_metadata as _extract_image_metadata,
-    TokenUsagePayload,
     TelegramClient,
+    UploadIngestionContext,
     UploadMetricsRecorder,
+    extract_image_metadata as _extract_image_metadata,
     ingest_photo,
 )
 
@@ -405,61 +400,51 @@ def register_upload_jobs(
 
                     download = await _download_from_storage(storage, key=str(file_ref))
                     try:
-                        vision_config = IngestionVisionConfig(
-                            enabled=uploads_config.vision_enabled,
-                            model=uploads_config.openai_vision_model,
-                        )
+                        device_id_value = record.get("device_id")
+                        device_user_id: int | None = None
+                        if device_id_value:
+                            device_row = get_device(conn, device_id=str(device_id_value))
+                            if device_row:
+                                raw_user = None
+                                try:
+                                    raw_user = device_row["user_id"]  # type: ignore[index]
+                                except (KeyError, TypeError):
+                                    try:
+                                        raw_user = device_row[1]  # type: ignore[index]
+                                    except Exception:
+                                        raw_user = None
+                                if raw_user is not None:
+                                    try:
+                                        device_user_id = int(raw_user)
+                                    except (TypeError, ValueError):
+                                        device_user_id = None
 
-                        ingestion_inputs = IngestionInputs(
-                            source="upload",
-                            channel_id=uploads_config.assets_channel_id,
-                            file=IngestionFile(path=download.path, cleanup=download.cleanup),
+                        ingestion_context = UploadIngestionContext(
                             upload_id=upload_id,
-                            file_ref=str(file_ref),
+                            storage_key=str(file_ref),
+                            metrics=metrics_recorder,
+                            source="mobile",
+                            device_id=str(device_id_value) if device_id_value else None,
+                            user_id=device_user_id,
                             job_id=job.id,
                             job_name=job.name,
-                            telemetry={"upload_id": upload_id, "job": job.name},
-                            max_image_side=uploads_config.max_image_side,
-                            vision=vision_config,
-                        )
-
-                        def _log_tokens(payload: TokenUsagePayload) -> None:
-                            model = payload.get("model")
-                            if not model:
-                                return
-                            data.log_token_usage(
-                                model,
-                                payload.get("prompt_tokens"),
-                                payload.get("completion_tokens"),
-                                payload.get("total_tokens"),
-                                job_id=payload.get("job_id"),
-                                request_id=payload.get("request_id"),
-                            )
-
-                        ingestion_context = IngestionContext(
-                            telegram=telegram,
-                            metrics=metrics_recorder,
-                            openai=openai,
-                            supabase=supabase,
-                            token_logger=_log_tokens,
-                        )
-
-                        ingestion_callbacks = IngestionCallbacks(
-                            create_asset=lambda payload: data.create_asset(**payload),
-                            link_upload_asset=lambda asset_id: link_upload_asset(
-                                conn, upload_id=upload_id, asset_id=asset_id
-                            ),
                         )
 
                         result = await ingest_photo(
-                            ingestion_inputs,
-                            ingestion_context,
-                            ingestion_callbacks,
+                            data=data,
+                            telegram=telegram,
+                            openai=openai,
+                            supabase=supabase,
+                            config=uploads_config,
+                            context=ingestion_context,
+                            file_path=download.path,
+                            cleanup_file=download.cleanup,
                         )
 
                         asset_id = result.asset_id
                         if not asset_id:
                             raise RuntimeError("asset creation failed for upload")
+                        link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)
                         logging.info(
                             "UPLOAD asset stored upload=%s asset=%s sha=%s mime=%s",
                             upload_id,

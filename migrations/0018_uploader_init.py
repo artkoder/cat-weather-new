@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS uploads (
   status          TEXT NOT NULL CHECK (status IN ('queued','processing','failed','done')),
   error           TEXT,
   file_ref        TEXT,
+  asset_id        TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -69,6 +70,7 @@ EXPECTED_COLUMNS = {
         "status",
         "error",
         "file_ref",
+        "asset_id",
         "created_at",
         "updated_at",
     },

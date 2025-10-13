@@ -26,7 +26,6 @@ from dataclasses import dataclass, replace
 
 from typing import Any, BinaryIO, Iterable, Mapping, Sequence, TYPE_CHECKING, Callable
 from uuid import uuid4
-from urllib.parse import parse_qs, urlparse
 
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -62,6 +61,7 @@ from api.uploads import (
     setup_upload_routes,
 )
 from api.security import create_hmac_middleware
+from api.pairing import PairingTokenError, normalize_pairing_token
 from api.rate_limit import TokenBucketLimiter, create_rate_limit_middleware
 from observability import (
     context,
@@ -1045,7 +1045,7 @@ class Bot:
             await self.api_request("sendMessage", payload)
 
     def _render_pairing_qr(self, code: str) -> io.BytesIO:
-        payload_text = f"PAIR:{code}"
+        payload_text = f"catweather://pair?token={code}"
         if qrcode is not None:
             qr_image = qrcode.make(payload_text)
         else:
@@ -13421,30 +13421,24 @@ async def attach_device(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({'error': 'invalid_payload'}, status=400)
 
-    raw_code = payload.get('code')
-    normalized_code = str(raw_code or '').strip()
+    if not isinstance(payload, dict):
+        return web.json_response({'error': 'invalid_payload'}, status=400)
 
-    if normalized_code.upper().startswith('PAIR:'):
-        normalized_code = normalized_code[5:]
-    elif normalized_code.lower().startswith('catweather://'):
-        try:
-            parsed = urlparse(normalized_code)
-        except ValueError:
-            normalized_code = ''
-        else:
-            if parsed.scheme == 'catweather' and parsed.netloc.lower() == 'pair':
-                code_values = parse_qs(parsed.query).get('code', [''])
-                normalized_code = code_values[0]
-            else:
-                normalized_code = ''
+    try:
+        code = normalize_pairing_token(payload)
+    except PairingTokenError as exc:
+        logging.warning(
+            'DEVICE attach invalid token ip=%s reason=%s',
+            request.remote,
+            exc.message,
+        )
+        return web.json_response(
+            {'error': 'invalid_token', 'message': exc.message},
+            status=400,
+        )
 
-    code = normalized_code.strip().upper()
     raw_name = payload.get('name')
     provided_name = str(raw_name).strip() if isinstance(raw_name, str) else ''
-
-    if not code or not re.fullmatch(r'[A-Z2-9]{6,8}', code):
-        logging.warning('DEVICE attach invalid format ip=%s', request.remote)
-        return web.json_response({'error': 'invalid_or_expired_code'}, status=400)
 
     ip = request.remote or 'unknown'
 
@@ -13513,9 +13507,11 @@ async def attach_device(request: web.Request) -> web.Response:
         )
     return web.json_response(
         {
-            'id': device_id,
+            'device_id': device_id,
+            'device_secret': secret,
+            'id': device_id,  # deprecated: remove after 2024-12 client sunset
+            'secret': secret,  # deprecated: remove after 2024-12 client sunset
             'name': effective_name,
-            'secret': secret,
         }
     )
 

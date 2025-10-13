@@ -9,9 +9,11 @@ Closes #123.
 
 ## API Contract
 
-The backend consumes the public API contract via the `api/contract` git submodule pinned to the release tag `v1.0.0`. The
+The backend consumes the public API contract via the `api/contract` git submodule pinned to the release tag `v1.0.0` (commit `d5820228`). The
 canonical OpenAPI document lives at `api/contract/openapi/openapi.yaml`; keep the repository free from alternative copies so the
 contract stays single-sourced.
+
+> ⚠️  The new token-based device-attach contract lives in the contract repository but the backend submodule intentionally stays on `d5820228` until the dedicated follow-up task bumps it. To finish the rollout later, follow the steps below and checkout the commit (or tag) that contains the updated OpenAPI before staging `api/contract`.
 
 ### Bumping the contract version
 
@@ -82,7 +84,7 @@ The job queue starts a periodic cleanup task that runs every five minutes. It pu
 ### Mobile pairing QR codes
 
 - The `/mobile` command posts a pairing card with a QR code so testers can attach new devices without copying the code manually.
-- The QR payload encodes the literal string `PAIR:<CODE>`; clients should continue to accept that legacy format even if the mobile app also supports a deeplink variant (for example `catweather://pair?code=<CODE>`).
+- The QR payload now encodes the deeplink `catweather://pair?token=<CODE>`; clients should continue to accept legacy values like `PAIR:<CODE>` or `catweather://pair?code=<CODE>` for backward compatibility.
 - The `/v1/devices/attach` endpoint accepts any of these payloads as well as a bare code, so operators can paste whichever string they received from the QR dialog without manual cleanup.
 - Regenerating the card via the inline "🔄 Новый код" button follows the same format and preserves the default expiry window shown in the caption.
 

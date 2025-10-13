@@ -212,14 +212,14 @@ def _run_helper_create_pairing(
 def _attach_device(client: httpx.Client, base_url: str, code: str, device_name: str) -> DeviceCredentials:
     url = f"{base_url}/devices/attach"
     _log("Calling /devices/attach")
-    response = client.post(url, json={"code": code, "name": device_name})
+    response = client.post(url, json={"token": code, "name": device_name})
     if response.status_code != 200:
         raise RuntimeError(
             f"Attach failed with HTTP {response.status_code}: {response.text.strip()}"
         )
     payload = response.json()
-    device_id = payload.get("id")
-    secret = payload.get("secret")
+    device_id = payload.get("device_id") or payload.get("id")
+    secret = payload.get("device_secret") or payload.get("secret")
     if not device_id or not secret:
         raise RuntimeError("Attach response missing device credentials")
     name = payload.get("name") or device_name

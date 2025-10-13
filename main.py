@@ -7,7 +7,6 @@ import contextlib
 import html
 import json
 import logging
-import base64
 import math
 import mimetypes
 import os
@@ -17,6 +16,7 @@ import sqlite3
 import tempfile
 import time
 import unicodedata
+import secrets
 from time import perf_counter
 from copy import deepcopy
 from datetime import datetime, date, timedelta, timezone, time as dtime
@@ -13484,7 +13484,7 @@ async def attach_device(request: web.Request) -> web.Response:
             provided_name or str(default_name or '').strip() or _PAIRING_DEFAULT_NAME
         )
         device_id = str(uuid4())
-        secret = base64.urlsafe_b64encode(os.urandom(32)).decode('utf-8').rstrip('=')
+        secret = secrets.token_hex(32)
         create_device(
             conn,
             device_id=device_id,

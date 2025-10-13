@@ -26,6 +26,7 @@ from dataclasses import dataclass, replace
 
 from typing import Any, BinaryIO, Iterable, Mapping, Sequence, TYPE_CHECKING, Callable
 from uuid import uuid4
+from urllib.parse import parse_qs, urlparse
 
 from aiohttp import web, ClientSession, FormData
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -13406,7 +13407,23 @@ async def attach_device(request: web.Request) -> web.Response:
         return web.json_response({'error': 'invalid_payload'}, status=400)
 
     raw_code = payload.get('code')
-    code = str(raw_code or '').strip().upper()
+    normalized_code = str(raw_code or '').strip()
+
+    if normalized_code.upper().startswith('PAIR:'):
+        normalized_code = normalized_code[5:]
+    elif normalized_code.lower().startswith('catweather://'):
+        try:
+            parsed = urlparse(normalized_code)
+        except ValueError:
+            normalized_code = ''
+        else:
+            if parsed.scheme == 'catweather' and parsed.netloc.lower() == 'pair':
+                code_values = parse_qs(parsed.query).get('code', [''])
+                normalized_code = code_values[0]
+            else:
+                normalized_code = ''
+
+    code = normalized_code.strip().upper()
     raw_name = payload.get('name')
     provided_name = str(raw_name).strip() if isinstance(raw_name, str) else ''
 

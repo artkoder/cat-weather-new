@@ -67,6 +67,51 @@ async def test_attach_device_success(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'submitted_code, token_code, user_id',
+    [
+        ('PAIR:WWF5LL', 'WWF5LL', 202),
+        ('catweather://pair?code=TR7X9Z', 'TR7X9Z', 303),
+    ],
+)
+async def test_attach_device_accepts_prefixed_payloads(
+    tmp_path, submitted_code, token_code, user_id
+):
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    bot.set_asset_channel(54321)
+    await bot.start()
+
+    create_pairing_token(bot.db, code=token_code, user_id=user_id, device_name='Office Pixel')
+    bot.db.commit()
+
+    app = await _make_app(bot)
+
+    async with TestServer(app) as server:
+        async with TestClient(server) as client:
+            resp = await client.post('/v1/devices/attach', json={'code': submitted_code})
+            payload = await resp.json()
+
+    assert resp.status == 200
+    assert payload['name'] == 'Office Pixel'
+    assert payload['id']
+    assert payload['secret']
+
+    row = bot.db.execute(
+        'SELECT user_id, name FROM devices WHERE id=?', (payload['id'],)
+    ).fetchone()
+    assert row is not None
+    assert row['user_id'] == user_id
+    assert row['name'] == 'Office Pixel'
+
+    token_row = bot.db.execute(
+        'SELECT used_at FROM pairing_tokens WHERE code=?', (token_code,)
+    ).fetchone()
+    assert token_row is not None and token_row['used_at'] is not None
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_attach_device_emits_mobile_log(tmp_path, caplog):
     caplog.set_level(logging.INFO)
 

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import logging
 import os
+import re
 
 import pytest
 from aiohttp import web
@@ -48,7 +49,7 @@ async def test_attach_device_success(tmp_path):
     assert payload['name'] == 'Pixel 8'
     assert payload['id']
     assert payload['secret']
-    assert '=' not in payload['secret']
+    assert re.fullmatch(r'[0-9a-f]{64}', payload['secret'])
 
     row = bot.db.execute(
         'SELECT user_id, name, secret FROM devices WHERE id=?', (payload['id'],)
@@ -95,6 +96,7 @@ async def test_attach_device_accepts_prefixed_payloads(
     assert payload['name'] == 'Office Pixel'
     assert payload['id']
     assert payload['secret']
+    assert re.fullmatch(r'[0-9a-f]{64}', payload['secret'])
 
     row = bot.db.execute(
         'SELECT user_id, name FROM devices WHERE id=?', (payload['id'],)

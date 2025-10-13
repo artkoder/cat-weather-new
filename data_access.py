@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import importlib.util
 import json
 import logging
@@ -2452,9 +2451,7 @@ def rotate_device_secret(
         name = str(row[1] or "")
     if expected_user_id is not None and user_id != expected_user_id:
         return None
-    secret = (
-        base64.urlsafe_b64encode(os.urandom(32)).decode("utf-8").rstrip("=")
-    )
+    secret = secrets.token_hex(32)
     create_device(
         conn,
         device_id=device_id,

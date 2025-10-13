@@ -13238,6 +13238,10 @@ class Bot:
             pass
 
 
+async def privet_handler(request: web.Request) -> web.Response:
+    return web.Response(text="Привет")
+
+
 async def health_handler(request: web.Request) -> web.Response:
     bot: Bot = request.app["bot"]
     started_at: datetime = request.app["started_at"]
@@ -13580,6 +13584,7 @@ def create_app():
     app.middlewares.append(create_rate_limit_middleware())
 
     app.router.add_post('/webhook', handle_webhook)
+    app.router.add_get('/privet', privet_handler)
     app.router.add_get('/v1/health', health_handler)
     app.router.add_post('/v1/devices/attach', attach_device)
     app.router.add_get('/metrics', metrics_handler)

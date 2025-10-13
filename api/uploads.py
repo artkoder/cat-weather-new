@@ -7,7 +7,7 @@ import logging
 import os
 import tempfile
 from collections.abc import AsyncIterator, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ContextManager
@@ -20,6 +20,7 @@ from aiohttp import web
 from data_access import (
     DataAccess,
     fetch_upload_record,
+    get_asset_channel_id,
     get_device,
     get_upload,
     insert_upload,
@@ -108,7 +109,7 @@ class UploadsConfig:
     max_upload_mb: float = 10.0
     allowed_prefixes: tuple[str, ...] = ("image/",)
     allowed_exact: tuple[str, ...] = ("application/pdf",)
-    assets_channel_id: int = 0
+    assets_channel_id: int | None = None
     vision_enabled: bool = False
     openai_vision_model: str | None = None
     max_image_side: int | None = None
@@ -127,14 +128,6 @@ def load_uploads_config() -> UploadsConfig:
     except ValueError:
         logging.warning("Invalid MAX_UPLOAD_MB=%s, defaulting to 10 MB", raw_max_upload)
         max_upload_mb = 10.0
-
-    channel_raw = os.getenv("ASSETS_CHANNEL_ID")
-    if not channel_raw:
-        raise RuntimeError("ASSETS_CHANNEL_ID is not configured")
-    try:
-        assets_channel_id = int(channel_raw)
-    except ValueError as exc:  # pragma: no cover - defensive
-        raise RuntimeError(f"Invalid ASSETS_CHANNEL_ID={channel_raw}") from exc
 
     vision_enabled = _env_bool("VISION_ENABLED", False)
     model_raw = os.getenv("OPENAI_VISION_MODEL")
@@ -160,7 +153,6 @@ def load_uploads_config() -> UploadsConfig:
 
     return UploadsConfig(
         max_upload_mb=max_upload_mb,
-        assets_channel_id=assets_channel_id,
         vision_enabled=vision_enabled,
         openai_vision_model=openai_vision_model,
         max_image_side=max_image_side,
@@ -243,6 +235,20 @@ async def handle_create_upload(request: web.Request) -> web.Response:
 
     conn = _ensure_db(request.app)
     config = _ensure_config(request.app)
+
+    asset_channel_id = get_asset_channel_id(conn)
+    if asset_channel_id is None:
+        logging.error(
+            "MOBILE_UPLOAD_CHANNEL_MISSING - установите канал в БД",
+            extra={
+                "device_id": device_id,
+                "source": "mobile",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return web.json_response({"error": "asset_channel_not_configured"}, status=503)
+
+    config = replace(config, assets_channel_id=asset_channel_id)
 
     reader = await request.multipart()
     file_part = None
@@ -395,6 +401,7 @@ def register_upload_jobs(
                 logging.info("UPLOAD job start upload=%s", upload_id)
                 device_id_str: str | None = None
                 size_bytes: int | None = None
+                asset_channel_id: int | None = None
                 try:
                     processed_path: Path | None = None
                     processed_cleanup = False
@@ -415,11 +422,37 @@ def register_upload_jobs(
                     if not file_ref:
                         raise RuntimeError("upload missing file_ref")
 
+                    device_id_value = record.get("device_id")
+                    if device_id_value:
+                        device_id_str = str(device_id_value)
+
+                    asset_channel_id = get_asset_channel_id(conn)
+                    if asset_channel_id is None:
+                        logging.error(
+                            "MOBILE_UPLOAD_CHANNEL_MISSING - установите канал в БД",
+                            extra={
+                                "upload_id": upload_id,
+                                "device_id": device_id_str,
+                                "source": "mobile",
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                        )
+                        set_upload_status(
+                            conn,
+                            id=upload_id,
+                            status="failed",
+                            error="asset_channel_not_configured",
+                        )
+                        record_upload_status_change()
+                        conn.commit()
+                        metrics_recorder.record_process_failure()
+                        record_job_processed("process_upload", "failed")
+                        return
+
+                    job_config = replace(uploads_config, assets_channel_id=asset_channel_id)
+
                     download = await _download_from_storage(storage, key=str(file_ref))
                     try:
-                        device_id_value = record.get("device_id")
-                        if device_id_value:
-                            device_id_str = str(device_id_value)
                         device_user_id: int | None = None
                         if device_id_value:
                             device_row = get_device(conn, device_id=str(device_id_value))
@@ -459,7 +492,7 @@ def register_upload_jobs(
                                 telegram=telegram,
                                 openai=openai,
                                 supabase=supabase,
-                                config=uploads_config,
+                                config=job_config,
                                 context=ingestion_context,
                                 file_path=download.path,
                                 cleanup_file=download.cleanup,
@@ -507,6 +540,8 @@ def register_upload_jobs(
                             extra={
                                 "upload_id": upload_id,
                                 "device_id": device_id_str,
+                                "tg_chat_id": asset_channel_id,
+                                "source": "mobile",
                                 "size_bytes": size_bytes,
                                 "timestamp": datetime.now(timezone.utc).isoformat(),
                             },

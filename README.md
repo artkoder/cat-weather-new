@@ -159,7 +159,6 @@ Replace `/data/bot.db` with the desired SQLite path (for local development you c
 | `CLEANUP_LOCAL_AFTER_PUBLISH` | `0` | When truthy and `STORAGE_BACKEND=local`, the mobile pipeline deletes the original upload once publishing finishes. Remote storage backends already purge their temporary downloads automatically, and Supabase uploads are unaffected by this flag. |
 | `TZ_OFFSET` | `+00:00` | Default timezone applied to schedules until users pick their own offset. |
 | `SCHED_INTERVAL_SEC` | `30` | Polling cadence for the scheduler loop. |
-| `ASSETS_CHANNEL_ID` | – | Telegram channel ID where the upload worker publishes newly ingested assets. Without it uploads stay queued forever because the processor cannot send previews. |
 | `ASSETS_DEBUG_EXIF` | `0` | When truthy, replies to recognized messages with a raw EXIF dump for debugging. |
 | `VISION_ENABLED` | – | Toggles the OpenAI vision classification step for new uploads. When disabled the job skips recognition entirely. |
 | `OPENAI_VISION_MODEL` | – | Model passed to the OpenAI Responses API for vision classification. Required whenever `VISION_ENABLED` is truthy. |
@@ -172,6 +171,8 @@ Replace `/data/bot.db` with the desired SQLite path (for local development you c
 | `ALLOWLIST_CIDR` | – | Comma-separated CIDR ranges allowed to call `/metrics` (and `/_admin` when present). Requests from outside the allow-list receive `403`. |
 | `RL_ATTACH_IP_PER_MIN`<br>`RL_ATTACH_USER_PER_MIN`<br>`RL_UPLOADS_PER_MIN`<br>`RL_UPLOAD_STATUS_PER_MIN`<br>`RL_HEALTH_PER_MIN`<br>`RL_METRICS_PER_MIN` | varies | Per-minute request ceilings enforced by the in-memory token bucket. Pair each limit with the corresponding `*_WINDOW_SEC` variable (defaults to 60 seconds) to tune the refill window. |
 | `SUPABASE_URL`<br>`SUPABASE_KEY` (or `SUPABASE_ANON_KEY`) | – | Supabase credentials. When set, the bot mirrors OpenAI token usage into `rest/v1/token_usage` **and** powers the Supabase storage backend for mobile uploads via `SUPABASE_BUCKET`. Each request logs a `log_token_usage` entry regardless of success. |
+
+> ℹ️  Configure the Telegram channel for asset ingestion via the admin bot (for example `/set_weather_assets_channel`). The value is stored in the database (`asset_channel` table) and there is no environment variable override.
 
 ### External services
 - **Nominatim** – the bot queries `https://nominatim.openstreetmap.org/reverse` and rate-limits calls to one request per second. Set `User-Agent` friendly values in the code if you fork, and consider running your own Nominatim instance for higher throughput.

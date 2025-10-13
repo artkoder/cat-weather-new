@@ -9,7 +9,19 @@ from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from main import health_handler
+from main import apply_migrations, health_handler
+
+def _init_db(asset_channel_id: int | None = None) -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    apply_migrations(conn)
+    if asset_channel_id is not None:
+        conn.execute("DELETE FROM asset_channel")
+        conn.execute(
+            "INSERT INTO asset_channel (channel_id) VALUES (?)",
+            (asset_channel_id,),
+        )
+        conn.commit()
+    return conn
 
 
 class DummyJobs:
@@ -51,7 +63,7 @@ async def _call_health(bot: DummyBot):
 
 @pytest.mark.asyncio
 async def test_health_dry_run_skips_telegram():
-    conn = sqlite3.connect(":memory:")
+    conn = _init_db(asset_channel_id=-100500)
     bot = DummyBot(
         conn,
         DummyJobs({"pending": 1, "active": 0, "failed": 0}),
@@ -67,6 +79,7 @@ async def test_health_dry_run_skips_telegram():
     assert payload["checks"]["db"]["ok"] is True
     assert payload["checks"]["queue"]["pending"] == 1
     assert payload["checks"]["telegram"]["skipped"] is True
+    assert payload["config"]["ok"] is True
     assert "telegram check skipped" in payload["warnings"][0]
     assert not bot.calls
     conn.close()
@@ -74,7 +87,7 @@ async def test_health_dry_run_skips_telegram():
 
 @pytest.mark.asyncio
 async def test_health_successful_probe():
-    conn = sqlite3.connect(":memory:")
+    conn = _init_db(asset_channel_id=-200200)
     bot = DummyBot(
         conn,
         DummyJobs({"pending": 0, "active": 0, "failed": 0}),
@@ -88,12 +101,13 @@ async def test_health_successful_probe():
     assert payload["ok"] is True
     assert payload["warnings"] == []
     assert bot.calls == [("getMe", None)]
+    assert payload["config"]["ok"] is True
     conn.close()
 
 
 @pytest.mark.asyncio
 async def test_health_telegram_failure():
-    conn = sqlite3.connect(":memory:")
+    conn = _init_db(asset_channel_id=-300300)
     bot = DummyBot(
         conn,
         DummyJobs({"pending": 0, "active": 0, "failed": 0}),
@@ -107,4 +121,24 @@ async def test_health_telegram_failure():
     assert payload["ok"] is False
     assert payload["checks"]["telegram"]["ok"] is False
     assert payload["checks"]["telegram"]["error"] == "bad token"
+    assert payload["config"]["ok"] is True
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_health_missing_asset_channel_marks_config():
+    conn = _init_db()
+    bot = DummyBot(
+        conn,
+        DummyJobs({"pending": 0, "active": 0, "failed": 0}),
+        dry_run=False,
+        telegram_response={"ok": True},
+    )
+
+    status, payload = await _call_health(bot)
+
+    assert status == 207
+    assert payload["ok"] is True
+    assert payload["config"]["ok"] is False
+    assert payload["config"]["missing"] == ["asset_channel"]
     conn.close()

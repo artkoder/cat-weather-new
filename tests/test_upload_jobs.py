@@ -99,10 +99,17 @@ class FlakyTelegram(TelegramStub):
         return await super().send_photo(chat_id=chat_id, photo=photo, caption=caption)
 
 
-def _setup_connection() -> sqlite3.Connection:
+def _setup_connection(*, asset_channel_id: int | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     apply_migrations(conn)
+    conn.execute("DELETE FROM asset_channel")
+    if asset_channel_id is not None:
+        conn.execute(
+            "INSERT INTO asset_channel (channel_id) VALUES (?)",
+            (asset_channel_id,),
+        )
+    conn.commit()
     return conn
 
 
@@ -145,7 +152,8 @@ async def test_process_upload_job_success_records_asset(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO)
-    conn = _setup_connection()
+    channel_id = -10001
+    conn = _setup_connection(asset_channel_id=channel_id)
     data = DataAccess(conn)
     image_path = create_sample_image(tmp_path / "asset.jpg")
     file_key = "sample-key"
@@ -153,7 +161,7 @@ async def test_process_upload_job_success_records_asset(
     telegram = TelegramStub()
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn)
-    config = UploadsConfig(assets_channel_id=-10001, vision_enabled=False)
+    config = UploadsConfig(assets_channel_id=channel_id, vision_enabled=False)
     register_upload_jobs(
         queue,
         conn,
@@ -226,6 +234,7 @@ async def test_process_upload_job_success_records_asset(
     )
     assert mobile_done.upload_id == upload_id
     assert mobile_done.device_id == "device-1"
+    assert mobile_done.tg_chat_id == channel_id
     assert mobile_done.source == "mobile"
     assert mobile_done.size_bytes == image_path.stat().st_size
     assert isinstance(mobile_done.timestamp, str) and mobile_done.timestamp
@@ -233,7 +242,8 @@ async def test_process_upload_job_success_records_asset(
 
 @pytest.mark.asyncio
 async def test_process_upload_mobile_upload_increments_metric(tmp_path: Path) -> None:
-    conn = _setup_connection()
+    channel_id = -10001
+    conn = _setup_connection(asset_channel_id=channel_id)
     data = DataAccess(conn)
     image_path = create_sample_image(tmp_path / "metric.jpg")
     file_key = "metric-key"
@@ -241,7 +251,7 @@ async def test_process_upload_mobile_upload_increments_metric(tmp_path: Path) ->
     telegram = TelegramStub()
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn)
-    config = UploadsConfig(assets_channel_id=-10001, vision_enabled=False)
+    config = UploadsConfig(assets_channel_id=channel_id, vision_enabled=False)
     register_upload_jobs(
         queue,
         conn,
@@ -300,7 +310,8 @@ async def test_process_upload_job_vision_failure_sets_failed_status(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO)
-    conn = _setup_connection()
+    channel_id = -10002
+    conn = _setup_connection(asset_channel_id=channel_id)
     data = DataAccess(conn)
     image_path = create_sample_image(tmp_path / "vision.jpg")
     file_key = "vision-key"
@@ -309,7 +320,7 @@ async def test_process_upload_job_vision_failure_sets_failed_status(
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn)
     config = UploadsConfig(
-        assets_channel_id=-10002,
+        assets_channel_id=channel_id,
         vision_enabled=True,
         openai_vision_model="vision-test",
     )
@@ -363,7 +374,8 @@ async def test_process_upload_job_vision_failure_sets_failed_status(
 
 @pytest.mark.asyncio
 async def test_process_upload_job_publish_failure_sets_failed_status(tmp_path: Path) -> None:
-    conn = _setup_connection()
+    channel_id = -10003
+    conn = _setup_connection(asset_channel_id=channel_id)
     data = DataAccess(conn)
     image_path = create_sample_image(tmp_path / "publish.jpg")
     file_key = "publish-key"
@@ -371,7 +383,7 @@ async def test_process_upload_job_publish_failure_sets_failed_status(tmp_path: P
     telegram = FailingTelegram(RuntimeError("telegram down"))
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn)
-    config = UploadsConfig(assets_channel_id=-10003, vision_enabled=False)
+    config = UploadsConfig(assets_channel_id=channel_id, vision_enabled=False)
     register_upload_jobs(
         queue,
         conn,
@@ -409,7 +421,8 @@ async def test_process_upload_job_publish_failure_sets_failed_status(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_process_upload_job_retry_after_failure(tmp_path: Path) -> None:
-    conn = _setup_connection()
+    channel_id = -10005
+    conn = _setup_connection(asset_channel_id=channel_id)
     data = DataAccess(conn)
     image_path = create_sample_image(tmp_path / "retry.jpg")
     file_key = "retry-key"
@@ -417,7 +430,7 @@ async def test_process_upload_job_retry_after_failure(tmp_path: Path) -> None:
     telegram = FlakyTelegram(failures=1, error=RuntimeError("telegram glitch"))
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn)
-    config = UploadsConfig(assets_channel_id=-10005, vision_enabled=False)
+    config = UploadsConfig(assets_channel_id=channel_id, vision_enabled=False)
     register_upload_jobs(
         queue,
         conn,
@@ -481,7 +494,8 @@ async def test_process_upload_job_retry_after_failure(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_register_upload_jobs_integration_flow(tmp_path: Path) -> None:
-    conn = _setup_connection()
+    channel_id = -10004
+    conn = _setup_connection(asset_channel_id=channel_id)
     data = DataAccess(conn)
     image_path = create_sample_image(tmp_path / "integration.jpg")
     file_key = "integration-key"
@@ -489,7 +503,7 @@ async def test_register_upload_jobs_integration_flow(tmp_path: Path) -> None:
     telegram = DummyTelegram()
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn, concurrency=1, poll_interval=0.01)
-    config = UploadsConfig(assets_channel_id=-10004, vision_enabled=False)
+    config = UploadsConfig(assets_channel_id=channel_id, vision_enabled=False)
     register_upload_jobs(
         queue,
         conn,

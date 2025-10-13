@@ -38,7 +38,7 @@ class Asset:
     tg_message_id: str | None
     payload_json: str | None
     created_at: str
-    source: str | None
+    source: str | None = None
     exif: dict[str, Any] | None = None
     labels: Any | None = None
     payload: dict[str, Any] = field(default_factory=dict)
@@ -2699,6 +2699,23 @@ def get_upload(
         "error": error_text,
         "asset_id": asset_text,
     }
+
+
+def get_asset_channel_id(conn: sqlite3.Connection) -> int | None:
+    """Return the configured asset channel identifier or ``None`` if missing."""
+
+    cur = conn.execute("SELECT channel_id FROM asset_channel LIMIT 1")
+    row = cur.fetchone()
+    if not row:
+        return None
+    if isinstance(row, sqlite3.Row):
+        value = row["channel_id"]
+    else:
+        value = row[0]
+    try:
+        return int(value)
+    except (TypeError, ValueError):  # pragma: no cover - defensive fallback
+        return None
 
 
 def set_upload_status(

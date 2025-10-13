@@ -48,6 +48,7 @@ from data_access import (
     create_device,
     create_pairing_token,
     consume_pairing_token,
+    get_asset_channel_id,
     list_user_devices,
     revoke_device,
     rotate_device_secret,
@@ -896,6 +897,10 @@ class Bot:
         self.failed_fetches: dict[int, tuple[int, datetime]] = {}
         self.weather_assets_channel_id = self.get_weather_assets_channel()
         self.recognition_channel_id = self.get_recognition_channel()
+        self.uploads_config = replace(
+            self.uploads_config,
+            assets_channel_id=self.weather_assets_channel_id,
+        )
 
         self.session: ClientSession | None = None
         self.running = False
@@ -2657,6 +2662,10 @@ class Bot:
     def set_weather_assets_channel(self, channel_id: int | None):
         self._store_single_channel("asset_channel", channel_id)
         self.weather_assets_channel_id = channel_id
+        self.uploads_config = replace(
+            self.uploads_config,
+            assets_channel_id=channel_id,
+        )
 
     def get_weather_assets_channel(self) -> int | None:
         cur = self.db.execute("SELECT channel_id FROM asset_channel LIMIT 1")
@@ -3747,7 +3756,7 @@ class Bot:
             upload_id=upload_id_value,
             storage_key=storage_key_value,
             metrics=metrics,
-            source="telegram",
+            source=asset.source or "telegram",
             device_id=None,
             user_id=asset.author_user_id,
             job_id=job.id,
@@ -13225,6 +13234,19 @@ async def health_handler(request: web.Request) -> web.Response:
         checks["queue"] = {"ok": False, "error": str(exc)}
         status = 503
 
+    try:
+        asset_channel_id = get_asset_channel_id(bot.db)
+    except Exception:
+        logging.exception("Failed to fetch asset channel configuration")
+        asset_channel_id = None
+
+    config_missing: list[str] = []
+    config_ok = asset_channel_id is not None
+    if not config_ok:
+        config_missing.append("asset_channel")
+        if status == 200:
+            status = 207
+
     # Telegram connectivity
     t0 = perf_counter()
     skipped = getattr(bot, "dry_run", False)
@@ -13272,12 +13294,17 @@ async def health_handler(request: web.Request) -> web.Response:
         started = started.replace(tzinfo=timezone.utc)
     uptime_s = max(0.0, (now_utc - started).total_seconds())
 
+    config_payload: dict[str, Any] = {"ok": config_ok}
+    if config_missing:
+        config_payload["missing"] = config_missing
+
     payload = {
         "ok": status in (200, 207),
         "version": version,
         "now": _isoformat_utc(now_utc),
         "uptime_s": uptime_s,
         "checks": checks,
+        "config": config_payload,
         "warnings": warnings,
     }
 
@@ -13308,6 +13335,11 @@ async def health_handler(request: web.Request) -> web.Response:
         log_parts.append(f"tg=ok({telegram_check.get('latency_ms', 0.0):.1f}ms)")
     else:
         log_parts.append(f"tg=fail({telegram_check.get('error', 'unknown')})")
+
+    if config_ok:
+        log_parts.append("config=ok")
+    else:
+        log_parts.append("config=missing(asset_channel)")
 
     logging.info("HEALTH %s status=%s", " ".join(log_parts), status)
     observe_health_latency(perf_counter() - overall_start)

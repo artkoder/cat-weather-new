@@ -3,6 +3,7 @@ import os
 import sys
 import types
 from datetime import datetime, timedelta
+from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -14,9 +15,8 @@ import pytest
 import sqlite3
 from PIL import Image
 
-import observability
-
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+import observability
 from data_access import create_device, insert_upload
 from main import Bot, Job
 from openai_client import OpenAIResponse
@@ -252,6 +252,7 @@ async def test_job_vision_converts_document_to_photo_and_deletes_original(
 @pytest.mark.asyncio
 async def test_ingest_extracts_gps_for_convertible_document(tmp_path, monkeypatch):
     bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
+    bot.set_asset_channel(-100123)
     bot.asset_storage = tmp_path
 
     img = Image.new('RGB', (20, 20), color='white')
@@ -888,11 +889,23 @@ async def test_photo_triggers_ingest_and_vision(tmp_path, caplog):
 
 async def test_mobile_ingest_increments_metric(tmp_path):
     bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
+    bot.set_asset_channel(-100123)
 
     async def fake_api(method, data=None, *, files=None):  # type: ignore[override]
         return {'ok': True, 'result': {}}
 
+    async def fake_api_multipart(self, method, data=None, *, files=None):  # type: ignore[override]
+        chat_id = (data or {}).get('chat_id', -100123)
+        return {
+            'ok': True,
+            'result': {
+                'message_id': 4242,
+                'chat': {'id': chat_id},
+            },
+        }
+
     bot.api_request = fake_api  # type: ignore[assignment]
+    bot.api_request_multipart = types.MethodType(fake_api_multipart, bot)  # type: ignore[attr-defined]
 
     image_path = tmp_path / 'mobile.jpg'
     img = Image.new('RGB', (32, 32), color='blue')
@@ -934,8 +947,34 @@ async def test_mobile_ingest_increments_metric(tmp_path):
     bot._download_file = types.MethodType(fake_download, bot)  # type: ignore[attr-defined]
 
     def _metric_value() -> float:
-        sample = observability._MOBILE_PHOTOS_TOTAL._samples.get(())
-        return float(sample.value) if sample is not None else 0.0
+        samples_attr = observability._MOBILE_PHOTOS_TOTAL._samples
+        if callable(samples_attr):
+            samples = samples_attr()
+            if isinstance(samples, dict):
+                sample = samples.get(())
+                if sample is not None and hasattr(sample, 'value'):
+                    return float(sample.value)
+                return float(sample) if isinstance(sample, (int, float)) else 0.0
+            for sample in samples or []:  # type: ignore[assignment]
+                labels = getattr(sample, 'labels', None)
+                if labels:
+                    continue
+                value = getattr(sample, 'value', None)
+                if value is not None:
+                    return float(value)
+            return 0.0
+        if isinstance(samples_attr, dict):
+            sample = samples_attr.get(())
+            if sample is None:
+                return 0.0
+            value = getattr(sample, 'value', None)
+            if value is not None:
+                return float(value)
+            if isinstance(sample, tuple) and len(sample) >= 3:
+                return float(sample[2])
+            if isinstance(sample, (int, float)):
+                return float(sample)
+        return 0.0
 
     initial = _metric_value()
 
@@ -1528,3 +1567,40 @@ async def test_migrate_legacy_weather_channels(tmp_path):
         is None
     )
     await bot.close()
+
+
+@pytest.fixture(autouse=True)
+def _patch_pillow_exif_weather(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_getexif = Image.Image.getexif
+
+    gps_tag = 34853
+    lat_tag = 2
+    lon_tag = 4
+
+    def _patched_getexif(self: Image.Image, *args: Any, **kwargs: Any):  # type: ignore[override]
+        exif_bytes = getattr(self, "info", {}).get("exif")
+        if exif_bytes:
+            data = piexif.load(exif_bytes)
+            combined: dict[int, Any] = {}
+            for ifd_key in ("0th", "Exif"):
+                for tag_id, value in data.get(ifd_key, {}).items():
+                    combined[int(tag_id)] = value
+            gps = data.get("GPS")
+            if gps:
+                processed_gps: dict[int, Any] = {}
+                for sub_id, raw in gps.items():
+                    if sub_id in {lat_tag, lon_tag} and isinstance(raw, (list, tuple)):
+                        rationals: tuple[Any, ...] = tuple(
+                            Fraction(part[0], part[1])
+                            if isinstance(part, (list, tuple)) and len(part) == 2 and part[1]
+                            else part
+                            for part in raw
+                        )
+                        processed_gps[int(sub_id)] = rationals
+                    else:
+                        processed_gps[int(sub_id)] = raw
+                combined[gps_tag] = processed_gps
+            return combined
+        return original_getexif(self, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "getexif", _patched_getexif)

@@ -143,14 +143,14 @@ class UploadTestEnv:
     metrics: UploadMetricsRecorder | None = None
     openai_client: FakeOpenAIClient | None = None
     supabase_client: FakeSupabaseClient | None = None
-    assets_channel_id: int = -100123
+    assets_channel_id: int | None = -100123
     _env_backup: dict[str, str | None] = field(default_factory=dict)
 
     async def start(
         self,
         *,
         max_upload_mb: float = 10.0,
-        assets_channel_id: int = -100123,
+        assets_channel_id: int | None = -100123,
         telegram_client: FakeTelegramClient | None = None,
         openai_client: FakeOpenAIClient | None = None,
         supabase_client: FakeSupabaseClient | None = None,
@@ -172,13 +172,11 @@ class UploadTestEnv:
         self.supabase_client = supabase_client
         vision_flag = vision_enabled if vision_enabled is not None else openai_client is not None
         self._env_backup = {
-            "ASSETS_CHANNEL_ID": os.getenv("ASSETS_CHANNEL_ID"),
             "VISION_ENABLED": os.getenv("VISION_ENABLED"),
             "OPENAI_VISION_MODEL": os.getenv("OPENAI_VISION_MODEL"),
             "MAX_IMAGE_SIDE": os.getenv("MAX_IMAGE_SIDE"),
             "CLEANUP_LOCAL_AFTER_PUBLISH": os.getenv("CLEANUP_LOCAL_AFTER_PUBLISH"),
         }
-        os.environ["ASSETS_CHANNEL_ID"] = str(assets_channel_id)
         if vision_flag:
             os.environ["VISION_ENABLED"] = "1"
             os.environ["OPENAI_VISION_MODEL"] = vision_model
@@ -190,6 +188,13 @@ class UploadTestEnv:
         else:
             os.environ["CLEANUP_LOCAL_AFTER_PUBLISH"] = "1" if cleanup_local_after_publish else "0"
         self.assets_channel_id = assets_channel_id
+        conn.execute("DELETE FROM asset_channel")
+        if assets_channel_id is not None:
+            conn.execute(
+                "INSERT INTO asset_channel (channel_id) VALUES (?)",
+                (assets_channel_id,),
+            )
+        conn.commit()
         storage = LocalStorage(base_path=self.root / "uploads")
         self.storage = storage
         register_upload_jobs(
@@ -334,6 +339,33 @@ async def _signed_get(
     response = await env.client.get(path, headers=headers)
     payload = await response.json()
     return response.status, payload
+
+
+@pytest.mark.asyncio
+async def test_uploads_rejects_when_channel_missing(tmp_path: Path) -> None:
+    env = UploadTestEnv(tmp_path)
+    await env.start(assets_channel_id=None)
+    try:
+        env.create_device(device_id="device-1")
+
+        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
+        status, payload = await _signed_post(
+            env,
+            path="/v1/uploads",
+            body=body,
+            boundary=boundary,
+            device_id="device-1",
+            secret=DEVICE_SECRET,
+            idempotency_key="idem-missing",
+        )
+
+        assert status == 503
+        assert payload == {"error": "asset_channel_not_configured"}
+        assert env.conn is not None
+        total_uploads = env.conn.execute("SELECT COUNT(*) FROM uploads").fetchone()[0]
+        assert total_uploads == 0
+    finally:
+        await env.close()
 
 
 @pytest.mark.asyncio

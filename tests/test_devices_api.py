@@ -26,9 +26,9 @@ async def _make_app(bot: Bot) -> web.Application:
 
 
 @pytest.mark.asyncio
-async def test_attach_device_success(tmp_path, monkeypatch):
-    monkeypatch.setenv('ASSETS_CHANNEL_ID', '12345')
+async def test_attach_device_success(tmp_path):
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    bot.set_asset_channel(12345)
     await bot.start()
 
     create_pairing_token(bot.db, code='CATPAA', user_id=101, device_name='Office Pixel')
@@ -67,11 +67,11 @@ async def test_attach_device_success(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_attach_device_emits_mobile_log(tmp_path, caplog, monkeypatch):
-    monkeypatch.setenv('ASSETS_CHANNEL_ID', '12345')
+async def test_attach_device_emits_mobile_log(tmp_path, caplog):
     caplog.set_level(logging.INFO)
 
     bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    bot.set_asset_channel(12345)
     await bot.start()
 
     create_pairing_token(bot.db, code='CATPAA', user_id=101, device_name='Office Pixel')

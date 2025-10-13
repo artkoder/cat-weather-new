@@ -63,6 +63,20 @@ def _load_schema(conn: sqlite3.Connection) -> None:
         spec.loader.exec_module(module)
         if hasattr(module, "run"):
             module.run(conn)
+    assets_uploads_path = Path(__file__).resolve().parents[1] / "migrations" / "0020_assets_uploads.py"
+    spec_uploads = importlib.util.spec_from_file_location("_migration_0020_assets_uploads", assets_uploads_path)
+    if spec_uploads and spec_uploads.loader:
+        module_uploads = importlib.util.module_from_spec(spec_uploads)
+        spec_uploads.loader.exec_module(module_uploads)
+        if hasattr(module_uploads, "run"):
+            module_uploads.run(conn)
+    mobile_sources_path = Path(__file__).resolve().parents[1] / "migrations" / "0021_mobile_sources.py"
+    spec_sources = importlib.util.spec_from_file_location("_migration_0021_mobile_sources", mobile_sources_path)
+    if spec_sources and spec_sources.loader:
+        module_sources = importlib.util.module_from_spec(spec_sources)
+        spec_sources.loader.exec_module(module_sources)
+        if hasattr(module_sources, "run"):
+            module_sources.run(conn)
 
 
 @pytest.fixture

@@ -2,6 +2,7 @@ import json
 import shutil
 import sqlite3
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -51,12 +52,19 @@ async def _run_mobile_upload(
 ) -> tuple[DataAccess, sqlite3.Connection, str, UploadsConfig, list[dict[str, Any]]]:
     conn = _setup_connection()
     data = DataAccess(conn)
+    asset_channel_id = -100777
+    conn.execute("DELETE FROM asset_channel")
+    conn.execute(
+        "INSERT INTO asset_channel (channel_id) VALUES (?)",
+        (asset_channel_id,),
+    )
+    conn.commit()
     file_key = "shared-file"
     storage = StorageStub({file_key: image_path})
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn)
     config = UploadsConfig(
-        assets_channel_id=-100777,
+        assets_channel_id=asset_channel_id * 2,
         vision_enabled=vision_enabled,
         openai_vision_model="vision-test" if vision_enabled else None,
     )
@@ -109,6 +117,8 @@ async def _run_mobile_upload(
     assert row is not None and row["asset_id"]
     asset_id = row["asset_id"]
     call_kwargs = list(openai.calls)
+    assert telegram.calls and telegram.calls[0]["chat_id"] == asset_channel_id
+    config = replace(config, assets_channel_id=asset_channel_id)
     return data, conn, asset_id, config, call_kwargs
 
 
@@ -138,16 +148,16 @@ async def test_ingestion_helper_mobile_and_telegram_payloads_align(
 
     assert asset_mobile.sha256 == expected_sha
     assert asset_mobile.source == "mobile"
+    assert mobile_chat_id == config.assets_channel_id
 
     # Telegram ingest job setup
-    monkeypatch.setenv("ASSETS_CHANNEL_ID", str(config.assets_channel_id))
     monkeypatch.setenv("VISION_ENABLED", "1")
     monkeypatch.setenv("OPENAI_VISION_MODEL", "vision-test")
 
     bot_db_path = tmp_path / "bot.sqlite"
     bot = Bot("dummy-token", str(bot_db_path))
     try:
-        bot.uploads_config.assets_channel_id = config.assets_channel_id
+        bot.set_asset_channel(config.assets_channel_id)
         bot.uploads_config.vision_enabled = True
         bot.uploads_config.openai_vision_model = "vision-test"
         bot.upload_metrics = UploadMetricsRecorder()

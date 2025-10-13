@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- `/mobile` command that lets operators pair devices through the `MOBILE_PAIR_UI` flow and trigger mobile-first
+  publication without relying on the legacy admin panel.
+- Prometheus counter `mobile_photos_total` that tracks the number of mobile uploads processed end-to-end for
+  visibility into ingestion throughput.
 - Ingest now preserves EXIF capture timestamps, season detection prefers those capture times when available, and operator
   captions surface the photo's capture date and time for easier context.
 - Operator style brief that puts a stronger emphasis on a lively, conversational tone and captures the explicit prompting
@@ -23,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vision schema enhancements that capture framing, detailed weather, seasonal context and architectural style metadata, and an automatic conversion path that renders document uploads into photo assets before publication.
 
 ### Changed
+- Default storage configuration now sets `STORAGE_BACKEND` to the mobile file store and keeps local artifacts in place
+  unless `CLEANUP_LOCAL_AFTER_PUBLISH` explicitly removes them, aligning local testing with production behavior.
+- Structured logging wraps mobile ingest events to emit JSON payloads with asset identifiers and publication outcomes so
+  observability tooling can parse them without additional filters.
 - Flowers rubric preview now supports multiple guess retries, trims the photo set,
   and surfaces an attempt counter during preview, with supporting updates in
   `main.py`, the preview workflow, and regression coverage in `tests/test_rubrics.py`.

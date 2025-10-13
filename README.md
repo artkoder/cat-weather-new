@@ -79,6 +79,12 @@ The job queue starts a periodic cleanup task that runs every five minutes. It pu
 - **Client storage**. Mobile clients must persist the `device.id` and `device.secret` pair inside an encrypted store (Android uses `EncryptedSharedPreferences`) and attach them to every signed request via the HMAC headers.
 - **Rotation and revoke**. Operators can call `POST /v1/devices/revoke` to invalidate the current secret. The backend immediately rejects signed calls with `device_revoked` forcing the client to repeat the attach flow and pick up the new secret. Secrets can also be proactively rotated by reissuing the attach flow and updating the persisted values on the device.
 
+### Mobile pairing QR codes
+
+- The `/mobile` command posts a pairing card with a QR code so testers can attach new devices without copying the code manually.
+- The QR payload encodes the literal string `PAIR:<CODE>`; clients should continue to accept that legacy format even if the mobile app also supports a deeplink variant (for example `catweather://pair?code=<CODE>`).
+- Regenerating the card via the inline "🔄 Новый код" button follows the same format and preserves the default expiry window shown in the caption.
+
 ### Running migrations
 
 Apply schema migrations whenever the service boots or before running tests:
@@ -141,26 +147,31 @@ Replace `/data/bot.db` with the desired SQLite path (for local development you c
 
 ## Environment Setup
 ### Required environment variables
-- `TELEGRAM_BOT_TOKEN` – Telegram bot API token used for both webhook registration and admin interactions.
-- `WEBHOOK_URL` – public HTTPS base used to register `/webhook` on startup.
-- `DB_PATH` – path to the SQLite database (default `/data/bot.db`).
-- `ASSET_STORAGE_DIR` – optional override for local media storage. Defaults to `/tmp/bot_assets`; ensure the directory persists across deployments if you expect re-ingestion safeguards.
-- `TZ_OFFSET` – default timezone applied to schedules until users pick their own offset.
-- `SCHED_INTERVAL_SEC` – polling cadence for the scheduler loop (default `30`).
-- `ASSETS_CHANNEL_ID` – numeric Telegram channel ID where the upload worker publishes newly ingested assets. Without it uploads stay queued forever because the processor cannot send previews.
-- `ASSETS_DEBUG_EXIF` – when set to a truthy value, replies to recognized messages with a raw EXIF dump for debugging; defaults to disabled (`0`).
-- `VISION_ENABLED` – toggles the OpenAI vision classification step for new uploads. When disabled the job skips recognition entirely.
-- `OPENAI_VISION_MODEL` – model name passed to the OpenAI Responses API while classifying photos. Required whenever `VISION_ENABLED` is truthy; if missing the worker logs a warning and skips recognition.
-- `MAX_IMAGE_SIDE` – optional upper bound (in pixels) for the longest photo side. When set the upload processor downscales the copy used for recognition and Telegram previews to keep bandwidth predictable while preserving the original file in storage.
-- `PORT` – aiohttp listener used when calling `web.run_app`; defaults to `8080` and must align with the port exposed by your hosting provider.
-- `4O_API_KEY` – key used by the recognition pipeline and rubric copy generators; when missing, related jobs are skipped automatically.
-- `OPENAI_DAILY_TOKEN_LIMIT`, `OPENAI_DAILY_TOKEN_LIMIT_GPT_4O` (`OPENAI_DAILY_TOKEN_LIMIT_4O` legacy), `OPENAI_DAILY_TOKEN_LIMIT_GPT_4O_MINI` (`OPENAI_DAILY_TOKEN_LIMIT_4O_MINI` legacy) – optional per-model quotas that gate new OpenAI jobs until the next UTC reset.
-- `PORT` – HTTP port that `web.run_app` listens on (default `8080`). Ensure it matches the port exposed by your proxy or hosting platform (Fly.io, Docker, etc.) so inbound requests reach the app.
-- `LOG_LEVEL` – controls structured log severity (`DEBUG`, `INFO`, `WARN`, `ERROR`). Defaults to `INFO`.
-- `LOG_FORMAT` – `json` (default) for production log shippers or `pretty` for local development.
-- `ALLOWLIST_CIDR` – comma-separated CIDR ranges allowed to call `/metrics` (and `/_admin` endpoints when present). Requests from outside the allow-list receive `403`.
-- `RL_ATTACH_IP_PER_MIN`, `RL_ATTACH_USER_PER_MIN`, `RL_UPLOADS_PER_MIN`, `RL_UPLOAD_STATUS_PER_MIN`, `RL_HEALTH_PER_MIN`, `RL_METRICS_PER_MIN` – per-minute request ceilings enforced by the in-memory token bucket. Pair each limit with the corresponding `*_WINDOW_SEC` variable to tune the refill window (defaults to 60 seconds).
-- `SUPABASE_URL`, `SUPABASE_KEY` – optional credentials for the Supabase project that receives OpenAI token usage events. When configured the bot mirrors SQLite usage rows into the `token_usage` table for centralized analytics, storing `bot`, `model`, prompt/completion/total token counts, `request_id`, `endpoint` (`responses`), strictly JSON-serialized `meta` and timestamp `at` in UTC ISO8601. Each Supabase call also emits a structured `log_token_usage` record – identical for successes and failures – so log shippers can archive the same payloads even when Supabase is unreachable.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | – | Telegram bot API token used for webhook registration and admin interactions. |
+| `WEBHOOK_URL` | – | Public HTTPS base used to register `/webhook` on startup. |
+| `DB_PATH` | `/data/bot.db` | SQLite database location. The directory is created automatically when it does not exist. |
+| `ASSET_STORAGE_DIR` | `/tmp/bot_assets` | Optional override for on-disk asset cache used by the bot when reposting to Telegram; ensure it survives restarts if you rely on re-ingestion safeguards. |
+| `STORAGE_BACKEND` | `local` | Storage driver for mobile uploads. `local` keeps files under `data/uploads`, while `supabase` streams payloads to the bucket configured via `SUPABASE_BUCKET`. Unknown values fall back to `local`. |
+| `SUPABASE_BUCKET` | `uploads` | Bucket name used when `STORAGE_BACKEND=supabase`. The bucket must exist in the target Supabase project. |
+| `CLEANUP_LOCAL_AFTER_PUBLISH` | `0` | When truthy the publish jobs delete local copies of processed assets after the remote upload succeeds, keeping ephemeral disks tidy when Supabase-backed storage is enabled. |
+| `TZ_OFFSET` | `+00:00` | Default timezone applied to schedules until users pick their own offset. |
+| `SCHED_INTERVAL_SEC` | `30` | Polling cadence for the scheduler loop. |
+| `ASSETS_CHANNEL_ID` | – | Telegram channel ID where the upload worker publishes newly ingested assets. Without it uploads stay queued forever because the processor cannot send previews. |
+| `ASSETS_DEBUG_EXIF` | `0` | When truthy, replies to recognized messages with a raw EXIF dump for debugging. |
+| `VISION_ENABLED` | – | Toggles the OpenAI vision classification step for new uploads. When disabled the job skips recognition entirely. |
+| `OPENAI_VISION_MODEL` | – | Model passed to the OpenAI Responses API for vision classification. Required whenever `VISION_ENABLED` is truthy. |
+| `MAX_IMAGE_SIDE` | – | Optional upper bound (pixels) for the longest photo side. Downscales recognition/preview copies while preserving the original upload. |
+| `PORT` | `8080` | HTTP port that `web.run_app` listens on. Must align with the port exposed by the hosting platform. |
+| `4O_API_KEY` | – | API key used by the recognition pipeline and rubric copy generators; related jobs are skipped automatically when missing. |
+| `OPENAI_DAILY_TOKEN_LIMIT`<br>`OPENAI_DAILY_TOKEN_LIMIT_GPT_4O` (`OPENAI_DAILY_TOKEN_LIMIT_4O` legacy)<br>`OPENAI_DAILY_TOKEN_LIMIT_GPT_4O_MINI` (`OPENAI_DAILY_TOKEN_LIMIT_4O_MINI` legacy) | – | Optional per-model daily token quotas that block new OpenAI jobs until the next UTC reset once exhausted. |
+| `LOG_LEVEL` | `INFO` | Structured log severity (`DEBUG`, `INFO`, `WARN`, `ERROR`). |
+| `LOG_FORMAT` | `json` | Switch to `pretty` locally for human-friendly logs. |
+| `ALLOWLIST_CIDR` | – | Comma-separated CIDR ranges allowed to call `/metrics` (and `/_admin` when present). Requests from outside the allow-list receive `403`. |
+| `RL_ATTACH_IP_PER_MIN`<br>`RL_ATTACH_USER_PER_MIN`<br>`RL_UPLOADS_PER_MIN`<br>`RL_UPLOAD_STATUS_PER_MIN`<br>`RL_HEALTH_PER_MIN`<br>`RL_METRICS_PER_MIN` | varies | Per-minute request ceilings enforced by the in-memory token bucket. Pair each limit with the corresponding `*_WINDOW_SEC` variable (defaults to 60 seconds) to tune the refill window. |
+| `SUPABASE_URL`<br>`SUPABASE_KEY` (or `SUPABASE_ANON_KEY`) | – | Supabase credentials. When set, the bot mirrors OpenAI token usage into `rest/v1/token_usage` **and** powers the Supabase storage backend for mobile uploads via `SUPABASE_BUCKET`. Each request logs a `log_token_usage` entry regardless of success. |
 
 ### External services
 - **Nominatim** – the bot queries `https://nominatim.openstreetmap.org/reverse` and rate-limits calls to one request per second. Set `User-Agent` friendly values in the code if you fork, and consider running your own Nominatim instance for higher throughput.

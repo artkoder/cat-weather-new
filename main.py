@@ -5223,6 +5223,17 @@ class Bot:
                 )
             return
 
+        command = text.split(maxsplit=1)[0] if text else ''
+        if command == '/privet' or command.startswith('/privet@'):
+            await self.api_request(
+                'sendMessage',
+                {
+                    'chat_id': user_id,
+                    'text': 'Привет',
+                },
+            )
+            return
+
         if text.startswith('/help'):
             help_messages = [
                 (

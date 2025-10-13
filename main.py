@@ -5405,6 +5405,14 @@ class Bot:
                     )
                     return
             devices = list_user_devices(self.db, user_id=user_id)
+            logging.info(
+                "MOBILE_PAIR_UI",
+                extra={
+                    "user_id": user_id,
+                    "has_devices": bool(devices),
+                    "code_len": len(code),
+                },
+            )
             await self._send_mobile_pairing_card(user_id, code, expires_at, devices)
             return
 

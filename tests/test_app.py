@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import sys
@@ -246,7 +247,7 @@ async def test_pair_command_generates_token(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mobile_command_and_callbacks(tmp_path):
+async def test_mobile_command_and_callbacks(tmp_path, caplog):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
 
     calls: list[tuple[str, Any]] = []
@@ -263,6 +264,7 @@ async def test_mobile_command_and_callbacks(tmp_path):
     bot.api_request = dummy_api  # type: ignore
     bot.api_request_multipart = dummy_multipart  # type: ignore
     await bot.start()
+    caplog.set_level(logging.INFO)
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
 
@@ -285,6 +287,7 @@ async def test_mobile_command_and_callbacks(tmp_path):
     calls.clear()
     multipart_calls.clear()
 
+    caplog.clear()
     await bot.handle_update({"message": {"text": "/mobile", "from": {"id": 1}}})
 
     assert multipart_calls, "sendPhoto should be used for the QR card"
@@ -301,11 +304,34 @@ async def test_mobile_command_and_callbacks(tmp_path):
     photo_entry = files["photo"]
     assert hasattr(photo_entry[1], "read")
 
+    mobile_logs = [rec for rec in caplog.records if rec.message == "MOBILE_PAIR_UI"]
+    assert mobile_logs, "Expected MOBILE_PAIR_UI log entry"
+    first_mobile_log = mobile_logs[-1]
+    assert first_mobile_log.user_id == 1
+    assert first_mobile_log.has_devices is True
+
     row = bot.db.execute(
         "SELECT code FROM pairing_tokens WHERE user_id=?", (1,)
     ).fetchone()
     assert row is not None
     initial_code = row["code"]
+    assert first_mobile_log.code_len == len(initial_code)
+
+    caplog.clear()
+    await bot.handle_update({"message": {"text": "/mobile", "from": {"id": 1}}})
+
+    reuse_logs = [rec for rec in caplog.records if rec.message == "MOBILE_PAIR_UI"]
+    assert reuse_logs, "Expected MOBILE_PAIR_UI log when reusing token"
+    reuse_log = reuse_logs[-1]
+    assert reuse_log.user_id == 1
+    assert reuse_log.has_devices is True
+    assert reuse_log.code_len == len(initial_code)
+
+    row = bot.db.execute(
+        "SELECT code FROM pairing_tokens WHERE user_id=?", (1,)
+    ).fetchone()
+    assert row is not None
+    assert row["code"] == initial_code
 
     multipart_calls.clear()
     await bot.handle_callback(

@@ -83,6 +83,7 @@ The job queue starts a periodic cleanup task that runs every five minutes. It pu
 
 - The `/mobile` command posts a pairing card with a QR code so testers can attach new devices without copying the code manually.
 - The QR payload encodes the literal string `PAIR:<CODE>`; clients should continue to accept that legacy format even if the mobile app also supports a deeplink variant (for example `catweather://pair?code=<CODE>`).
+- The `/v1/devices/attach` endpoint accepts any of these payloads as well as a bare code, so operators can paste whichever string they received from the QR dialog without manual cleanup.
 - Regenerating the card via the inline "🔄 Новый код" button follows the same format and preserves the default expiry window shown in the caption.
 
 ### Running migrations

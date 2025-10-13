@@ -29,6 +29,7 @@ from data_access import (
 from observability import (
     context,
     record_job_processed,
+    record_mobile_photo_ingested,
     record_storage_put_bytes,
     record_upload_created,
     record_upload_status_change,
@@ -399,6 +400,7 @@ def register_upload_jobs(
                     processed_cleanup = False
                     download: DownloadedFile | None = None
                     should_cleanup_local_download = False
+                    upload_source: str | None = None
                     set_upload_status(conn, id=upload_id, status="processing")
                     record_upload_status_change()
                     conn.commit()
@@ -406,6 +408,9 @@ def register_upload_jobs(
                     if not record:
                         logging.warning("UPLOAD missing record upload=%s", upload_id)
                         return
+                    source_value = record.get("source")
+                    if source_value:
+                        upload_source = str(source_value)
                     file_ref = record.get("file_ref")
                     if not file_ref:
                         raise RuntimeError("upload missing file_ref")
@@ -494,6 +499,8 @@ def register_upload_jobs(
                         ):
                             with contextlib.suppress(Exception):
                                 download.path.unlink()
+                        if upload_source and upload_source.lower() == "mobile":
+                            record_mobile_photo_ingested()
                         logging.info("UPLOAD job done upload=%s", upload_id)
                         logging.info(
                             "MOBILE_UPLOAD_DONE",

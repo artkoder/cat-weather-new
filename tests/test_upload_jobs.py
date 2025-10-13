@@ -14,6 +14,7 @@ from PIL import Image
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+import observability
 from api.uploads import (
     UploadMetricsRecorder,
     UploadsConfig,
@@ -228,6 +229,70 @@ async def test_process_upload_job_success_records_asset(
     assert mobile_done.source == "mobile"
     assert mobile_done.size_bytes == image_path.stat().st_size
     assert isinstance(mobile_done.timestamp, str) and mobile_done.timestamp
+
+
+@pytest.mark.asyncio
+async def test_process_upload_mobile_upload_increments_metric(tmp_path: Path) -> None:
+    conn = _setup_connection()
+    data = DataAccess(conn)
+    image_path = create_sample_image(tmp_path / "metric.jpg")
+    file_key = "metric-key"
+    storage = StorageStub({file_key: image_path})
+    telegram = TelegramStub()
+    metrics = UploadMetricsRecorder()
+    queue = JobQueue(conn)
+    config = UploadsConfig(assets_channel_id=-10001, vision_enabled=False)
+    register_upload_jobs(
+        queue,
+        conn,
+        storage=storage,
+        data=data,
+        telegram=telegram,
+        metrics=metrics,
+        config=config,
+    )
+
+    upload_id = _prepare_upload(conn, file_key=file_key)
+    job = Job(
+        id=101,
+        name="process_upload",
+        payload={"upload_id": upload_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    def _metric_value() -> float:
+        samples_attr = observability._MOBILE_PHOTOS_TOTAL._samples
+        if callable(samples_attr):
+            samples = samples_attr()
+            for sample in samples:
+                labels = getattr(sample, "labels", None)
+                if labels:
+                    continue
+                value = getattr(sample, "value", None)
+                if value is not None:
+                    return float(value)
+            return 0.0
+        if isinstance(samples_attr, dict):
+            sample = samples_attr.get(())
+            if sample is None:
+                return 0.0
+            value = getattr(sample, "value", None)
+            if value is not None:
+                return float(value)
+            if isinstance(sample, tuple) and len(sample) >= 3:
+                return float(sample[2])
+        return 0.0
+
+    before = _metric_value()
+    await queue.handlers["process_upload"](job)
+    after = _metric_value()
+
+    assert after == before + 1
 
 
 @pytest.mark.asyncio

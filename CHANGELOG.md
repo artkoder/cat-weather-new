@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Vision schema enhancements that capture framing, detailed weather, seasonal context and architectural style metadata, and an automatic conversion path that renders document uploads into photo assets before publication.
 
 ### Changed
+- Device attach flow now follows [API contract v1.4.0](https://github.com/artkoder/kotopogoda-api-contract/tree/v1.4.0):
+  accepts normalized `token` values (with legacy `code` support), returns
+  `device_id`/`device_secret` alongside deprecated `id`/`secret`, emits
+  `invalid_token` errors for malformed payloads, and the `/mobile` QR code now
+  embeds the `catweather://pair?token=<CODE>` deeplink.
 - Default storage configuration now sets `STORAGE_BACKEND` to the mobile file store and keeps local artifacts in place
   unless `CLEANUP_LOCAL_AFTER_PUBLISH` explicitly removes them, aligning local testing with production behavior.
 - Structured logging wraps mobile ingest events to emit JSON payloads with asset identifiers and publication outcomes so

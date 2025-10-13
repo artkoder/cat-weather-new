@@ -41,23 +41,25 @@ async def test_attach_device_success(tmp_path):
         async with TestClient(server) as client:
             resp = await client.post(
                 '/v1/devices/attach',
-                json={'code': 'catpaa', 'name': 'Pixel 8'},
+                json={'token': 'catpaa', 'name': 'Pixel 8'},
             )
             payload = await resp.json()
 
     assert resp.status == 200
     assert payload['name'] == 'Pixel 8'
-    assert payload['id']
-    assert payload['secret']
-    assert re.fullmatch(r'[0-9a-f]{64}', payload['secret'])
+    assert payload['device_id']
+    assert payload['device_secret']
+    assert payload['id'] == payload['device_id']
+    assert payload['secret'] == payload['device_secret']
+    assert re.fullmatch(r'[0-9a-f]{64}', payload['device_secret'])
 
     row = bot.db.execute(
-        'SELECT user_id, name, secret FROM devices WHERE id=?', (payload['id'],)
+        'SELECT user_id, name, secret FROM devices WHERE id=?', (payload['device_id'],)
     ).fetchone()
     assert row is not None
     assert row['user_id'] == 101
     assert row['name'] == 'Pixel 8'
-    assert row['secret'] == payload['secret']
+    assert row['secret'] == payload['device_secret']
 
     token_row = bot.db.execute(
         'SELECT used_at FROM pairing_tokens WHERE code=?', ('CATPAA',)
@@ -73,6 +75,7 @@ async def test_attach_device_success(tmp_path):
     [
         ('PAIR:WWF5LL', 'WWF5LL', 202),
         ('catweather://pair?code=TR7X9Z', 'TR7X9Z', 303),
+        ('catweather://pair?token=XY2Z34', 'XY2Z34', 404),
     ],
 )
 async def test_attach_device_accepts_prefixed_payloads(
@@ -94,12 +97,14 @@ async def test_attach_device_accepts_prefixed_payloads(
 
     assert resp.status == 200
     assert payload['name'] == 'Office Pixel'
-    assert payload['id']
-    assert payload['secret']
-    assert re.fullmatch(r'[0-9a-f]{64}', payload['secret'])
+    assert payload['device_id']
+    assert payload['device_secret']
+    assert payload['id'] == payload['device_id']
+    assert payload['secret'] == payload['device_secret']
+    assert re.fullmatch(r'[0-9a-f]{64}', payload['device_secret'])
 
     row = bot.db.execute(
-        'SELECT user_id, name FROM devices WHERE id=?', (payload['id'],)
+        'SELECT user_id, name FROM devices WHERE id=?', (payload['device_id'],)
     ).fetchone()
     assert row is not None
     assert row['user_id'] == user_id
@@ -130,7 +135,7 @@ async def test_attach_device_emits_mobile_log(tmp_path, caplog):
         async with TestClient(server) as client:
             resp = await client.post(
                 '/v1/devices/attach',
-                json={'code': 'CATPAA', 'name': 'Pixel 8'},
+                json={'token': 'CATPAA', 'name': 'Pixel 8'},
             )
             payload = await resp.json()
 
@@ -139,7 +144,7 @@ async def test_attach_device_emits_mobile_log(tmp_path, caplog):
     attach_event = next(
         record for record in caplog.records if record.message == 'MOBILE_ATTACH_OK'
     )
-    assert attach_event.device_id == payload['id']
+    assert attach_event.device_id == payload['device_id']
     assert attach_event.user_id == 101
     assert attach_event.device_name == 'Pixel 8'
     assert attach_event.source == 'mobile'
@@ -237,10 +242,11 @@ async def test_attach_device_invalid_code(tmp_path):
         async with TestClient(server) as client:
             resp = await client.post(
                 '/v1/devices/attach',
-                json={'code': 'bad-code'},
+                json={'token': 'bad-code'},
             )
             assert resp.status == 400
             payload = await resp.json()
-            assert payload['error'] == 'invalid_or_expired_code'
+            assert payload['error'] == 'invalid_token'
+            assert 'message' in payload and payload['message']
 
     await bot.close()

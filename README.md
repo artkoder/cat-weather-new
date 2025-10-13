@@ -156,7 +156,7 @@ Replace `/data/bot.db` with the desired SQLite path (for local development you c
 | `ASSET_STORAGE_DIR` | `/tmp/bot_assets` | Optional override for on-disk asset cache used by the bot when reposting to Telegram; ensure it survives restarts if you rely on re-ingestion safeguards. |
 | `STORAGE_BACKEND` | `local` | Storage driver for mobile uploads. `local` keeps files under `data/uploads`, while `supabase` streams payloads to the bucket configured via `SUPABASE_BUCKET`. Unknown values fall back to `local`. |
 | `SUPABASE_BUCKET` | `uploads` | Bucket name used when `STORAGE_BACKEND=supabase`. The bucket must exist in the target Supabase project. |
-| `CLEANUP_LOCAL_AFTER_PUBLISH` | `0` | When truthy the publish jobs delete local copies of processed assets after the remote upload succeeds, keeping ephemeral disks tidy when Supabase-backed storage is enabled. |
+| `CLEANUP_LOCAL_AFTER_PUBLISH` | `0` | When truthy and `STORAGE_BACKEND=local`, the mobile pipeline deletes the original upload once publishing finishes. Remote storage backends already purge their temporary downloads automatically, and Supabase uploads are unaffected by this flag. |
 | `TZ_OFFSET` | `+00:00` | Default timezone applied to schedules until users pick their own offset. |
 | `SCHED_INTERVAL_SEC` | `30` | Polling cadence for the scheduler loop. |
 | `ASSETS_CHANNEL_ID` | – | Telegram channel ID where the upload worker publishes newly ingested assets. Without it uploads stay queued forever because the processor cannot send previews. |

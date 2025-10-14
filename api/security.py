@@ -147,11 +147,30 @@ def create_hmac_middleware(conn) -> web.middleware:
         timestamp_raw = headers.get("X-Timestamp")
         nonce = headers.get("X-Nonce")
         signature = headers.get("X-Signature")
+        content_sha = headers.get("X-Content-SHA256")
         idempotency_key = headers.get("Idempotency-Key")
 
-        if not device_id or not timestamp_raw or not nonce or not signature:
+        if (
+            not device_id
+            or not timestamp_raw
+            or not nonce
+            or not signature
+            or not content_sha
+        ):
             record_hmac_failure("missing_headers")
             return _json_error(400, "invalid_headers", "Missing required HMAC headers.")
+
+        content_sha = content_sha.strip().lower()
+        if not (
+            len(content_sha) == 64
+            and all(c in "0123456789abcdef" for c in content_sha)
+        ):
+            record_hmac_failure("content_sha_format")
+            return _json_error(
+                400,
+                "invalid_headers",
+                "X-Content-SHA256 must be a 64-character lowercase hex digest.",
+            )
 
         try:
             timestamp = int(timestamp_raw)
@@ -187,6 +206,13 @@ def create_hmac_middleware(conn) -> web.middleware:
 
         body = await _read_body(request)
         body_sha = _body_sha256(body)
+        if not hmac.compare_digest(body_sha, content_sha):
+            record_hmac_failure("content_sha_mismatch")
+            return _json_error(
+                400,
+                "invalid_body_digest",
+                "X-Content-SHA256 does not match request body.",
+            )
         query = _canonical_query(request.rel_url.query)
         canonical = _canonical_string(
             method,
@@ -195,7 +221,7 @@ def create_hmac_middleware(conn) -> web.middleware:
             timestamp,
             nonce,
             device_id,
-            body_sha,
+            content_sha,
             idempotency_key,
         )
 

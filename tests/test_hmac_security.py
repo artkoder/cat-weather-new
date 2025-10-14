@@ -42,7 +42,9 @@ def _sign(
     nonce: str,
     device_id: str,
     idempotency_key: str | None,
+    body_sha_override: str | None = None,
 ) -> str:
+    body_sha = body_sha_override if body_sha_override is not None else _body_sha256(body)
     canonical = _canonical_string(
         method,
         _normalize_path(path),
@@ -50,7 +52,7 @@ def _sign(
         timestamp,
         nonce,
         device_id,
-        _body_sha256(body),
+        body_sha,
         idempotency_key,
     )
     secret_bytes = _decode_secret(secret)
@@ -101,12 +103,14 @@ async def test_valid_signature(connection):
         timestamp = int(time.time())
         nonce = "nonce-valid-1234567890"
         body = json.dumps({"hello": "world"}).encode()
+        body_sha = _body_sha256(body)
         headers = {
             "X-Device-Id": DEVICE_ID,
             "X-Timestamp": str(timestamp),
             "X-Nonce": nonce,
             "Idempotency-Key": "idem-1",
             "Content-Type": "application/json",
+            "X-Content-SHA256": body_sha,
         }
         headers["X-Signature"] = _sign(
             DEVICE_SECRET,
@@ -118,6 +122,7 @@ async def test_valid_signature(connection):
             nonce=nonce,
             device_id=DEVICE_ID,
             idempotency_key=headers["Idempotency-Key"],
+            body_sha_override=body_sha,
         )
         response = await client.post("/v1/uploads", data=body, headers=headers)
         assert response.status == 200
@@ -130,18 +135,20 @@ async def test_valid_signature(connection):
 
 
 @pytest.mark.asyncio
-async def test_signature_mismatch_due_to_body(connection):
+async def test_content_sha_mismatch_rejected(connection):
     app, server, client = await _create_client(connection)
     try:
         timestamp = int(time.time())
         nonce = "nonce-bad-body-123456"
         signed_body = json.dumps({"hello": "world"}).encode()
         actual_body = json.dumps({"hello": "tampered"}).encode()
+        signed_body_sha = _body_sha256(signed_body)
         headers = {
             "X-Device-Id": DEVICE_ID,
             "X-Timestamp": str(timestamp),
             "X-Nonce": nonce,
             "Content-Type": "application/json",
+            "X-Content-SHA256": signed_body_sha,
             "X-Signature": _sign(
                 DEVICE_SECRET,
                 method="POST",
@@ -152,24 +159,25 @@ async def test_signature_mismatch_due_to_body(connection):
                 nonce=nonce,
                 device_id=DEVICE_ID,
                 idempotency_key=None,
+                body_sha_override=signed_body_sha,
             ),
         }
         response = await client.post("/v1/uploads", data=actual_body, headers=headers)
-        assert response.status == 401
+        assert response.status == 400
         data = await response.json()
-        assert data["error"] == "invalid_signature"
+        assert data["error"] == "invalid_body_digest"
     finally:
         await client.close()
         await server.close()
 
 
 @pytest.mark.asyncio
-async def test_timestamp_outside_window(connection):
+async def test_missing_content_sha_header(connection):
     app, server, client = await _create_client(connection)
     try:
-        timestamp = int(time.time()) - 400
-        nonce = "nonce-old-1234567890"
-        body = b"{}"
+        timestamp = int(time.time())
+        nonce = "nonce-missing-digest-1234"
+        body = json.dumps({"hello": "world"}).encode()
         headers = {
             "X-Device-Id": DEVICE_ID,
             "X-Timestamp": str(timestamp),
@@ -185,6 +193,43 @@ async def test_timestamp_outside_window(connection):
                 nonce=nonce,
                 device_id=DEVICE_ID,
                 idempotency_key=None,
+            ),
+        }
+        response = await client.post("/v1/uploads", data=body, headers=headers)
+        assert response.status == 400
+        data = await response.json()
+        assert data["error"] == "invalid_headers"
+        assert data["message"] == "Missing required HMAC headers."
+    finally:
+        await client.close()
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_timestamp_outside_window(connection):
+    app, server, client = await _create_client(connection)
+    try:
+        timestamp = int(time.time()) - 400
+        nonce = "nonce-old-1234567890"
+        body = b"{}"
+        body_sha = _body_sha256(body)
+        headers = {
+            "X-Device-Id": DEVICE_ID,
+            "X-Timestamp": str(timestamp),
+            "X-Nonce": nonce,
+            "Content-Type": "application/json",
+            "X-Content-SHA256": body_sha,
+            "X-Signature": _sign(
+                DEVICE_SECRET,
+                method="POST",
+                path="/v1/uploads",
+                query=None,
+                body=body,
+                timestamp=timestamp,
+                nonce=nonce,
+                device_id=DEVICE_ID,
+                idempotency_key=None,
+                body_sha_override=body_sha,
             ),
         }
         response = await client.post("/v1/uploads", data=body, headers=headers)
@@ -203,11 +248,13 @@ async def test_reused_nonce_rejected(connection):
         timestamp = int(time.time())
         nonce = "nonce-repeat-1234567890"
         body = b"{}"
+        body_sha = _body_sha256(body)
         headers = {
             "X-Device-Id": DEVICE_ID,
             "X-Timestamp": str(timestamp),
             "X-Nonce": nonce,
             "Content-Type": "application/json",
+            "X-Content-SHA256": body_sha,
             "X-Signature": _sign(
                 DEVICE_SECRET,
                 method="POST",
@@ -218,6 +265,7 @@ async def test_reused_nonce_rejected(connection):
                 nonce=nonce,
                 device_id=DEVICE_ID,
                 idempotency_key=None,
+                body_sha_override=body_sha,
             ),
         }
         first = await client.post("/v1/uploads", data=body, headers=headers)
@@ -238,6 +286,7 @@ async def test_upload_happy_path_with_query(connection):
         timestamp = int(time.time())
         nonce = "nonce-query-abcdef123456"
         body = json.dumps({"foo": "bar"}).encode()
+        body_sha = _body_sha256(body)
         query = MultiDict([("foo", "1")])
         headers = {
             "X-Device-Id": DEVICE_ID,
@@ -245,6 +294,7 @@ async def test_upload_happy_path_with_query(connection):
             "X-Nonce": nonce,
             "Idempotency-Key": "idem-xyz",
             "Content-Type": "application/json",
+            "X-Content-SHA256": body_sha,
         }
         headers["X-Signature"] = _sign(
             DEVICE_SECRET,
@@ -256,6 +306,7 @@ async def test_upload_happy_path_with_query(connection):
             nonce=nonce,
             device_id=DEVICE_ID,
             idempotency_key=headers["Idempotency-Key"],
+            body_sha_override=body_sha,
         )
         response = await client.post("/v1/uploads?foo=1", data=body, headers=headers)
         assert response.status == 200

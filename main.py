@@ -13471,7 +13471,13 @@ async def attach_device(request: web.Request) -> web.Response:
         info = consume_pairing_token(conn, code=code)
         if not info:
             logging.warning('DEVICE attach invalid token ip=%s', ip)
-            return web.json_response({'error': 'invalid_or_expired_code'}, status=400)
+            return web.json_response(
+                {
+                    'error': 'invalid_token',
+                    'message': 'Токен недействителен или срок его действия истёк.',
+                },
+                status=400,
+            )
 
         user_id, default_name = info
         effective_name = (

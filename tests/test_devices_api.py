@@ -247,6 +247,36 @@ async def test_attach_device_invalid_code(tmp_path):
             assert resp.status == 400
             payload = await resp.json()
             assert payload['error'] == 'invalid_token'
-            assert 'message' in payload and payload['message']
+            assert (
+                payload['message']
+                == 'Недопустимый формат токена: ожидаем 6–8 символов A-Z и 2-9.'
+            )
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_attach_device_rejects_consumed_token(tmp_path):
+    bot = Bot('dummy', str(tmp_path / 'db.sqlite'))
+    await bot.start()
+
+    create_pairing_token(bot.db, code='CATPZZ', user_id=17, device_name='Spare iPhone')
+    bot.db.commit()
+
+    app = await _make_app(bot)
+
+    async with TestServer(app) as server:
+        async with TestClient(server) as client:
+            first = await client.post('/v1/devices/attach', json={'token': 'CATPZZ'})
+            assert first.status == 200
+
+            second = await client.post('/v1/devices/attach', json={'token': 'CATPZZ'})
+            assert second.status == 400
+            payload = await second.json()
+
+    assert payload == {
+        'error': 'invalid_token',
+        'message': 'Токен недействителен или срок его действия истёк.',
+    }
 
     await bot.close()

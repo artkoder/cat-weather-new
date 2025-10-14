@@ -14,17 +14,28 @@ jobs:
           fetch-depth: 0
       - name: Verify API contract submodule
         run: |
-          CONTRACT=api/contract/openapi/openapi.yaml
+          set -euo pipefail
+          CONTRACT="api/contract/openapi/openapi.yaml"
+      
+          # наличие сабмодуля и спецификации
           if [ ! -f "$CONTRACT" ]; then
-            echo "::error::${CONTRACT} is missing"
-            echo "Tree for debugging:" && ls -la api/contract && echo && ls -la api/contract/openapi || true
+            echo "::error::api/contract submodule or $CONTRACT is missing"
+            ls -la api || true
+            ls -la api/contract || true
             exit 1
           fi
-          tag="$(git -C api/contract describe --tags --exact-match HEAD 2>/dev/null || true)"
-          if [ "$tag" != "v1.0.0" ]; then
-            echo "::error::api/contract must be pinned to tag v1.0.0 (current: ${tag:-<none>})"
+      
+          # требуем, чтобы HEAD сабмодуля был ровно на теге v1.4.1
+          git -C api/contract fetch --tags --force
+          TAG_EXPECTED="v1.4.1"
+          TAG_ACTUAL="$(git -C api/contract describe --tags --exact-match HEAD 2>/dev/null || true)"
+      
+          echo "Contract tag (actual): ${TAG_ACTUAL:-<none>}"
+          if [ "$TAG_ACTUAL" != "$TAG_EXPECTED" ]; then
+            echo "::error::Contract tag mismatch. Expected $TAG_EXPECTED but found ${TAG_ACTUAL:-<none>}"
             exit 1
           fi
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'

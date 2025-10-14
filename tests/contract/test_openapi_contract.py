@@ -33,7 +33,7 @@ from api.security import (
     create_hmac_middleware,
 )
 from api.uploads import UploadsConfig, setup_upload_routes
-from data_access import create_pairing_token
+from data_access import create_pairing_token, insert_upload
 from main import apply_migrations, attach_device
 from storage import LocalStorage
 
@@ -66,6 +66,7 @@ class ContractServerContext:
     base_url: str
     conn: sqlite3.Connection
     server: TestServer
+    uploads_config: UploadsConfig
 
     def issue_pairing_token(
         self,
@@ -86,6 +87,32 @@ class ContractServerContext:
 
     def url_for(self, path: str) -> str:
         return urljoin(self.base_url.rstrip("/") + "/", path.lstrip("/"))
+
+    def register_upload_conflict(
+        self,
+        *,
+        device_id: str,
+        idempotency_key: str,
+        file_ref: str | None = None,
+    ) -> str:
+        upload_id = str(uuid.uuid4())
+        insert_upload(
+            self.conn,
+            id=upload_id,
+            device_id=device_id,
+            idempotency_key=idempotency_key,
+            file_ref=file_ref or f"conflict/{upload_id}",
+        )
+        self.conn.commit()
+        return upload_id
+
+    def make_payload_stream(self, size: int) -> BytesIO:
+        return BytesIO(b"\xff" * size)
+
+    def make_oversized_payload_stream(self, extra_bytes: int = 1) -> BytesIO:
+        return self.make_payload_stream(
+            self.uploads_config.max_upload_bytes + max(1, extra_bytes)
+        )
 
 
 def _make_test_image_bytes(size: tuple[int, int] = (48, 32)) -> bytes:
@@ -142,6 +169,113 @@ def _prepare_signature(
 def _send_prepared(prepared: requests.PreparedRequest) -> requests.Response:
     with requests.Session() as session:
         return session.send(prepared)
+
+
+async def _call_attach(
+    contract_server: ContractServerContext,
+    openapi_schema,
+    *,
+    token: str,
+    name: str,
+):
+    operation = openapi_schema["/v1/devices/attach"]["post"]
+    case = operation.make_case()
+    case.media_type = "application/json"
+    case.body = {"token": token, "name": name}
+    response = await asyncio.to_thread(case.call, base_url=contract_server.base_url)
+    case.validate_response(response)
+    return response
+
+
+async def _obtain_device_credentials(
+    contract_server: ContractServerContext,
+    openapi_schema,
+    *,
+    user_id: int,
+    device_name: str,
+):
+    token = contract_server.issue_pairing_token(
+        user_id=user_id, device_name=device_name
+    )
+    response = await _call_attach(
+        contract_server,
+        openapi_schema,
+        token=token,
+        name=device_name,
+    )
+    payload = response.json()
+    return payload["device_id"], payload["device_secret"], token
+
+
+async def _execute_upload_request(
+    contract_server: ContractServerContext,
+    openapi_schema,
+    *,
+    device_id: str,
+    device_secret: str,
+    files: dict[str, tuple[str, BytesIO | bytes, str]],
+    idempotency_key: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+):
+    upload_operation = openapi_schema["/v1/uploads"]["post"]
+    upload_url = contract_server.url_for("/v1/uploads")
+    key = idempotency_key or str(uuid.uuid4())
+    headers = {"Accept": "application/json", "Idempotency-Key": key}
+    if extra_headers:
+        headers.update(extra_headers)
+    request = requests.Request(
+        method=upload_operation.method.upper(),
+        url=upload_url,
+        headers=headers,
+        files=files,
+    )
+    prepared = request.prepare()
+    nonce = secrets.token_hex(16)
+    timestamp = int(time.time())
+    _prepare_signature(
+        prepared,
+        device_id=device_id,
+        secret=device_secret,
+        nonce=nonce,
+        timestamp=timestamp,
+        idempotency_key=key,
+    )
+    response = await asyncio.to_thread(_send_prepared, prepared)
+    case = upload_operation.make_case()
+    case.validate_response(response)
+    return response, key
+
+
+async def _execute_status_request(
+    contract_server: ContractServerContext,
+    openapi_schema,
+    *,
+    device_id: str,
+    device_secret: str,
+    upload_id: str,
+):
+    status_operation = openapi_schema["/v1/uploads/{id}/status"]["get"]
+    status_url = contract_server.url_for(f"/v1/uploads/{upload_id}/status")
+    request = requests.Request(
+        method=status_operation.method.upper(),
+        url=status_url,
+        headers={"Accept": "application/json"},
+    )
+    prepared = request.prepare()
+    nonce = secrets.token_hex(16)
+    timestamp = int(time.time())
+    _prepare_signature(
+        prepared,
+        device_id=device_id,
+        secret=device_secret,
+        nonce=nonce,
+        timestamp=timestamp,
+        idempotency_key=None,
+    )
+    response = await asyncio.to_thread(_send_prepared, prepared)
+    case = status_operation.make_case(path_parameters={"id": upload_id})
+    case.validate_response(response)
+    return response
 
 
 @pytest.fixture(scope="session")
@@ -220,6 +354,7 @@ def contract_server(
         base_url=str(server.make_url("/")),
         conn=conn,
         server=server,
+        uploads_config=app["uploads_config"],
     )
     try:
         yield context
@@ -350,3 +485,160 @@ async def test_contract_rejects_bad_signature(contract_server: ContractServerCon
     assert response.status_code in {401, 403}
     error = response.json().get("error")
     assert error in {"invalid_signature", "nonce_reused", "device_revoked", "invalid_headers"}
+
+
+@pytest.mark.asyncio
+async def test_contract_rejects_invalid_attach_token(
+    contract_server: ContractServerContext,
+    openapi_schema,
+):
+    invalid_token = "BADTOK"
+    response = await _call_attach(
+        contract_server,
+        openapi_schema,
+        token=invalid_token,
+        name="Spec Invalid Token",
+    )
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"] == "invalid_token"
+
+
+@pytest.mark.asyncio
+async def test_contract_upload_rejects_reused_idempotency_key(
+    contract_server: ContractServerContext,
+    openapi_schema,
+):
+    device_id, device_secret, _ = await _obtain_device_credentials(
+        contract_server,
+        openapi_schema,
+        user_id=1501,
+        device_name="Spec Conflict",
+    )
+    idempotency_key = str(uuid.uuid4())
+    contract_server.register_upload_conflict(
+        device_id=device_id, idempotency_key=idempotency_key
+    )
+    files = {
+        "file": ("conflict.jpg", _make_test_image_bytes(), "image/jpeg"),
+    }
+    response, returned_key = await _execute_upload_request(
+        contract_server,
+        openapi_schema,
+        device_id=device_id,
+        device_secret=device_secret,
+        files=files,
+        idempotency_key=idempotency_key,
+    )
+    assert returned_key == idempotency_key
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["error"] == "conflict"
+    assert payload["id"]
+
+
+@pytest.mark.asyncio
+async def test_contract_upload_rejects_oversized_payload(
+    contract_server: ContractServerContext,
+    openapi_schema,
+):
+    device_id, device_secret, _ = await _obtain_device_credentials(
+        contract_server,
+        openapi_schema,
+        user_id=1502,
+        device_name="Spec Too Large",
+    )
+    oversize_stream = contract_server.make_oversized_payload_stream()
+    files = {
+        "file": ("oversize.jpg", oversize_stream, "image/jpeg"),
+    }
+    response, _ = await _execute_upload_request(
+        contract_server,
+        openapi_schema,
+        device_id=device_id,
+        device_secret=device_secret,
+        files=files,
+    )
+    assert response.status_code == 413
+    payload = response.json()
+    assert payload["error"] == "file_too_large"
+
+
+@pytest.mark.asyncio
+async def test_contract_upload_rejects_unsupported_media(
+    contract_server: ContractServerContext,
+    openapi_schema,
+):
+    device_id, device_secret, _ = await _obtain_device_credentials(
+        contract_server,
+        openapi_schema,
+        user_id=1503,
+        device_name="Spec Unsupported",
+    )
+    text_stream = contract_server.make_payload_stream(256)
+    files = {
+        "file": ("unsupported.txt", text_stream, "text/plain"),
+    }
+    response, _ = await _execute_upload_request(
+        contract_server,
+        openapi_schema,
+        device_id=device_id,
+        device_secret=device_secret,
+        files=files,
+    )
+    assert response.status_code == 415
+    payload = response.json()
+    assert payload["error"] in {"unsupported_media_type", "invalid_content_type"}
+
+
+@pytest.mark.asyncio
+async def test_contract_upload_status_missing_upload(
+    contract_server: ContractServerContext,
+    openapi_schema,
+):
+    device_id, device_secret, _ = await _obtain_device_credentials(
+        contract_server,
+        openapi_schema,
+        user_id=1504,
+        device_name="Spec Missing Status",
+    )
+    missing_id = str(uuid.uuid4())
+    response = await _execute_status_request(
+        contract_server,
+        openapi_schema,
+        device_id=device_id,
+        device_secret=device_secret,
+        upload_id=missing_id,
+    )
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["error"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_contract_upload_reports_internal_error_when_channel_missing(
+    contract_server: ContractServerContext,
+    openapi_schema,
+):
+    contract_server.conn.execute("DELETE FROM asset_channel")
+    contract_server.conn.commit()
+
+    device_id, device_secret, _ = await _obtain_device_credentials(
+        contract_server,
+        openapi_schema,
+        user_id=1505,
+        device_name="Spec Missing Channel",
+    )
+    files = {
+        "file": ("channel-missing.jpg", _make_test_image_bytes(), "image/jpeg"),
+    }
+    response, _ = await _execute_upload_request(
+        contract_server,
+        openapi_schema,
+        device_id=device_id,
+        device_secret=device_secret,
+        files=files,
+    )
+    assert response.status_code == 500
+    payload = response.json()
+    assert payload["error"] == "asset_channel_not_configured"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -30,6 +31,12 @@ class _Bucket:
     updated_at: float
 
 
+@dataclass
+class _Allowance:
+    allowed: bool
+    retry_after_seconds: float | None = None
+
+
 class TokenBucketLimiter:
     """Simple in-memory token bucket limiter."""
 
@@ -50,9 +57,9 @@ class TokenBucketLimiter:
     def window(self) -> int:
         return self._window
 
-    async def allow(self, key: str) -> bool:
+    async def allow(self, key: str) -> _Allowance:
         if self._capacity <= 0:
-            return False
+            return _Allowance(False, float(self._window))
         now = time.monotonic()
         async with self._lock:
             bucket = self._buckets.get(key)
@@ -68,11 +75,16 @@ class TokenBucketLimiter:
                     bucket.updated_at = now
             if bucket.tokens < 1.0:
                 self._buckets[key] = bucket
-                return False
+                missing_tokens = max(0.0, 1.0 - bucket.tokens)
+                if self._refill_rate <= 0:
+                    retry_after = float(self._window)
+                else:
+                    retry_after = missing_tokens / self._refill_rate
+                return _Allowance(False, retry_after)
             bucket.tokens -= 1.0
             bucket.updated_at = now
             self._buckets[key] = bucket
-            return True
+            return _Allowance(True, None)
 
 
 class AllowList:
@@ -214,7 +226,7 @@ def create_rate_limit_middleware() -> web.middleware:
                     key = "unknown"
             else:
                 continue
-            allowed = await rule.limiter.allow(key)
+            allowance = await rule.limiter.allow(key)
             request.setdefault(
                 "rate_limit_log",
                 {
@@ -225,16 +237,28 @@ def create_rate_limit_middleware() -> web.middleware:
                     "key": f"{rule.scope}:{key}",
                 },
             )
-            if not allowed:
+            if not allowance.allowed:
+                retry_after_seconds = allowance.retry_after_seconds
+                headers: dict[str, str] | None = None
+                if (
+                    retry_after_seconds is not None
+                    and retry_after_seconds >= 0
+                    and math.isfinite(retry_after_seconds)
+                ):
+                    delay_seconds = max(0, int(math.ceil(retry_after_seconds)))
+                    headers = {"Retry-After": str(delay_seconds)}
                 request["rate_limit_log"] = {
                     "result": "hit",
                     "scope": rule.scope,
                     "limit": rule.limiter.capacity,
                     "window": rule.limiter.window,
                     "key": f"{rule.scope}:{key}",
+                    "retry_after": retry_after_seconds,
                 }
                 record_rate_limit_drop(rule.path, rule.scope)
-                return web.json_response({"error": "rate_limited"}, status=429)
+                return web.json_response(
+                    {"error": "rate_limited"}, status=429, headers=headers
+                )
         response = await handler(request)
         return response
 

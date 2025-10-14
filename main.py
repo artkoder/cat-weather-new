@@ -13455,7 +13455,8 @@ async def attach_device(request: web.Request) -> web.Response:
     row = cur.fetchone()
     if row:
         user_for_limit = int(row['user_id']) if isinstance(row, sqlite3.Row) else int(row[0])
-        if not await user_limiter.allow(f'user:{user_for_limit}'):
+        allowance = await user_limiter.allow(f'user:{user_for_limit}')
+        if not allowance.allowed:
             logging.warning('DEVICE attach user rate-limit user=%s ip=%s', user_for_limit, ip)
             request['rate_limit_log'] = {
                 'result': 'hit',
@@ -13463,9 +13464,21 @@ async def attach_device(request: web.Request) -> web.Response:
                 'limit': user_limiter.capacity,
                 'window': user_limiter.window,
                 'key': f'user:{user_for_limit}',
+                'retry_after': allowance.retry_after_seconds,
             }
             record_rate_limit_drop('/v1/devices/attach', 'user')
-            return web.json_response({'error': 'rate_limited'}, status=429)
+            headers: dict[str, str] | None = None
+            if (
+                allowance.retry_after_seconds is not None
+                and allowance.retry_after_seconds >= 0
+                and math.isfinite(allowance.retry_after_seconds)
+            ):
+                headers = {
+                    'Retry-After': str(
+                        max(0, int(math.ceil(allowance.retry_after_seconds)))
+                    )
+                }
+            return web.json_response({'error': 'rate_limited'}, status=429, headers=headers)
 
     with conn:
         info = consume_pairing_token(conn, code=code)

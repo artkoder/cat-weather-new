@@ -62,6 +62,8 @@ def test_insert_upload_enforces_idempotency_per_device(conn: sqlite3.Connection)
         idempotency_key="idem-42",
     )
     assert second == "upload-1"
+    row = _get_upload(conn, first)
+    assert row["status"] == "queued"
     count = conn.execute("SELECT COUNT(*) FROM uploads").fetchone()[0]
     assert count == 1
     row = conn.execute("SELECT source FROM uploads WHERE id=?", (first,)).fetchone()

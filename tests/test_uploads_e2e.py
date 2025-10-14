@@ -284,6 +284,7 @@ async def _signed_post(
     assert env.client is not None
     timestamp = int(time.time())
     nonce = f"nonce-{time.time_ns()}"
+    content_sha = _body_sha256(body)
     signature = _sign(
         secret=secret,
         method="POST",
@@ -302,6 +303,7 @@ async def _signed_post(
         "X-Nonce": nonce,
         "Idempotency-Key": idempotency_key,
         "X-Signature": signature,
+        "X-Content-SHA256": content_sha,
     }
     response = await env.client.post(path, data=body, headers=headers)
     payload = await response.json()
@@ -319,6 +321,7 @@ async def _signed_get(
     timestamp = int(time.time())
     nonce = f"nonce-{time.time_ns()}"
     body = b""
+    content_sha = _body_sha256(body)
     signature = _sign(
         secret=secret,
         method="GET",
@@ -335,6 +338,7 @@ async def _signed_get(
         "X-Timestamp": str(timestamp),
         "X-Nonce": nonce,
         "X-Signature": signature,
+        "X-Content-SHA256": content_sha,
     }
     response = await env.client.get(path, headers=headers)
     payload = await response.json()
@@ -359,8 +363,11 @@ async def test_uploads_rejects_when_channel_missing(tmp_path: Path) -> None:
             idempotency_key="idem-missing",
         )
 
-        assert status == 503
-        assert payload == {"error": "asset_channel_not_configured"}
+        assert status == 500
+        assert payload == {
+            "error": "asset_channel_not_configured",
+            "message": "Asset upload channel is not configured.",
+        }
         assert env.conn is not None
         total_uploads = env.conn.execute("SELECT COUNT(*) FROM uploads").fetchone()[0]
         assert total_uploads == 0
@@ -386,7 +393,8 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
             secret=DEVICE_SECRET,
             idempotency_key="idem-1",
         )
-        assert status == 201
+        assert status == 202
+        assert payload["status"] == "queued"
         upload_id = payload["id"]
 
         deadline = time.time() + 5
@@ -470,7 +478,8 @@ async def test_process_upload_local_cleanup(tmp_path: Path, cleanup_flag: bool):
             secret=DEVICE_SECRET,
             idempotency_key=f"idem-clean-{cleanup_flag}",
         )
-        assert status == 201
+        assert status == 202
+        assert payload["status"] == "queued"
         upload_id = payload["id"]
 
         for _ in range(30):
@@ -519,7 +528,8 @@ async def test_uploads_idempotency_returns_same_id(tmp_path: Path):
             secret=DEVICE_SECRET,
             idempotency_key="idem-42",
         )
-        assert status1 == 201
+        assert status1 == 202
+        assert payload1["status"] == "queued"
         status2, payload2 = await _signed_post(
             env,
             path="/v1/uploads",
@@ -529,8 +539,11 @@ async def test_uploads_idempotency_returns_same_id(tmp_path: Path):
             secret=DEVICE_SECRET,
             idempotency_key="idem-42",
         )
-        assert status2 == 201
-        assert payload1["id"] == payload2["id"]
+        assert status2 == 409
+        assert payload2["error"] == "conflict"
+        assert payload2["message"] == "An upload with this idempotency key already exists."
+        assert payload2["id"] == payload1["id"]
+        assert payload2["status"] in {"queued", "processing", "done", "failed"}
     finally:
         await env.close()
 
@@ -585,7 +598,8 @@ async def test_upload_status_for_other_device_not_found(tmp_path: Path):
             secret=DEVICE_SECRET,
             idempotency_key="idem-main",
         )
-        assert status == 201
+        assert status == 202
+        assert payload["status"] == "queued"
         upload_id = payload["id"]
 
         status_resp, payload_resp = await _signed_get(
@@ -666,7 +680,8 @@ async def test_upload_processing_with_vision(tmp_path: Path):
             secret=DEVICE_SECRET,
             idempotency_key="idem-vision",
         )
-        assert status == 201
+        assert status == 202
+        assert payload["status"] == "queued"
         upload_id = payload["id"]
 
         deadline = time.time() + 5

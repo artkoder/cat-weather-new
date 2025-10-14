@@ -231,7 +231,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
         return _json_error(400, "invalid_idempotency_key", "Idempotency-Key header is required.")
 
     if request.content_type is None or not request.content_type.startswith("multipart/"):
-        return _json_error(400, "invalid_content_type", "Expected multipart/form-data payload.")
+        return _json_error(415, "invalid_content_type", "Expected multipart/form-data payload.")
 
     conn = _ensure_db(request.app)
     config = _ensure_config(request.app)
@@ -246,7 +246,11 @@ async def handle_create_upload(request: web.Request) -> web.Response:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
-        return web.json_response({"error": "asset_channel_not_configured"}, status=503)
+        return _json_error(
+            500,
+            "asset_channel_not_configured",
+            "Asset upload channel is not configured.",
+        )
 
     config = replace(config, assets_channel_id=asset_channel_id)
 
@@ -262,7 +266,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
     content_type = file_part.headers.get("Content-Type", "application/octet-stream")
     if not _is_allowed_type(content_type, config):
         await file_part.release()
-        return _json_error(400, "unsupported_media_type", "Unsupported file type.")
+        return _json_error(415, "unsupported_media_type", "Unsupported file type.")
 
     upload_id = str(uuid4())
     request["upload_id"] = upload_id
@@ -282,7 +286,20 @@ async def handle_create_upload(request: web.Request) -> web.Response:
         if created_id != upload_id:
             logging.info("UPLOAD idempotent-return device=%s upload=%s", device_id, created_id)
             await file_part.release()
-            return web.json_response({"id": created_id}, status=201)
+            request["upload_id"] = created_id
+            existing = get_upload(conn, device_id=device_id, upload_id=created_id)
+            payload: dict[str, Any] = {
+                "error": "conflict",
+                "message": "An upload with this idempotency key already exists.",
+                "id": created_id,
+            }
+            if existing:
+                payload["status"] = existing.get("status")
+                if existing.get("error") is not None:
+                    payload["upload_error"] = existing.get("error")
+                if existing.get("asset_id") is not None:
+                    payload["asset_id"] = existing.get("asset_id")
+            return web.json_response(payload, status=409)
 
         record_upload_created()
 
@@ -342,7 +359,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
-        return web.json_response({"id": upload_id}, status=201)
+        return web.json_response({"id": upload_id, "status": "queued"}, status=202)
 
 
 async def handle_get_upload_status(request: web.Request) -> web.Response:

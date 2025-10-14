@@ -13,6 +13,8 @@ The backend consumes the public API contract via the `api/contract` git submodul
 canonical OpenAPI document lives at `api/contract/openapi/openapi.yaml`; keep the repository free from alternative copies so the
 contract stays single-sourced.
 
+> 🚫 **Не изменяйте содержимое `api/contract` вручную.** Любые правки внутри подмодуля нужно вносить в репозитории контракта, после чего подтягивать обновления через `git submodule update --remote` и коммитить только обновлённый указатель (`git add api/contract`). Так CI остаётся зелёным, а OpenAPI продолжает жить в одном источнике истины.
+
 > ⚠️  The new token-based device-attach contract lives in the contract repository but the backend submodule intentionally stays on `d5820228` until the dedicated follow-up task bumps it. To finish the rollout later, follow the steps below and checkout the commit (or tag) that contains the updated OpenAPI before staging `api/contract`.
 
 ### Bumping the contract version

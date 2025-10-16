@@ -49,8 +49,6 @@ async def test_attach_device_success(tmp_path):
     assert payload['name'] == 'Pixel 8'
     assert payload['device_id']
     assert payload['device_secret']
-    assert payload['id'] == payload['device_id']
-    assert payload['secret'] == payload['device_secret']
     assert re.fullmatch(r'[0-9a-f]{64}', payload['device_secret'])
 
     row = bot.db.execute(
@@ -99,8 +97,6 @@ async def test_attach_device_accepts_prefixed_payloads(
     assert payload['name'] == 'Office Pixel'
     assert payload['device_id']
     assert payload['device_secret']
-    assert payload['id'] == payload['device_id']
-    assert payload['secret'] == payload['device_secret']
     assert re.fullmatch(r'[0-9a-f]{64}', payload['device_secret'])
 
     row = bot.db.execute(

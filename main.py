@@ -13524,15 +13524,14 @@ async def attach_device(request: web.Request) -> web.Response:
             effective_name,
             ip,
         )
-    return web.json_response(
-        {
-            'device_id': device_id,
-            'device_secret': secret,
-            'id': device_id,  # deprecated: remove after 2024-12 client sunset
-            'secret': secret,  # deprecated: remove after 2024-12 client sunset
-            'name': effective_name,
-        }
-    )
+    payload: dict[str, str] = {
+        'device_id': device_id,
+        'device_secret': secret,
+    }
+    if effective_name:
+        payload['name'] = effective_name
+
+    return web.json_response(payload)
 
 
 async def handle_webhook(request):
@@ -13551,7 +13550,10 @@ async def handle_webhook(request):
     return web.Response(text='ok')
 
 def create_app():
-    app = web.Application()
+    uploads_config = bot.uploads_config
+    app = web.Application(
+        client_max_size=uploads_config.max_upload_bytes + 1024
+    )
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -13566,7 +13568,6 @@ def create_app():
         _env_int('RL_ATTACH_USER_WINDOW_SEC', 60),
     )
 
-    uploads_config = bot.uploads_config
     storage = create_storage_from_env(supabase=bot.supabase)
     upload_metrics = UploadMetricsRecorder(emitter=LoggingMetricsEmitter())
     bot.upload_metrics = upload_metrics

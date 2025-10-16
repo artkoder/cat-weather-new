@@ -5,7 +5,6 @@
 
 - [API reference](api/docs/index.html)
 
-Closes #123.
 
 ## API Contract
 

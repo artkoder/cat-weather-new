@@ -210,15 +210,16 @@ class UploadTestEnv:
         await jobs.start()
         self.jobs = jobs
 
-        app = web.Application(
-            middlewares=[create_hmac_middleware(conn), create_rate_limit_middleware()]
-        )
         config = UploadsConfig(
             max_upload_mb=max_upload_mb,
             assets_channel_id=assets_channel_id,
             vision_enabled=vision_flag,
             openai_vision_model=vision_model if vision_flag else None,
             max_image_side=None,
+        )
+        app = web.Application(
+            middlewares=[create_hmac_middleware(conn), create_rate_limit_middleware()],
+            client_max_size=config.max_upload_bytes + 1024,
         )
         setup_upload_routes(app, storage=storage, conn=conn, jobs=jobs, config=config)
         self.config = config

@@ -322,8 +322,16 @@ def contract_server(
         def __init__(self, connection: sqlite3.Connection) -> None:
             self.db = connection
 
+    uploads_config = UploadsConfig(
+        max_upload_mb=5.0,
+        allowed_prefixes=("image/",),
+        allowed_exact=("application/pdf",),
+        assets_channel_id=ASSET_CHANNEL_ID,
+    )
+
     app = web.Application(
-        middlewares=[create_rate_limit_middleware(), create_hmac_middleware(conn)]
+        middlewares=[create_rate_limit_middleware(), create_hmac_middleware(conn)],
+        client_max_size=uploads_config.max_upload_bytes + 1024,
     )
     app["bot"] = _BotStub(conn)
     app["attach_user_rate_limiter"] = TokenBucketLimiter(500, 60)
@@ -332,12 +340,7 @@ def contract_server(
     app["db"] = conn
     jobs = DummyJobQueue()
     app["jobs"] = jobs
-    app["uploads_config"] = UploadsConfig(
-        max_upload_mb=5.0,
-        allowed_prefixes=("image/",),
-        allowed_exact=("application/pdf",),
-        assets_channel_id=ASSET_CHANNEL_ID,
-    )
+    app["uploads_config"] = uploads_config
 
     setup_upload_routes(
         app,

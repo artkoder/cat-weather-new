@@ -4,7 +4,6 @@
 [Полную историю изменений см. в `CHANGELOG.md`](CHANGELOG.md).
 
 - [API reference](api/docs/index.html)
-- Этот коммит используется для проверки конвейера CI.
 
 Closes #123.
 

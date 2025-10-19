@@ -38,6 +38,7 @@ from main import apply_migrations, attach_device
 from storage import LocalStorage
 
 schemathesis = pytest.importorskip("schemathesis")
+pytest.importorskip("schemathesis.loaders")
 requests = pytest.importorskip("requests")
 
 ASSET_CHANNEL_ID = -100123
@@ -286,7 +287,7 @@ def openapi_schema() -> schemathesis.schemas.BaseSchema:
             "OpenAPI contract is unavailable; fetch api/contract submodule to run contract tests.",
             allow_module_level=True,
         )
-    return schemathesis.from_path(str(contract_path))
+    return schemathesis.loaders.from_path(str(contract_path))
 
 
 @pytest.fixture

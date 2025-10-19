@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from types import MethodType, SimpleNamespace
 
 import pytest
 from aiohttp import web
@@ -22,6 +23,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import main as main_module
 
 from api.security import (
     _body_sha256,
@@ -344,6 +347,85 @@ async def _signed_get(
     response = await env.client.get(path, headers=headers)
     payload = await response.json()
     return response.status, payload
+
+
+@pytest.mark.asyncio
+async def test_create_app_registers_process_upload_and_completes_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    uploads_dir = tmp_path / "storage"
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy")
+    monkeypatch.setenv("WEBHOOK_URL", "https://example.com/bot")
+    monkeypatch.setattr(main_module, "DB_PATH", str(tmp_path / "bot.db"))
+
+    def _fake_storage_from_env(*, base_path=None, supabase=None):
+        return LocalStorage(base_path=uploads_dir)
+
+    monkeypatch.setattr(main_module, "create_storage_from_env", _fake_storage_from_env)
+
+    app = main_module.create_app()
+    bot = app["bot"]
+
+    async def _fake_publish(self, chat_id, local_path, caption, *, caption_entities=None):
+        return {"message_id": 123, "chat": {"id": chat_id}}, "original"
+
+    monkeypatch.setattr(bot, "_publish_as_photo", MethodType(_fake_publish, bot))
+
+    assert app["uploads_config"] is bot.uploads_config
+    assert "process_upload" in bot.jobs.handlers
+
+    bot.db.execute("DELETE FROM asset_channel")
+    bot.db.execute("INSERT INTO asset_channel (channel_id) VALUES (?)", (-100123,))
+    bot.db.commit()
+
+    create_device(
+        bot.db,
+        device_id="device-1",
+        user_id=101,
+        name="Android",
+        secret=DEVICE_SECRET,
+    )
+    bot.db.commit()
+
+    server = TestServer(app)
+    client = TestClient(server)
+    await server.start_server()
+    await client.start_server()
+    helper_env = SimpleNamespace(client=client)
+
+    try:
+        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
+        status, payload = await _signed_post(
+            helper_env,
+            path="/v1/uploads",
+            body=body,
+            boundary=boundary,
+            device_id="device-1",
+            secret=DEVICE_SECRET,
+            idempotency_key="idem-create-app",
+        )
+
+        assert status == 202
+        assert payload["status"] == "queued"
+        upload_id = payload["id"]
+
+        for _ in range(50):
+            status_check, status_payload = await _signed_get(
+                helper_env,
+                path=f"/v1/uploads/{upload_id}/status",
+                device_id="device-1",
+                secret=DEVICE_SECRET,
+            )
+            assert status_check == 200
+            if status_payload["status"] == "done":
+                break
+            await asyncio.sleep(0.1)
+        else:
+            pytest.fail("process_upload did not complete in time")
+    finally:
+        await client.close()
+        await server.close()
 
 
 @pytest.mark.asyncio

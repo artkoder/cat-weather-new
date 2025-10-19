@@ -13550,17 +13550,17 @@ async def handle_webhook(request):
     return web.Response(text='ok')
 
 def create_app():
-    uploads_config = bot.uploads_config
-    app = web.Application(
-        client_max_size=uploads_config.max_upload_bytes + 1024
-    )
-
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN not found in environment variables")
 
     bot = Bot(token, DB_PATH)
+    uploads_config = bot.uploads_config
+    app = web.Application(
+        client_max_size=uploads_config.max_upload_bytes + 1024
+    )
     app['bot'] = bot
+    app['uploads_config'] = uploads_config
     app['started_at'] = datetime.now(timezone.utc)
     app['version'] = APP_VERSION
     app['attach_user_rate_limiter'] = TokenBucketLimiter(

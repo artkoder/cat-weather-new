@@ -38,14 +38,7 @@ from main import apply_migrations, attach_device
 from storage import LocalStorage
 
 schemathesis = pytest.importorskip("schemathesis")
-schemathesis_loaders: object | None
-try:
-    schemathesis_loaders = pytest.importorskip("schemathesis.loaders")
-except pytest.SkipTest:
-    # Older Schemathesis releases exposed the loader helper directly on the
-    # top-level module. Preserve compatibility by falling back to the module
-    # attribute when the new loaders namespace is unavailable.
-    schemathesis_loaders = None
+schemathesis_loaders = pytest.importorskip("schemathesis.loaders")
 requests = pytest.importorskip("requests")
 
 ASSET_CHANNEL_ID = -100123
@@ -294,15 +287,7 @@ def openapi_schema() -> schemathesis.schemas.BaseSchema:
             "OpenAPI contract is unavailable; fetch api/contract submodule to run contract tests.",
             allow_module_level=True,
         )
-    loader = getattr(schemathesis, "from_path", None)
-    if loader is None:
-        if schemathesis_loaders is None:
-            pytest.skip(
-                "Schemathesis loader helper unavailable; upgrade Schemathesis to run contract tests.",
-                allow_module_level=True,
-            )
-        loader = schemathesis_loaders.from_path
-    return loader(str(contract_path))
+    return schemathesis_loaders.from_path(contract_path)
 
 
 @pytest.fixture

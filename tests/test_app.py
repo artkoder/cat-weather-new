@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from main import create_app, Bot
-from data_access import create_device, insert_upload, set_upload_status
+from data_access import create_device, insert_upload, revoke_device, set_upload_status
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 os.environ.setdefault("WEBHOOK_URL", "https://example.com")
@@ -282,6 +282,16 @@ async def test_mobile_command_and_callbacks(tmp_path, caplog):
             name="Backup Phone",
             secret="secret-2",
         )
+        create_device(
+            bot.db,
+            device_id="dev-3",
+            user_id=1,
+            name="Revoked Phone",
+            secret="secret-3",
+        )
+        assert revoke_device(
+            bot.db, device_id="dev-3", expected_user_id=1
+        ), "Expected device to be revoked"
 
     calls.clear()
     multipart_calls.clear()
@@ -294,11 +304,14 @@ async def test_mobile_command_and_callbacks(tmp_path, caplog):
     assert method == "sendPhoto"
     assert payload["chat_id"] == 1
     assert "Код" in payload["caption"]
+    assert "Revoked Phone" not in payload["caption"]
+    assert "Office Pixel" in payload["caption"]
     keyboard = payload["reply_markup"]["inline_keyboard"]
     callbacks = [btn["callback_data"] for row in keyboard for btn in row]
     assert "pair:new" in callbacks
     assert any(cb == "dev:revoke:dev-1" for cb in callbacks)
     assert any(cb == "dev:rotate:dev-1" for cb in callbacks)
+    assert all("dev-3" not in cb for cb in callbacks)
     assert "photo" in files
     photo_entry = files["photo"]
     assert hasattr(photo_entry[1], "read")
@@ -357,6 +370,20 @@ async def test_mobile_command_and_callbacks(tmp_path, caplog):
             "message": {"message_id": 77, "chat": {"id": 1}},
         }
     )
+    edit_payload = next(
+        data for method, data in calls if method == "editMessageCaption"
+    )
+    edit_caption = edit_payload["caption"]
+    assert "Office Pixel" not in edit_caption
+    assert "Revoked Phone" not in edit_caption
+    assert "Backup Phone" in edit_caption
+    edit_keyboard = edit_payload["reply_markup"]["inline_keyboard"]
+    edit_callbacks = [
+        btn["callback_data"] for row in edit_keyboard for btn in row
+    ]
+    assert all("dev-1" not in cb for cb in edit_callbacks)
+    assert all("dev-3" not in cb for cb in edit_callbacks)
+    assert any("dev-2" in cb for cb in edit_callbacks)
     assert any(
         method == "answerCallbackQuery" and data["text"] == "Устройство отозвано"
         for method, data in calls
@@ -438,6 +465,53 @@ async def test_mobile_caption_truncates_devices(tmp_path):
     caption = payload["caption"]
     assert len(caption) <= 1024
     assert "…" in caption
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_mobile_caption_no_active_devices(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    async def dummy_api(method, data=None):
+        return {"ok": True, "result": {}}
+
+    photo_calls: list[tuple[str, Any, Any]] = []
+
+    async def dummy_multipart(method, data=None, *, files=None):
+        photo_calls.append((method, data, files))
+        return {"ok": True, "result": {"message_id": 202}}
+
+    bot.api_request = dummy_api  # type: ignore
+    bot.api_request_multipart = dummy_multipart  # type: ignore
+
+    await bot.start()
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+
+    with bot.db:
+        create_device(
+            bot.db,
+            device_id="revoked-only",
+            user_id=1,
+            name="Old Phone",
+            secret="secret-x",
+        )
+        assert revoke_device(
+            bot.db, device_id="revoked-only", expected_user_id=1
+        ), "Expected device to be revoked"
+
+    photo_calls.clear()
+
+    await bot.handle_update({"message": {"text": "/mobile", "from": {"id": 1}}})
+
+    assert photo_calls, "Expected sendPhoto call for revoked-only devices"
+    method, payload, _ = photo_calls[-1]
+    assert method == "sendPhoto"
+    caption = payload["caption"]
+    assert "Нет активных устройств." in caption
+    assert "Old Phone" not in caption
+    keyboard = payload["reply_markup"]["inline_keyboard"]
+    assert keyboard == [[{"text": "🔄 Новый код", "callback_data": "pair:new"}]]
 
     await bot.close()
 

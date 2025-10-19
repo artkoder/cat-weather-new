@@ -1212,8 +1212,13 @@ class Bot:
         message: Mapping[str, Any] | None = None,
         replace_photo: bool = False,
     ) -> None:
-        caption = self._format_mobile_caption(code, expires_at, devices)
-        keyboard = self._build_mobile_keyboard(devices)
+        active_devices = [
+            device
+            for device in devices
+            if not str(device.get("revoked_at") or "").strip()
+        ]
+        caption = self._format_mobile_caption(code, expires_at, active_devices)
+        keyboard = self._build_mobile_keyboard(active_devices)
         if message and message.get("message_id"):
             message_id = message["message_id"]
             if replace_photo:

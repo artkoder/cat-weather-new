@@ -1104,6 +1104,28 @@ class Bot:
             f"Код: <code>{html.escape(code)}</code>",
             ttl_line,
         ]
+        max_caption_length = 1024
+
+        def _caption_length(lines: Sequence[str]) -> int:
+            if not lines:
+                return 0
+            return sum(len(line) for line in lines) + len(lines) - 1
+
+        current_length = _caption_length(caption_lines)
+
+        def _can_append(line: str) -> bool:
+            extra = len(line)
+            if caption_lines:
+                extra += 1
+            return current_length + extra <= max_caption_length
+
+        def _append_line(line: str) -> None:
+            nonlocal current_length
+            extra = len(line)
+            if caption_lines:
+                extra += 1
+            caption_lines.append(line)
+            current_length += extra
 
         def _format_timestamp(raw: str | None) -> str | None:
             if not raw:
@@ -1120,9 +1142,11 @@ class Bot:
             return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
         if devices:
-            caption_lines.append("")
-            caption_lines.append("<b>Устройства</b>:")
-            for device in devices:
+            if _can_append(""):
+                _append_line("")
+            if _can_append("<b>Устройства</b>:"):
+                _append_line("<b>Устройства</b>:")
+            for index, device in enumerate(devices):
                 name = html.escape(str(device.get("name") or _PAIRING_DEFAULT_NAME))
                 revoked_raw = device.get("revoked_at") or ""
                 status = "отозван" if str(revoked_raw).strip() else "активен"
@@ -1130,10 +1154,22 @@ class Bot:
                 entry = f"• {name} — {status}"
                 if last_seen:
                     entry += f" (последнее событие {last_seen})"
-                caption_lines.append(entry)
+                if _can_append(entry):
+                    _append_line(entry)
+                    continue
+                omitted_count = len(devices) - index
+                if omitted_count > 0:
+                    summary_line = f"… и ещё {omitted_count} устройств"
+                    if not _can_append(summary_line):
+                        summary_line = "…"
+                    if _can_append(summary_line):
+                        _append_line(summary_line)
+                break
         else:
-            caption_lines.append("")
-            caption_lines.append("Нет активных устройств.")
+            if _can_append(""):
+                _append_line("")
+            if _can_append("Нет активных устройств."):
+                _append_line("Нет активных устройств.")
 
         return "\n".join(caption_lines)
 

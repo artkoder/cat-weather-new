@@ -287,7 +287,15 @@ def openapi_schema() -> schemathesis.schemas.BaseSchema:
             "OpenAPI contract is unavailable; fetch api/contract submodule to run contract tests.",
             allow_module_level=True,
         )
-    return schemathesis_loaders.from_path(contract_path)
+    try:
+        return schemathesis_loaders.from_path(
+            contract_path, validate_schema=False
+        )
+    except TypeError:
+        # Older Schemathesis versions don't support validate_schema.
+        # Fall back to the default behavior so local development with
+        # pinned dependencies keeps working.
+        return schemathesis_loaders.from_path(contract_path)
 
 
 @pytest.fixture

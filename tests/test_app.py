@@ -397,6 +397,52 @@ async def test_mobile_command_and_callbacks(tmp_path, caplog):
 
 
 @pytest.mark.asyncio
+async def test_mobile_caption_truncates_devices(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    async def dummy_api(method, data=None):
+        return {"ok": True, "result": {}}
+
+    photo_calls: list[tuple[str, Any, Any]] = []
+
+    async def dummy_multipart(method, data=None, *, files=None):
+        photo_calls.append((method, data, files))
+        return {"ok": True, "result": {"message_id": 101}}
+
+    bot.api_request = dummy_api  # type: ignore
+    bot.api_request_multipart = dummy_multipart  # type: ignore
+
+    await bot.start()
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+
+    with bot.db:
+        for idx in range(120):
+            create_device(
+                bot.db,
+                device_id=f"dev-{idx}",
+                user_id=1,
+                name=(
+                    f"Test Device {idx:03d} with a very long descriptive name that keeps "
+                    f"growing {idx:03d}"
+                ),
+                secret=f"secret-{idx}",
+            )
+
+    photo_calls.clear()
+
+    await bot.handle_update({"message": {"text": "/mobile", "from": {"id": 1}}})
+
+    assert photo_calls, "Expected sendPhoto call with truncated caption"
+    method, payload, _ = photo_calls[-1]
+    assert method == "sendPhoto"
+    caption = payload["caption"]
+    assert len(caption) <= 1024
+    assert "…" in caption
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_mobile_stats_command(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
 

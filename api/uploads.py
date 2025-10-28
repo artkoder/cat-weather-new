@@ -533,6 +533,12 @@ def register_upload_jobs(
 
                             exif_payload = dict(result.exif or {})
                             gps_payload = dict(result.gps or {})
+                            exif_ifds_payload = dict(result.exif_ifds or {})
+                            zeroth_ifd_payload = dict(
+                                exif_ifds_payload.get("0th") or {}
+                            )
+                            exif_ifd_payload = dict(exif_ifds_payload.get("Exif") or {})
+                            gps_ifd_payload = dict(exif_ifds_payload.get("GPS") or {})
                             exif_datetime_payload: dict[str, Any] = {}
                             if download and download.path.exists():
                                 exif_datetime_payload = _extract_exif_datetimes(
@@ -559,20 +565,26 @@ def register_upload_jobs(
                                 extra={
                                     "asset_id": asset_id,
                                     "upload_id": upload_id,
+                                    "zeroth_ifd_raw": json.dumps(
+                                        zeroth_ifd_payload,
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                        default=str,
+                                    ),
                                     "exif_raw": json.dumps(
-                                        exif_payload,
+                                        exif_ifd_payload,
                                         ensure_ascii=False,
                                         sort_keys=True,
                                         default=str,
                                     ),
                                     "gps_raw": json.dumps(
-                                        gps_payload,
+                                        gps_ifd_payload,
                                         ensure_ascii=False,
                                         sort_keys=True,
                                         default=str,
                                     ),
                                     "exif_ifds_raw": json.dumps(
-                                        result.exif_ifds,
+                                        exif_ifds_payload,
                                         ensure_ascii=False,
                                         sort_keys=True,
                                         default=str,

@@ -199,6 +199,34 @@ async def _run_vision_job_collect_calls(
 
 
 @pytest.mark.asyncio
+async def test_job_vision_safe_caption_omits_safety_line(tmp_path, monkeypatch):
+    calls, _, _ = await _run_vision_job_collect_calls(
+        tmp_path, monkeypatch, flag_enabled=False
+    )
+    copy_calls = [call for call in calls if call['method'] == 'copyMessage']
+    assert copy_calls, 'vision result should be published via copyMessage'
+    caption = copy_calls[0]['data'].get('caption')
+    assert caption is not None
+    assert 'Безопасность:' not in caption
+    assert '⚠️ Чувствительный контент' not in caption
+
+
+@pytest.mark.asyncio
+async def test_job_vision_nsfw_caption_includes_warning(tmp_path, monkeypatch):
+    calls, _, _ = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        vision_overrides={'safety': {'nsfw': True, 'reason': 'нарушение'}}
+    )
+    copy_calls = [call for call in calls if call['method'] == 'copyMessage']
+    assert copy_calls, 'vision result should be published via copyMessage'
+    caption = copy_calls[0]['data'].get('caption')
+    assert caption is not None
+    assert '⚠️ Чувствительный контент: нарушение' in caption
+
+
+@pytest.mark.asyncio
 async def test_job_vision_skips_exif_debug_by_default(tmp_path, monkeypatch):
     calls, _, _ = await _run_vision_job_collect_calls(
         tmp_path, monkeypatch, flag_enabled=False
@@ -1145,7 +1173,7 @@ async def test_recognized_message_skips_reingest(tmp_path):
         'message_id': recognized_mid,
         'date': int(datetime.utcnow().timestamp()),
         'chat': {'id': -100123},
-        'caption': 'Распознано: кот\nУверенность в локации: 0%\nОбстановка: солнечно\nНа улице: нет\nАрхитектура: нет\nОбъекты: кот\nТеги: animals, sunny, pet\nБезопасность: безопасно',
+        'caption': 'Распознано: кот\nУверенность в локации: 0%\nОбстановка: солнечно\nНа улице: нет\nАрхитектура: нет\nОбъекты: кот\nТеги: animals, sunny, pet',
         'photo': [
             {
                 'file_id': 'vision_small',

@@ -4540,8 +4540,6 @@ class Bot:
                     "⚠️ Чувствительный контент: "
                     + (safety_reason or "потенциально NSFW")
                 )
-            elif safety_reason:
-                caption_lines.append("Безопасность: " + safety_reason)
 
             attribution_line = "Адрес: OSM/Nominatim"
             if attribution_line not in caption_lines:

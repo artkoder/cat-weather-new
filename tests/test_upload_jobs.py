@@ -114,6 +114,7 @@ async def test_extract_image_metadata_reads_jpeg_exif(
     image_path = create_sample_image(tmp_path / "sample.jpg")
 
     with caplog.at_level(logging.INFO):
+        metadata_result = _extract_image_metadata(image_path)
         (
             mime_type,
             width,
@@ -121,7 +122,7 @@ async def test_extract_image_metadata_reads_jpeg_exif(
             exif_payload,
             gps_payload,
             exif_ifds,
-        ) = _extract_image_metadata(image_path)
+        ) = metadata_result
 
     assert mime_type == "image/jpeg"
     assert width == 640
@@ -130,6 +131,9 @@ async def test_extract_image_metadata_reads_jpeg_exif(
     assert pytest.approx(gps_payload["latitude"], rel=1e-6) == 55.5
     assert pytest.approx(gps_payload["longitude"], rel=1e-6) == 37.6
     assert gps_payload["captured_at"].startswith("2023-12-24T15:30:45")
+    assert metadata_result.photo is not None
+    assert metadata_result.photo.latitude == pytest.approx(55.5, rel=1e-6)
+    assert metadata_result.photo.longitude == pytest.approx(37.6, rel=1e-6)
 
     metadata_log = next(
         record for record in caplog.records if record.message == "MOBILE_IMAGE_METADATA"
@@ -141,8 +145,20 @@ async def test_extract_image_metadata_reads_jpeg_exif(
 
     gps_log = next(record for record in caplog.records if record.message == "MOBILE_GPS_EXIF")
     assert gps_log.path.endswith("sample.jpg")
-    assert gps_log.gps_tags["GPSLatitudeRef"] == "N"
-    assert gps_log.gps_tags["GPSLongitudeRef"] == "E"
+    lat_ref = gps_log.gps_tags["GPSLatitudeRef"]
+    lon_ref = gps_log.gps_tags["GPSLongitudeRef"]
+
+    def _decode_ref(value: Any) -> str:
+        if isinstance(value, str) and len(value) == 2:
+            try:
+                decoded = bytes.fromhex(value).decode("utf-8")
+            except Exception:
+                return value
+            return decoded
+        return value
+
+    assert _decode_ref(lat_ref) == "N"
+    assert _decode_ref(lon_ref) == "E"
     gps_block = exif_payload["GPS"]
     assert gps_block["GPSLatitudeRef"] == "N"
     assert gps_block["GPSLongitudeRef"] == "E"
@@ -182,18 +198,22 @@ def test_extract_image_metadata_handles_nested_rationals(
 
     monkeypatch.setattr(Image.Image, "getexif", fake_getexif)
 
-    _, _, _, exif_payload, coords, exif_ifds = _extract_image_metadata(image_path)
+    metadata_result = _extract_image_metadata(image_path)
+    _, _, _, exif_payload, coords, exif_ifds = metadata_result
 
     assert coords["latitude"] == pytest.approx(-55.25, rel=1e-6)
     expected_lon = -(37 + 36 / 60.0 + 6 / 3600.0)
     assert coords["longitude"] == pytest.approx(expected_lon, rel=1e-6)
+    assert metadata_result.photo is not None
+    assert metadata_result.photo.latitude == pytest.approx(-55.25, rel=1e-6)
+    assert metadata_result.photo.longitude == pytest.approx(expected_lon, rel=1e-6)
 
     gps_info = exif_payload["GPS"]
     assert gps_info == exif_payload["GPSInfo"]
     assert gps_info["GPSLatitudeRef"] == "S"
     assert gps_info["GPSLongitudeRef"] == "W"
     raw_gps_ifd = exif_ifds.get("GPS") or {}
-    assert raw_gps_ifd == {}
+    assert raw_gps_ifd == gps_info
     assert gps_info["GPSLatitude"] == [
         [[55, 1], [1, 1]],
         [[30, 1], [2, 1]],

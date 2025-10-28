@@ -21,6 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
+import piexif
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -127,6 +128,32 @@ def _make_test_image_bytes(*, size: tuple[int, int] = (32, 24), color: tuple[int
 
 
 DEFAULT_IMAGE_BYTES = _make_test_image_bytes()
+
+
+def _make_test_image_with_exif_bytes(
+    *,
+    size: tuple[int, int] = (64, 48),
+    color: tuple[int, int, int] = (20, 30, 40),
+    captured: str = "2023:12:24 15:30:45",
+) -> bytes:
+    buffer = BytesIO()
+    image = Image.new("RGB", size, color=color)
+    exif_dict = {
+        "0th": {piexif.ImageIFD.DateTime: captured},
+        "Exif": {
+            piexif.ExifIFD.DateTimeOriginal: captured,
+            piexif.ExifIFD.DateTimeDigitized: captured,
+        },
+        "GPS": {},
+        "1st": {},
+        "thumbnail": None,
+    }
+    exif_bytes = piexif.dump(exif_dict)
+    image.save(buffer, format="JPEG", exif=exif_bytes)
+    return buffer.getvalue()
+
+
+EXIF_IMAGE_BYTES = _make_test_image_with_exif_bytes()
 
 
 def _sign(
@@ -435,7 +462,7 @@ async def test_create_app_registers_process_upload_and_completes_flow(
     helper_env = SimpleNamespace(client=client)
 
     try:
-        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
+        body, boundary = _multipart_body(EXIF_IMAGE_BYTES)
         status, payload = await _signed_post(
             helper_env,
             path="/v1/uploads",
@@ -475,7 +502,7 @@ async def test_uploads_rejects_when_channel_missing(tmp_path: Path) -> None:
     try:
         env.create_device(device_id="device-1")
 
-        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
+        body, boundary = _multipart_body(EXIF_IMAGE_BYTES)
         status, payload = await _signed_post(
             env,
             path="/v1/uploads",
@@ -801,7 +828,7 @@ async def test_upload_processing_with_vision(tmp_path: Path):
     try:
         env.create_device(device_id="device-vision")
 
-        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
+        body, boundary = _multipart_body(EXIF_IMAGE_BYTES)
         status, payload = await _signed_post(
             env,
             path="/v1/uploads",
@@ -853,6 +880,11 @@ async def test_upload_processing_with_vision(tmp_path: Path):
         assert payload_map["tg_chat_id"] == env.assets_channel_id
         assert payload_map["message_id"] == env.telegram.calls[0]["message_id"]
         assert payload_map["file_id"] == env.telegram.calls[0].get("file_id")
+        metadata_map = payload_map.get("metadata") or {}
+        assert metadata_map.get("exif_datetime_original") == "2023:12:24 15:30:45"
+        assert metadata_map.get("exif_datetime_digitized") == "2023:12:24 15:30:45"
+        assert metadata_map.get("exif_datetime") == "2023:12:24 15:30:45"
+        assert metadata_map.get("exif_datetime_best") == "2023:12:24 15:30:45"
         usage_row = env.conn.execute("SELECT model, total_tokens FROM token_usage").fetchone()
         assert usage_row is not None
         assert usage_row["model"] == "vision-test"
@@ -867,6 +899,7 @@ async def test_upload_processing_with_vision(tmp_path: Path):
         assert env.telegram.calls
         caption = env.telegram.calls[0]["caption"] or ""
         assert "Категории" in caption
+        assert "Дата съёмки: 2023-12-24T15:30:45+00:00" in caption
         assert openai_client.calls
         assert openai_client.calls[0]["model"] == "vision-test"
         assert supabase_client.calls

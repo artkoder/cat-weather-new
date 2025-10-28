@@ -46,6 +46,7 @@ from ingestion import (
     TelegramClient,
     UploadIngestionContext,
     UploadMetricsRecorder,
+    extract_exif_datetimes as _extract_exif_datetimes,
     extract_image_metadata as _extract_image_metadata,
     ingest_photo,
 )
@@ -523,7 +524,7 @@ def register_upload_jobs(
                                 config=job_config,
                                 context=ingestion_context,
                                 file_path=download.path,
-                                cleanup_file=download.cleanup,
+                                cleanup_file=False,
                             )
 
                             asset_id = result.asset_id
@@ -532,10 +533,17 @@ def register_upload_jobs(
 
                             exif_payload = dict(result.exif or {})
                             gps_payload = dict(result.gps or {})
+                            exif_datetime_payload: dict[str, Any] = {}
+                            if download and download.path.exists():
+                                exif_datetime_payload = _extract_exif_datetimes(
+                                    download.path
+                                )
                             metadata_payload = {
                                 "exif": exif_payload,
                                 "gps": gps_payload,
                             }
+                            if exif_datetime_payload:
+                                metadata_payload.update(exif_datetime_payload)
                             update_kwargs: dict[str, Any] = {
                                 "metadata": metadata_payload,
                                 "exif_present": bool(exif_payload) or bool(gps_payload),

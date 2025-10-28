@@ -715,7 +715,7 @@ async def _ingest_photo_internal(
                 "forward_from_chat": inputs.forward_from_chat,
                 "latitude": gps_payload.get("latitude"),
                 "longitude": gps_payload.get("longitude"),
-                "exif_present": bool(gps_payload),
+                "exif_present": bool(exif_payload) or bool(gps_payload),
             }
             asset_id = callbacks.save_asset(save_payload)
 

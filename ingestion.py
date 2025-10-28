@@ -10,9 +10,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence, TypedDict
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Mapping, Protocol, Sequence, TypedDict
 
 from PIL import ExifTags, Image, ImageOps
+import piexif
 
 from observability import context as telemetry_context
 
@@ -330,6 +331,66 @@ def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float 
         str(gps_info.get("GPSLongitudeRef") or "") or None,
     )
     return lat, lon
+
+
+def _decode_exif_datetime_value(value: Any) -> str | None:
+    if isinstance(value, bytes):
+        for encoding in ("utf-8", "ascii", "latin-1"):
+            try:
+                decoded = value.decode(encoding, errors="ignore")
+            except Exception:
+                continue
+            decoded = decoded.strip().strip("\x00")
+            if decoded:
+                return decoded
+        return None
+    if isinstance(value, str):
+        decoded = value.strip().strip("\x00")
+        return decoded or None
+    return None
+
+
+def extract_exif_datetimes(image_source: str | Path | BinaryIO) -> dict[str, str]:
+    try:
+        with Image.open(image_source, mode="r") as img:
+            exif_bytes = img.info.get("exif")
+        if exif_bytes:
+            exif_dict = piexif.load(exif_bytes)
+        else:
+            if isinstance(image_source, (str, Path)):
+                exif_dict = piexif.load(str(image_source))
+            else:
+                return {}
+    except Exception:
+        logging.exception("Failed to parse EXIF metadata")
+        return {}
+
+    result: dict[str, str] = {}
+    exif_ifd = exif_dict.get("Exif") or {}
+    original_value = _decode_exif_datetime_value(
+        exif_ifd.get(piexif.ExifIFD.DateTimeOriginal)
+    )
+    if original_value:
+        result["exif_datetime_original"] = original_value
+    digitized_value = _decode_exif_datetime_value(
+        exif_ifd.get(piexif.ExifIFD.DateTimeDigitized)
+    )
+    if digitized_value:
+        result["exif_datetime_digitized"] = digitized_value
+    zeroth_ifd = exif_dict.get("0th") or {}
+    image_datetime_value = _decode_exif_datetime_value(
+        zeroth_ifd.get(piexif.ImageIFD.DateTime)
+    )
+    if image_datetime_value:
+        result["exif_datetime"] = image_datetime_value
+    best_value = (
+        result.get("exif_datetime_original")
+        or result.get("exif_datetime_digitized")
+        or result.get("exif_datetime")
+    )
+    if best_value:
+        result["exif_datetime_best"] = best_value
+    return result
 
 
 def _extract_capture_datetime(exif: dict[str, Any]) -> str | None:

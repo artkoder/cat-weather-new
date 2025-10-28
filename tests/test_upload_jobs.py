@@ -245,6 +245,10 @@ async def test_process_upload_job_success_records_asset(
     assert gps_metadata
     assert pytest.approx(gps_metadata.get("latitude"), rel=1e-6) == 55.5
     assert pytest.approx(gps_metadata.get("longitude"), rel=1e-6) == 37.6
+    assert metadata.get("exif_datetime_original") == "2023:12:24 15:30:45"
+    assert metadata.get("exif_datetime_digitized") == "2023:12:24 15:30:45"
+    assert metadata.get("exif_datetime") == "2023:12:24 15:30:45"
+    assert metadata.get("exif_datetime_best") == "2023:12:24 15:30:45"
     assert asset.latitude == pytest.approx(55.5, rel=1e-6)
     assert asset.longitude == pytest.approx(37.6, rel=1e-6)
     assert asset.exif_present is True

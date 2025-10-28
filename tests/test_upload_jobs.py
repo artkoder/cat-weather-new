@@ -360,6 +360,93 @@ async def test_process_upload_job_success_records_asset(
 
 
 @pytest.mark.asyncio
+async def test_process_upload_job_parses_comma_separated_gps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recognition_channel_id = -40001
+    conn = _setup_connection(
+        asset_channel_id=recognition_channel_id,
+        recognition_channel_id=recognition_channel_id,
+    )
+    data = DataAccess(conn)
+    image_path = create_sample_image(tmp_path / "asset-commas.jpg")
+    file_key = "comma-key"
+    storage = StorageStub({file_key: image_path})
+    telegram = TelegramStub()
+    metrics = UploadMetricsRecorder()
+    queue = JobQueue(conn)
+    config = UploadsConfig(
+        assets_channel_id=recognition_channel_id,
+        vision_enabled=False,
+    )
+    register_upload_jobs(
+        queue,
+        conn,
+        storage=storage,
+        data=data,
+        telegram=telegram,
+        metrics=metrics,
+        config=config,
+    )
+
+    upload_id = _prepare_upload(conn, file_key=file_key)
+    job = Job(
+        id=3,
+        name="process_upload",
+        payload={"upload_id": upload_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    base_getexif = Image.Image.getexif
+
+    def _string_gps_getexif(self: Image.Image, *args: Any, **kwargs: Any):  # type: ignore[override]
+        data_dict = base_getexif(self, *args, **kwargs)
+        if not data_dict:
+            return data_dict
+        gps_tag = 34853
+        lat_tag = piexif.GPSIFD.GPSLatitude
+        lon_tag = piexif.GPSIFD.GPSLongitude
+        gps_payload = data_dict.get(gps_tag)
+        if isinstance(gps_payload, dict):
+            gps_payload = dict(gps_payload)
+            if lat_tag in gps_payload:
+                gps_payload[lat_tag] = "55/1,30/1,1234/100"
+            if lon_tag in gps_payload:
+                gps_payload[lon_tag] = "37/1 36/1 600/100"
+            data_dict = dict(data_dict)
+            data_dict[gps_tag] = gps_payload
+        return data_dict
+
+    monkeypatch.setattr(Image.Image, "getexif", _string_gps_getexif, raising=False)
+
+    await queue.handlers["process_upload"](job)
+
+    row = conn.execute(
+        "SELECT asset_id FROM uploads WHERE id=?",
+        (upload_id,),
+    ).fetchone()
+    assert row is not None and row["asset_id"]
+
+    asset = data.get_asset(row["asset_id"])
+    assert asset is not None
+
+    expected_lat = 55 + 30 / 60 + 12.34 / 3600
+    expected_lon = 37 + 36 / 60 + 6 / 3600
+    assert asset.latitude == pytest.approx(expected_lat, rel=1e-6)
+    assert asset.longitude == pytest.approx(expected_lon, rel=1e-6)
+
+    metadata = asset.metadata or {}
+    gps_metadata = metadata.get("gps") or {}
+    assert gps_metadata.get("latitude") == pytest.approx(expected_lat, rel=1e-6)
+    assert gps_metadata.get("longitude") == pytest.approx(expected_lon, rel=1e-6)
+
+
+@pytest.mark.asyncio
 async def test_process_upload_marks_exif_present_without_gps(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

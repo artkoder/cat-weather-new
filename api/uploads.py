@@ -555,6 +555,26 @@ def register_upload_jobs(
                             if longitude is not None:
                                 update_kwargs["longitude"] = longitude
                             logging.info(
+                                "MOBILE_EXIF_RAW",
+                                extra={
+                                    "asset_id": asset_id,
+                                    "upload_id": upload_id,
+                                    "exif_raw": json.dumps(
+                                        exif_payload,
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                        default=str,
+                                    ),
+                                    "gps_raw": json.dumps(
+                                        gps_payload,
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                        default=str,
+                                    ),
+                                },
+                            )
+
+                            logging.info(
                                 "MOBILE_EXIF_EXTRACTED",
                                 extra={
                                     "asset_id": asset_id,

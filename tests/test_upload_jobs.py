@@ -406,16 +406,33 @@ async def test_process_upload_job_success_records_asset(
     )
     assert raw_log.asset_id == row["asset_id"]
     assert raw_log.upload_id == upload_id
+    raw_zeroth = json.loads(raw_log.zeroth_ifd_raw)
     raw_exif = json.loads(raw_log.exif_raw)
     raw_gps = json.loads(raw_log.gps_raw)
     raw_ifds = json.loads(raw_log.exif_ifds_raw)
+    assert raw_zeroth
+    assert "Make" in raw_zeroth
     assert raw_exif
+    original_raw = raw_exif.get("DateTimeOriginal")
+    digitized_raw = raw_exif.get("DateTimeDigitized")
+
+    def _decode(value: Any) -> Any:
+        if isinstance(value, str):
+            try:
+                return bytes.fromhex(value).decode("utf-8")
+            except ValueError:
+                return value
+        return value
+
+    assert _decode(original_raw) == "2023:12:24 15:30:45"
+    assert _decode(digitized_raw) == "2023:12:24 15:30:45"
     assert raw_gps
-    assert raw_gps.get("latitude") == pytest.approx(55.5, rel=1e-6)
-    assert raw_gps.get("longitude") == pytest.approx(37.6, rel=1e-6)
+    assert _decode(raw_gps.get("GPSLatitudeRef")) == "N"
+    assert _decode(raw_gps.get("GPSLongitudeRef")) == "E"
+    assert raw_gps.get("GPSLatitude") == [[55, 1], [30, 1], [0, 1]]
+    assert raw_gps.get("GPSLongitude") == [[37, 1], [36, 1], [0, 1]]
     gps_ifd = raw_ifds.get("GPS") or {}
-    assert gps_ifd.get("GPSLatitude") == [[55, 1], [30, 1], [0, 1]]
-    assert gps_ifd.get("GPSLongitude") == [[37, 1], [36, 1], [0, 1]]
+    assert gps_ifd == raw_gps
 
     mobile_done = next(
         record for record in caplog.records if record.message == "MOBILE_UPLOAD_DONE"

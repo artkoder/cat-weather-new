@@ -537,7 +537,7 @@ def register_upload_jobs(
                             }
                             update_kwargs: dict[str, Any] = {
                                 "metadata": metadata_payload,
-                                "exif_present": bool(gps_payload),
+                                "exif_present": bool(result.exif or gps_payload),
                             }
                             latitude = gps_payload.get("latitude")
                             if latitude is not None:

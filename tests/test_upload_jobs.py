@@ -30,6 +30,7 @@ from tests.fixtures.ingestion_utils import (
     StorageStub,
     TelegramStub,
     create_sample_image,
+    create_sample_image_without_gps,
 )
 
 
@@ -274,6 +275,68 @@ async def test_process_upload_job_success_records_asset(
     assert mobile_done.source == "mobile"
     assert mobile_done.size_bytes == image_path.stat().st_size
     assert isinstance(mobile_done.timestamp, str) and mobile_done.timestamp
+
+
+@pytest.mark.asyncio
+async def test_process_upload_job_marks_exif_present_without_gps(
+    tmp_path: Path,
+) -> None:
+    channel_id = -12345
+    conn = _setup_connection(asset_channel_id=channel_id)
+    data = DataAccess(conn)
+    image_path = create_sample_image_without_gps(tmp_path / "asset-no-gps.jpg")
+    file_key = "sample-key-no-gps"
+    storage = StorageStub({file_key: image_path})
+    telegram = TelegramStub()
+    metrics = UploadMetricsRecorder()
+    queue = JobQueue(conn)
+    config = UploadsConfig(
+        assets_channel_id=channel_id,
+        vision_enabled=False,
+    )
+    register_upload_jobs(
+        queue,
+        conn,
+        storage=storage,
+        data=data,
+        telegram=telegram,
+        metrics=metrics,
+        config=config,
+    )
+
+    upload_id = _prepare_upload(conn, file_key=file_key)
+    job = Job(
+        id=99,
+        name="process_upload",
+        payload={"upload_id": upload_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await queue.handlers["process_upload"](job)
+
+    row = conn.execute(
+        "SELECT status, error, asset_id FROM uploads WHERE id=?",
+        (upload_id,),
+    ).fetchone()
+    assert row["status"] == "done"
+    assert row["error"] is None
+    assert row["asset_id"] is not None
+
+    asset = data.get_asset(row["asset_id"])
+    assert asset is not None
+    metadata = asset.metadata or {}
+    assert metadata.get("exif")
+    gps_metadata = metadata.get("gps") or {}
+    assert gps_metadata.get("latitude") is None
+    assert gps_metadata.get("longitude") is None
+    assert asset.latitude is None
+    assert asset.longitude is None
+    assert asset.exif_present is True
 
 
 @pytest.mark.asyncio

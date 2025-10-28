@@ -51,6 +51,27 @@ def create_sample_image(path: Path) -> Path:
     return path
 
 
+def create_sample_image_without_gps(path: Path) -> Path:
+    """Create a JPEG image with EXIF metadata but without GPS tags."""
+
+    image = Image.new("RGB", (640, 480), color=(10, 20, 30))
+    exif_dict = {
+        "0th": {
+            piexif.ImageIFD.Make: "UnitTest".encode("utf-8"),
+            piexif.ImageIFD.DateTime: "2023:12:24 15:30:45",
+        },
+        "Exif": {
+            piexif.ExifIFD.DateTimeOriginal: "2023:12:24 15:30:45",
+            piexif.ExifIFD.DateTimeDigitized: "2023:12:24 15:30:45",
+        },
+        "1st": {},
+        "thumbnail": None,
+    }
+    exif_bytes = piexif.dump(exif_dict)
+    image.save(path, format="JPEG", exif=exif_bytes)
+    return path
+
+
 def compute_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 

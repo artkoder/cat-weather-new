@@ -288,6 +288,47 @@ def _compute_sha256(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def _to_float_ratio(value: Any) -> float | None:
+    """Convert EXIF rational representations to float when possible."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    numerator = getattr(value, "numerator", None)
+    denominator = getattr(value, "denominator", None)
+    if numerator is not None and denominator is not None:
+        try:
+            numerator_value = float(numerator)
+            denominator_value = float(denominator)
+        except Exception:
+            return None
+        if denominator_value == 0:
+            return None
+        return numerator_value / denominator_value
+
+    if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes)):
+        sequence = list(value)
+        if not sequence:
+            return None
+        if len(sequence) == 1:
+            return _to_float_ratio(sequence[0])
+        if len(sequence) == 2:
+            numerator_value = _to_float_ratio(sequence[0])
+            denominator_value = _to_float_ratio(sequence[1])
+            if numerator_value is None or denominator_value in (None, 0.0):
+                return None
+            return numerator_value / denominator_value
+        return None
+
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
 def _normalize_exif_value(value: Any) -> Any:
     if isinstance(value, bytes):
         try:
@@ -296,6 +337,9 @@ def _normalize_exif_value(value: Any) -> Any:
             return value.hex()
     if isinstance(value, (str, int, float)):
         return value
+    ratio_value = _to_float_ratio(value)
+    if ratio_value is not None and not isinstance(value, (list, tuple)):
+        return ratio_value
     if isinstance(value, (list, tuple)):
         return [_normalize_exif_value(item) for item in value]
     if isinstance(value, dict):
@@ -307,28 +351,56 @@ def _normalize_exif_value(value: Any) -> Any:
 
 
 def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float | None]:
-    def _to_decimal(values: list[Any], ref: str | None) -> float | None:
+    def _coerce_sequence(value: Any) -> list[Any]:
+        if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes)):
+            return list(value)
+        return [value]
+
+    def _to_decimal(values: Any, ref: str | None) -> float | None:
         if not values:
             return None
-        try:
-            degrees = [_normalize_exif_value(part) for part in values]
-            parts = [float(part) for part in degrees]
-            while len(parts) < 3:
-                parts.append(0.0)
-        except Exception:
-            return None
-        decimal = parts[0] + parts[1] / 60.0 + parts[2] / 3600.0
+
+        raw_parts = _coerce_sequence(values)
+        numeric_parts: list[float] = []
+
+        for raw_part in raw_parts:
+            normalized = _normalize_exif_value(raw_part)
+            number: float | None = None
+
+            if isinstance(normalized, (int, float)):
+                number = float(normalized)
+            else:
+                ratio_value = _to_float_ratio(normalized)
+                if ratio_value is None:
+                    ratio_value = _to_float_ratio(raw_part)
+                if ratio_value is not None:
+                    number = ratio_value
+
+            if number is None:
+                try:
+                    number = float(normalized)
+                except Exception:
+                    return None
+
+            numeric_parts.append(number)
+
+        while len(numeric_parts) < 3:
+            numeric_parts.append(0.0)
+
+        decimal = (
+            numeric_parts[0]
+            + numeric_parts[1] / 60.0
+            + numeric_parts[2] / 3600.0
+        )
         if ref and ref.upper() in {"S", "W"}:
             decimal *= -1.0
         return decimal
 
-    lat = _to_decimal(
-        gps_info.get("GPSLatitude") or [],
-        str(gps_info.get("GPSLatitudeRef") or "") or None,
-    )
+    lat_ref = gps_info.get("GPSLatitudeRef")
+    lon_ref = gps_info.get("GPSLongitudeRef")
+    lat = _to_decimal(gps_info.get("GPSLatitude") or [], str(lat_ref) if lat_ref else None)
     lon = _to_decimal(
-        gps_info.get("GPSLongitude") or [],
-        str(gps_info.get("GPSLongitudeRef") or "") or None,
+        gps_info.get("GPSLongitude") or [], str(lon_ref) if lon_ref else None
     )
     return lat, lon
 

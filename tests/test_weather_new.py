@@ -17,7 +17,8 @@ from PIL import Image
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import observability
-from data_access import create_device, insert_upload
+from api.uploads import _extract_image_metadata
+from data_access import DataAccess, create_device, insert_upload
 from main import Bot, Job
 from openai_client import OpenAIResponse
 
@@ -244,6 +245,60 @@ async def test_job_vision_sends_exif_debug_when_flag_enabled(tmp_path, monkeypat
     )
     assert any(call['method'] == 'copyMessage' for call in calls)
     assert any(call['method'] == 'sendMessage' for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_job_vision_caption_includes_exif_address_for_nested_gps(
+    tmp_path, monkeypatch
+):
+    image_path = tmp_path / 'nested-gps.jpg'
+    Image.new('RGB', (10, 10), color='blue').save(image_path, format='JPEG')
+
+    nested_lat = (
+        ((55, 1), (1, 1)),
+        ((30, 1), (2, 1)),
+    )
+    nested_lon = (
+        ((37, 1), (1, 1)),
+        ((36, 1), (1, 1)),
+        ((12, 1), (2, 1)),
+    )
+
+    gps_payload = {
+        piexif.GPSIFD.GPSLatitudeRef: 'N',
+        piexif.GPSIFD.GPSLatitude: nested_lat,
+        piexif.GPSIFD.GPSLongitudeRef: 'E',
+        piexif.GPSIFD.GPSLongitude: nested_lon,
+    }
+
+    def fake_getexif(self, *args, **kwargs):  # type: ignore[override]
+        return {34853: gps_payload}
+
+    monkeypatch.setattr(Image.Image, 'getexif', fake_getexif)
+
+    _, _, _, _, gps_coords = _extract_image_metadata(image_path)
+    lat_value = gps_coords['latitude']
+    lon_value = gps_coords['longitude']
+
+    original_save_asset = DataAccess.save_asset
+
+    def save_asset_with_coords(self, *args, **kwargs):  # type: ignore[override]
+        asset_id = original_save_asset(self, *args, **kwargs)
+        self.update_asset(asset_id, latitude=lat_value, longitude=lon_value)
+        return asset_id
+
+    monkeypatch.setattr(DataAccess, 'save_asset', save_asset_with_coords)
+
+    calls, asset, _ = await _run_vision_job_collect_calls(
+        tmp_path, monkeypatch, flag_enabled=False
+    )
+
+    copy_calls = [call for call in calls if call['method'] == 'copyMessage']
+    assert copy_calls, 'vision result should be copied to channel'
+    caption = copy_calls[0]['data'].get('caption')
+    assert caption is not None and 'Адрес (EXIF)' in caption
+    assert asset.latitude == pytest.approx(lat_value, rel=1e-6)
+    assert asset.longitude == pytest.approx(lon_value, rel=1e-6)
 
 
 @pytest.mark.asyncio

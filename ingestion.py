@@ -9,7 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, TypedDict
+from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence, TypedDict
 
 from PIL import ExifTags, Image, ImageOps
 
@@ -274,6 +275,7 @@ class IngestionResult:
     exif: dict[str, Any]
     gps: dict[str, Any]
     vision: dict[str, Any] | None
+    telegram_file: dict[str, Any] | None
     metrics: UploadMetricsRecorder
 
 
@@ -443,6 +445,78 @@ def _ensure_telemetry(telemetry: Mapping[str, Any] | None):
     return contextlib.nullcontext()
 
 
+def _select_best_photo_size(photo_sizes: Sequence[Any] | None) -> dict[str, Any] | None:
+    if not photo_sizes:
+        return None
+    best: dict[str, Any] | None = None
+    best_score = -1
+    for entry in photo_sizes:
+        if not isinstance(entry, MappingABC):
+            continue
+        try:
+            width = int(entry.get("width") or 0)
+        except (TypeError, ValueError):
+            width = 0
+        try:
+            height = int(entry.get("height") or 0)
+        except (TypeError, ValueError):
+            height = 0
+        try:
+            file_size = int(entry.get("file_size") or 0)
+        except (TypeError, ValueError):
+            file_size = 0
+        score = width * height
+        if score <= 0 and file_size <= 0:
+            continue
+        if best is None:
+            best = dict(entry)
+            best_score = score
+            continue
+        best_file_size = 0
+        try:
+            best_file_size = int(best.get("file_size") or 0)
+        except (TypeError, ValueError):
+            best_file_size = 0
+        if score > best_score or (score == best_score and file_size > best_file_size):
+            best = dict(entry)
+            best_score = score
+    return best
+
+
+def _extract_telegram_photo_meta(response: Any) -> dict[str, Any] | None:
+    if isinstance(response, MappingABC):
+        photo_sizes = response.get("photo")
+        if isinstance(photo_sizes, SequenceABC):
+            best = _select_best_photo_size(photo_sizes)
+            if best:
+                meta: dict[str, Any] = {}
+                for key in ("file_id", "file_unique_id", "file_ref", "mime_type"):
+                    value = best.get(key)
+                    if value is not None:
+                        meta[key] = value
+                for key in ("width", "height", "file_size"):
+                    try:
+                        value = best.get(key)
+                        if value is not None:
+                            meta[key] = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                if "mime_type" not in meta:
+                    meta["mime_type"] = "image/jpeg"
+                return meta
+        for nested_key in ("result", "message", "channel_post"):
+            nested = response.get(nested_key)
+            meta = _extract_telegram_photo_meta(nested)
+            if meta:
+                return meta
+    if isinstance(response, SequenceABC) and not isinstance(response, (str, bytes, bytearray)):
+        for item in response:
+            meta = _extract_telegram_photo_meta(item)
+            if meta:
+                return meta
+    return None
+
+
 async def _ingest_photo_internal(
     inputs: IngestionInputs,
     context: IngestionContext,
@@ -548,6 +622,17 @@ async def _ingest_photo_internal(
         if message_id is None:
             raise RuntimeError("telegram response missing message_id")
 
+        telegram_file_meta = _extract_telegram_photo_meta(response)
+        if telegram_file_meta:
+            if "mime_type" not in telegram_file_meta and mime_type:
+                telegram_file_meta["mime_type"] = mime_type
+            if "width" not in telegram_file_meta and width is not None:
+                telegram_file_meta["width"] = width
+            if "height" not in telegram_file_meta and height is not None:
+                telegram_file_meta["height"] = height
+            if inputs.file_ref and "file_ref" not in telegram_file_meta:
+                telegram_file_meta["file_ref"] = inputs.file_ref
+
         tg_chat_id = inputs.tg_chat_id or inputs.channel_id
         message_identifier = f"{tg_chat_id}:{message_id}"
         asset_id: str | None = inputs.asset_id
@@ -577,6 +662,10 @@ async def _ingest_photo_internal(
                 combined_file_meta.setdefault("file_ref", inputs.file_ref)
             if mime_type is not None:
                 combined_file_meta["mime_type"] = mime_type
+            if telegram_file_meta:
+                for key, value in telegram_file_meta.items():
+                    if value is not None:
+                        combined_file_meta[key] = value
             combined_file_meta["sha256"] = sha256
             if width is not None:
                 combined_file_meta["width"] = width
@@ -653,6 +742,7 @@ async def _ingest_photo_internal(
         exif=exif_payload,
         gps=gps_payload,
         vision=vision_payload,
+        telegram_file=telegram_file_meta,
         metrics=metrics,
     )
 

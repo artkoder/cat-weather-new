@@ -63,6 +63,8 @@ class FakeTelegramClient:
         photo: Path,
         caption: str | None = None,
     ) -> dict[str, Any]:
+        with Image.open(photo) as img:
+            width, height = img.size
         call = {
             "chat_id": chat_id,
             "photo": Path(photo),
@@ -72,7 +74,28 @@ class FakeTelegramClient:
         self.calls.append(call)
         message_id = self.next_message_id
         self.next_message_id += 1
-        return {"message_id": message_id, "chat": {"id": chat_id}}
+        file_id = f"photo-{message_id}"
+        photo_sizes = [
+            {
+                "file_id": f"{file_id}-s",
+                "file_unique_id": f"{file_id}-s-uniq",
+                "width": max(1, width // 2),
+                "height": max(1, height // 2),
+                "file_size": max(1, (width // 2) * (height // 2) * 2),
+                "mime_type": "image/jpeg",
+            },
+            {
+                "file_id": file_id,
+                "file_unique_id": f"{file_id}-uniq",
+                "width": width,
+                "height": height,
+                "file_size": max(1, width * height * 3),
+                "mime_type": "image/jpeg",
+            },
+        ]
+        call["photo_sizes"] = photo_sizes
+        call["file_id"] = file_id
+        return {"message_id": message_id, "chat": {"id": chat_id}, "photo": photo_sizes}
 
 
 class FakeOpenAIClient:
@@ -548,6 +571,7 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
         payload_map = json.loads(payload_blob)
         assert payload_map["tg_chat_id"] == env.assets_channel_id
         assert payload_map["message_id"] == telegram_call["message_id"]
+        assert payload_map["file_id"] == telegram_call.get("file_id")
         assert telegram_call["chat_id"] == env.assets_channel_id
         assert telegram_call["photo"].exists()
         assert "Новая загрузка" in (telegram_call["caption"] or "")
@@ -556,6 +580,13 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
         assert env.metrics.counters.get("upload_process_fail_total", 0) == 0
         assert "process_upload_ms" in env.metrics.timings
         assert env.metrics.counters.get("vision_tokens_total", 0) == 0
+
+        queued_jobs = env.conn.execute(
+            "SELECT name, payload FROM jobs_queue WHERE name='ingest' ORDER BY id"
+        ).fetchall()
+        assert queued_jobs
+        ingest_payload = json.loads(queued_jobs[0]["payload"])
+        assert ingest_payload == {"asset_id": row["id"]}
     finally:
         await env.close()
 
@@ -821,6 +852,7 @@ async def test_upload_processing_with_vision(tmp_path: Path):
         payload_map = json.loads(payload_blob)
         assert payload_map["tg_chat_id"] == env.assets_channel_id
         assert payload_map["message_id"] == env.telegram.calls[0]["message_id"]
+        assert payload_map["file_id"] == env.telegram.calls[0].get("file_id")
         usage_row = env.conn.execute("SELECT model, total_tokens FROM token_usage").fetchone()
         assert usage_row is not None
         assert usage_row["model"] == "vision-test"
@@ -841,5 +873,12 @@ async def test_upload_processing_with_vision(tmp_path: Path):
         supabase_meta = supabase_client.calls[0]["meta"]
         assert supabase_meta["upload_id"] == upload_id
         assert supabase_client.calls[0]["model"] == "vision-test"
+
+        queued_jobs = env.conn.execute(
+            "SELECT name, payload FROM jobs_queue WHERE name='ingest' ORDER BY id"
+        ).fetchall()
+        assert queued_jobs
+        ingest_payload = json.loads(queued_jobs[0]["payload"])
+        assert ingest_payload == {"asset_id": asset_row["id"]}
     finally:
         await env.close()

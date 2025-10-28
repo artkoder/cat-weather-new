@@ -3839,6 +3839,23 @@ class Bot:
             "file_metadata": file_metadata,
         }
 
+        stored_exif = asset.exif or base_metadata.get("exif")
+        if stored_exif:
+            overrides["exif"] = stored_exif
+
+        gps_override: dict[str, Any] = {}
+        metadata_gps = base_metadata.get("gps") if base_metadata else None
+        if isinstance(metadata_gps, dict):
+            gps_override.update(metadata_gps)
+        latitude_value = asset.latitude
+        if latitude_value is not None:
+            gps_override.setdefault("latitude", latitude_value)
+        longitude_value = asset.longitude
+        if longitude_value is not None:
+            gps_override.setdefault("longitude", longitude_value)
+        if gps_override:
+            overrides["gps"] = gps_override
+
         existing_metadata_for_callback = base_metadata.copy()
 
         class _TelegramReuseAdapter:

@@ -296,6 +296,14 @@ async def test_ingestion_helper_mobile_and_telegram_payloads_align(
         ingest_exif = json.loads(asset_ingest.exif_json or "{}")
         assert mobile_exif == ingest_exif
 
+        mobile_metadata = asset_mobile.metadata or {}
+        ingest_metadata = asset_ingest.metadata or {}
+        assert mobile_metadata.get("exif") == ingest_metadata.get("exif")
+        assert mobile_metadata.get("gps") == ingest_metadata.get("gps")
+        assert asset_ingest.latitude == asset_mobile.latitude
+        assert asset_ingest.longitude == asset_mobile.longitude
+        assert asset_ingest.exif_present == asset_mobile.exif_present
+
         mobile_labels = json.loads(asset_mobile.labels_json or "{}")
         ingest_labels = json.loads(asset_ingest.labels_json or "[]")
         expected_categories = extract_categories(mobile_labels)

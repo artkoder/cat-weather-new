@@ -238,6 +238,15 @@ async def test_process_upload_job_success_records_asset(
     assert asset.payload.get("tg_chat_id") == config.assets_channel_id
     assert asset.payload.get("message_id") == telegram.calls[0]["message_id"]
     assert asset.source == "mobile"
+    metadata = asset.metadata or {}
+    assert metadata.get("exif") == asset.exif
+    gps_metadata = metadata.get("gps")
+    assert gps_metadata
+    assert pytest.approx(gps_metadata.get("latitude"), rel=1e-6) == 55.5
+    assert pytest.approx(gps_metadata.get("longitude"), rel=1e-6) == 37.6
+    assert asset.latitude == pytest.approx(55.5, rel=1e-6)
+    assert asset.longitude == pytest.approx(37.6, rel=1e-6)
+    assert asset.exif_present is True
 
     fetched = data.get_asset_by_message(
         config.assets_channel_id, telegram.calls[0]["message_id"]

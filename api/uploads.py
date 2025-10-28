@@ -529,6 +529,24 @@ def register_upload_jobs(
                             asset_id = result.asset_id
                             if not asset_id:
                                 raise RuntimeError("asset creation failed for upload")
+
+                            gps_payload = dict(result.gps or {})
+                            metadata_payload = {
+                                "exif": result.exif or {},
+                                "gps": gps_payload,
+                            }
+                            update_kwargs: dict[str, Any] = {
+                                "metadata": metadata_payload,
+                                "exif_present": bool(gps_payload),
+                            }
+                            latitude = gps_payload.get("latitude")
+                            if latitude is not None:
+                                update_kwargs["latitude"] = latitude
+                            longitude = gps_payload.get("longitude")
+                            if longitude is not None:
+                                update_kwargs["longitude"] = longitude
+                            data.update_asset(asset_id, **update_kwargs)
+
                             link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)
                             logging.info(
                                 "UPLOAD asset stored upload=%s asset=%s sha=%s mime=%s",
@@ -580,6 +598,7 @@ def register_upload_jobs(
                                 caption=result.caption,
                                 kind="photo",
                                 file_meta=file_meta_payload,
+                                metadata=metadata_payload,
                                 origin="mobile",
                                 source="mobile",
                             )

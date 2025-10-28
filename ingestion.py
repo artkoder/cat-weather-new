@@ -499,6 +499,24 @@ def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float 
     return lat, lon
 
 
+def _gps_rational_to_decimal(values: Any, ref: Any, *, axis: str) -> float | None:
+    if not values:
+        return None
+
+    gps_info: dict[str, Any] = {}
+    if axis == "lat":
+        gps_info["GPSLatitude"] = values
+        if ref is not None:
+            gps_info["GPSLatitudeRef"] = ref
+    else:
+        gps_info["GPSLongitude"] = values
+        if ref is not None:
+            gps_info["GPSLongitudeRef"] = ref
+
+    lat, lon = _extract_gps_decimal(gps_info)
+    return lat if axis == "lat" else lon
+
+
 def _decode_exif_datetime_value(value: Any) -> str | None:
     if isinstance(value, bytes):
         for encoding in ("utf-8", "ascii", "latin-1"):
@@ -592,28 +610,76 @@ def extract_image_metadata(path: Path) -> tuple[str | None, int | None, int | No
     with Image.open(path) as raw_image:
         original_format = raw_image.format
         image = ImageOps.exif_transpose(raw_image)
+        exif_dict: dict[str, Any] | None = None
+        gps_info: dict[str, Any] | None = None
         try:
             width, height = image.size
             format_name = image.format or original_format
             if format_name and format_name in Image.MIME:
                 mime_type = Image.MIME[format_name]
             exif_data = image.getexif() if hasattr(image, "getexif") else None
+            exif_bytes = getattr(image, "info", {}).get("exif")
+            if exif_bytes:
+                try:
+                    exif_dict = piexif.load(exif_bytes)
+                except Exception:
+                    logging.exception("MOBILE_EXIF_LOAD_FAILURE", extra={"path": str(path)})
+            if exif_dict is None:
+                try:
+                    exif_dict = piexif.load(str(path))
+                except Exception:
+                    exif_dict = None
+            if exif_dict:
+                for ifd_name in ("0th", "Exif", "1st"):
+                    source_ifd = exif_dict.get(ifd_name)
+                    if not isinstance(source_ifd, dict):
+                        continue
+                    tag_map = piexif.TAGS.get(ifd_name, {})
+                    for tag_id, raw_value in source_ifd.items():
+                        tag_info = tag_map.get(tag_id) or {}
+                        tag_name = tag_info.get("name") or ExifTags.TAGS.get(tag_id, str(tag_id))
+                        exif_payload[tag_name] = _normalize_exif_value(raw_value)
+                gps_ifd = exif_dict.get("GPS") or {}
+                if gps_ifd:
+                    gps_info = {
+                        ExifTags.GPSTAGS.get(int(sub_id), str(sub_id)): _normalize_exif_value(sub_val)
+                        for sub_id, sub_val in gps_ifd.items()
+                    }
+                    exif_payload["GPSInfo"] = gps_info
+
+                    lat = _gps_rational_to_decimal(
+                        gps_ifd.get(piexif.GPSIFD.GPSLatitude),
+                        gps_ifd.get(piexif.GPSIFD.GPSLatitudeRef),
+                        axis="lat",
+                    )
+                    lon = _gps_rational_to_decimal(
+                        gps_ifd.get(piexif.GPSIFD.GPSLongitude),
+                        gps_ifd.get(piexif.GPSIFD.GPSLongitudeRef),
+                        axis="lon",
+                    )
+                    if lat is not None:
+                        gps_payload["latitude"] = lat
+                    if lon is not None:
+                        gps_payload["longitude"] = lon
             if exif_data:
                 for tag_id, value in exif_data.items():
                     tag_name = ExifTags.TAGS.get(tag_id, str(tag_id))
                     if tag_name == "GPSInfo" and isinstance(value, dict):
-                        gps_info = {
+                        fallback_gps_info = {
                             ExifTags.GPSTAGS.get(sub_id, str(sub_id)): _normalize_exif_value(sub_val)
                             for sub_id, sub_val in value.items()
                         }
-                        exif_payload["GPSInfo"] = gps_info
-                        lat, lon = _extract_gps_decimal(gps_info)
+                        if "GPSInfo" not in exif_payload:
+                            exif_payload["GPSInfo"] = fallback_gps_info
+                        lat, lon = _extract_gps_decimal(fallback_gps_info)
                         if lat is not None:
-                            gps_payload["latitude"] = lat
+                            gps_payload.setdefault("latitude", lat)
                         if lon is not None:
-                            gps_payload["longitude"] = lon
+                            gps_payload.setdefault("longitude", lon)
+                        if gps_info is None:
+                            gps_info = fallback_gps_info
                     else:
-                        exif_payload[tag_name] = _normalize_exif_value(value)
+                        exif_payload.setdefault(tag_name, _normalize_exif_value(value))
         finally:
             if image is not raw_image:
                 with contextlib.suppress(Exception):
@@ -622,6 +688,14 @@ def extract_image_metadata(path: Path) -> tuple[str | None, int | None, int | No
     capture = _extract_capture_datetime(exif_payload)
     if capture:
         gps_payload.setdefault("captured_at", capture)
+    if gps_info is not None:
+        logging.info(
+            "MOBILE_GPS_EXIF",
+            extra={
+                "path": str(path),
+                "gps_tags": gps_info,
+            },
+        )
     logging.info(
         "MOBILE_IMAGE_METADATA",
         extra={

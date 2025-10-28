@@ -457,6 +457,13 @@ async def test_process_upload_job_parses_comma_separated_gps(
     assert gps_metadata.get("latitude") == pytest.approx(expected_lat, rel=1e-6)
     assert gps_metadata.get("longitude") == pytest.approx(expected_lon, rel=1e-6)
 
+    caption_text = telegram.calls[0]["caption"]
+    assert isinstance(caption_text, str)
+    expected_coordinates = f"Координаты: {expected_lat:.5f}, {expected_lon:.5f}"
+    assert expected_coordinates in caption_text
+    assert asset.caption is not None
+    assert expected_coordinates in asset.caption
+
 
 @pytest.mark.asyncio
 async def test_process_upload_marks_exif_present_without_gps(

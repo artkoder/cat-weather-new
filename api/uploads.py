@@ -554,6 +554,17 @@ def register_upload_jobs(
                             longitude = gps_payload.get("longitude")
                             if longitude is not None:
                                 update_kwargs["longitude"] = longitude
+                            logging.info(
+                                "MOBILE_EXIF_EXTRACTED",
+                                extra={
+                                    "asset_id": asset_id,
+                                    "upload_id": upload_id,
+                                    "exif_payload": bool(exif_payload),
+                                    "gps_payload": bool(gps_payload),
+                                    "latitude": latitude,
+                                    "longitude": longitude,
+                                },
+                            )
                             data.update_asset(asset_id, **update_kwargs)
 
                             link_upload_asset(conn, upload_id=upload_id, asset_id=asset_id)

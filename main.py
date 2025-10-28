@@ -3796,10 +3796,12 @@ class Bot:
         metadata_gps = base_metadata.get("gps") if base_metadata else None
         if isinstance(metadata_gps, dict):
             gps_override.update(metadata_gps)
-        latitude_value = asset.latitude
+        stored_latitude = asset.latitude
+        stored_longitude = asset.longitude
+        latitude_value = stored_latitude
         if latitude_value is not None:
             gps_override.setdefault("latitude", latitude_value)
-        longitude_value = asset.longitude
+        longitude_value = stored_longitude
         if longitude_value is not None:
             gps_override.setdefault("longitude", longitude_value)
         if gps_override:
@@ -3929,6 +3931,8 @@ class Bot:
         gps_payload = result.gps or {}
         lat = gps_payload.get("latitude")
         lon = gps_payload.get("longitude")
+        override_latitude = gps_override.get("latitude") if gps_override else None
+        override_longitude = gps_override.get("longitude") if gps_override else None
         if should_extract_gps and (lat is None or lon is None):
             author_id = asset.author_user_id
             if author_id:
@@ -3943,6 +3947,18 @@ class Bot:
         if lat is not None and lon is not None:
             update_kwargs["latitude"] = lat
             update_kwargs["longitude"] = lon
+            logging.info(
+                "MOBILE_REVERSE_GEOCODE_INPUT",
+                extra={
+                    "asset_id": asset_id,
+                    "stored_latitude": stored_latitude,
+                    "stored_longitude": stored_longitude,
+                    "override_latitude": override_latitude,
+                    "override_longitude": override_longitude,
+                    "ingested_latitude": lat,
+                    "ingested_longitude": lon,
+                },
+            )
             address = await self._reverse_geocode(lat, lon)
             if address:
                 city = address.get("city") or address.get("town") or address.get("village")
@@ -3951,6 +3967,27 @@ class Bot:
                     update_kwargs["city"] = city
                 if country:
                     update_kwargs["country"] = country
+        else:
+            stored_has_coords = (
+                stored_latitude is not None and stored_longitude is not None
+            )
+            override_has_coords = (
+                override_latitude is not None and override_longitude is not None
+            )
+            ingest_has_coords = lat is not None and lon is not None
+            if not stored_has_coords and not override_has_coords and not ingest_has_coords:
+                logging.warning(
+                    "MOBILE_REVERSE_GEOCODE_MISSING_COORDS",
+                    extra={
+                        "asset_id": asset_id,
+                        "stored_latitude": stored_latitude,
+                        "stored_longitude": stored_longitude,
+                        "override_latitude": override_latitude,
+                        "override_longitude": override_longitude,
+                        "ingested_latitude": lat,
+                        "ingested_longitude": lon,
+                    },
+                )
         if update_kwargs:
             self.data.update_asset(asset_id, **update_kwargs)
 

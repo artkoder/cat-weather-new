@@ -528,6 +528,17 @@ def extract_image_metadata(path: Path) -> tuple[str | None, int | None, int | No
     capture = _extract_capture_datetime(exif_payload)
     if capture:
         gps_payload.setdefault("captured_at", capture)
+    logging.info(
+        "MOBILE_IMAGE_METADATA",
+        extra={
+            "path": str(path),
+            "mime_type": mime_type,
+            "exif_present": bool(exif_payload),
+            "gps_present": bool(gps_payload),
+            "latitude": gps_payload.get("latitude"),
+            "longitude": gps_payload.get("longitude"),
+        },
+    )
     return mime_type, width, height, exif_payload, gps_payload
 
 

@@ -9,6 +9,8 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
+import logging
+
 import piexif
 import pytest
 from PIL import Image
@@ -143,10 +145,15 @@ def _prepare_upload(conn: sqlite3.Connection, *, file_key: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_extract_image_metadata_reads_jpeg_exif(tmp_path: Path) -> None:
+async def test_extract_image_metadata_reads_jpeg_exif(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     image_path = create_sample_image(tmp_path / "sample.jpg")
 
-    mime_type, width, height, exif_payload, gps_payload = _extract_image_metadata(image_path)
+    with caplog.at_level(logging.INFO):
+        mime_type, width, height, exif_payload, gps_payload = _extract_image_metadata(
+            image_path
+        )
 
     assert mime_type == "image/jpeg"
     assert width == 640
@@ -155,6 +162,14 @@ async def test_extract_image_metadata_reads_jpeg_exif(tmp_path: Path) -> None:
     assert pytest.approx(gps_payload["latitude"], rel=1e-6) == 55.5
     assert pytest.approx(gps_payload["longitude"], rel=1e-6) == 37.6
     assert gps_payload["captured_at"].startswith("2023-12-24T15:30:45")
+
+    metadata_log = next(
+        record for record in caplog.records if record.message == "MOBILE_IMAGE_METADATA"
+    )
+    assert metadata_log.path.endswith("sample.jpg")
+    assert metadata_log.gps_present is True
+    assert metadata_log.latitude == pytest.approx(55.5, rel=1e-6)
+    assert metadata_log.longitude == pytest.approx(37.6, rel=1e-6)
 
 
 def test_extract_image_metadata_handles_nested_rationals(
@@ -320,6 +335,16 @@ async def test_process_upload_job_success_records_asset(
     assert metrics.counters.get("upload_process_fail_total", 0) == 0
     assert "process_upload_ms" in metrics.timings
 
+    exif_log = next(
+        record for record in caplog.records if record.message == "MOBILE_EXIF_EXTRACTED"
+    )
+    assert exif_log.asset_id == row["asset_id"]
+    assert exif_log.upload_id == upload_id
+    assert exif_log.exif_payload is True
+    assert exif_log.gps_payload is True
+    assert exif_log.latitude == pytest.approx(55.5, rel=1e-6)
+    assert exif_log.longitude == pytest.approx(37.6, rel=1e-6)
+
     mobile_done = next(
         record for record in caplog.records if record.message == "MOBILE_UPLOAD_DONE"
     )
@@ -332,7 +357,10 @@ async def test_process_upload_job_success_records_asset(
 
 
 @pytest.mark.asyncio
-async def test_process_upload_marks_exif_present_without_gps(tmp_path: Path) -> None:
+async def test_process_upload_marks_exif_present_without_gps(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
     recognition_channel_id = -30001
     conn = _setup_connection(
         asset_channel_id=recognition_channel_id,
@@ -390,6 +418,23 @@ async def test_process_upload_marks_exif_present_without_gps(tmp_path: Path) -> 
     assert asset.latitude is None
     assert asset.longitude is None
     assert asset.exif_present is True
+
+    exif_log = next(
+        record for record in caplog.records if record.message == "MOBILE_EXIF_EXTRACTED"
+    )
+    assert exif_log.asset_id == row["asset_id"]
+    assert exif_log.upload_id == upload_id
+    assert exif_log.exif_payload is True
+    assert exif_log.gps_payload is False
+    assert exif_log.latitude is None
+    assert exif_log.longitude is None
+
+    metadata_log = next(
+        record
+        for record in caplog.records
+        if record.message == "MOBILE_IMAGE_METADATA" and record.gps_present is False
+    )
+    assert metadata_log.path.endswith("asset-nogps.jpg")
 
 
 @pytest.mark.asyncio

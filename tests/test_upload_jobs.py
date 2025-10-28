@@ -348,6 +348,18 @@ async def test_process_upload_job_success_records_asset(
     assert exif_log.latitude == pytest.approx(55.5, rel=1e-6)
     assert exif_log.longitude == pytest.approx(37.6, rel=1e-6)
 
+    raw_log = next(
+        record for record in caplog.records if record.message == "MOBILE_EXIF_RAW"
+    )
+    assert raw_log.asset_id == row["asset_id"]
+    assert raw_log.upload_id == upload_id
+    raw_exif = json.loads(raw_log.exif_raw)
+    raw_gps = json.loads(raw_log.gps_raw)
+    assert raw_exif
+    assert raw_gps
+    assert raw_gps.get("latitude") == pytest.approx(55.5, rel=1e-6)
+    assert raw_gps.get("longitude") == pytest.approx(37.6, rel=1e-6)
+
     mobile_done = next(
         record for record in caplog.records if record.message == "MOBILE_UPLOAD_DONE"
     )
@@ -525,6 +537,13 @@ async def test_process_upload_marks_exif_present_without_gps(
     assert exif_log.gps_payload is False
     assert exif_log.latitude is None
     assert exif_log.longitude is None
+
+    raw_log = next(
+        record for record in caplog.records if record.message == "MOBILE_EXIF_RAW"
+    )
+    assert raw_log.asset_id == row["asset_id"]
+    assert raw_log.upload_id == upload_id
+    assert json.loads(raw_log.gps_raw) == {}
 
     metadata_log = next(
         record

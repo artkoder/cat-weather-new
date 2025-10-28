@@ -655,6 +655,7 @@ def extract_image_metadata(
 
     with Image.open(path) as raw_image:
         original_format = raw_image.format
+        exif_bytes = getattr(raw_image, "info", {}).get("exif")
         image = ImageOps.exif_transpose(raw_image)
         exif_dict: dict[str, Any] | None = None
         gps_info: dict[str, Any] | None = None
@@ -663,8 +664,7 @@ def extract_image_metadata(
             format_name = image.format or original_format
             if format_name and format_name in Image.MIME:
                 mime_type = Image.MIME[format_name]
-            exif_data = image.getexif() if hasattr(image, "getexif") else None
-            exif_bytes = getattr(image, "info", {}).get("exif")
+            exif_data = raw_image.getexif() if hasattr(raw_image, "getexif") else None
             if exif_bytes:
                 try:
                     exif_dict = piexif.load(exif_bytes)
@@ -694,6 +694,7 @@ def extract_image_metadata(
                         for sub_id, sub_val in gps_ifd.items()
                     }
                     exif_payload["GPSInfo"] = gps_info
+                    exif_payload["GPS"] = gps_info
 
                     lat = _gps_rational_to_decimal(
                         gps_ifd.get(piexif.GPSIFD.GPSLatitude),
@@ -719,6 +720,8 @@ def extract_image_metadata(
                         }
                         if "GPSInfo" not in exif_payload:
                             exif_payload["GPSInfo"] = fallback_gps_info
+                        if "GPS" not in exif_payload:
+                            exif_payload["GPS"] = fallback_gps_info
                         lat, lon = _extract_gps_decimal(fallback_gps_info)
                         if lat is not None:
                             gps_payload.setdefault("latitude", lat)

@@ -424,9 +424,10 @@ async def test_process_upload_job_success_records_asset(
     )
     assert raw_log.asset_id == row["asset_id"]
     assert raw_log.upload_id == upload_id
-    raw_zeroth = json.loads(raw_log.zeroth_ifd_raw)
-    raw_exif = json.loads(raw_log.exif_raw)
-    raw_gps = json.loads(raw_log.gps_raw)
+    raw_sections = json.loads(raw_log.exif_sections_raw)
+    raw_zeroth = raw_sections.get("0th") or {}
+    raw_exif = raw_sections.get("Exif") or {}
+    raw_gps = raw_sections.get("GPS") or {}
     raw_ifds = json.loads(raw_log.exif_ifds_raw)
     assert raw_zeroth
     assert "Make" in raw_zeroth
@@ -629,7 +630,8 @@ async def test_process_upload_marks_exif_present_without_gps(
     )
     assert raw_log.asset_id == row["asset_id"]
     assert raw_log.upload_id == upload_id
-    assert json.loads(raw_log.gps_raw) == {}
+    raw_sections = json.loads(raw_log.exif_sections_raw)
+    assert raw_sections.get("GPS") == {}
     raw_ifds = json.loads(raw_log.exif_ifds_raw)
     gps_ifd = raw_ifds.get("GPS") or {}
     assert gps_ifd == {}

@@ -530,14 +530,15 @@ def register_upload_jobs(
                             if not asset_id:
                                 raise RuntimeError("asset creation failed for upload")
 
+                            exif_payload = dict(result.exif or {})
                             gps_payload = dict(result.gps or {})
                             metadata_payload = {
-                                "exif": result.exif or {},
+                                "exif": exif_payload,
                                 "gps": gps_payload,
                             }
                             update_kwargs: dict[str, Any] = {
                                 "metadata": metadata_payload,
-                                "exif_present": bool(gps_payload),
+                                "exif_present": bool(exif_payload) or bool(gps_payload),
                             }
                             latitude = gps_payload.get("latitude")
                             if latitude is not None:

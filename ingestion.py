@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import re
 import hashlib
 import logging
 import os
@@ -297,6 +298,26 @@ def _to_float_ratio(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
 
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if "/" in stripped:
+            parts = stripped.split("/", 1)
+            if len(parts) == 2:
+                try:
+                    numerator_value = float(parts[0])
+                    denominator_value = float(parts[1])
+                except Exception:
+                    return None
+                if denominator_value == 0:
+                    return None
+                return numerator_value / denominator_value
+        try:
+            return float(stripped)
+        except Exception:
+            return None
+
     numerator = getattr(value, "numerator", None)
     denominator = getattr(value, "denominator", None)
     if numerator is not None and denominator is not None:
@@ -352,6 +373,16 @@ def _normalize_exif_value(value: Any) -> Any:
 
 def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float | None]:
     def _coerce_sequence(value: Any) -> list[Any]:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if re.search(r"[\s,]", stripped):
+                tokens = [token for token in re.split(r"[\s,]+", stripped) if token]
+                if tokens:
+                    return tokens
+            return [value]
+
         if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes)):
             return list(value)
         return [value]

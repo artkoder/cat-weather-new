@@ -289,6 +289,51 @@ def _compute_sha256(path: Path) -> str:
     return hasher.hexdigest()
 
 
+_RATIO_SPLIT_PATTERN = re.compile(r"[\s,]+")
+
+
+def _parse_ratio_token(token: str) -> float | None:
+    """Parse a single ``numerator/denominator`` token into a float."""
+
+    stripped = token.strip()
+    if not stripped:
+        return None
+    if "/" in stripped:
+        numerator_text, denominator_text = stripped.split("/", 1)
+        try:
+            numerator_value = float(numerator_text)
+            denominator_value = float(denominator_text)
+        except Exception:
+            return None
+        if denominator_value == 0:
+            return None
+        return numerator_value / denominator_value
+    try:
+        return float(stripped)
+    except Exception:
+        return None
+
+
+def _extract_ratio_numbers(text: str) -> list[float] | None:
+    """Extract numeric values from a ratio string like ``"10/1,20/1"``."""
+
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if "/" not in stripped and "," not in stripped:
+        return None
+    tokens = [token for token in _RATIO_SPLIT_PATTERN.split(stripped) if token]
+    if not tokens:
+        return None
+    numbers: list[float] = []
+    for token in tokens:
+        parsed = _parse_ratio_token(token)
+        if parsed is None:
+            return None
+        numbers.append(parsed)
+    return numbers
+
+
 def _to_float_ratio(value: Any) -> float | None:
     """Convert EXIF rational representations to float when possible."""
 
@@ -302,6 +347,9 @@ def _to_float_ratio(value: Any) -> float | None:
         stripped = value.strip()
         if not stripped:
             return None
+        ratio_numbers = _extract_ratio_numbers(stripped)
+        if ratio_numbers and len(ratio_numbers) == 1:
+            return ratio_numbers[0]
         if "/" in stripped:
             parts = stripped.split("/", 1)
             if len(parts) == 2:
@@ -356,7 +404,14 @@ def _normalize_exif_value(value: Any) -> Any:
             return value.decode("utf-8", errors="ignore")
         except Exception:
             return value.hex()
-    if isinstance(value, (str, int, float)):
+    if isinstance(value, str):
+        ratio_numbers = _extract_ratio_numbers(value)
+        if ratio_numbers:
+            if len(ratio_numbers) == 1:
+                return ratio_numbers[0]
+            return ratio_numbers
+        return value
+    if isinstance(value, (int, float)):
         return value
     ratio_value = _to_float_ratio(value)
     if ratio_value is not None and not isinstance(value, (list, tuple)):
@@ -377,6 +432,9 @@ def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float 
             stripped = value.strip()
             if not stripped:
                 return []
+            ratio_numbers = _extract_ratio_numbers(stripped)
+            if ratio_numbers:
+                return ratio_numbers
             if re.search(r"[\s,]", stripped):
                 tokens = [token for token in re.split(r"[\s,]+", stripped) if token]
                 if tokens:
@@ -395,6 +453,11 @@ def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float 
         numeric_parts: list[float] = []
 
         for raw_part in raw_parts:
+            if isinstance(raw_part, str):
+                ratio_values = _extract_ratio_numbers(raw_part)
+                if ratio_values:
+                    numeric_parts.extend(ratio_values)
+                    continue
             normalized = _normalize_exif_value(raw_part)
             number: float | None = None
 

@@ -146,14 +146,17 @@ class UploadTestEnv:
     metrics: UploadMetricsRecorder | None = None
     openai_client: FakeOpenAIClient | None = None
     supabase_client: FakeSupabaseClient | None = None
-    assets_channel_id: int | None = -100123
+    assets_channel_id: int | None = None
+    recognition_channel_id: int | None = None
+    legacy_channel_id: int | None = None
     _env_backup: dict[str, str | None] = field(default_factory=dict)
 
     async def start(
         self,
         *,
         max_upload_mb: float = 10.0,
-        assets_channel_id: int | None = -100123,
+        recognition_channel_id: int | None = -200456,
+        legacy_channel_id: int | None = -100123,
         telegram_client: FakeTelegramClient | None = None,
         openai_client: FakeOpenAIClient | None = None,
         supabase_client: FakeSupabaseClient | None = None,
@@ -190,12 +193,24 @@ class UploadTestEnv:
             os.environ.pop("CLEANUP_LOCAL_AFTER_PUBLISH", None)
         else:
             os.environ["CLEANUP_LOCAL_AFTER_PUBLISH"] = "1" if cleanup_local_after_publish else "0"
-        self.assets_channel_id = assets_channel_id
+        self.recognition_channel_id = recognition_channel_id
+        self.legacy_channel_id = legacy_channel_id
+        target_channel_id = (
+            recognition_channel_id if recognition_channel_id is not None else legacy_channel_id
+        )
+        self.assets_channel_id = target_channel_id
+
         conn.execute("DELETE FROM asset_channel")
-        if assets_channel_id is not None:
+        if legacy_channel_id is not None:
             conn.execute(
                 "INSERT INTO asset_channel (channel_id) VALUES (?)",
-                (assets_channel_id,),
+                (legacy_channel_id,),
+            )
+        conn.execute("DELETE FROM recognition_channel")
+        if recognition_channel_id is not None:
+            conn.execute(
+                "INSERT INTO recognition_channel (channel_id) VALUES (?)",
+                (recognition_channel_id,),
             )
         conn.commit()
         storage = LocalStorage(base_path=self.root / "uploads")
@@ -215,7 +230,7 @@ class UploadTestEnv:
 
         config = UploadsConfig(
             max_upload_mb=max_upload_mb,
-            assets_channel_id=assets_channel_id,
+            assets_channel_id=target_channel_id,
             vision_enabled=vision_flag,
             openai_vision_model=vision_model if vision_flag else None,
             max_image_side=None,
@@ -376,7 +391,9 @@ async def test_create_app_registers_process_upload_and_completes_flow(
     assert "process_upload" in bot.jobs.handlers
 
     bot.db.execute("DELETE FROM asset_channel")
+    bot.db.execute("DELETE FROM recognition_channel")
     bot.db.execute("INSERT INTO asset_channel (channel_id) VALUES (?)", (-100123,))
+    bot.db.execute("INSERT INTO recognition_channel (channel_id) VALUES (?)", (-200123,))
     bot.db.commit()
 
     create_device(
@@ -431,7 +448,7 @@ async def test_create_app_registers_process_upload_and_completes_flow(
 @pytest.mark.asyncio
 async def test_uploads_rejects_when_channel_missing(tmp_path: Path) -> None:
     env = UploadTestEnv(tmp_path)
-    await env.start(assets_channel_id=None)
+    await env.start(recognition_channel_id=None, legacy_channel_id=None)
     try:
         env.create_device(device_id="device-1")
 
@@ -449,7 +466,7 @@ async def test_uploads_rejects_when_channel_missing(tmp_path: Path) -> None:
         assert status == 500
         assert payload == {
             "error": "asset_channel_not_configured",
-            "message": "Asset upload channel is not configured.",
+            "message": "Recognition upload channel is not configured.",
         }
         assert env.conn is not None
         total_uploads = env.conn.execute("SELECT COUNT(*) FROM uploads").fetchone()[0]

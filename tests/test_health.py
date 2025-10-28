@@ -1,4 +1,5 @@
 import os
+import os
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -11,16 +12,24 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from main import apply_migrations, health_handler
 
-def _init_db(asset_channel_id: int | None = None) -> sqlite3.Connection:
+def _init_db(
+    *, asset_channel_id: int | None = None, recognition_channel_id: int | None = None
+) -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     apply_migrations(conn)
+    conn.execute("DELETE FROM asset_channel")
     if asset_channel_id is not None:
-        conn.execute("DELETE FROM asset_channel")
         conn.execute(
             "INSERT INTO asset_channel (channel_id) VALUES (?)",
             (asset_channel_id,),
         )
-        conn.commit()
+    conn.execute("DELETE FROM recognition_channel")
+    if recognition_channel_id is not None:
+        conn.execute(
+            "INSERT INTO recognition_channel (channel_id) VALUES (?)",
+            (recognition_channel_id,),
+        )
+    conn.commit()
     return conn
 
 
@@ -63,7 +72,7 @@ async def _call_health(bot: DummyBot):
 
 @pytest.mark.asyncio
 async def test_health_dry_run_skips_telegram():
-    conn = _init_db(asset_channel_id=-100500)
+    conn = _init_db(asset_channel_id=-100500, recognition_channel_id=-200500)
     bot = DummyBot(
         conn,
         DummyJobs({"pending": 1, "active": 0, "failed": 0}),
@@ -87,7 +96,7 @@ async def test_health_dry_run_skips_telegram():
 
 @pytest.mark.asyncio
 async def test_health_successful_probe():
-    conn = _init_db(asset_channel_id=-200200)
+    conn = _init_db(asset_channel_id=-200200, recognition_channel_id=-300300)
     bot = DummyBot(
         conn,
         DummyJobs({"pending": 0, "active": 0, "failed": 0}),
@@ -107,7 +116,7 @@ async def test_health_successful_probe():
 
 @pytest.mark.asyncio
 async def test_health_telegram_failure():
-    conn = _init_db(asset_channel_id=-300300)
+    conn = _init_db(asset_channel_id=-300300, recognition_channel_id=-400400)
     bot = DummyBot(
         conn,
         DummyJobs({"pending": 0, "active": 0, "failed": 0}),
@@ -140,5 +149,5 @@ async def test_health_missing_asset_channel_marks_config():
     assert status == 207
     assert payload["ok"] is True
     assert payload["config"]["ok"] is False
-    assert payload["config"]["missing"] == ["asset_channel"]
+    assert payload["config"]["missing"] == ["recognition_channel", "asset_channel"]
     conn.close()

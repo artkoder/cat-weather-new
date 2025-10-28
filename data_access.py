@@ -2698,6 +2698,23 @@ def get_upload(
     }
 
 
+def get_recognition_channel_id(conn: sqlite3.Connection) -> int | None:
+    """Return the configured recognition channel identifier or ``None`` if missing."""
+
+    cur = conn.execute("SELECT channel_id FROM recognition_channel LIMIT 1")
+    row = cur.fetchone()
+    if not row:
+        return None
+    if isinstance(row, sqlite3.Row):
+        value = row["channel_id"]
+    else:
+        value = row[0]
+    try:
+        return int(value)
+    except (TypeError, ValueError):  # pragma: no cover - defensive fallback
+        return None
+
+
 def get_asset_channel_id(conn: sqlite3.Connection) -> int | None:
     """Return the configured asset channel identifier or ``None`` if missing."""
 

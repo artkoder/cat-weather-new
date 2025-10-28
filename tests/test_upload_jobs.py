@@ -26,7 +26,7 @@ from api.uploads import (
 from data_access import DataAccess, create_device, insert_upload
 from jobs import Job, JobQueue
 from main import Bot, apply_migrations
-from ingestion import IngestionCallbacks
+from ingestion import IngestionCallbacks, UploadIngestionContext, ingest_photo
 from tests.fixtures.ingestion_utils import (
     OpenAIStub,
     StorageStub,
@@ -143,6 +143,9 @@ async def test_extract_image_metadata_reads_jpeg_exif(
     assert gps_log.path.endswith("sample.jpg")
     assert gps_log.gps_tags["GPSLatitudeRef"] == "N"
     assert gps_log.gps_tags["GPSLongitudeRef"] == "E"
+    gps_block = exif_payload["GPS"]
+    assert gps_block["GPSLatitudeRef"] == "N"
+    assert gps_block["GPSLongitudeRef"] == "E"
     gps_ifd = exif_ifds.get("GPS") or {}
     assert gps_ifd.get("GPSLatitude") == [[55, 1], [30, 1], [0, 1]]
     assert gps_ifd.get("GPSLongitude") == [[37, 1], [36, 1], [0, 1]]
@@ -185,7 +188,8 @@ def test_extract_image_metadata_handles_nested_rationals(
     expected_lon = -(37 + 36 / 60.0 + 6 / 3600.0)
     assert coords["longitude"] == pytest.approx(expected_lon, rel=1e-6)
 
-    gps_info = exif_payload["GPSInfo"]
+    gps_info = exif_payload["GPS"]
+    assert gps_info == exif_payload["GPSInfo"]
     assert gps_info["GPSLatitudeRef"] == "S"
     assert gps_info["GPSLongitudeRef"] == "W"
     raw_gps_ifd = exif_ifds.get("GPS") or {}
@@ -199,6 +203,79 @@ def test_extract_image_metadata_handles_nested_rationals(
         [[36, 1], [1, 1]],
         [[12, 1], [2, 1]],
     ]
+
+
+@pytest.mark.asyncio
+async def test_ingest_photo_populates_result_gps_from_offset_ifd(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "offset.jpg"
+    image = Image.new("RGB", (128, 96), color=(90, 120, 150))
+    gps_ifd = {
+        piexif.GPSIFD.GPSLatitudeRef: b"N",
+        piexif.GPSIFD.GPSLatitude: ((55, 1), (30, 1), (1234, 100)),
+        piexif.GPSIFD.GPSLongitudeRef: b"E",
+        piexif.GPSIFD.GPSLongitude: ((37, 1), (36, 1), (678, 100)),
+    }
+    exif_dict = {
+        "0th": {piexif.ImageIFD.Make: b"UnitTest"},
+        "Exif": {},
+        "GPS": gps_ifd,
+        "1st": {},
+        "thumbnail": None,
+    }
+    image.save(image_path, format="JPEG", exif=piexif.dump(exif_dict))
+
+    with Image.open(image_path) as created:
+        raw_gps_value = created.getexif().get(34853)
+    assert isinstance(raw_gps_value, int), "GPS IFD should be referenced via offset"
+
+    class DummyData:
+        def log_token_usage(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+    telegram = TelegramStub()
+    metrics = UploadMetricsRecorder()
+    context = UploadIngestionContext(
+        upload_id="upload-offset",
+        storage_key="offset-key",
+        metrics=metrics,
+        source="mobile",
+    )
+    config = UploadsConfig(
+        assets_channel_id=-50001,
+        vision_enabled=False,
+    )
+
+    created_assets: list[dict[str, Any]] = []
+
+    def create_asset(payload: dict[str, Any]) -> str:
+        created_assets.append(payload)
+        return "asset-offset"
+
+    result = await ingest_photo(
+        data=DummyData(),
+        telegram=telegram,
+        openai=None,
+        supabase=None,
+        config=config,
+        context=context,
+        file_path=image_path,
+        cleanup_file=False,
+        callbacks=IngestionCallbacks(create_asset=create_asset),
+    )
+
+    expected_lat = 55 + 30 / 60 + 12.34 / 3600
+    expected_lon = 37 + 36 / 60 + 6.78 / 3600
+
+    assert result.asset_id == "asset-offset"
+    assert created_assets, "create_asset callback should be invoked"
+    assert result.gps
+    assert result.gps["latitude"] == pytest.approx(expected_lat, rel=1e-6)
+    assert result.gps["longitude"] == pytest.approx(expected_lon, rel=1e-6)
+    assert result.exif.get("GPS")
+    assert result.exif["GPS"]["GPSLatitudeRef"] == "N"
+    assert result.exif["GPS"]["GPSLongitudeRef"] == "E"
 
 
 @pytest.mark.asyncio

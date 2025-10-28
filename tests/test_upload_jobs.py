@@ -230,14 +230,14 @@ async def test_ingest_photo_populates_result_gps_from_offset_ifd(
         raw_gps_value = created.getexif().get(34853)
     assert isinstance(raw_gps_value, int), "GPS IFD should be referenced via offset"
 
-    class DummyData:
-        def log_token_usage(self, *args: Any, **kwargs: Any) -> None:
-            pass
+    conn = _setup_connection(asset_channel_id=-50001)
+    data = DataAccess(conn)
+    upload_id = _prepare_upload(conn, file_key="offset-key")
 
     telegram = TelegramStub()
     metrics = UploadMetricsRecorder()
     context = UploadIngestionContext(
-        upload_id="upload-offset",
+        upload_id=upload_id,
         storage_key="offset-key",
         metrics=metrics,
         source="mobile",
@@ -247,14 +247,8 @@ async def test_ingest_photo_populates_result_gps_from_offset_ifd(
         vision_enabled=False,
     )
 
-    created_assets: list[dict[str, Any]] = []
-
-    def create_asset(payload: dict[str, Any]) -> str:
-        created_assets.append(payload)
-        return "asset-offset"
-
     result = await ingest_photo(
-        data=DummyData(),
+        data=data,
         telegram=telegram,
         openai=None,
         supabase=None,
@@ -262,20 +256,44 @@ async def test_ingest_photo_populates_result_gps_from_offset_ifd(
         context=context,
         file_path=image_path,
         cleanup_file=False,
-        callbacks=IngestionCallbacks(create_asset=create_asset),
     )
 
     expected_lat = 55 + 30 / 60 + 12.34 / 3600
     expected_lon = 37 + 36 / 60 + 6.78 / 3600
 
-    assert result.asset_id == "asset-offset"
-    assert created_assets, "create_asset callback should be invoked"
+    assert result.asset_id
     assert result.gps
     assert result.gps["latitude"] == pytest.approx(expected_lat, rel=1e-6)
     assert result.gps["longitude"] == pytest.approx(expected_lon, rel=1e-6)
     assert result.exif.get("GPS")
     assert result.exif["GPS"]["GPSLatitudeRef"] == "N"
     assert result.exif["GPS"]["GPSLongitudeRef"] == "E"
+
+    asset = data.get_asset(result.asset_id)
+    assert asset is not None
+    assert asset.exif
+    gps_block = asset.exif.get("GPS") if asset.exif else None
+    assert gps_block
+    assert gps_block["GPSLatitudeRef"] == "N"
+    assert gps_block["GPSLongitudeRef"] == "E"
+
+    metadata_payload = {"exif": result.exif, "gps": result.gps}
+    data.update_asset(
+        result.asset_id,
+        metadata=metadata_payload,
+        latitude=result.gps["latitude"],
+        longitude=result.gps["longitude"],
+        exif_present=True,
+    )
+
+    updated_asset = data.get_asset(result.asset_id)
+    assert updated_asset is not None
+    assert updated_asset.latitude == pytest.approx(expected_lat, rel=1e-6)
+    assert updated_asset.longitude == pytest.approx(expected_lon, rel=1e-6)
+    stored_metadata = updated_asset.metadata or {}
+    stored_gps = stored_metadata.get("gps") or {}
+    assert stored_gps.get("latitude") == pytest.approx(expected_lat, rel=1e-6)
+    assert stored_gps.get("longitude") == pytest.approx(expected_lon, rel=1e-6)
 
 
 @pytest.mark.asyncio

@@ -462,6 +462,30 @@ def _serialize_exif_ifd(ifd_name: str, source_ifd: Mapping[int, Any]) -> dict[st
     return result
 
 
+def _normalize_gps_ref(ref: Any) -> str | None:
+    if ref is None:
+        return None
+    if isinstance(ref, (bytes, bytearray)):
+        for encoding in ("utf-8", "ascii", "latin-1"):
+            try:
+                decoded = ref.decode(encoding, errors="ignore").strip()
+            except Exception:
+                continue
+            if decoded:
+                ref = decoded
+                break
+        else:
+            return None
+    text = str(ref).strip()
+    if not text:
+        return None
+    if len(text) >= 3 and text[0] == "b" and text[1] in {'"', "'"} and text[-1] == text[1]:
+        inner = text[2:-1].strip()
+        if inner:
+            text = inner
+    return text or None
+
+
 def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float | None]:
     def _coerce_sequence(value: Any) -> list[Any]:
         if isinstance(value, str):
@@ -522,16 +546,16 @@ def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float 
             + numeric_parts[1] / 60.0
             + numeric_parts[2] / 3600.0
         )
-        if ref and ref.upper() in {"S", "W"}:
-            decimal *= -1.0
+        if ref:
+            ref_letter = ref.strip().upper()[:1]
+            if ref_letter in {"S", "W"}:
+                decimal *= -1.0
         return decimal
 
-    lat_ref = gps_info.get("GPSLatitudeRef")
-    lon_ref = gps_info.get("GPSLongitudeRef")
-    lat = _to_decimal(gps_info.get("GPSLatitude") or [], str(lat_ref) if lat_ref else None)
-    lon = _to_decimal(
-        gps_info.get("GPSLongitude") or [], str(lon_ref) if lon_ref else None
-    )
+    lat_ref = _normalize_gps_ref(gps_info.get("GPSLatitudeRef"))
+    lon_ref = _normalize_gps_ref(gps_info.get("GPSLongitudeRef"))
+    lat = _to_decimal(gps_info.get("GPSLatitude") or [], lat_ref)
+    lon = _to_decimal(gps_info.get("GPSLongitude") or [], lon_ref)
     return lat, lon
 
 

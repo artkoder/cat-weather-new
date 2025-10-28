@@ -157,6 +157,56 @@ async def test_extract_image_metadata_reads_jpeg_exif(tmp_path: Path) -> None:
     assert gps_payload["captured_at"].startswith("2023-12-24T15:30:45")
 
 
+def test_extract_image_metadata_handles_nested_rationals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image_path = create_sample_image(tmp_path / "nested.jpg")
+
+    nested_lat = (
+        ((55, 1), (1, 1)),
+        ((30, 1), (2, 1)),
+    )
+    nested_lon = (
+        ((37, 1), (1, 1)),
+        ((36, 1), (1, 1)),
+        ((12, 1), (2, 1)),
+    )
+
+    gps_payload = {
+        piexif.GPSIFD.GPSLatitudeRef: "S",
+        piexif.GPSIFD.GPSLatitude: nested_lat,
+        piexif.GPSIFD.GPSLongitudeRef: "W",
+        piexif.GPSIFD.GPSLongitude: nested_lon,
+    }
+
+    def fake_getexif(self: Image.Image, *args: Any, **kwargs: Any):  # type: ignore[override]
+        return {
+            piexif.ExifIFD.DateTimeOriginal: "2024:01:02 03:04:05",
+            34853: gps_payload,
+        }
+
+    monkeypatch.setattr(Image.Image, "getexif", fake_getexif)
+
+    _, _, _, exif_payload, coords = _extract_image_metadata(image_path)
+
+    assert coords["latitude"] == pytest.approx(-55.25, rel=1e-6)
+    expected_lon = -(37 + 36 / 60.0 + 6 / 3600.0)
+    assert coords["longitude"] == pytest.approx(expected_lon, rel=1e-6)
+
+    gps_info = exif_payload["GPSInfo"]
+    assert gps_info["GPSLatitudeRef"] == "S"
+    assert gps_info["GPSLongitudeRef"] == "W"
+    assert gps_info["GPSLatitude"] == [
+        [[55, 1], [1, 1]],
+        [[30, 1], [2, 1]],
+    ]
+    assert gps_info["GPSLongitude"] == [
+        [[37, 1], [1, 1]],
+        [[36, 1], [1, 1]],
+        [[12, 1], [2, 1]],
+    ]
+
+
 @pytest.mark.asyncio
 async def test_process_upload_job_success_records_asset(
     tmp_path: Path, caplog: pytest.LogCaptureFixture

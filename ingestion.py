@@ -426,6 +426,25 @@ def _normalize_exif_value(value: Any) -> Any:
         return str(value)
 
 
+def _normalize_gps_ref(ref: Any) -> str | None:
+    if ref is None:
+        return None
+    if isinstance(ref, bytes):
+        for encoding in ("ascii", "utf-8", "latin-1"):
+            try:
+                decoded = ref.decode(encoding, errors="ignore")
+            except Exception:
+                continue
+            decoded = decoded.strip().strip("\x00")
+            if decoded:
+                return decoded
+        return None
+    if isinstance(ref, str):
+        decoded = ref.strip().strip("\x00")
+        return decoded or None
+    return str(ref)
+
+
 def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float | None]:
     def _coerce_sequence(value: Any) -> list[Any]:
         if isinstance(value, str):
@@ -490,12 +509,10 @@ def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float 
             decimal *= -1.0
         return decimal
 
-    lat_ref = gps_info.get("GPSLatitudeRef")
-    lon_ref = gps_info.get("GPSLongitudeRef")
-    lat = _to_decimal(gps_info.get("GPSLatitude") or [], str(lat_ref) if lat_ref else None)
-    lon = _to_decimal(
-        gps_info.get("GPSLongitude") or [], str(lon_ref) if lon_ref else None
-    )
+    lat_ref = _normalize_gps_ref(gps_info.get("GPSLatitudeRef"))
+    lon_ref = _normalize_gps_ref(gps_info.get("GPSLongitudeRef"))
+    lat = _to_decimal(gps_info.get("GPSLatitude") or [], lat_ref)
+    lon = _to_decimal(gps_info.get("GPSLongitude") or [], lon_ref)
     return lat, lon
 
 
@@ -507,11 +524,11 @@ def _gps_rational_to_decimal(values: Any, ref: Any, *, axis: str) -> float | Non
     if axis == "lat":
         gps_info["GPSLatitude"] = values
         if ref is not None:
-            gps_info["GPSLatitudeRef"] = ref
+            gps_info["GPSLatitudeRef"] = _normalize_gps_ref(ref)
     else:
         gps_info["GPSLongitude"] = values
         if ref is not None:
-            gps_info["GPSLongitudeRef"] = ref
+            gps_info["GPSLongitudeRef"] = _normalize_gps_ref(ref)
 
     lat, lon = _extract_gps_decimal(gps_info)
     return lat if axis == "lat" else lon

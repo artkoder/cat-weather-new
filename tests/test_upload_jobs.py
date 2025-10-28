@@ -6,12 +6,9 @@ import shutil
 import sqlite3
 import sys
 from datetime import datetime
-from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from types import SimpleNamespace
-
-import logging
 
 import piexif
 import pytest
@@ -37,43 +34,6 @@ from tests.fixtures.ingestion_utils import (
     create_sample_image,
     create_sample_image_without_gps,
 )
-
-
-@pytest.fixture(autouse=True)
-def _patch_pillow_exif(monkeypatch: pytest.MonkeyPatch) -> None:
-    original_getexif = Image.Image.getexif
-
-    gps_tag = 34853
-    lat_tag = 2
-    lon_tag = 4
-
-    def _patched_getexif(self: Image.Image, *args: Any, **kwargs: Any):  # type: ignore[override]
-        exif_bytes = getattr(self, "info", {}).get("exif")
-        if exif_bytes:
-            data = piexif.load(exif_bytes)
-            combined: dict[int, Any] = {}
-            for ifd_key in ("0th", "Exif"):
-                for tag_id, value in data.get(ifd_key, {}).items():
-                    combined[int(tag_id)] = value
-            gps = data.get("GPS")
-            if gps:
-                processed_gps: dict[int, Any] = {}
-                for sub_id, raw in gps.items():
-                    if sub_id in {lat_tag, lon_tag} and isinstance(raw, (list, tuple)):
-                        rationals: tuple[Any, ...] = tuple(
-                            Fraction(part[0], part[1])
-                            if isinstance(part, (list, tuple)) and len(part) == 2 and part[1]
-                            else part
-                            for part in raw
-                        )
-                        processed_gps[int(sub_id)] = rationals
-                    else:
-                        processed_gps[int(sub_id)] = raw
-                combined[gps_tag] = processed_gps
-            return combined
-        return original_getexif(self, *args, **kwargs)
-
-    monkeypatch.setattr(Image.Image, "getexif", _patched_getexif)
 
 
 class DummyStorage(StorageStub):
@@ -174,11 +134,17 @@ async def test_extract_image_metadata_reads_jpeg_exif(
     assert metadata_log.latitude == pytest.approx(55.5, rel=1e-6)
     assert metadata_log.longitude == pytest.approx(37.6, rel=1e-6)
 
+    gps_log = next(record for record in caplog.records if record.message == "MOBILE_GPS_EXIF")
+    assert gps_log.path.endswith("sample.jpg")
+    assert gps_log.gps_tags["GPSLatitudeRef"] == "N"
+    assert gps_log.gps_tags["GPSLongitudeRef"] == "E"
+
 
 def test_extract_image_metadata_handles_nested_rationals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    image_path = create_sample_image(tmp_path / "nested.jpg")
+    image_path = tmp_path / "nested.jpg"
+    Image.new("RGB", (32, 32), color=(128, 64, 32)).save(image_path, format="JPEG")
 
     nested_lat = (
         ((55, 1), (1, 1)),
@@ -414,27 +380,21 @@ async def test_process_upload_job_parses_comma_separated_gps(
         updated_at=datetime.utcnow(),
     )
 
-    base_getexif = Image.Image.getexif
+    original_load = piexif.load
 
-    def _string_gps_getexif(self: Image.Image, *args: Any, **kwargs: Any):  # type: ignore[override]
-        data_dict = base_getexif(self, *args, **kwargs)
-        if not data_dict:
-            return data_dict
-        gps_tag = 34853
-        lat_tag = piexif.GPSIFD.GPSLatitude
-        lon_tag = piexif.GPSIFD.GPSLongitude
-        gps_payload = data_dict.get(gps_tag)
-        if isinstance(gps_payload, dict):
-            gps_payload = dict(gps_payload)
-            if lat_tag in gps_payload:
-                gps_payload[lat_tag] = "55/1,30/1,1234/100"
-            if lon_tag in gps_payload:
-                gps_payload[lon_tag] = "37/1 36/1 600/100"
-            data_dict = dict(data_dict)
-            data_dict[gps_tag] = gps_payload
-        return data_dict
+    def _stringified_gps_load(*args: Any, **kwargs: Any):
+        data = original_load(*args, **kwargs)
+        gps = data.get("GPS")
+        if isinstance(gps, dict):
+            lat_tag = piexif.GPSIFD.GPSLatitude
+            lon_tag = piexif.GPSIFD.GPSLongitude
+            if lat_tag in gps:
+                gps[lat_tag] = "55/1,30/1,1234/100"
+            if lon_tag in gps:
+                gps[lon_tag] = "37/1 36/1 600/100"
+        return data
 
-    monkeypatch.setattr(Image.Image, "getexif", _string_gps_getexif, raising=False)
+    monkeypatch.setattr(piexif, "load", _stringified_gps_load)
 
     await queue.handlers["process_upload"](job)
 

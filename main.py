@@ -49,6 +49,7 @@ from data_access import (
     create_pairing_token,
     consume_pairing_token,
     get_asset_channel_id,
+    get_recognition_channel_id,
     list_user_devices,
     revoke_device,
     rotate_device_secret,
@@ -13330,12 +13331,20 @@ async def health_handler(request: web.Request) -> web.Response:
         logging.exception("Failed to fetch asset channel configuration")
         asset_channel_id = None
 
+    try:
+        recognition_channel_id = get_recognition_channel_id(bot.db)
+    except Exception:
+        logging.exception("Failed to fetch recognition channel configuration")
+        recognition_channel_id = None
+
     config_missing: list[str] = []
-    config_ok = asset_channel_id is not None
-    if not config_ok:
+    if recognition_channel_id is None:
+        config_missing.append("recognition_channel")
+    if asset_channel_id is None:
         config_missing.append("asset_channel")
-        if status == 200:
-            status = 207
+    config_ok = not config_missing
+    if config_missing and status == 200:
+        status = 207
 
     # Telegram connectivity
     t0 = perf_counter()
@@ -13429,7 +13438,8 @@ async def health_handler(request: web.Request) -> web.Response:
     if config_ok:
         log_parts.append("config=ok")
     else:
-        log_parts.append("config=missing(asset_channel)")
+        missing_desc = ",".join(config_missing) if config_missing else "unknown"
+        log_parts.append(f"config=missing({missing_desc})")
 
     logging.info("HEALTH %s status=%s", " ".join(log_parts), status)
     observe_health_latency(perf_counter() - overall_start)

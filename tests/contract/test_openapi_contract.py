@@ -325,6 +325,11 @@ def contract_server(
     apply_migrations(conn)
     conn.execute("DELETE FROM asset_channel")
     conn.execute("INSERT OR REPLACE INTO asset_channel (channel_id) VALUES (?)", (ASSET_CHANNEL_ID,))
+    conn.execute("DELETE FROM recognition_channel")
+    conn.execute(
+        "INSERT OR REPLACE INTO recognition_channel (channel_id) VALUES (?)",
+        (ASSET_CHANNEL_ID * 2,),
+    )
     conn.commit()
 
     class _BotStub:
@@ -335,7 +340,7 @@ def contract_server(
         max_upload_mb=5.0,
         allowed_prefixes=("image/",),
         allowed_exact=("application/pdf",),
-        assets_channel_id=ASSET_CHANNEL_ID,
+        assets_channel_id=ASSET_CHANNEL_ID * 2,
     )
 
     app = web.Application(
@@ -633,6 +638,7 @@ async def test_contract_upload_reports_internal_error_when_channel_missing(
     openapi_schema,
 ):
     contract_server.conn.execute("DELETE FROM asset_channel")
+    contract_server.conn.execute("DELETE FROM recognition_channel")
     contract_server.conn.commit()
 
     device_id, device_secret, _ = await _obtain_device_credentials(

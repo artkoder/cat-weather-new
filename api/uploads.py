@@ -21,6 +21,7 @@ from data_access import (
     DataAccess,
     fetch_upload_record,
     get_asset_channel_id,
+    get_recognition_channel_id,
     get_device,
     get_upload,
     insert_upload,
@@ -236,10 +237,15 @@ async def handle_create_upload(request: web.Request) -> web.Response:
     conn = _ensure_db(request.app)
     config = _ensure_config(request.app)
 
-    asset_channel_id = get_asset_channel_id(conn)
+    recognition_channel_id = get_recognition_channel_id(conn)
+    asset_channel_id = (
+        recognition_channel_id
+        if recognition_channel_id is not None
+        else get_asset_channel_id(conn)
+    )
     if asset_channel_id is None:
         logging.error(
-            "MOBILE_UPLOAD_CHANNEL_MISSING - установите канал в БД",
+            "MOBILE_UPLOAD_RECOGNITION_CHANNEL_MISSING - установите recognition_channel в БД",
             extra={
                 "device_id": device_id,
                 "source": "mobile",
@@ -249,7 +255,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
         return _json_error(
             500,
             "asset_channel_not_configured",
-            "Asset upload channel is not configured.",
+            "Recognition upload channel is not configured.",
         )
 
     config = replace(config, assets_channel_id=asset_channel_id)
@@ -443,10 +449,15 @@ def register_upload_jobs(
                     if device_id_value:
                         device_id_str = str(device_id_value)
 
-                    asset_channel_id = get_asset_channel_id(conn)
+                    recognition_channel_id = get_recognition_channel_id(conn)
+                    asset_channel_id = (
+                        recognition_channel_id
+                        if recognition_channel_id is not None
+                        else get_asset_channel_id(conn)
+                    )
                     if asset_channel_id is None:
                         logging.error(
-                            "MOBILE_UPLOAD_CHANNEL_MISSING - установите канал в БД",
+                            "MOBILE_UPLOAD_RECOGNITION_CHANNEL_MISSING - установите recognition_channel в БД",
                             extra={
                                 "upload_id": upload_id,
                                 "device_id": device_id_str,

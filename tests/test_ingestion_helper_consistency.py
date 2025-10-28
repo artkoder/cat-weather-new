@@ -49,14 +49,28 @@ async def _run_mobile_upload(
     telegram: TelegramStub,
     openai_payload: dict[str, object],
     vision_enabled: bool,
-) -> tuple[DataAccess, sqlite3.Connection, str, UploadsConfig, list[dict[str, Any]]]:
+) -> tuple[
+    DataAccess,
+    sqlite3.Connection,
+    str,
+    UploadsConfig,
+    list[dict[str, Any]],
+    int,
+    int,
+]:
     conn = _setup_connection()
     data = DataAccess(conn)
     asset_channel_id = -100777
+    recognition_channel_id = -200777
     conn.execute("DELETE FROM asset_channel")
     conn.execute(
         "INSERT INTO asset_channel (channel_id) VALUES (?)",
         (asset_channel_id,),
+    )
+    conn.execute("DELETE FROM recognition_channel")
+    conn.execute(
+        "INSERT INTO recognition_channel (channel_id) VALUES (?)",
+        (recognition_channel_id,),
     )
     conn.commit()
     file_key = "shared-file"
@@ -64,7 +78,7 @@ async def _run_mobile_upload(
     metrics = UploadMetricsRecorder()
     queue = JobQueue(conn)
     config = UploadsConfig(
-        assets_channel_id=asset_channel_id * 2,
+        assets_channel_id=recognition_channel_id * 2,
         vision_enabled=vision_enabled,
         openai_vision_model="vision-test" if vision_enabled else None,
     )
@@ -117,9 +131,17 @@ async def _run_mobile_upload(
     assert row is not None and row["asset_id"]
     asset_id = row["asset_id"]
     call_kwargs = list(openai.calls)
-    assert telegram.calls and telegram.calls[0]["chat_id"] == asset_channel_id
-    config = replace(config, assets_channel_id=asset_channel_id)
-    return data, conn, asset_id, config, call_kwargs
+    assert telegram.calls and telegram.calls[0]["chat_id"] == recognition_channel_id
+    config = replace(config, assets_channel_id=recognition_channel_id)
+    return (
+        data,
+        conn,
+        asset_id,
+        config,
+        call_kwargs,
+        recognition_channel_id,
+        asset_channel_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -131,7 +153,15 @@ async def test_ingestion_helper_mobile_and_telegram_payloads_align(
     telegram_mobile = TelegramStub(start_message_id=500)
     openai_payload = json.loads(json.dumps(DEFAULT_VISION_PAYLOAD))
 
-    data_mobile, conn_mobile, mobile_asset_id, config, mobile_openai_calls = await _run_mobile_upload(
+    (
+        data_mobile,
+        conn_mobile,
+        mobile_asset_id,
+        config,
+        mobile_openai_calls,
+        recognition_channel_id,
+        legacy_channel_id,
+    ) = await _run_mobile_upload(
         image_path=image_path,
         telegram=telegram_mobile,
         openai_payload=openai_payload,
@@ -157,7 +187,8 @@ async def test_ingestion_helper_mobile_and_telegram_payloads_align(
     bot_db_path = tmp_path / "bot.sqlite"
     bot = Bot("dummy-token", str(bot_db_path))
     try:
-        bot.set_asset_channel(config.assets_channel_id)
+        bot.set_asset_channel(legacy_channel_id)
+        bot.set_recognition_channel(recognition_channel_id)
         bot.uploads_config.vision_enabled = True
         bot.uploads_config.openai_vision_model = "vision-test"
         bot.upload_metrics = UploadMetricsRecorder()
@@ -246,7 +277,7 @@ async def test_ingestion_helper_mobile_and_telegram_payloads_align(
 
         assert len(telegram_ingest.calls) == 1
 
-        identifier = f"{mobile_chat_id}:{mobile_message_id}"
+        identifier = f"{legacy_channel_id}:{mobile_message_id}"
         row = bot.db.execute(
             "SELECT id FROM assets WHERE tg_message_id=?",
             (identifier,),
@@ -258,7 +289,7 @@ async def test_ingestion_helper_mobile_and_telegram_payloads_align(
         assert asset_ingest.sha256 == expected_sha
         assert asset_ingest.width == asset_mobile.width
         assert asset_ingest.height == asset_mobile.height
-        assert asset_ingest.tg_message_id == asset_mobile.tg_message_id
+        assert asset_ingest.tg_message_id == identifier
         assert asset_ingest.source == "telegram"
 
         mobile_exif = json.loads(asset_mobile.exif_json or "{}")
@@ -270,7 +301,8 @@ async def test_ingestion_helper_mobile_and_telegram_payloads_align(
         expected_categories = extract_categories(mobile_labels)
         assert ingest_labels == expected_categories
 
-        assert asset_ingest.payload.get("tg_chat_id") == asset_mobile.payload.get("tg_chat_id")
+        assert asset_ingest.payload.get("tg_chat_id") == legacy_channel_id
+        assert asset_mobile.payload.get("tg_chat_id") == recognition_channel_id
         assert asset_ingest.payload.get("message_id") == asset_mobile.payload.get("message_id")
 
         assert not mobile_openai_calls

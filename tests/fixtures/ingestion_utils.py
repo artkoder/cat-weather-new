@@ -85,14 +85,37 @@ class TelegramStub:
     ) -> dict[str, Any]:
         message_id = self.next_message_id
         self.next_message_id += 1
+        with Image.open(photo) as img:
+            width, height = img.size
+        file_id = f"photo-{message_id}"
+        photo_sizes = [
+            {
+                "file_id": f"{file_id}-s",
+                "file_unique_id": f"{file_id}-s-uniq",
+                "width": max(1, width // 2),
+                "height": max(1, height // 2),
+                "file_size": max(1, (width // 2) * (height // 2) * 2),
+                "mime_type": "image/jpeg",
+            },
+            {
+                "file_id": file_id,
+                "file_unique_id": f"{file_id}-uniq",
+                "width": width,
+                "height": height,
+                "file_size": max(1, width * height * 3),
+                "mime_type": "image/jpeg",
+            },
+        ]
         call = {
             "chat_id": chat_id,
             "photo": Path(photo),
             "caption": caption,
             "message_id": message_id,
+            "photo_sizes": photo_sizes,
+            "file_id": file_id,
         }
         self.calls.append(call)
-        return {"message_id": message_id, "chat": {"id": chat_id}}
+        return {"message_id": message_id, "chat": {"id": chat_id}, "photo": photo_sizes}
 
 
 @dataclass

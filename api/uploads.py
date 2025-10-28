@@ -394,7 +394,7 @@ async def handle_get_upload_status(request: web.Request) -> web.Response:
 
 
 def register_upload_jobs(
-    queue: JobQueue,
+    jobs: JobQueue,
     conn,
     *,
     storage: Storage,
@@ -405,7 +405,7 @@ def register_upload_jobs(
     metrics: UploadMetricsRecorder | None = None,
     config: UploadsConfig | None = None,
 ) -> None:
-    if "process_upload" in queue.handlers:
+    if "process_upload" in jobs.handlers:
         return
 
     metrics_recorder = metrics or UploadMetricsRecorder()
@@ -537,6 +537,59 @@ def register_upload_jobs(
                                 result.sha256,
                                 result.mime_type,
                             )
+                            telegram_file_meta = result.telegram_file or {}
+                            file_meta_payload: dict[str, Any] = {
+                                "file_ref": str(file_ref),
+                                "sha256": result.sha256,
+                            }
+                            for key in ("file_id", "file_unique_id", "file_ref"):
+                                value = telegram_file_meta.get(key)
+                                if value:
+                                    file_meta_payload[key] = value
+                            mime_value = telegram_file_meta.get("mime_type") or result.mime_type
+                            if mime_value:
+                                file_meta_payload["mime_type"] = mime_value
+
+                            def _as_int(value: Any) -> int | None:
+                                try:
+                                    return int(value)
+                                except (TypeError, ValueError):
+                                    return None
+
+                            width_value = telegram_file_meta.get("width")
+                            if width_value is None:
+                                width_value = result.width
+                            height_value = telegram_file_meta.get("height")
+                            if height_value is None:
+                                height_value = result.height
+                            for key, raw in (
+                                ("width", width_value),
+                                ("height", height_value),
+                                ("file_size", telegram_file_meta.get("file_size")),
+                            ):
+                                coerced = _as_int(raw)
+                                if coerced is not None:
+                                    file_meta_payload[key] = coerced
+
+                            saved_asset_id = data.save_asset(
+                                result.chat_id,
+                                result.message_id,
+                                None,
+                                None,
+                                tg_chat_id=result.chat_id,
+                                caption=result.caption,
+                                kind="photo",
+                                file_meta=file_meta_payload,
+                                origin="mobile",
+                                source="mobile",
+                            )
+                            if saved_asset_id != asset_id:
+                                logging.warning(
+                                    "Asset id mismatch after save (expected %s, got %s)",
+                                    asset_id,
+                                    saved_asset_id,
+                                )
+                            jobs.enqueue("ingest", {"asset_id": asset_id}, dedupe=True)
                             if (
                                 cleanup_local_after_publish
                                 and storage_is_local
@@ -605,7 +658,7 @@ def register_upload_jobs(
                     record_job_processed("process_upload", "failed")
                     raise
 
-    queue.register_handler("process_upload", process_upload)
+    jobs.register_handler("process_upload", process_upload)
 
 
 def setup_upload_routes(

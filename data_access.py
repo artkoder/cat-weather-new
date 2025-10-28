@@ -884,11 +884,16 @@ class DataAccess:
 
         now = datetime.utcnow().isoformat()
         categories_list = self._collect_categories(hashtags, categories)
-        labels_json = json.dumps(categories_list, ensure_ascii=False)
         cleaned_metadata = self._prepare_metadata(metadata)
         file_meta = file_meta or {}
 
         existing = self.get_asset_by_message(tg_chat_id, message_id)
+        if categories_list:
+            labels_json = json.dumps(categories_list, ensure_ascii=False)
+        elif existing:
+            labels_json = existing.labels_json
+        else:
+            labels_json = None
         payload = dict(existing.payload) if existing else {}
         if "created_at" not in payload:
             payload["created_at"] = existing.created_at if existing else now

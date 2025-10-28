@@ -1,6 +1,7 @@
 import asyncio
-import logging
 import hashlib
+import json
+import logging
 import sqlite3
 import sys
 from datetime import datetime
@@ -221,6 +222,10 @@ async def test_process_upload_job_success_records_asset(
     assert "GPSInfo" in (asset_row["exif_json"] or "")
     expected_identifier = f"{config.assets_channel_id}:{telegram.calls[0]['message_id']}"
     assert asset_row["tg_message_id"] == expected_identifier
+    payload_blob = asset_row["payload_json"]
+    assert payload_blob
+    payload_map = json.loads(payload_blob)
+    assert payload_map.get("file_id") == telegram.calls[0]["file_id"]
 
     assert len(telegram.calls) == 1
     assert telegram.calls[0]["chat_id"] == config.assets_channel_id
@@ -239,6 +244,13 @@ async def test_process_upload_job_success_records_asset(
     )
     assert fetched is not None
     assert fetched.id == asset.id
+
+    queued = conn.execute(
+        "SELECT name, payload FROM jobs_queue WHERE name='ingest' ORDER BY id",
+    ).fetchall()
+    assert queued
+    queued_payload = json.loads(queued[0]["payload"])
+    assert queued_payload == {"asset_id": row["asset_id"]}
 
     assert metrics.counters.get("assets_created_total") == 1
     assert metrics.counters.get("upload_process_fail_total", 0) == 0

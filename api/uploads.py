@@ -571,6 +571,12 @@ def register_upload_jobs(
                                         sort_keys=True,
                                         default=str,
                                     ),
+                                    "exif_ifds_raw": json.dumps(
+                                        result.exif_ifds,
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                        default=str,
+                                    ),
                                 },
                             )
 

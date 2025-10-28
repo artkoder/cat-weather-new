@@ -276,7 +276,7 @@ async def test_job_vision_caption_includes_exif_address_for_nested_gps(
 
     monkeypatch.setattr(Image.Image, 'getexif', fake_getexif)
 
-    _, _, _, _, gps_coords = _extract_image_metadata(image_path)
+    _, _, _, _, gps_coords, _ = _extract_image_metadata(image_path)
     lat_value = gps_coords['latitude']
     lon_value = gps_coords['longitude']
 

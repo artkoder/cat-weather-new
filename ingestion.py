@@ -276,6 +276,7 @@ class IngestionResult:
     height: int | None
     exif: dict[str, Any]
     gps: dict[str, Any]
+    exif_ifds: dict[str, dict[str, Any]]
     vision: dict[str, Any] | None
     telegram_file: dict[str, Any] | None
     metrics: UploadMetricsRecorder
@@ -424,6 +425,41 @@ def _normalize_exif_value(value: Any) -> Any:
         return float(value)
     except Exception:
         return str(value)
+
+
+def _serialize_exif_raw_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return value.hex()
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    numerator = getattr(value, "numerator", None)
+    denominator = getattr(value, "denominator", None)
+    if isinstance(numerator, int) and isinstance(denominator, int):
+        return [numerator, denominator]
+    if isinstance(value, tuple):
+        return [_serialize_exif_raw_value(item) for item in value]
+    if isinstance(value, list):
+        return [_serialize_exif_raw_value(item) for item in value]
+    if isinstance(value, set):
+        return sorted(_serialize_exif_raw_value(item) for item in value)
+    if isinstance(value, dict):
+        return {str(k): _serialize_exif_raw_value(v) for k, v in value.items()}
+    return str(value)
+
+
+def _serialize_exif_ifd(ifd_name: str, source_ifd: Mapping[int, Any]) -> dict[str, Any]:
+    tag_map = piexif.TAGS.get(ifd_name, {})
+    result: dict[str, Any] = {}
+    for tag_id, raw_value in source_ifd.items():
+        if ifd_name == "GPS":
+            tag_name = ExifTags.GPSTAGS.get(int(tag_id), str(tag_id))
+        else:
+            tag_info = tag_map.get(tag_id) or {}
+            tag_name = tag_info.get("name") or ExifTags.TAGS.get(tag_id, str(tag_id))
+        result[tag_name] = _serialize_exif_raw_value(raw_value)
+    return result
 
 
 def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float | None]:
@@ -600,12 +636,22 @@ def _extract_capture_datetime(exif: dict[str, Any]) -> str | None:
     return None
 
 
-def extract_image_metadata(path: Path) -> tuple[str | None, int | None, int | None, dict[str, Any], dict[str, Any]]:
+def extract_image_metadata(
+    path: Path,
+) -> tuple[
+    str | None,
+    int | None,
+    int | None,
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, dict[str, Any]],
+]:
     exif_payload: dict[str, Any] = {}
     gps_payload: dict[str, Any] = {}
     mime_type: str | None = None
     width: int | None = None
     height: int | None = None
+    exif_ifds_raw: dict[str, dict[str, Any]] = {}
 
     with Image.open(path) as raw_image:
         original_format = raw_image.format
@@ -634,6 +680,7 @@ def extract_image_metadata(path: Path) -> tuple[str | None, int | None, int | No
                     source_ifd = exif_dict.get(ifd_name)
                     if not isinstance(source_ifd, dict):
                         continue
+                    exif_ifds_raw[ifd_name] = _serialize_exif_ifd(ifd_name, source_ifd)
                     tag_map = piexif.TAGS.get(ifd_name, {})
                     for tag_id, raw_value in source_ifd.items():
                         tag_info = tag_map.get(tag_id) or {}
@@ -641,6 +688,7 @@ def extract_image_metadata(path: Path) -> tuple[str | None, int | None, int | No
                         exif_payload[tag_name] = _normalize_exif_value(raw_value)
                 gps_ifd = exif_dict.get("GPS") or {}
                 if gps_ifd:
+                    exif_ifds_raw["GPS"] = _serialize_exif_ifd("GPS", gps_ifd)
                     gps_info = {
                         ExifTags.GPSTAGS.get(int(sub_id), str(sub_id)): _normalize_exif_value(sub_val)
                         for sub_id, sub_val in gps_ifd.items()
@@ -707,7 +755,7 @@ def extract_image_metadata(path: Path) -> tuple[str | None, int | None, int | No
             "longitude": gps_payload.get("longitude"),
         },
     )
-    return mime_type, width, height, exif_payload, gps_payload
+    return mime_type, width, height, exif_payload, gps_payload, exif_ifds_raw
 
 
 def extract_categories(vision: dict[str, Any] | None) -> list[str]:
@@ -842,9 +890,14 @@ async def _ingest_photo_internal(
     with _ensure_telemetry(inputs.telemetry):
         sha256 = _compute_sha256(inputs.file.path)
         with metrics.measure_exif():
-            mime_type, width, height, extracted_exif, extracted_gps = extract_image_metadata(
-                inputs.file.path
-            )
+            (
+                mime_type,
+                width,
+                height,
+                extracted_exif,
+                extracted_gps,
+                extracted_ifds,
+            ) = extract_image_metadata(inputs.file.path)
         exif_payload = inputs.exif or extracted_exif
         gps_payload = dict(extracted_gps)
         if inputs.gps:
@@ -853,6 +906,7 @@ async def _ingest_photo_internal(
             capture_candidate = _extract_capture_datetime(exif_payload)
             if capture_candidate:
                 gps_payload["captured_at"] = capture_candidate
+        exif_ifds = extracted_ifds
 
         if inputs.max_image_side:
             processed_path, processed_cleanup = _downscale_image_if_needed(
@@ -1053,6 +1107,7 @@ async def _ingest_photo_internal(
         height=height,
         exif=exif_payload,
         gps=gps_payload,
+        exif_ifds=exif_ifds,
         vision=vision_payload,
         telegram_file=telegram_file_meta,
         metrics=metrics,

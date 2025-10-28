@@ -3928,11 +3928,31 @@ class Bot:
             self._remove_file(asset.local_path)
 
         should_extract_gps = asset.kind == "photo" or self._is_convertible_image_document(asset)
-        gps_payload = result.gps or {}
+        gps_payload = dict(result.gps or {})
         lat = gps_payload.get("latitude")
         lon = gps_payload.get("longitude")
         override_latitude = gps_override.get("latitude") if gps_override else None
         override_longitude = gps_override.get("longitude") if gps_override else None
+        if lat is None:
+            fallback_latitude = (
+                override_latitude
+                if override_latitude is not None
+                else stored_latitude
+            )
+            if fallback_latitude is not None:
+                gps_payload["latitude"] = fallback_latitude
+                lat = fallback_latitude
+        if lon is None:
+            fallback_longitude = (
+                override_longitude
+                if override_longitude is not None
+                else stored_longitude
+            )
+            if fallback_longitude is not None:
+                gps_payload["longitude"] = fallback_longitude
+                lon = fallback_longitude
+        if result.gps is not gps_payload:
+            result.gps = gps_payload
         if should_extract_gps and (lat is None or lon is None):
             author_id = asset.author_user_id
             if author_id:

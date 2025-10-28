@@ -2,12 +2,14 @@ import asyncio
 import hashlib
 import json
 import logging
+import shutil
 import sqlite3
 import sys
 from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
 
 import logging
 
@@ -26,7 +28,8 @@ from api.uploads import (
 )
 from data_access import DataAccess, create_device, insert_upload
 from jobs import Job, JobQueue
-from main import apply_migrations
+from main import Bot, apply_migrations
+from ingestion import IngestionCallbacks
 from tests.fixtures.ingestion_utils import (
     OpenAIStub,
     StorageStub,
@@ -436,6 +439,116 @@ async def test_process_upload_marks_exif_present_without_gps(
     )
     assert metadata_log.path.endswith("asset-nogps.jpg")
 
+
+@pytest.mark.asyncio
+async def test_ingest_job_uses_stored_coordinates_when_result_missing_gps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "bot.sqlite"
+    bot = Bot("test-token", str(db_path))
+    bot.asset_storage = tmp_path
+
+    stored_lat = 55.5
+    stored_lon = 37.6
+    metadata_payload = {
+        "gps": {"latitude": stored_lat, "longitude": stored_lon},
+        "exif": {"DateTimeOriginal": "2023:12:24 15:30:45"},
+    }
+
+    asset_channel = -40001
+    asset_id = bot.data.save_asset(
+        asset_channel,
+        101,
+        None,
+        None,
+        tg_chat_id=asset_channel,
+        caption="Test asset",
+        kind="photo",
+        file_meta={
+            "file_id": "file-101",
+            "file_unique_id": "file-101-uniq",
+            "mime_type": "image/jpeg",
+            "width": 640,
+            "height": 480,
+        },
+        metadata=metadata_payload,
+        origin="mobile",
+        source="mobile",
+        author_user_id=777,
+    )
+
+    bot.data.update_asset(
+        asset_id,
+        metadata=metadata_payload,
+        latitude=stored_lat,
+        longitude=stored_lon,
+        exif_present=True,
+    )
+
+    telegram_copy = create_sample_image_without_gps(tmp_path / "telegram.jpg")
+
+    async def fake_download_file(self: Bot, file_id: str, dest_path):
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(telegram_copy, dest)
+        return dest
+
+    async def fake_api_request(self: Bot, method: str, payload: dict[str, Any]):
+        return {"ok": True, "result": {"file_path": "dummy"}}
+
+    reverse_calls: list[tuple[float, float]] = []
+
+    async def fake_reverse_geocode(self: Bot, lat: float, lon: float):
+        reverse_calls.append((lat, lon))
+        return {"city": "Москва", "country": "Россия"}
+
+    ingest_calls: list[dict[str, Any]] = []
+
+    async def fake_ingest_photo(**kwargs):
+        ingest_calls.append(kwargs)
+        callbacks: IngestionCallbacks | None = kwargs.get("callbacks")
+        overrides: dict[str, Any] = kwargs.get("input_overrides") or {}
+        if callbacks and callbacks.save_asset:
+            callbacks.save_asset(
+                {
+                    "channel_id": overrides.get("channel_id", asset_channel),
+                    "message_id": 202,
+                    "tg_chat_id": overrides.get("tg_chat_id", asset_channel),
+                }
+            )
+        return SimpleNamespace(gps={})
+
+    monkeypatch.setattr(Bot, "_download_file", fake_download_file)
+    monkeypatch.setattr(Bot, "api_request", fake_api_request)
+    monkeypatch.setattr(Bot, "_reverse_geocode", fake_reverse_geocode)
+    monkeypatch.setattr(
+        sys.modules["main"], "ingest_photo", fake_ingest_photo
+    )
+
+    job = Job(
+        id=301,
+        name="ingest",
+        payload={"asset_id": asset_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_ingest(job)
+
+    updated_asset = bot.data.get_asset(asset_id)
+    assert updated_asset is not None
+    assert updated_asset.latitude == pytest.approx(stored_lat, rel=1e-6)
+    assert updated_asset.longitude == pytest.approx(stored_lon, rel=1e-6)
+    assert updated_asset.city == "Москва"
+    assert updated_asset.country == "Россия"
+    assert reverse_calls == [(stored_lat, stored_lon)]
+    assert ingest_calls, "ingest_photo should be invoked"
+
+    bot.db.close()
 
 @pytest.mark.asyncio
 async def test_process_upload_mobile_upload_increments_metric(tmp_path: Path) -> None:

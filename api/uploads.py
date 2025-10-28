@@ -531,6 +531,7 @@ def register_upload_jobs(
                             if not asset_id:
                                 raise RuntimeError("asset creation failed for upload")
 
+                            photo_meta = result.photo
                             exif_payload = dict(result.exif or {})
                             gps_payload = dict(result.gps or {})
                             exif_ifds_payload = dict(result.exif_ifds or {})
@@ -549,25 +550,60 @@ def register_upload_jobs(
                                 "exif": exif_payload,
                                 "gps": gps_payload,
                             }
+                            if photo_meta:
+                                photo_meta_payload: dict[str, Any] = {}
+                                if photo_meta.captured_at:
+                                    photo_meta_payload["captured_at"] = (
+                                        photo_meta.captured_at.isoformat()
+                                    )
+                                if photo_meta.latitude is not None:
+                                    photo_meta_payload["latitude"] = photo_meta.latitude
+                                if photo_meta.longitude is not None:
+                                    photo_meta_payload["longitude"] = photo_meta.longitude
+                                if photo_meta.altitude is not None:
+                                    photo_meta_payload["altitude"] = photo_meta.altitude
+                                if photo_meta.make:
+                                    photo_meta_payload["make"] = photo_meta.make
+                                if photo_meta.model:
+                                    photo_meta_payload["model"] = photo_meta.model
+                                if photo_meta.orientation is not None:
+                                    photo_meta_payload["orientation"] = photo_meta.orientation
+                                photo_meta_payload["source"] = photo_meta.source
+                                if photo_meta_payload:
+                                    metadata_payload["photo_meta"] = photo_meta_payload
                             if exif_datetime_payload:
                                 metadata_payload.update(exif_datetime_payload)
                             update_kwargs: dict[str, Any] = {
                                 "metadata": metadata_payload,
                                 "exif_present": bool(exif_payload) or bool(gps_payload),
                             }
-                            latitude = gps_payload.get("latitude")
-                            if latitude is not None:
-                                update_kwargs["latitude"] = latitude
-                            longitude = gps_payload.get("longitude")
-                            if longitude is not None:
-                                update_kwargs["longitude"] = longitude
+                            if photo_meta and photo_meta.latitude is not None:
+                                update_kwargs["latitude"] = photo_meta.latitude
+                            elif gps_payload.get("latitude") is not None:
+                                update_kwargs["latitude"] = gps_payload.get("latitude")
+                            if photo_meta and photo_meta.longitude is not None:
+                                update_kwargs["longitude"] = photo_meta.longitude
+                            elif gps_payload.get("longitude") is not None:
+                                update_kwargs["longitude"] = gps_payload.get("longitude")
+                            latitude = update_kwargs.get("latitude")
+                            longitude = update_kwargs.get("longitude")
+                            raw_sections_payload: dict[str, dict[str, Any]] = {}
+                            if photo_meta:
+                                for ifd_name, raw_ifd in (photo_meta.raw_exif or {}).items():
+                                    raw_sections_payload[ifd_name] = dict(raw_ifd)
+                                if photo_meta.raw_gps:
+                                    raw_sections_payload["GPS"] = dict(photo_meta.raw_gps)
+                            if not raw_sections_payload:
+                                raw_sections_payload.update(exif_sections_payload)
+                            for required_ifd in ("0th", "Exif", "GPS"):
+                                raw_sections_payload.setdefault(required_ifd, {})
                             logging.info(
                                 "MOBILE_EXIF_RAW",
                                 extra={
                                     "asset_id": asset_id,
                                     "upload_id": upload_id,
                                     "exif_sections_raw": json.dumps(
-                                        exif_sections_payload,
+                                        raw_sections_payload,
                                         ensure_ascii=False,
                                         sort_keys=True,
                                         default=str,

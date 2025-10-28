@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import re
 import hashlib
 import logging
@@ -15,6 +16,8 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Mapping, Protocol, Se
 
 from PIL import ExifTags, Image, ImageOps
 import piexif
+
+from metadata.extractor import PhotoMeta, extract_metadata_from_file
 
 from observability import context as telemetry_context
 
@@ -280,6 +283,44 @@ class IngestionResult:
     vision: dict[str, Any] | None
     telegram_file: dict[str, Any] | None
     metrics: UploadMetricsRecorder
+    photo: PhotoMeta | None = None
+
+
+@dataclass(slots=True)
+class ImageMetadataResult:
+    mime_type: str | None
+    width: int | None
+    height: int | None
+    exif: dict[str, Any]
+    gps: dict[str, Any]
+    exif_ifds: dict[str, dict[str, Any]]
+    photo: PhotoMeta | None = None
+
+    def _as_tuple(self) -> tuple[
+        str | None,
+        int | None,
+        int | None,
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, dict[str, Any]],
+    ]:
+        return (
+            self.mime_type,
+            self.width,
+            self.height,
+            self.exif,
+            self.gps,
+            self.exif_ifds,
+        )
+
+    def __iter__(self):
+        yield from self._as_tuple()
+
+    def __getitem__(self, index: int):
+        return self._as_tuple()[index]
+
+    def __len__(self) -> int:
+        return 6
 
 
 def _compute_sha256(path: Path) -> str:
@@ -660,117 +701,46 @@ def _extract_capture_datetime(exif: dict[str, Any]) -> str | None:
     return None
 
 
-def extract_image_metadata(
-    path: Path,
-) -> tuple[
-    str | None,
-    int | None,
-    int | None,
-    dict[str, Any],
-    dict[str, Any],
-    dict[str, dict[str, Any]],
-]:
-    exif_payload: dict[str, Any] = {}
-    gps_payload: dict[str, Any] = {}
+def extract_image_metadata(path: Path) -> ImageMetadataResult:
+    raw_bytes = path.read_bytes()
+    photo_meta, extracted_exif, extracted_gps, extracted_ifds = extract_metadata_from_file(raw_bytes)
+
     mime_type: str | None = None
     width: int | None = None
     height: int | None = None
-    exif_ifds_raw: dict[str, dict[str, Any]] = {}
 
-    with Image.open(path) as raw_image:
+    with Image.open(io.BytesIO(raw_bytes)) as raw_image:
         original_format = raw_image.format
-        exif_bytes = getattr(raw_image, "info", {}).get("exif")
         image = ImageOps.exif_transpose(raw_image)
-        exif_dict: dict[str, Any] | None = None
-        gps_info: dict[str, Any] | None = None
         try:
             width, height = image.size
             format_name = image.format or original_format
             if format_name and format_name in Image.MIME:
                 mime_type = Image.MIME[format_name]
-            exif_data = raw_image.getexif() if hasattr(raw_image, "getexif") else None
-            if exif_bytes:
-                try:
-                    exif_dict = piexif.load(exif_bytes)
-                except Exception:
-                    logging.exception("MOBILE_EXIF_LOAD_FAILURE", extra={"path": str(path)})
-            if exif_dict is None:
-                try:
-                    exif_dict = piexif.load(str(path))
-                except Exception:
-                    exif_dict = None
-            if exif_dict:
-                for ifd_name in ("0th", "Exif", "1st"):
-                    source_ifd = exif_dict.get(ifd_name)
-                    if not isinstance(source_ifd, dict):
-                        continue
-                    exif_ifds_raw[ifd_name] = _serialize_exif_ifd(ifd_name, source_ifd)
-                    tag_map = piexif.TAGS.get(ifd_name, {})
-                    for tag_id, raw_value in source_ifd.items():
-                        tag_info = tag_map.get(tag_id) or {}
-                        tag_name = tag_info.get("name") or ExifTags.TAGS.get(tag_id, str(tag_id))
-                        exif_payload[tag_name] = _normalize_exif_value(raw_value)
-                gps_ifd = exif_dict.get("GPS") or {}
-                if gps_ifd:
-                    exif_ifds_raw["GPS"] = _serialize_exif_ifd("GPS", gps_ifd)
-                    gps_info = {
-                        ExifTags.GPSTAGS.get(int(sub_id), str(sub_id)): _normalize_exif_value(sub_val)
-                        for sub_id, sub_val in gps_ifd.items()
-                    }
-                    exif_payload["GPSInfo"] = gps_info
-                    exif_payload["GPS"] = gps_info
-
-                    lat = _gps_rational_to_decimal(
-                        gps_ifd.get(piexif.GPSIFD.GPSLatitude),
-                        gps_ifd.get(piexif.GPSIFD.GPSLatitudeRef),
-                        axis="lat",
-                    )
-                    lon = _gps_rational_to_decimal(
-                        gps_ifd.get(piexif.GPSIFD.GPSLongitude),
-                        gps_ifd.get(piexif.GPSIFD.GPSLongitudeRef),
-                        axis="lon",
-                    )
-                    if lat is not None:
-                        gps_payload["latitude"] = lat
-                    if lon is not None:
-                        gps_payload["longitude"] = lon
-            if exif_data:
-                for tag_id, value in exif_data.items():
-                    tag_name = ExifTags.TAGS.get(tag_id, str(tag_id))
-                    if tag_name == "GPSInfo" and isinstance(value, dict):
-                        fallback_gps_info = {
-                            ExifTags.GPSTAGS.get(sub_id, str(sub_id)): _normalize_exif_value(sub_val)
-                            for sub_id, sub_val in value.items()
-                        }
-                        if "GPSInfo" not in exif_payload:
-                            exif_payload["GPSInfo"] = fallback_gps_info
-                        if "GPS" not in exif_payload:
-                            exif_payload["GPS"] = fallback_gps_info
-                        lat, lon = _extract_gps_decimal(fallback_gps_info)
-                        if lat is not None:
-                            gps_payload.setdefault("latitude", lat)
-                        if lon is not None:
-                            gps_payload.setdefault("longitude", lon)
-                        if gps_info is None:
-                            gps_info = fallback_gps_info
-                    else:
-                        exif_payload.setdefault(tag_name, _normalize_exif_value(value))
         finally:
             if image is not raw_image:
                 with contextlib.suppress(Exception):
                     image.close()
 
-    capture = _extract_capture_datetime(exif_payload)
-    if capture:
-        gps_payload.setdefault("captured_at", capture)
-    if gps_info is not None:
+    gps_payload = dict(extracted_gps)
+    exif_payload = dict(extracted_exif)
+    exif_ifds_raw = {key: dict(value) for key, value in extracted_ifds.items()}
+
+    gps_tags_for_log = photo_meta.raw_gps if photo_meta and photo_meta.raw_gps else None
+    if not gps_tags_for_log:
+        gps_section = exif_ifds_raw.get("GPS")
+        if gps_section:
+            gps_tags_for_log = gps_section
+
+    if gps_tags_for_log:
         logging.info(
             "MOBILE_GPS_EXIF",
             extra={
                 "path": str(path),
-                "gps_tags": gps_info,
+                "gps_tags": gps_tags_for_log,
             },
         )
+
     logging.info(
         "MOBILE_IMAGE_METADATA",
         extra={
@@ -782,10 +752,18 @@ def extract_image_metadata(
             "longitude": gps_payload.get("longitude"),
         },
     )
-    for required_ifd in ("0th", "Exif", "GPS"):
-        exif_ifds_raw.setdefault(required_ifd, {})
 
-    return mime_type, width, height, exif_payload, gps_payload, exif_ifds_raw
+    return ImageMetadataResult(
+        mime_type=mime_type,
+        width=width,
+        height=height,
+        exif=exif_payload,
+        gps=gps_payload,
+        exif_ifds=exif_ifds_raw,
+        photo=photo_meta,
+    )
+
+
 
 
 def extract_categories(vision: dict[str, Any] | None) -> list[str]:
@@ -917,9 +895,12 @@ async def _ingest_photo_internal(
     processed_cleanup = False
     vision_payload: dict[str, Any] | None = None
 
+    photo_meta: PhotoMeta | None = None
+
     with _ensure_telemetry(inputs.telemetry):
         sha256 = _compute_sha256(inputs.file.path)
         with metrics.measure_exif():
+            metadata_result = extract_image_metadata(inputs.file.path)
             (
                 mime_type,
                 width,
@@ -927,11 +908,14 @@ async def _ingest_photo_internal(
                 extracted_exif,
                 extracted_gps,
                 extracted_ifds,
-            ) = extract_image_metadata(inputs.file.path)
+            ) = metadata_result
+            photo_meta = metadata_result.photo
         exif_payload = inputs.exif or extracted_exif
         gps_payload = dict(extracted_gps)
         if inputs.gps:
             gps_payload.update(inputs.gps)
+        if photo_meta and photo_meta.captured_at and "captured_at" not in gps_payload:
+            gps_payload["captured_at"] = photo_meta.captured_at.isoformat()
         if "captured_at" not in gps_payload:
             capture_candidate = _extract_capture_datetime(exif_payload)
             if capture_candidate:
@@ -1141,6 +1125,7 @@ async def _ingest_photo_internal(
         vision=vision_payload,
         telegram_file=telegram_file_meta,
         metrics=metrics,
+        photo=photo_meta,
     )
 
 

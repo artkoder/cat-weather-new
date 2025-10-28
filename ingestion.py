@@ -782,6 +782,9 @@ def extract_image_metadata(
             "longitude": gps_payload.get("longitude"),
         },
     )
+    for required_ifd in ("0th", "Exif", "GPS"):
+        exif_ifds_raw.setdefault(required_ifd, {})
+
     return mime_type, width, height, exif_payload, gps_payload, exif_ifds_raw
 
 

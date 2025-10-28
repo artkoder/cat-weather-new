@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, ContextManager
+from typing import Any, ContextManager, Mapping
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
@@ -534,11 +534,12 @@ def register_upload_jobs(
                             exif_payload = dict(result.exif or {})
                             gps_payload = dict(result.gps or {})
                             exif_ifds_payload = dict(result.exif_ifds or {})
-                            zeroth_ifd_payload = dict(
-                                exif_ifds_payload.get("0th") or {}
-                            )
-                            exif_ifd_payload = dict(exif_ifds_payload.get("Exif") or {})
-                            gps_ifd_payload = dict(exif_ifds_payload.get("GPS") or {})
+                            exif_sections_payload: dict[str, dict[str, Any]] = {}
+                            for ifd_name, raw_ifd in exif_ifds_payload.items():
+                                if isinstance(raw_ifd, Mapping):
+                                    exif_sections_payload[ifd_name] = dict(raw_ifd)
+                            for required_ifd in ("0th", "Exif", "GPS"):
+                                exif_sections_payload.setdefault(required_ifd, {})
                             exif_datetime_payload: dict[str, Any] = {}
                             if download and download.path.exists():
                                 exif_datetime_payload = _extract_exif_datetimes(
@@ -565,20 +566,8 @@ def register_upload_jobs(
                                 extra={
                                     "asset_id": asset_id,
                                     "upload_id": upload_id,
-                                    "zeroth_ifd_raw": json.dumps(
-                                        zeroth_ifd_payload,
-                                        ensure_ascii=False,
-                                        sort_keys=True,
-                                        default=str,
-                                    ),
-                                    "exif_raw": json.dumps(
-                                        exif_ifd_payload,
-                                        ensure_ascii=False,
-                                        sort_keys=True,
-                                        default=str,
-                                    ),
-                                    "gps_raw": json.dumps(
-                                        gps_ifd_payload,
+                                    "exif_sections_raw": json.dumps(
+                                        exif_sections_payload,
                                         ensure_ascii=False,
                                         sort_keys=True,
                                         default=str,

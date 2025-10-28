@@ -114,9 +114,14 @@ async def test_extract_image_metadata_reads_jpeg_exif(
     image_path = create_sample_image(tmp_path / "sample.jpg")
 
     with caplog.at_level(logging.INFO):
-        mime_type, width, height, exif_payload, gps_payload = _extract_image_metadata(
-            image_path
-        )
+        (
+            mime_type,
+            width,
+            height,
+            exif_payload,
+            gps_payload,
+            exif_ifds,
+        ) = _extract_image_metadata(image_path)
 
     assert mime_type == "image/jpeg"
     assert width == 640
@@ -138,6 +143,9 @@ async def test_extract_image_metadata_reads_jpeg_exif(
     assert gps_log.path.endswith("sample.jpg")
     assert gps_log.gps_tags["GPSLatitudeRef"] == "N"
     assert gps_log.gps_tags["GPSLongitudeRef"] == "E"
+    gps_ifd = exif_ifds.get("GPS") or {}
+    assert gps_ifd.get("GPSLatitude") == [[55, 1], [30, 1], [0, 1]]
+    assert gps_ifd.get("GPSLongitude") == [[37, 1], [36, 1], [0, 1]]
 
 
 def test_extract_image_metadata_handles_nested_rationals(
@@ -171,7 +179,7 @@ def test_extract_image_metadata_handles_nested_rationals(
 
     monkeypatch.setattr(Image.Image, "getexif", fake_getexif)
 
-    _, _, _, exif_payload, coords = _extract_image_metadata(image_path)
+    _, _, _, exif_payload, coords, exif_ifds = _extract_image_metadata(image_path)
 
     assert coords["latitude"] == pytest.approx(-55.25, rel=1e-6)
     expected_lon = -(37 + 36 / 60.0 + 6 / 3600.0)
@@ -180,6 +188,8 @@ def test_extract_image_metadata_handles_nested_rationals(
     gps_info = exif_payload["GPSInfo"]
     assert gps_info["GPSLatitudeRef"] == "S"
     assert gps_info["GPSLongitudeRef"] == "W"
+    raw_gps_ifd = exif_ifds.get("GPS") or {}
+    assert raw_gps_ifd == {}
     assert gps_info["GPSLatitude"] == [
         [[55, 1], [1, 1]],
         [[30, 1], [2, 1]],
@@ -321,10 +331,14 @@ async def test_process_upload_job_success_records_asset(
     assert raw_log.upload_id == upload_id
     raw_exif = json.loads(raw_log.exif_raw)
     raw_gps = json.loads(raw_log.gps_raw)
+    raw_ifds = json.loads(raw_log.exif_ifds_raw)
     assert raw_exif
     assert raw_gps
     assert raw_gps.get("latitude") == pytest.approx(55.5, rel=1e-6)
     assert raw_gps.get("longitude") == pytest.approx(37.6, rel=1e-6)
+    gps_ifd = raw_ifds.get("GPS") or {}
+    assert gps_ifd.get("GPSLatitude") == [[55, 1], [30, 1], [0, 1]]
+    assert gps_ifd.get("GPSLongitude") == [[37, 1], [36, 1], [0, 1]]
 
     mobile_done = next(
         record for record in caplog.records if record.message == "MOBILE_UPLOAD_DONE"
@@ -504,6 +518,9 @@ async def test_process_upload_marks_exif_present_without_gps(
     assert raw_log.asset_id == row["asset_id"]
     assert raw_log.upload_id == upload_id
     assert json.loads(raw_log.gps_raw) == {}
+    raw_ifds = json.loads(raw_log.exif_ifds_raw)
+    gps_ifd = raw_ifds.get("GPS") or {}
+    assert gps_ifd == {}
 
     metadata_log = next(
         record

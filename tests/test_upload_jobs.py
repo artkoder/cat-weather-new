@@ -23,6 +23,7 @@ from api.uploads import (
     UploadMetricsRecorder,
     UploadsConfig,
     _extract_image_metadata,
+    _serialize_for_log,
     register_upload_jobs,
 )
 from data_access import DataAccess, create_device, insert_upload
@@ -226,6 +227,25 @@ def test_extract_image_metadata_handles_nested_rationals(
         [[36, 1], [1, 1]],
         [[12, 1], [2, 1]],
     ]
+
+
+def test_serialize_for_log_coerces_bytes_payload() -> None:
+    photo_meta_log_payload = {
+        "raw_bytes": b"\x00\xff",
+        "nested": {
+            "exif": [b"\x01\x02", Fraction(1, 3)],
+            "captured_at": datetime(2024, 1, 2, 3, 4, 5),
+        },
+    }
+
+    serialized = _serialize_for_log(photo_meta_log_payload)
+
+    assert isinstance(serialized, str)
+    decoded = json.loads(serialized)
+    assert decoded["raw_bytes"] == "00ff"
+    assert decoded["nested"]["exif"][0] == "0102"
+    assert decoded["nested"]["exif"][1] == pytest.approx(1 / 3)
+    assert decoded["nested"]["captured_at"] == "2024-01-02T03:04:05"
 
 
 @pytest.mark.asyncio

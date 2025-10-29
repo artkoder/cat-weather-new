@@ -2956,6 +2956,30 @@ class Bot:
             return None
 
     @staticmethod
+    def _normalize_gps_ref(ref) -> str | None:
+        if ref is None:
+            return None
+        original_ref = ref
+        if isinstance(ref, (bytes, bytearray)):
+            for encoding in ("ascii", "latin-1"):
+                try:
+                    ref = ref.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                ref = original_ref.decode("latin-1", errors="ignore")
+        if not isinstance(ref, str):
+            ref = str(ref)
+        normalized = ref.replace("\x00", "").strip().upper()
+        if not normalized:
+            return None
+        candidate = normalized[0]
+        if candidate in {"N", "S", "E", "W"}:
+            return candidate
+        return None
+
+    @staticmethod
     def _convert_gps(value, ref) -> float | None:
         if not value:
             return None
@@ -2964,7 +2988,14 @@ class Bot:
             minutes = value[1][0] / value[1][1]
             seconds = value[2][0] / value[2][1]
             decimal = degrees + minutes / 60 + seconds / 3600
-            if ref in {"S", "W"}:
+            normalized_ref = Bot._normalize_gps_ref(ref)
+            if normalized_ref is None:
+                logging.debug(
+                    "Unable to normalize GPS ref %r (type=%s)",
+                    ref,
+                    type(ref).__name__,
+                )
+            elif normalized_ref in {"S", "W"}:
                 decimal = -decimal
             return decimal
         except Exception:

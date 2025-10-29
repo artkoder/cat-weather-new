@@ -40,6 +40,10 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover - fallback when LittleCMS is unavailable
     ImageCms = None  # type: ignore[assignment]
 import piexif
+try:  # pragma: no cover - optional dependency
+    import exifread  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - fallback when exifread is unavailable
+    exifread = None  # type: ignore[assignment]
 
 from data_access import (
     Asset,
@@ -2986,47 +2990,197 @@ class Bot:
             return None
 
     @staticmethod
-    def _convert_gps(value, ref) -> float | None:
+    def _normalize_gps_ref(ref) -> str | None:
+        if ref is None:
+            return None
+        original_ref = ref
+        if isinstance(ref, (bytes, bytearray)):
+            for encoding in ("ascii", "latin-1"):
+                try:
+                    ref = ref.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                ref = original_ref.decode("latin-1", errors="ignore")
+        if not isinstance(ref, str):
+            ref = str(ref)
+        normalized = ref.replace("\x00", "").strip().upper()
+        if not normalized:
+            return None
+        candidate = normalized[0]
+        if candidate in {"N", "S", "E", "W"}:
+            return candidate
+        return None
+
+    @staticmethod
+    def _convert_gps(value, ref, axis: str, source: str) -> float | None:
         if not value:
             return None
-        try:
-            degrees = value[0][0] / value[0][1]
-            minutes = value[1][0] / value[1][1]
-            seconds = value[2][0] / value[2][1]
-            decimal = degrees + minutes / 60 + seconds / 3600
-            if ref in {"S", "W"}:
-                decimal = -decimal
-            return decimal
-        except Exception:
-            logging.exception("Failed to convert GPS coordinates")
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            components = list(value)
+        else:
+            components = [value]
+        coerced: list[float] = []
+        for index, component in enumerate(components):
+            numerator: float | None
+            denominator: float | None
+            if hasattr(component, "num") and hasattr(component, "den"):
+                numerator = getattr(component, "num", None)
+                denominator = getattr(component, "den", None)
+            elif isinstance(component, tuple) and len(component) == 2:
+                numerator, denominator = component
+            else:
+                numerator = component
+                denominator = 1
+            try:
+                num_value = float(numerator)
+                den_value = float(denominator)
+            except (TypeError, ValueError):
+                logging.debug(
+                    "GPS %s conversion from %s failed to coerce component[%s]; value=%r (type=%s), ref=%r (type=%s)",
+                    axis,
+                    source,
+                    index,
+                    component,
+                    type(component).__name__,
+                    ref,
+                    type(ref).__name__ if ref is not None else "NoneType",
+                )
+                return None
+            if den_value == 0:
+                logging.debug(
+                    "GPS %s conversion from %s encountered zero denominator in component[%s]; value=%r (type=%s), ref=%r (type=%s)",
+                    axis,
+                    source,
+                    index,
+                    component,
+                    type(component).__name__,
+                    ref,
+                    type(ref).__name__ if ref is not None else "NoneType",
+                )
+                return None
+            coerced.append(num_value / den_value)
+        if len(coerced) < 3:
+            logging.debug(
+                "GPS %s conversion from %s has insufficient components; value=%r (type=%s), ref=%r (type=%s)",
+                axis,
+                source,
+                value,
+                type(value).__name__,
+                ref,
+                type(ref).__name__ if ref is not None else "NoneType",
+            )
             return None
+        decimal = coerced[0] + coerced[1] / 60 + coerced[2] / 3600
+        normalized_ref = Bot._normalize_gps_ref(ref)
+        if normalized_ref is None:
+            logging.debug(
+                "GPS %s ref normalization from %s failed; raw=%r (type=%s)",
+                axis,
+                source,
+                ref,
+                type(ref).__name__ if ref is not None else "NoneType",
+            )
+        elif normalized_ref in {"S", "W"}:
+            decimal = -decimal
+        return decimal
 
     def _extract_gps(
         self, image_source: str | Path | BinaryIO
     ) -> tuple[float, float] | None:
+        exif_dict: dict[str, Any] | None = None
+        loaded_from_path = False
         try:
             with Image.open(image_source, mode="r") as img:
                 exif_bytes = img.info.get("exif")
-            if exif_bytes:
-                exif_dict = piexif.load(exif_bytes)
-            else:
-                if isinstance(image_source, (str, Path)):
-                    exif_dict = piexif.load(str(image_source))
-                else:
-                    return None
         except Exception:
             logging.exception("Failed to parse EXIF metadata")
-            return None
-        gps = exif_dict.get("GPS") or {}
-        lat = self._convert_gps(
-            gps.get(piexif.GPSIFD.GPSLatitude), gps.get(piexif.GPSIFD.GPSLatitudeRef)
-        )
-        lon = self._convert_gps(
-            gps.get(piexif.GPSIFD.GPSLongitude), gps.get(piexif.GPSIFD.GPSLongitudeRef)
-        )
-        if lat is None or lon is None:
-            return None
-        return lat, lon
+            exif_bytes = None
+        if exif_bytes:
+            try:
+                exif_dict = piexif.load(exif_bytes)
+            except Exception:
+                logging.exception("Failed to load EXIF metadata from embedded bytes")
+                exif_dict = None
+        if exif_dict is None and isinstance(image_source, (str, Path)):
+            try:
+                exif_dict = piexif.load(str(image_source))
+                loaded_from_path = True
+            except Exception:
+                logging.exception("Failed to load EXIF metadata from file path")
+                exif_dict = None
+        if (
+            exif_dict is not None
+            and not loaded_from_path
+            and isinstance(image_source, (str, Path))
+        ):
+            gps_ifd = exif_dict.get("GPS") or {}
+            zeroth_source = exif_dict.get("0th")
+            zeroth_ifd = zeroth_source if isinstance(zeroth_source, dict) else {}
+            has_gps_pointer = any(
+                key in zeroth_ifd for key in (piexif.ImageIFD.GPSTag, "GPSInfo")
+            )
+            if has_gps_pointer and not gps_ifd:
+                try:
+                    exif_dict = piexif.load(str(image_source))
+                    loaded_from_path = True
+                except Exception:
+                    logging.debug(
+                        "Failed to reload EXIF metadata for GPS pointer fallback", exc_info=True
+                    )
+        if exif_dict:
+            gps = exif_dict.get("GPS") or {}
+            lat = self._convert_gps(
+                gps.get(piexif.GPSIFD.GPSLatitude),
+                gps.get(piexif.GPSIFD.GPSLatitudeRef),
+                "latitude",
+                "piexif",
+            )
+            lon = self._convert_gps(
+                gps.get(piexif.GPSIFD.GPSLongitude),
+                gps.get(piexif.GPSIFD.GPSLongitudeRef),
+                "longitude",
+                "piexif",
+            )
+            if lat is not None and lon is not None:
+                return lat, lon
+        if exifread is not None and isinstance(image_source, (str, Path)):
+            try:
+                with Path(image_source).open("rb") as fh:
+                    tags = exifread.process_file(fh, details=False)
+            except Exception:
+                logging.debug(
+                    "exifread failed to process file for GPS extraction", exc_info=True
+                )
+            else:
+                lat_field = tags.get("GPS GPSLatitude")
+                lon_field = tags.get("GPS GPSLongitude")
+                lat_ref_field = tags.get("GPS GPSLatitudeRef")
+                lon_ref_field = tags.get("GPS GPSLongitudeRef")
+
+                def _field_values(field: Any) -> Any:
+                    if field is None:
+                        return None
+                    return getattr(field, "values", field)
+
+                def _single_value(field: Any) -> Any:
+                    if isinstance(field, Sequence) and not isinstance(
+                        field, (str, bytes, bytearray)
+                    ):
+                        return field[0] if field else None
+                    return field
+
+                lat_value = _field_values(lat_field)
+                lon_value = _field_values(lon_field)
+                lat_ref_value = _single_value(_field_values(lat_ref_field))
+                lon_ref_value = _single_value(_field_values(lon_ref_field))
+
+                lat = self._convert_gps(lat_value, lat_ref_value, "latitude", "exifread")
+                lon = self._convert_gps(lon_value, lon_ref_value, "longitude", "exifread")
+                if lat is not None and lon is not None:
+                    return lat, lon
+        return None
 
     def _extract_exif_full(
         self, image_source: str | Path | BinaryIO

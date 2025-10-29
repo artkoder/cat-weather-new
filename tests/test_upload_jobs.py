@@ -446,10 +446,12 @@ async def test_process_upload_job_success_records_asset(
     assert raw_log.upload_id == upload_id
     assert raw_log.has_exif is True
     assert raw_log.has_gps is True
+    assert raw_log.gps_ifd_present is True
     assert len(raw_log.photo_meta_raw) <= 64 * 1024
     photo_meta_raw = json.loads(raw_log.photo_meta_raw)
     assert photo_meta_raw["has_exif"] is True
     assert photo_meta_raw["has_gps"] is True
+    assert photo_meta_raw["gps_ifd_present"] is True
     assert pytest.approx(photo_meta_raw["latitude"], rel=1e-6) == 55.5
     assert pytest.approx(photo_meta_raw["longitude"], rel=1e-6) == 37.6
     raw_exif_sections = photo_meta_raw.get("raw_exif") or {}
@@ -657,10 +659,12 @@ async def test_process_upload_marks_exif_present_without_gps(
     assert raw_log.upload_id == upload_id
     assert raw_log.has_exif is True
     assert raw_log.has_gps is False
+    assert raw_log.gps_ifd_present is False
     assert len(raw_log.photo_meta_raw) <= 64 * 1024
     photo_meta_raw = json.loads(raw_log.photo_meta_raw)
     assert photo_meta_raw["has_exif"] is True
     assert photo_meta_raw["has_gps"] is False
+    assert photo_meta_raw["gps_ifd_present"] is False
     assert photo_meta_raw.get("raw_gps") == {}
 
     metadata_log = next(

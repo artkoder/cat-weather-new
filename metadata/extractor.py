@@ -87,9 +87,58 @@ def extract_metadata_from_file(
 
     if exif_dict:
         exif_payload, gps_info, exif_ifds = _extract_from_piexif(exif_dict)
+        gps_issue = _validate_gps_payload(gps_info)
+        if gps_issue:
+            logging.warning(
+                "piexif returned invalid GPS metadata (%s); retrying with fallback parser",
+                gps_issue,
+            )
+            exif_payload.pop("GPSInfo", None)
+            exif_payload.pop("GPS", None)
+            exif_ifds.pop("GPS", None)
+            gps_info = {}
+
+            fallback_payload: dict[str, Any] = {}
+            fallback_gps: dict[str, Any] = {}
+            fallback_ifds: dict[str, dict[str, Any]] = {}
+            fallback_source: str | None = None
+
+            if pil_exif_cached:
+                pillow_exif, pillow_gps, pillow_ifds = _extract_from_pillow_exif(pil_exif_cached)
+                pillow_issue = _validate_gps_payload(pillow_gps)
+                if pillow_gps and not pillow_issue:
+                    fallback_payload = pillow_exif
+                    fallback_gps = pillow_gps
+                    fallback_ifds = pillow_ifds
+                    fallback_source = "pillow"
+
+            if not fallback_gps and exifread is not None:
+                try:
+                    exifread_payload, exifread_gps, exifread_ifds = _extract_with_exifread(data)
+                except Exception:
+                    logging.debug("exifread failed during GPS fallback", exc_info=True)
+                else:
+                    if exifread_payload or exifread_gps:
+                        fallback_payload = exifread_payload
+                        fallback_gps = exifread_gps
+                        fallback_ifds = exifread_ifds
+                        fallback_source = "exifread"
+
+            if fallback_payload:
+                exif_payload = _merge_exif_payloads(exif_payload, fallback_payload)
+            if fallback_ifds:
+                exif_ifds = _merge_exif_ifds(exif_ifds, fallback_ifds)
+            if fallback_gps:
+                gps_info = dict(fallback_gps)
+                exif_payload["GPSInfo"] = gps_info
+                exif_payload["GPS"] = gps_info
+                exif_ifds.setdefault("GPS", {})
+                exif_ifds["GPS"].update(fallback_ifds.get("GPS", {}))
+                if fallback_source:
+                    source = fallback_source
         if (not gps_info) and pil_exif_cached:
             pillow_exif, pillow_gps, pillow_ifds = _extract_from_pillow_exif(pil_exif_cached)
-            if pillow_gps:
+            if pillow_gps and not _validate_gps_payload(pillow_gps):
                 gps_info = pillow_gps
                 merged_ifds: dict[str, dict[str, Any]] = {}
                 merged_ifds.update(exif_ifds)
@@ -208,6 +257,62 @@ def _extract_from_piexif(
         exif_payload["GPS"] = gps_info
 
     return exif_payload, gps_info, exif_ifds
+
+
+def _validate_gps_payload(gps_info: Mapping[str, Any] | None) -> str | None:
+    if not gps_info:
+        return None
+
+    lat_values = gps_info.get("GPSLatitude")
+    lon_values = gps_info.get("GPSLongitude")
+    lat_ref = _normalize_gps_ref(gps_info.get("GPSLatitudeRef"))
+    lon_ref = _normalize_gps_ref(gps_info.get("GPSLongitudeRef"))
+    valid_refs = {"N", "S", "E", "W"}
+
+    if lat_values and (not lat_ref or lat_ref.strip().upper()[:1] not in valid_refs):
+        return "invalid latitude reference"
+    if lon_values and (not lon_ref or lon_ref.strip().upper()[:1] not in valid_refs):
+        return "invalid longitude reference"
+
+    if not lat_values and not lon_values:
+        return None
+
+    latitude, longitude = _extract_gps_decimal(gps_info)
+    if lat_values and latitude is None:
+        return "unable to decode latitude"
+    if lon_values and longitude is None:
+        return "unable to decode longitude"
+    return None
+
+
+def _merge_exif_payloads(
+    base: Mapping[str, Any], updates: Mapping[str, Any]
+) -> dict[str, Any]:
+    if not updates:
+        return dict(base)
+    merged = dict(base)
+    for key, value in updates.items():
+        if key in {"GPS", "GPSInfo"}:
+            merged[key] = value
+        elif key not in merged or merged[key] in (None, "", {}):
+            merged[key] = value
+    return merged
+
+
+def _merge_exif_ifds(
+    base: Mapping[str, Mapping[str, Any]], updates: Mapping[str, Mapping[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    if not updates:
+        return {key: dict(value) for key, value in base.items()}
+    merged: dict[str, dict[str, Any]] = {
+        key: dict(value) for key, value in base.items()
+    }
+    for ifd_name, ifd_values in updates.items():
+        existing = merged.get(ifd_name, {})
+        combined = dict(existing)
+        combined.update(ifd_values)
+        merged[ifd_name] = combined
+    return merged
 
 
 def _extract_from_pillow_exif(

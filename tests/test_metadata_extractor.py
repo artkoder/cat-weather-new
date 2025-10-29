@@ -172,3 +172,35 @@ def test_extract_metadata_falls_back_to_exifread(monkeypatch: pytest.MonkeyPatch
 
     assert photo_meta.source in {"exifread", "pillow"}
     assert exif_payload
+
+
+def test_extract_metadata_recovers_from_invalid_piexif_gps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pytest.importorskip("exifread")
+
+    image_path = create_sample_image(tmp_path / "fallback-invalid-gps.jpg")
+
+    original_load = piexif.load
+
+    def _corrupting_load(*args: Any, **kwargs: Any):  # type: ignore[override]
+        exif_dict = original_load(*args, **kwargs)
+        mutated = dict(exif_dict)
+        gps_ifd = dict(mutated.get("GPS") or {})
+        if gps_ifd:
+            gps_ifd[piexif.GPSIFD.GPSLatitudeRef] = b"00"
+            gps_ifd[piexif.GPSIFD.GPSLongitudeRef] = b"00"
+            gps_ifd[piexif.GPSIFD.GPSLatitude] = [(0, 0)]
+            gps_ifd[piexif.GPSIFD.GPSLongitude] = [(0, 0)]
+            mutated["GPS"] = gps_ifd
+        return mutated
+
+    monkeypatch.setattr(piexif, "load", _corrupting_load)
+
+    photo_meta, _, _, exif_ifds = extract_metadata_from_file(image_path)
+
+    assert photo_meta.source == "exifread"
+    assert photo_meta.latitude == pytest.approx(55.5, rel=1e-7)
+    assert photo_meta.longitude == pytest.approx(37.6, rel=1e-7)
+    assert photo_meta.raw_gps
+    assert exif_ifds.get("GPS")

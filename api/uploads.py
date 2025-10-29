@@ -602,9 +602,14 @@ def register_upload_jobs(
                             if not raw_gps_payload:
                                 raw_gps_payload = dict(exif_sections_payload.get("GPS") or {})
 
+                            gps_ifd_present = bool(raw_gps_payload)
+                            gps_coordinates_present = (
+                                latitude is not None and longitude is not None
+                            )
                             photo_meta_log_payload = {
                                 "has_exif": bool(raw_exif_payload),
-                                "has_gps": bool(raw_gps_payload),
+                                "has_gps": gps_coordinates_present,
+                                "gps_ifd_present": gps_ifd_present,
                                 "latitude": latitude,
                                 "longitude": longitude,
                                 "altitude": photo_meta.altitude if photo_meta else None,
@@ -620,6 +625,9 @@ def register_upload_jobs(
                                     "upload_id": upload_id,
                                     "has_exif": photo_meta_log_payload["has_exif"],
                                     "has_gps": photo_meta_log_payload["has_gps"],
+                                    "gps_ifd_present": photo_meta_log_payload[
+                                        "gps_ifd_present"
+                                    ],
                                     "photo_meta_raw": _serialize_for_log(photo_meta_log_payload),
                                 },
                             )

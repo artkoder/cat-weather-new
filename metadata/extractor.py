@@ -13,10 +13,17 @@ from typing import Any, BinaryIO
 import piexif
 from PIL import ExifTags, Image
 
+ExifreadFieldType: Any | None = None
+
 try:  # pragma: no cover - optional dependency
     import exifread  # type: ignore
 except Exception:  # pragma: no cover - dependency may be missing in some environments
     exifread = None  # type: ignore[assignment]
+else:  # pragma: no cover - optional dependency helpers
+    try:
+        from exifread.core.ifd_tag import FieldType as ExifreadFieldType  # type: ignore
+    except Exception:
+        ExifreadFieldType = None
 
 _HEIF_REGISTERED = False
 _HEIF_IMPORT_FAILED = False
@@ -407,6 +414,31 @@ def _extract_from_pillow_exif(
     return exif_payload, gps_info, exif_ifds
 
 
+def _is_ascii_exif_field(field: Any) -> bool:
+    field_type = getattr(field, "field_type", None)
+    if ExifreadFieldType is not None:
+        try:
+            if field_type == ExifreadFieldType.ASCII:
+                return True
+        except Exception:  # pragma: no cover - defensive against unexpected field types
+            pass
+    if isinstance(field_type, str):
+        return field_type.upper() == "ASCII"
+    if isinstance(field_type, int):
+        return field_type == 2
+    return False
+
+
+def _should_use_ascii_printable(tag_name: str, field: Any, printable_value: Any) -> bool:
+    if not isinstance(tag_name, str):
+        return False
+    if not isinstance(printable_value, str) or not printable_value:
+        return False
+    if not (tag_name.startswith("GPS ") or tag_name.startswith("EXIF ")):
+        return False
+    return _is_ascii_exif_field(field)
+
+
 def _extract_with_exifread(
     data: bytes,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, Any]]]:
@@ -419,15 +451,31 @@ def _extract_with_exifread(
     exif_ifds: dict[str, dict[str, Any]] = {}
 
     for tag_name, field in tags.items():
-        printable: Any
         values: Any
         if hasattr(field, "values"):
             values = field.values
         else:
             values = field
-        printable = getattr(field, "printable", values)
+
+        printable_attr = getattr(field, "printable", values)
+        printable_normalized: Any | None = None
+        if isinstance(printable_attr, str):
+            stripped_printable = printable_attr.replace("\x00", "").strip()
+            if stripped_printable:
+                printable_normalized = _normalize_exif_value(stripped_printable)
+
         normalized = _normalize_exif_value(values)
         raw_serialized = _serialize_exif_raw_value(values)
+
+        if (
+            printable_normalized is not None
+            and _should_use_ascii_printable(tag_name, field, printable_normalized)
+        ):
+            normalized = printable_normalized
+            raw_serialized = _serialize_exif_raw_value(printable_normalized)
+            printable_value: Any = printable_normalized
+        else:
+            printable_value = printable_attr
 
         if tag_name.startswith("GPS "):
             key = tag_name[4:]
@@ -442,7 +490,7 @@ def _extract_with_exifread(
             exif_payload[key] = normalized
             exif_ifds.setdefault("0th", {})[key] = raw_serialized
         else:
-            exif_payload[tag_name] = printable
+            exif_payload[tag_name] = printable_value
 
     if gps_info:
         exif_payload["GPSInfo"] = gps_info

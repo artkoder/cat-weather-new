@@ -4070,12 +4070,19 @@ class Bot:
                 else asset.forward_from_chat,
             )
             update_kwargs: dict[str, Any] = {"local_path": None}
-            if payload.get("latitude") is not None:
-                update_kwargs["latitude"] = payload["latitude"]
-            if payload.get("longitude") is not None:
-                update_kwargs["longitude"] = payload["longitude"]
-            if payload.get("exif_present") is not None:
-                update_kwargs["exif_present"] = payload["exif_present"]
+            latitude = payload.get("latitude")
+            longitude = payload.get("longitude")
+            if latitude is not None:
+                update_kwargs["latitude"] = latitude
+            if longitude is not None:
+                update_kwargs["longitude"] = longitude
+
+            exif_flag = payload.get("exif_present")
+            gps_present = latitude is not None and longitude is not None
+            if exif_flag is True:
+                update_kwargs["exif_present"] = True
+            elif gps_present:
+                update_kwargs["exif_present"] = True
             self.data.update_asset(result_id, **update_kwargs)
             return result_id
 

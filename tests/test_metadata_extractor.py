@@ -26,7 +26,10 @@ def _save_with_exif(path: Path, *, fmt: str, exif_dict: dict[str, Any]) -> Path:
 def _create_heic_with_exif(path: Path) -> Path:
     pillow_heif = pytest.importorskip("pillow_heif")
     pillow_heif.register_heif_opener()
-    pillow_heif.register_heif_writer()
+    if hasattr(pillow_heif, "register_heif_writer"):
+        pillow_heif.register_heif_writer()
+    else:  # pragma: no cover - depends on optional dependency version
+        pytest.skip("pillow_heif writer support not available")
 
     exif_dict = {
         "0th": {
@@ -197,10 +200,16 @@ def test_extract_metadata_recovers_from_invalid_piexif_gps(
 
     monkeypatch.setattr(piexif, "load", _corrupting_load)
 
-    photo_meta, _, _, exif_ifds = extract_metadata_from_file(image_path)
+    photo_meta, exif_payload, _, exif_ifds = extract_metadata_from_file(image_path)
 
     assert photo_meta.source == "exifread"
     assert photo_meta.latitude == pytest.approx(55.5, rel=1e-7)
     assert photo_meta.longitude == pytest.approx(37.6, rel=1e-7)
     assert photo_meta.raw_gps
+    assert exif_payload.get("GPS", {}).get("GPSLatitudeRef") == "N"
+    assert exif_payload.get("GPS", {}).get("GPSLongitudeRef") == "E"
     assert exif_ifds.get("GPS")
+    assert exif_ifds["GPS"].get("GPSLatitudeRef") == "N"
+    assert exif_ifds["GPS"].get("GPSLongitudeRef") == "E"
+    assert photo_meta.raw_gps.get("GPSLatitudeRef") == "N"
+    assert photo_meta.raw_gps.get("GPSLongitudeRef") == "E"

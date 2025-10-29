@@ -105,24 +105,57 @@ def extract_metadata_from_file(
 
             if pil_exif_cached:
                 pillow_exif, pillow_gps, pillow_ifds = _extract_from_pillow_exif(pil_exif_cached)
-                pillow_issue = _validate_gps_payload(pillow_gps)
-                if pillow_gps and not pillow_issue:
-                    fallback_payload = pillow_exif
-                    fallback_gps = pillow_gps
-                    fallback_ifds = pillow_ifds
+                if pillow_gps:
+                    fallback_payload = dict(pillow_exif)
+                    fallback_ifds = {name: dict(values) for name, values in pillow_ifds.items()}
+                    fallback_gps = dict(pillow_gps)
                     fallback_source = "pillow"
+                    pillow_issue = _validate_gps_payload(fallback_gps)
+                    if pillow_issue:
+                        logging.warning(
+                            "pillow returned invalid GPS metadata (%s); continuing to next fallback",
+                            pillow_issue,
+                        )
+                        fallback_gps.clear()
+                        fallback_source = None
+                        fallback_payload.pop("GPS", None)
+                        fallback_payload.pop("GPSInfo", None)
+                        if "GPS" in fallback_ifds:
+                            fallback_ifds = {
+                                name: values
+                                for name, values in fallback_ifds.items()
+                                if name != "GPS"
+                            }
 
-            if not fallback_gps and exifread is not None:
+            if (not fallback_gps) and exifread is not None:
                 try:
                     exifread_payload, exifread_gps, exifread_ifds = _extract_with_exifread(data)
                 except Exception:
                     logging.debug("exifread failed during GPS fallback", exc_info=True)
                 else:
                     if exifread_payload or exifread_gps:
-                        fallback_payload = exifread_payload
-                        fallback_gps = exifread_gps
-                        fallback_ifds = exifread_ifds
+                        fallback_payload = dict(exifread_payload)
+                        fallback_gps = dict(exifread_gps)
+                        fallback_ifds = {
+                            name: dict(values) for name, values in exifread_ifds.items()
+                        }
                         fallback_source = "exifread"
+                        exifread_issue = _validate_gps_payload(fallback_gps)
+                        if exifread_issue:
+                            logging.warning(
+                                "exifread returned invalid GPS metadata (%s); ignoring fallback",
+                                exifread_issue,
+                            )
+                            fallback_gps.clear()
+                            fallback_source = None
+                            fallback_payload.pop("GPS", None)
+                            fallback_payload.pop("GPSInfo", None)
+                            if "GPS" in fallback_ifds:
+                                fallback_ifds = {
+                                    name: values
+                                    for name, values in fallback_ifds.items()
+                                    if name != "GPS"
+                                }
 
             if fallback_payload:
                 exif_payload = _merge_exif_payloads(exif_payload, fallback_payload)

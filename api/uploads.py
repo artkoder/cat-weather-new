@@ -799,7 +799,8 @@ RAW_EXIF_LOG_MAX_LENGTH = 64 * 1024
 def _serialize_for_log(payload: Mapping[str, Any]) -> str:
     """Serialize payload to JSON and trim overly large entries."""
 
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    safe_payload = DataAccess._make_json_safe(payload)
+    raw = json.dumps(safe_payload, ensure_ascii=False, sort_keys=True)
     if len(raw) > RAW_EXIF_LOG_MAX_LENGTH:
         return raw[:RAW_EXIF_LOG_MAX_LENGTH]
     return raw

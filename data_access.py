@@ -554,7 +554,7 @@ class DataAccess:
 
         asset_id = str(uuid4())
         now = datetime.utcnow().isoformat()
-        exif_json = self._encode_json_blob(exif)
+        exif_json = self._encode_exif_blob(exif)
         labels_json = self._encode_json_blob(labels)
         chat_id_value = Asset._to_int(tg_chat_id)
         message_id_value: int | None = None
@@ -790,6 +790,31 @@ class DataAccess:
             return json.dumps(fallback, ensure_ascii=False, sort_keys=sort_keys)
 
     @staticmethod
+    def _encode_exif_blob(payload: Any) -> str | None:
+        if payload is None:
+            return None
+        safe_payload = DataAccess._make_json_safe(payload)
+        try:
+            return json.dumps(safe_payload, ensure_ascii=False)
+        except TypeError:
+            fallback = DataAccess._make_json_safe(str(safe_payload))
+            return json.dumps(fallback, ensure_ascii=False)
+
+    @staticmethod
+    def _try_ratio_tuple(value: tuple[Any, ...]) -> float | None:
+        if len(value) != 2:
+            return None
+        numerator, denominator = value
+        try:
+            numerator_value = float(numerator)
+            denominator_value = float(denominator)
+        except (TypeError, ValueError):
+            return None
+        if denominator_value == 0:
+            return numerator_value
+        return numerator_value / denominator_value
+
+    @staticmethod
     def _make_json_safe(value: Any) -> Any:
         def _coerce(obj: Any) -> Any:
             if obj is None or isinstance(obj, (str, int, float, bool)):
@@ -798,6 +823,10 @@ class DataAccess:
                 return bytes(obj).hex()
             if isinstance(obj, dict):
                 return {str(key): _coerce(val) for key, val in obj.items()}
+            if isinstance(obj, tuple):
+                ratio = DataAccess._try_ratio_tuple(obj)
+                if ratio is not None:
+                    return ratio
             if isinstance(obj, (list, tuple, set)):
                 return [_coerce(item) for item in obj]
             numerator = getattr(obj, "numerator", None)
@@ -997,10 +1026,7 @@ class DataAccess:
 
         exif_json_value = file_meta.get("exif_json")
         if exif_json_value is None and "exif" in file_meta:
-            try:
-                exif_json_value = json.dumps(file_meta["exif"])
-            except TypeError:
-                exif_json_value = None
+            exif_json_value = self._encode_exif_blob(file_meta["exif"])
         if exif_json_value is None and existing:
             exif_json_value = existing.exif_json
 
@@ -1172,10 +1198,7 @@ class DataAccess:
             columns["height"] = height_value
             exif_json_value = fm.get("exif_json")
             if exif_json_value is None and "exif" in fm:
-                try:
-                    exif_json_value = json.dumps(fm["exif"])
-                except TypeError:
-                    exif_json_value = None
+                exif_json_value = self._encode_exif_blob(fm["exif"])
             if exif_json_value is None:
                 exif_json_value = row.exif_json
             columns["exif_json"] = exif_json_value

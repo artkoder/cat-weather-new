@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import sys
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from types import SimpleNamespace
@@ -26,7 +27,8 @@ from api.uploads import (
 from data_access import DataAccess, create_device, insert_upload
 from jobs import Job, JobQueue
 from main import Bot, apply_migrations
-from ingestion import IngestionCallbacks, UploadIngestionContext, ingest_photo
+from ingestion import ImageMetadataResult, IngestionCallbacks, UploadIngestionContext, ingest_photo
+from openai_client import OpenAIResponse
 from tests.fixtures.ingestion_utils import (
     OpenAIStub,
     StorageStub,
@@ -489,6 +491,135 @@ async def test_process_upload_job_success_records_asset(
     assert mobile_done.source == "mobile"
     assert mobile_done.size_bytes == image_path.stat().st_size
     assert isinstance(mobile_done.timestamp, str) and mobile_done.timestamp
+
+
+@pytest.mark.asyncio
+async def test_process_upload_serializes_complex_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recognition_channel_id = -30001
+    conn = _setup_connection(
+        asset_channel_id=-20001,
+        recognition_channel_id=recognition_channel_id,
+    )
+    data = DataAccess(conn)
+    image_path = create_sample_image(tmp_path / "complex.jpg")
+    file_key = "complex-key"
+    storage = StorageStub({file_key: image_path})
+    telegram = TelegramStub()
+    metrics = UploadMetricsRecorder()
+    queue = JobQueue(conn)
+
+    base_extract = _extract_image_metadata
+
+    def fake_extract_image_metadata(path: Path) -> ImageMetadataResult:
+        base = base_extract(path)
+        gps_block = dict(base.exif.get("GPS") or {})
+        gps_block.update(
+            {
+                "AltitudeRatio": Fraction(5, 2),
+                "Bytes": [b"\x0e", b"\x0f"],
+            }
+        )
+        mutated_exif = dict(base.exif)
+        mutated_exif["GPS"] = gps_block
+        mutated_exif["GPSInfo"] = dict(gps_block)
+        mutated_exif["BinaryTop"] = b"\x0c\x0d"
+        return ImageMetadataResult(
+            mime_type=base.mime_type,
+            width=base.width,
+            height=base.height,
+            exif=mutated_exif,
+            gps=dict(base.gps),
+            exif_ifds=base.exif_ifds,
+            photo=base.photo,
+        )
+
+    monkeypatch.setattr("ingestion.extract_image_metadata", fake_extract_image_metadata)
+
+    vision_payload: dict[str, Any] = {
+        "caption": "complex",
+        "categories": ["test"],
+        "raw_bytes": b"\x99",
+        "stats": {"ratio": Fraction(2, 5), "chunks": [b"\x01\x02"]},
+    }
+
+    class VisionStub:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self.payload = payload
+
+        async def classify_image(self, **_: Any) -> OpenAIResponse:
+            return OpenAIResponse(
+                self.payload,
+                {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "request_id": "req-complex",
+                },
+            )
+
+    openai_stub = VisionStub(vision_payload)
+
+    config = UploadsConfig(
+        assets_channel_id=recognition_channel_id,
+        vision_enabled=True,
+        openai_vision_model="vision-test",
+    )
+
+    register_upload_jobs(
+        queue,
+        conn,
+        storage=storage,
+        data=data,
+        telegram=telegram,
+        openai=openai_stub,
+        metrics=metrics,
+        config=config,
+    )
+
+    upload_id = _prepare_upload(conn, file_key=file_key)
+    job = Job(
+        id=1,
+        name="process_upload",
+        payload={"upload_id": upload_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await queue.handlers["process_upload"](job)
+
+    upload_row = conn.execute(
+        "SELECT status, error, asset_id FROM uploads WHERE id=?",
+        (upload_id,),
+    ).fetchone()
+    assert upload_row["status"] == "done"
+    assert upload_row["error"] is None
+    assert upload_row["asset_id"] is not None
+
+    asset_row = conn.execute(
+        "SELECT exif_json, labels_json FROM assets WHERE id=?",
+        (upload_row["asset_id"],),
+    ).fetchone()
+    assert asset_row is not None
+    assert asset_row["exif_json"]
+    assert asset_row["labels_json"]
+
+    exif_payload = json.loads(asset_row["exif_json"])
+    gps_block = exif_payload.get("GPS") or {}
+    assert exif_payload["BinaryTop"] == "0c0d"
+    assert gps_block.get("Bytes") == ["0e", "0f"]
+    assert gps_block.get("AltitudeRatio") == pytest.approx(2.5, rel=1e-6)
+
+    labels_payload = json.loads(asset_row["labels_json"])
+    assert labels_payload.get("raw_bytes") == "99"
+    stats_payload = labels_payload.get("stats") or {}
+    assert stats_payload.get("ratio") == pytest.approx(0.4, rel=1e-6)
+    assert stats_payload.get("chunks") == ["0102"]
 
 
 @pytest.mark.asyncio

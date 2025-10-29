@@ -554,8 +554,8 @@ class DataAccess:
 
         asset_id = str(uuid4())
         now = datetime.utcnow().isoformat()
-        exif_json = json.dumps(exif) if exif else None
-        labels_json = json.dumps(labels) if labels else None
+        exif_json = self._encode_json_blob(exif)
+        labels_json = self._encode_json_blob(labels)
         chat_id_value = Asset._to_int(tg_chat_id)
         message_id_value: int | None = None
         identifier: str | None = None
@@ -774,19 +774,58 @@ class DataAccess:
 
     @staticmethod
     def _encode_payload_blob(payload: dict[str, Any]) -> str | None:
-        if not payload:
+        return DataAccess._encode_json_blob(payload, sort_keys=True)
+
+    @staticmethod
+    def _encode_json_blob(payload: Any, *, sort_keys: bool = False) -> str | None:
+        if payload is None:
             return None
+        if isinstance(payload, (dict, list, tuple, set)) and not payload:
+            return None
+        safe_payload = DataAccess._make_json_safe(payload)
         try:
-            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            return json.dumps(safe_payload, ensure_ascii=False, sort_keys=sort_keys)
         except TypeError:
-            safe_payload: dict[str, Any] = {}
-            for key, value in payload.items():
+            fallback = DataAccess._make_json_safe(str(safe_payload))
+            return json.dumps(fallback, ensure_ascii=False, sort_keys=sort_keys)
+
+    @staticmethod
+    def _make_json_safe(value: Any) -> Any:
+        def _coerce(obj: Any) -> Any:
+            if obj is None or isinstance(obj, (str, int, float, bool)):
+                return obj
+            if isinstance(obj, (bytes, bytearray, memoryview)):
+                return bytes(obj).hex()
+            if isinstance(obj, dict):
+                return {str(key): _coerce(val) for key, val in obj.items()}
+            if isinstance(obj, (list, tuple, set)):
+                return [_coerce(item) for item in obj]
+            numerator = getattr(obj, "numerator", None)
+            denominator = getattr(obj, "denominator", None)
+            if numerator is not None and denominator is not None:
                 try:
-                    json.dumps(value)
-                    safe_payload[key] = value
-                except TypeError:
-                    safe_payload[key] = str(value)
-            return json.dumps(safe_payload, ensure_ascii=False, sort_keys=True)
+                    numerator_value = float(numerator)
+                    denominator_value = float(denominator)
+                    if denominator_value != 0:
+                        return numerator_value / denominator_value
+                    return numerator_value
+                except Exception:
+                    return str(obj)
+            isoformat = getattr(obj, "isoformat", None)
+            if callable(isoformat):
+                try:
+                    return isoformat()
+                except Exception:
+                    pass
+            as_float = getattr(obj, "__float__", None)
+            if callable(as_float):
+                try:
+                    return float(obj)
+                except Exception:
+                    pass
+            return str(obj)
+
+        return _coerce(value)
 
     @staticmethod
     def _update_payload_map(

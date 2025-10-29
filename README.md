@@ -200,6 +200,7 @@ The bot targets Fly.io and exposes a single aiohttp application on port `8080`. 
    ```bash
    pip install -r requirements.txt
    ```
+   The requirements bundle `exifread` for EXIF fallbacks and `pillow-heif` for HEIC decoding, so make sure CI images and production containers are rebuilt after pulling the updated file.
 2. Launch the bot:
    ```bash
    python main.py

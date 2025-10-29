@@ -2685,10 +2685,12 @@ def insert_upload(
     idempotency_key: str,
     file_ref: str | None = None,
     source: str = "mobile",
+    gps_redacted_by_client: bool = False,
 ) -> str:
     """Insert an upload row respecting idempotency."""
 
     now = datetime.utcnow().isoformat()
+    gps_flag = 1 if gps_redacted_by_client else 0
     try:
         conn.execute(
             """
@@ -2701,12 +2703,13 @@ def insert_upload(
                 file_ref,
                 asset_id,
                 source,
+                gps_redacted_by_client,
                 created_at,
                 updated_at
             )
-            VALUES (?, ?, ?, 'queued', NULL, ?, NULL, ?, ?, ?)
+            VALUES (?, ?, ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?)
             """,
-            (id, device_id, idempotency_key, file_ref, source, now, now),
+            (id, device_id, idempotency_key, file_ref, source, gps_flag, now, now),
         )
         return id
     except sqlite3.IntegrityError as exc:
@@ -2875,7 +2878,7 @@ def fetch_upload_record(
 ) -> dict[str, Any] | None:
     cur = conn.execute(
         """
-        SELECT id, device_id, status, error, file_ref, asset_id, source, created_at, updated_at
+        SELECT id, device_id, status, error, file_ref, asset_id, source, gps_redacted_by_client, created_at, updated_at
         FROM uploads
         WHERE id=?
         """,
@@ -2893,6 +2896,7 @@ def fetch_upload_record(
             "file_ref": row["file_ref"],
             "asset_id": str(row["asset_id"]) if row["asset_id"] is not None else None,
             "source": str(row["source"]) if row["source"] is not None else None,
+            "gps_redacted_by_client": bool(row["gps_redacted_by_client"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -2904,6 +2908,7 @@ def fetch_upload_record(
         "file_ref": row[4],
         "asset_id": str(row[5]) if row[5] is not None else None,
         "source": str(row[6]) if row[6] is not None else None,
-        "created_at": row[7],
-        "updated_at": row[8],
+        "gps_redacted_by_client": bool(row[7]),
+        "created_at": row[8],
+        "updated_at": row[9],
     }

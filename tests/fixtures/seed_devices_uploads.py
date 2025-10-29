@@ -124,15 +124,17 @@ def _insert_uploads(conn: sqlite3.Connection, device_ids: Iterable[str]) -> list
                 status,
                 error,
                 file_ref,
+                gps_redacted_by_client,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 device_id=excluded.device_id,
                 idempotency_key=excluded.idempotency_key,
                 status=excluded.status,
                 error=excluded.error,
                 file_ref=excluded.file_ref,
+                gps_redacted_by_client=excluded.gps_redacted_by_client,
                 created_at=excluded.created_at,
                 updated_at=excluded.updated_at
             """,
@@ -143,6 +145,7 @@ def _insert_uploads(conn: sqlite3.Connection, device_ids: Iterable[str]) -> list
                 "done" if idx % 2 == 0 else "queued",
                 None,
                 f"file-{idx}",
+                0,
                 (now - timedelta(minutes=idx * 5)).isoformat(),
                 (now - timedelta(minutes=idx * 3)).isoformat(),
             ),

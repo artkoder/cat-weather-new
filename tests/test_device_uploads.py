@@ -12,6 +12,7 @@ from data_access import (
     create_device,
     create_pairing_token,
     consume_pairing_token,
+    fetch_upload_record,
     insert_upload,
     link_upload_asset,
     set_upload_status,
@@ -68,6 +69,27 @@ def test_insert_upload_enforces_idempotency_per_device(conn: sqlite3.Connection)
     assert count == 1
     row = conn.execute("SELECT source FROM uploads WHERE id=?", (first,)).fetchone()
     assert row is not None and row["source"] == "mobile"
+
+
+def test_insert_upload_records_gps_flag(conn: sqlite3.Connection) -> None:
+    _ensure_device(conn)
+    upload_id = insert_upload(
+        conn,
+        id="upload-gps",
+        device_id="device-1",
+        idempotency_key="idem-gps",
+        gps_redacted_by_client=True,
+    )
+    row = conn.execute(
+        "SELECT gps_redacted_by_client FROM uploads WHERE id=?",
+        (upload_id,),
+    ).fetchone()
+    assert row is not None
+    assert row["gps_redacted_by_client"] == 1
+
+    record = fetch_upload_record(conn, upload_id=upload_id)
+    assert record is not None
+    assert record["gps_redacted_by_client"] is True
 
 
 def test_pairing_token_expires(conn: sqlite3.Connection) -> None:

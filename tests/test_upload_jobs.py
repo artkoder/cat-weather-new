@@ -172,6 +172,26 @@ async def test_extract_image_metadata_reads_jpeg_exif(
     assert gps_ifd.get("GPSLongitude") == [[37, 1], [36, 1], [0, 1]]
 
 
+def test_extract_image_metadata_logs_missing_coordinates(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    image_path = create_sample_image_with_invalid_gps(tmp_path / "no-coords.jpg")
+
+    with caplog.at_level(logging.INFO):
+        metadata_result = _extract_image_metadata(image_path)
+
+    assert metadata_result.gps is not None
+    assert metadata_result.gps.get("captured_at") == "2023-12-24T15:30:45+00:00"
+
+    metadata_log = next(
+        record for record in caplog.records if record.message == "MOBILE_IMAGE_METADATA"
+    )
+    assert metadata_log.path.endswith("no-coords.jpg")
+    assert metadata_log.gps_present is False
+    assert metadata_log.latitude is None
+    assert metadata_log.longitude is None
+
+
 def test_extract_image_metadata_handles_nested_rationals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -895,7 +915,7 @@ async def test_process_upload_marks_exif_present_without_gps(
     assert exif_log.asset_id == row["asset_id"]
     assert exif_log.upload_id == upload_id
     assert exif_log.exif_payload is True
-    assert exif_log.gps_payload is True
+    assert exif_log.gps_payload is False
     assert exif_log.latitude is None
     assert exif_log.longitude is None
 
@@ -932,6 +952,9 @@ async def test_process_upload_marks_exif_present_without_gps(
         record for record in caplog.records if record.message == "MOBILE_IMAGE_METADATA"
     )
     assert metadata_log.path.endswith("asset-invalid-gps.jpg")
+    assert metadata_log.gps_present is False
+    assert metadata_log.latitude is None
+    assert metadata_log.longitude is None
 
 
 @pytest.mark.asyncio

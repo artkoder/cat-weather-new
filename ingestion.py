@@ -741,15 +741,19 @@ def extract_image_metadata(path: Path) -> ImageMetadataResult:
             },
         )
 
+    latitude = gps_payload.get("latitude")
+    longitude = gps_payload.get("longitude")
+    gps_present = latitude is not None and longitude is not None
+
     logging.info(
         "MOBILE_IMAGE_METADATA",
         extra={
             "path": str(path),
             "mime_type": mime_type,
             "exif_present": bool(exif_payload),
-            "gps_present": bool(gps_payload),
-            "latitude": gps_payload.get("latitude"),
-            "longitude": gps_payload.get("longitude"),
+            "gps_present": gps_present,
+            "latitude": latitude,
+            "longitude": longitude,
         },
     )
 

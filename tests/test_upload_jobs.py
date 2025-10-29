@@ -130,7 +130,9 @@ def _setup_connection(
     return conn
 
 
-def _prepare_upload(conn: sqlite3.Connection, *, file_key: str) -> str:
+def _prepare_upload(
+    conn: sqlite3.Connection, *, file_key: str, gps_redacted: bool = False
+) -> str:
     create_device(
         conn,
         device_id="device-1",
@@ -144,6 +146,7 @@ def _prepare_upload(conn: sqlite3.Connection, *, file_key: str) -> str:
         device_id="device-1",
         idempotency_key="key-1",
         file_ref=file_key,
+        gps_redacted_by_client=gps_redacted,
     )
     conn.commit()
     return upload_id
@@ -575,6 +578,123 @@ async def test_process_upload_job_success_records_asset(
 
 
 @pytest.mark.asyncio
+async def test_ingest_photo_skips_gps_when_redacted(tmp_path: Path) -> None:
+    conn = _setup_connection(asset_channel_id=-50001)
+    data = DataAccess(conn)
+    image_path = create_sample_image(tmp_path / "redacted.jpg")
+    upload_id = _prepare_upload(conn, file_key="redacted-key", gps_redacted=True)
+    telegram = TelegramStub()
+    metrics = UploadMetricsRecorder()
+    context = UploadIngestionContext(
+        upload_id=upload_id,
+        storage_key="redacted-key",
+        metrics=metrics,
+        source="mobile",
+        gps_redacted_by_client=True,
+    )
+    config = UploadsConfig(
+        assets_channel_id=-50001,
+        vision_enabled=False,
+    )
+
+    result = await ingest_photo(
+        data=data,
+        telegram=telegram,
+        openai=None,
+        supabase=None,
+        config=config,
+        context=context,
+        file_path=image_path,
+        cleanup_file=False,
+    )
+
+    assert result.asset_id
+    assert "latitude" not in result.gps
+    assert "longitude" not in result.gps
+    assert result.photo is not None
+    assert result.photo.latitude is None
+    assert result.photo.longitude is None
+
+    asset = data.get_asset(result.asset_id)
+    assert asset is not None
+    assert asset.latitude is None
+    assert asset.longitude is None
+    gps_metadata = (asset.metadata or {}).get("gps") or {}
+    assert "latitude" not in gps_metadata
+    assert "longitude" not in gps_metadata
+
+
+@pytest.mark.asyncio
+async def test_process_upload_skips_gps_for_redacted_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recognition_channel_id = -22001
+    conn = _setup_connection(
+        asset_channel_id=-21001,
+        recognition_channel_id=recognition_channel_id,
+    )
+    data = DataAccess(conn)
+    image_path = create_sample_image(tmp_path / "redacted-job.jpg")
+    file_key = "redacted-job"
+    storage = StorageStub({file_key: image_path})
+    telegram = TelegramStub()
+    metrics = UploadMetricsRecorder()
+    queue = JobQueue(conn)
+    config = UploadsConfig(
+        assets_channel_id=recognition_channel_id,
+        vision_enabled=False,
+    )
+
+    base_extract = _extract_image_metadata
+    skip_flags: list[bool] = []
+
+    def capture_extract_image_metadata(path: Path, *, skip_gps: bool = False) -> ImageMetadataResult:
+        skip_flags.append(skip_gps)
+        return base_extract(path, skip_gps=skip_gps)
+
+    monkeypatch.setattr("ingestion.extract_image_metadata", capture_extract_image_metadata)
+
+    register_upload_jobs(
+        queue,
+        conn,
+        storage=storage,
+        data=data,
+        telegram=telegram,
+        metrics=metrics,
+        config=config,
+    )
+
+    upload_id = _prepare_upload(conn, file_key=file_key, gps_redacted=True)
+    job = Job(
+        id=1,
+        name="process_upload",
+        payload={"upload_id": upload_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await queue.handlers["process_upload"](job)
+
+    assert skip_flags == [True]
+
+    row = conn.execute(
+        "SELECT asset_id FROM uploads WHERE id=?", (upload_id,)
+    ).fetchone()
+    assert row is not None and row["asset_id"] is not None
+    asset = data.get_asset(row["asset_id"])
+    assert asset is not None
+    assert asset.latitude is None
+    assert asset.longitude is None
+    gps_metadata = (asset.metadata or {}).get("gps") or {}
+    assert "latitude" not in gps_metadata
+    assert "longitude" not in gps_metadata
+
+
+@pytest.mark.asyncio
 async def test_process_upload_serializes_complex_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -593,8 +713,8 @@ async def test_process_upload_serializes_complex_metadata(
 
     base_extract = _extract_image_metadata
 
-    def fake_extract_image_metadata(path: Path) -> ImageMetadataResult:
-        base = base_extract(path)
+    def fake_extract_image_metadata(path: Path, *, skip_gps: bool = False) -> ImageMetadataResult:
+        base = base_extract(path, skip_gps=skip_gps)
         gps_block = dict(base.exif.get("GPS") or {})
         gps_block.update(
             {

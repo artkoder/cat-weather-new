@@ -125,6 +125,7 @@ class UploadIngestionContext:
     user_id: int | None = None
     job_id: int | None = None
     job_name: str | None = None
+    gps_redacted_by_client: bool = False
 
     def telemetry_payload(self) -> Mapping[str, Any] | None:
         payload: dict[str, Any] = {"upload_id": self.upload_id}
@@ -205,6 +206,7 @@ class IngestionInputs:
     max_image_side: int | None = None
     exif: dict[str, Any] | None = None
     gps: dict[str, Any] | None = None
+    gps_redacted_by_client: bool = False
     vision: IngestionVisionConfig = field(default_factory=IngestionVisionConfig)
     tg_chat_id: int | None = None
     template: str | None = None
@@ -712,9 +714,11 @@ def _extract_capture_datetime(exif: dict[str, Any]) -> str | None:
     return None
 
 
-def extract_image_metadata(path: Path) -> ImageMetadataResult:
+def extract_image_metadata(path: Path, *, skip_gps: bool = False) -> ImageMetadataResult:
     raw_bytes = path.read_bytes()
-    photo_meta, extracted_exif, extracted_gps, extracted_ifds = extract_metadata_from_file(raw_bytes)
+    photo_meta, extracted_exif, extracted_gps, extracted_ifds = extract_metadata_from_file(
+        raw_bytes, skip_gps=skip_gps
+    )
 
     mime_type: str | None = None
     width: int | None = None
@@ -929,7 +933,9 @@ async def _ingest_photo_internal(
     with _ensure_telemetry(inputs.telemetry):
         sha256 = _compute_sha256(inputs.file.path)
         with metrics.measure_exif():
-            metadata_result = extract_image_metadata(inputs.file.path)
+            metadata_result = extract_image_metadata(
+                inputs.file.path, skip_gps=inputs.gps_redacted_by_client
+            )
             (
                 mime_type,
                 width,
@@ -940,9 +946,12 @@ async def _ingest_photo_internal(
             ) = metadata_result
             photo_meta = metadata_result.photo
         exif_payload = inputs.exif or extracted_exif
-        gps_payload = dict(extracted_gps)
-        if inputs.gps:
-            gps_payload.update(inputs.gps)
+        if inputs.gps_redacted_by_client:
+            gps_payload: dict[str, Any] = {}
+        else:
+            gps_payload = dict(extracted_gps)
+            if inputs.gps:
+                gps_payload.update(inputs.gps)
         if photo_meta and photo_meta.captured_at and "captured_at" not in gps_payload:
             gps_payload["captured_at"] = photo_meta.captured_at.isoformat()
         if "captured_at" not in gps_payload:
@@ -1216,6 +1225,7 @@ async def ingest_photo(
         telemetry=telemetry,
         max_image_side=config.max_image_side,
         vision=vision_config,
+        gps_redacted_by_client=context.gps_redacted_by_client,
     )
 
     if input_overrides:

@@ -465,6 +465,9 @@ def register_upload_jobs(
                     source_value = record.get("source")
                     if source_value:
                         upload_source = str(source_value)
+                    gps_redacted_by_client = bool(
+                        record.get("gps_redacted_by_client")
+                    )
                     file_ref = record.get("file_ref")
                     if not file_ref:
                         raise RuntimeError("upload missing file_ref")
@@ -537,6 +540,7 @@ def register_upload_jobs(
                                 user_id=device_user_id,
                                 job_id=job.id,
                                 job_name=job.name,
+                                gps_redacted_by_client=gps_redacted_by_client,
                             )
 
                             result = await ingest_photo(
@@ -557,6 +561,9 @@ def register_upload_jobs(
                             photo_meta = result.photo
                             exif_payload = dict(result.exif or {})
                             gps_payload = dict(result.gps or {})
+                            if gps_redacted_by_client:
+                                for key in ("latitude", "longitude", "altitude"):
+                                    gps_payload.pop(key, None)
                             exif_ifds_payload = dict(result.exif_ifds or {})
                             exif_sections_payload: dict[str, dict[str, Any]] = {}
                             for ifd_name, raw_ifd in exif_ifds_payload.items():
@@ -600,14 +607,15 @@ def register_upload_jobs(
                                 "metadata": metadata_payload,
                                 "exif_present": bool(exif_payload) or bool(gps_payload),
                             }
-                            if photo_meta and photo_meta.latitude is not None:
-                                update_kwargs["latitude"] = photo_meta.latitude
-                            elif gps_payload.get("latitude") is not None:
-                                update_kwargs["latitude"] = gps_payload.get("latitude")
-                            if photo_meta and photo_meta.longitude is not None:
-                                update_kwargs["longitude"] = photo_meta.longitude
-                            elif gps_payload.get("longitude") is not None:
-                                update_kwargs["longitude"] = gps_payload.get("longitude")
+                            if not gps_redacted_by_client:
+                                if photo_meta and photo_meta.latitude is not None:
+                                    update_kwargs["latitude"] = photo_meta.latitude
+                                elif gps_payload.get("latitude") is not None:
+                                    update_kwargs["latitude"] = gps_payload.get("latitude")
+                                if photo_meta and photo_meta.longitude is not None:
+                                    update_kwargs["longitude"] = photo_meta.longitude
+                                elif gps_payload.get("longitude") is not None:
+                                    update_kwargs["longitude"] = gps_payload.get("longitude")
                             latitude = update_kwargs.get("latitude")
                             longitude = update_kwargs.get("longitude")
                             raw_exif_payload: dict[str, Any] = {}

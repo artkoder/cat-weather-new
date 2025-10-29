@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 import hashlib
 import json
@@ -154,6 +155,7 @@ class TelegramStub:
             },
         ]
         call = {
+            "method": "sendPhoto",
             "chat_id": chat_id,
             "photo": Path(photo),
             "caption": caption,
@@ -163,6 +165,58 @@ class TelegramStub:
         }
         self.calls.append(call)
         return {"message_id": message_id, "chat": {"id": chat_id}, "photo": photo_sizes}
+
+    async def send_document(
+        self,
+        *,
+        chat_id: int,
+        document: BinaryIO | bytes,
+        file_name: str,
+        caption: str | None = None,
+        content_type: str | None = None,
+    ) -> dict[str, Any]:
+        message_id = self.next_message_id
+        self.next_message_id += 1
+        if isinstance(document, (bytes, bytearray)):
+            data = bytes(document)
+            stream = BytesIO(data)
+        else:
+            try:
+                document.seek(0)
+            except Exception:  # pragma: no cover - defensive
+                pass
+            data = document.read()
+            stream = BytesIO(data)
+        try:
+            with Image.open(stream) as img:
+                width, height = img.size
+        except Exception:  # pragma: no cover - fallback for non-images
+            width = height = 0
+        file_id = f"document-{message_id}"
+        call = {
+            "method": "sendDocument",
+            "chat_id": chat_id,
+            "caption": caption,
+            "message_id": message_id,
+            "file_id": file_id,
+            "file_name": file_name,
+            "document_bytes": data,
+        }
+        self.calls.append(call)
+        document_payload = {
+            "file_id": file_id,
+            "file_unique_id": f"{file_id}-uniq",
+            "file_name": file_name,
+            "mime_type": content_type or "image/jpeg",
+            "file_size": len(data),
+        }
+        if width and height:
+            document_payload["thumbnail"] = {"width": width, "height": height}
+        return {
+            "message_id": message_id,
+            "chat": {"id": chat_id},
+            "document": document_payload,
+        }
 
 
 @dataclass

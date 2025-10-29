@@ -57,6 +57,17 @@ class FailingTelegram(TelegramStub):
     async def send_photo(self, *, chat_id: int, photo: Path, caption: str | None = None) -> dict[str, object]:
         raise self.error
 
+    async def send_document(
+        self,
+        *,
+        chat_id: int,
+        document,
+        file_name: str,
+        caption: str | None = None,
+        content_type: str | None = None,
+    ) -> dict[str, object]:
+        raise self.error
+
 
 class FlakyTelegram(TelegramStub):
     def __init__(self, *, failures: int = 1, error: Exception | None = None) -> None:
@@ -69,6 +80,26 @@ class FlakyTelegram(TelegramStub):
             self.failures -= 1
             raise self.error
         return await super().send_photo(chat_id=chat_id, photo=photo, caption=caption)
+
+    async def send_document(
+        self,
+        *,
+        chat_id: int,
+        document,
+        file_name: str,
+        caption: str | None = None,
+        content_type: str | None = None,
+    ) -> dict[str, object]:
+        if self.failures > 0:
+            self.failures -= 1
+            raise self.error
+        return await super().send_document(
+            chat_id=chat_id,
+            document=document,
+            file_name=file_name,
+            caption=caption,
+            content_type=content_type,
+        )
 
 
 def _setup_connection(
@@ -358,6 +389,7 @@ async def test_ingest_photo_populates_result_gps_from_offset_ifd(
     stored_gps = stored_metadata.get("gps") or {}
     assert stored_gps.get("latitude") == pytest.approx(expected_lat, rel=1e-6)
     assert stored_gps.get("longitude") == pytest.approx(expected_lon, rel=1e-6)
+    assert telegram.calls[0]["method"] == "sendDocument"
 
 
 @pytest.mark.asyncio
@@ -432,6 +464,7 @@ async def test_process_upload_job_success_records_asset(
     assert payload_map.get("file_id") == telegram.calls[0]["file_id"]
 
     assert len(telegram.calls) == 1
+    assert telegram.calls[0]["method"] == "sendDocument"
     assert telegram.calls[0]["chat_id"] == config.assets_channel_id
     assert storage.get_calls == [file_key]
 

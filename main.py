@@ -4022,6 +4022,35 @@ class Bot:
                 response, _ = await self._bot._publish_as_photo(chat_id, str(photo), caption)
                 return response or {}
 
+            async def send_document(
+                self,
+                *,
+                chat_id: int,
+                document: BinaryIO | bytes,
+                file_name: str,
+                caption: str | None = None,
+                content_type: str | None = None,
+            ) -> dict[str, Any]:
+                if self._message_id and (self._chat_id is None or self._chat_id == chat_id):
+                    logging.debug(
+                        "Reusing existing Telegram message %s for asset %s",
+                        self._message_id,
+                        asset_id,
+                    )
+                    return {"message_id": self._message_id, "chat": {"id": self._chat_id or chat_id}}
+                if isinstance(document, (bytes, bytearray)):
+                    document_stream: BinaryIO = io.BytesIO(document)
+                else:
+                    document_stream = document
+                response = await self._bot._publish_mobile_document(
+                    chat_id,
+                    document_stream,
+                    file_name,
+                    caption,
+                    content_type=content_type,
+                )
+                return response or {}
+
         def _save_asset(payload: dict[str, Any]) -> str:
             merged_metadata = existing_metadata_for_callback.copy()
             incoming_metadata = payload.get("metadata") or {}

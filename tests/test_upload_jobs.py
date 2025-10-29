@@ -29,7 +29,13 @@ from api.uploads import (
 from data_access import DataAccess, create_device, insert_upload
 from jobs import Job, JobQueue
 from main import Bot, apply_migrations
-from ingestion import ImageMetadataResult, IngestionCallbacks, UploadIngestionContext, ingest_photo
+from ingestion import (
+    ImageMetadataResult,
+    IngestionCallbacks,
+    IngestionResult,
+    UploadIngestionContext,
+    ingest_photo,
+)
 from openai_client import OpenAIResponse
 from tests.fixtures.ingestion_utils import (
     OpenAIStub,
@@ -1099,6 +1105,200 @@ async def test_ingest_job_uses_stored_coordinates_when_result_missing_gps(
     assert ingest_calls, "ingest_photo should be invoked"
 
     bot.db.close()
+
+
+@pytest.mark.asyncio
+async def test_ingest_job_mobile_adapter_handles_documents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "bot.sqlite"
+    bot = Bot("test-token", str(db_path))
+    bot.asset_storage = tmp_path
+
+    channel_id = -42001
+    message_id = 777
+    asset_id = bot.data.save_asset(
+        channel_id,
+        message_id,
+        None,
+        None,
+        tg_chat_id=channel_id,
+        caption="Existing mobile asset",
+        kind="photo",
+        file_meta={
+            "file_id": "file-mobile",
+            "file_unique_id": "file-mobile-unique",
+            "file_name": "mobile.jpg",
+            "mime_type": "image/jpeg",
+            "file_size": 64,
+            "width": 32,
+            "height": 32,
+        },
+        origin="mobile",
+        source="mobile",
+    )
+
+    source_path = tmp_path / "downloaded.jpg"
+    source_bytes = b"test-image-data"
+    source_path.write_bytes(source_bytes)
+
+    async def fake_download(self, file_id, dest_path=None):
+        assert dest_path is not None
+        destination = Path(dest_path)
+        destination.write_bytes(source_path.read_bytes())
+        return destination
+
+    async def fail_publish_as_photo(self, chat_id, local_path, caption, *, caption_entities=None):
+        raise AssertionError("send_photo should reuse existing message")
+
+    publish_calls: list[dict[str, Any]] = []
+
+    async def fake_publish_mobile_document(
+        self,
+        chat_id,
+        document,
+        filename,
+        caption,
+        *,
+        caption_entities=None,
+        content_type=None,
+    ):
+        data_preview = None
+        if hasattr(document, "read"):
+            try:
+                position = document.tell()
+            except Exception:
+                position = None
+            data_preview = document.read()
+            try:
+                if position is not None:
+                    document.seek(position)
+                else:
+                    document.seek(0)
+            except Exception:
+                pass
+        publish_calls.append(
+            {
+                "chat_id": chat_id,
+                "filename": filename,
+                "caption": caption,
+                "content_type": content_type,
+                "stream_type": type(document).__name__,
+                "data": data_preview,
+            }
+        )
+        return {"message_id": 900 + len(publish_calls), "chat": {"id": chat_id}}
+
+    monkeypatch.setattr(Bot, "_download_file", fake_download)
+    monkeypatch.setattr(Bot, "_publish_as_photo", fail_publish_as_photo)
+    monkeypatch.setattr(Bot, "_publish_mobile_document", fake_publish_mobile_document)
+
+    document_responses: list[tuple[str, dict[str, Any] | None]] = []
+    photo_responses: list[dict[str, Any]] = []
+
+    async def fake_ingest_photo(
+        *,
+        data,
+        telegram,
+        openai,
+        supabase,
+        config,
+        context: UploadIngestionContext,
+        file_path: Path,
+        cleanup_file: bool,
+        callbacks: IngestionCallbacks,
+        input_overrides: dict[str, Any],
+    ) -> IngestionResult:
+        channel = input_overrides["channel_id"]
+        photo_response = await telegram.send_photo(
+            chat_id=channel,
+            photo=Path(file_path),
+            caption="photo",
+        )
+        photo_responses.append(photo_response)
+        reuse_response = await telegram.send_document(
+            chat_id=channel,
+            document=b"reuse-bytes",
+            file_name="reuse.bin",
+            caption="reuse",
+            content_type="application/octet-stream",
+        )
+        document_responses.append(("reuse", reuse_response))
+        with open(file_path, "rb") as stream:
+            stream_response = await telegram.send_document(
+                chat_id=channel + 1,
+                document=stream,
+                file_name="stream.bin",
+                caption="stream",
+                content_type="application/octet-stream",
+            )
+        document_responses.append(("stream", stream_response))
+        bytes_response = await telegram.send_document(
+            chat_id=channel + 2,
+            document=b"bytes-data",
+            file_name="bytes.bin",
+            caption="bytes",
+            content_type="application/octet-stream",
+        )
+        document_responses.append(("bytes", bytes_response))
+        if callbacks.save_asset:
+            callbacks.save_asset(
+                {
+                    "channel_id": channel,
+                    "message_id": photo_response["message_id"],
+                    "tg_chat_id": input_overrides.get("tg_chat_id", channel),
+                    "caption": "stub caption",
+                    "kind": "photo",
+                    "file_meta": {"file_id": "file-mobile", "mime_type": "image/jpeg"},
+                    "metadata": {},
+                    "source": "mobile",
+                }
+            )
+        return IngestionResult(
+            asset_id=input_overrides.get("asset_id"),
+            message_id=photo_response["message_id"],
+            chat_id=photo_response["chat"]["id"],
+            caption="stub caption",
+            sha256="sha",
+            mime_type="image/jpeg",
+            width=32,
+            height=32,
+            exif={},
+            gps={},
+            exif_ifds={},
+            vision=None,
+            telegram_file=None,
+            metrics=context.metrics,
+        )
+
+    monkeypatch.setattr(sys.modules["main"], "ingest_photo", fake_ingest_photo)
+
+    job = Job(
+        id=501,
+        name="ingest",
+        payload={"asset_id": asset_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_ingest(job)
+
+    assert photo_responses and photo_responses[0]["message_id"] == message_id
+    assert document_responses[0][0] == "reuse"
+    reuse_payload = document_responses[0][1]
+    assert reuse_payload is not None and reuse_payload["message_id"] == message_id
+    assert len(publish_calls) == 2
+    assert publish_calls[0]["chat_id"] == channel_id + 1
+    assert publish_calls[0]["data"] == source_bytes
+    assert publish_calls[1]["chat_id"] == channel_id + 2
+    assert publish_calls[1]["stream_type"] == "BytesIO"
+    assert publish_calls[1]["data"] == b"bytes-data"
+
+    await bot.close()
 
 
 @pytest.mark.asyncio

@@ -55,6 +55,17 @@ class TelegramClient(Protocol):
     ) -> Any:
         ...
 
+    async def send_document(
+        self,
+        *,
+        chat_id: int,
+        document: BinaryIO | bytes,
+        file_name: str,
+        caption: str | None = None,
+        content_type: str | None = None,
+    ) -> Any:
+        ...
+
 
 @dataclass(slots=True)
 class UploadMetricsRecorder:
@@ -855,13 +866,27 @@ def _select_best_photo_size(photo_sizes: Sequence[Any] | None) -> dict[str, Any]
     return best
 
 
-def _extract_telegram_photo_meta(response: Any) -> dict[str, Any] | None:
+def _extract_telegram_file_meta(response: Any) -> dict[str, Any] | None:
     if isinstance(response, MappingABC):
+        document = response.get("document")
+        if isinstance(document, MappingABC):
+            meta: dict[str, Any] = {}
+            for key in ("file_id", "file_unique_id", "file_ref", "mime_type", "file_name"):
+                value = document.get(key)
+                if value is not None:
+                    meta[key] = value
+            try:
+                file_size = document.get("file_size")
+                if file_size is not None:
+                    meta["file_size"] = int(file_size)
+            except (TypeError, ValueError):
+                pass
+            return meta or None
         photo_sizes = response.get("photo")
         if isinstance(photo_sizes, SequenceABC):
             best = _select_best_photo_size(photo_sizes)
             if best:
-                meta: dict[str, Any] = {}
+                meta = {}
                 for key in ("file_id", "file_unique_id", "file_ref", "mime_type"):
                     value = best.get(key)
                     if value is not None:
@@ -878,12 +903,12 @@ def _extract_telegram_photo_meta(response: Any) -> dict[str, Any] | None:
                 return meta
         for nested_key in ("result", "message", "channel_post"):
             nested = response.get(nested_key)
-            meta = _extract_telegram_photo_meta(nested)
+            meta = _extract_telegram_file_meta(nested)
             if meta:
                 return meta
     if isinstance(response, SequenceABC) and not isinstance(response, (str, bytes, bytearray)):
         for item in response:
-            meta = _extract_telegram_photo_meta(item)
+            meta = _extract_telegram_file_meta(item)
             if meta:
                 return meta
     return None
@@ -997,16 +1022,42 @@ async def _ingest_photo_internal(
         )
 
         with metrics.measure_telegram():
-            response = await context.telegram.send_photo(
-                chat_id=inputs.channel_id,
-                photo=processed_path,
-                caption=caption,
-            )
+            if inputs.source == "mobile":
+                original_name = inputs.file.path.name or "photo"
+                if not Path(original_name).suffix and mime_type:
+                    normalized_ext = {
+                        "image/jpeg": ".jpg",
+                        "image/jpg": ".jpg",
+                        "image/png": ".png",
+                        "image/webp": ".webp",
+                    }
+                    suffix = normalized_ext.get(mime_type.lower()) if mime_type else None
+                    if suffix:
+                        original_name = f"{original_name}{suffix}"
+                logging.info(
+                    "Publishing mobile upload for chat %s via sendDocument (filename=%s)",
+                    inputs.channel_id,
+                    original_name,
+                )
+                with inputs.file.path.open("rb") as document_stream:
+                    response = await context.telegram.send_document(
+                        chat_id=inputs.channel_id,
+                        document=document_stream,
+                        file_name=original_name,
+                        caption=caption,
+                        content_type=mime_type,
+                    )
+            else:
+                response = await context.telegram.send_photo(
+                    chat_id=inputs.channel_id,
+                    photo=processed_path,
+                    caption=caption,
+                )
         message_id = extract_message_id(response)
         if message_id is None:
             raise RuntimeError("telegram response missing message_id")
 
-        telegram_file_meta = _extract_telegram_photo_meta(response)
+        telegram_file_meta = _extract_telegram_file_meta(response)
         if telegram_file_meta:
             if "mime_type" not in telegram_file_meta and mime_type:
                 telegram_file_meta["mime_type"] = mime_type

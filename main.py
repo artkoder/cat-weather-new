@@ -1417,6 +1417,36 @@ class Bot:
             gc.collect()
         return response, mode
 
+    async def _publish_mobile_document(
+        self,
+        chat_id: int,
+        document: BinaryIO,
+        filename: str,
+        caption: str | None,
+        *,
+        caption_entities: Sequence[dict[str, Any]] | None = None,
+        content_type: str | None = None,
+    ) -> dict[str, Any] | None:
+        resolved_type = (
+            content_type
+            or mimetypes.guess_type(filename)[0]
+            or "application/octet-stream"
+        )
+        logging.info(
+            "Publishing mobile document for chat %s via sendDocument (filename=%s, content_type=%s)",
+            chat_id,
+            filename,
+            resolved_type,
+        )
+        payload: dict[str, Any] = {"chat_id": chat_id, "caption": caption or None}
+        if caption_entities:
+            payload["caption_entities"] = caption_entities
+        return await self.api_request_multipart(
+            "sendDocument",
+            payload,
+            files={"document": (filename, document, resolved_type)},
+        )
+
     @staticmethod
     def _extract_photo_file_meta(
         photo_sizes: Sequence[dict[str, Any]] | None,
@@ -13811,6 +13841,28 @@ def create_app():
             caption: str | None = None,
         ) -> dict[str, Any]:
             response, _ = await self._bot._publish_as_photo(chat_id, str(photo), caption)
+            return response or {}
+
+        async def send_document(
+            self,
+            *,
+            chat_id: int,
+            document: BinaryIO | bytes,
+            file_name: str,
+            caption: str | None = None,
+            content_type: str | None = None,
+        ) -> dict[str, Any]:
+            if isinstance(document, (bytes, bytearray)):
+                document_stream: BinaryIO = io.BytesIO(document)
+            else:
+                document_stream = document
+            response = await self._bot._publish_mobile_document(
+                chat_id,
+                document_stream,
+                file_name,
+                caption,
+                content_type=content_type,
+            )
             return response or {}
 
     register_upload_jobs(

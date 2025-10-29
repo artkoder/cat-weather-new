@@ -238,6 +238,11 @@ async def handle_create_upload(request: web.Request) -> web.Response:
     conn = _ensure_db(request.app)
     config = _ensure_config(request.app)
 
+    has_gps_header = request.headers.get("X-Has-GPS")
+    exif_source_header = request.headers.get("X-EXIF-Source")
+    has_gps_value = has_gps_header.strip() if has_gps_header is not None else None
+    gps_redacted_by_client = has_gps_value == "0"
+
     recognition_channel_id = get_recognition_channel_id(conn)
     asset_channel_id = (
         recognition_channel_id
@@ -287,8 +292,26 @@ async def handle_create_upload(request: web.Request) -> web.Response:
             device_id=device_id,
             idempotency_key=idempotency_key,
             file_ref=storage_key,
+            gps_redacted_by_client=gps_redacted_by_client,
         )
         conn.commit()
+
+        logging.info(
+            "UPLOAD gps-metadata device=%s upload=%s has_gps=%s exif_source=%s",
+            device_id,
+            created_id,
+            has_gps_value,
+            exif_source_header,
+        )
+        if gps_redacted_by_client:
+            logging.info(
+                "MOBILE_UPLOAD_GPS_REDACTED_BY_CLIENT device=%s upload=%s has_gps=%s exif_source=%s",
+                device_id,
+                created_id,
+                has_gps_value,
+                exif_source_header,
+            )
+        request["upload_id"] = created_id
 
         if created_id != upload_id:
             logging.info("UPLOAD idempotent-return device=%s upload=%s", device_id, created_id)

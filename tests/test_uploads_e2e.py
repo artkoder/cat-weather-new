@@ -11,6 +11,7 @@ import os
 import sqlite3
 import sys
 import time
+import logging
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -349,6 +350,7 @@ async def _signed_post(
     device_id: str,
     secret: str,
     idempotency_key: str,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     assert env.client is not None
     timestamp = int(time.time())
@@ -374,6 +376,8 @@ async def _signed_post(
         "X-Signature": signature,
         "X-Content-SHA256": content_sha,
     }
+    if extra_headers:
+        headers.update(extra_headers)
     response = await env.client.post(path, data=body, headers=headers)
     payload = await response.json()
     return response.status, payload
@@ -521,6 +525,43 @@ async def test_uploads_rejects_when_channel_missing(tmp_path: Path) -> None:
         assert env.conn is not None
         total_uploads = env.conn.execute("SELECT COUNT(*) FROM uploads").fetchone()[0]
         assert total_uploads == 0
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_uploads_records_gps_headers(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    env = UploadTestEnv(tmp_path)
+    await env.start()
+    try:
+        env.create_device(device_id="device-1")
+
+        body, boundary = _multipart_body(EXIF_IMAGE_BYTES)
+        caplog.set_level(logging.INFO)
+        status, payload = await _signed_post(
+            env,
+            path="/v1/uploads",
+            body=body,
+            boundary=boundary,
+            device_id="device-1",
+            secret=DEVICE_SECRET,
+            idempotency_key="idem-gps",
+            extra_headers={"X-Has-GPS": "0", "X-EXIF-Source": "ios"},
+        )
+
+        assert status == 202
+        upload_id = payload["id"]
+        assert env.conn is not None
+        row = env.conn.execute(
+            "SELECT gps_redacted_by_client FROM uploads WHERE id=?",
+            (upload_id,),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == 1
+
+        messages = "\n".join(record.getMessage() for record in caplog.records)
+        assert "UPLOAD gps-metadata" in messages
+        assert "MOBILE_UPLOAD_GPS_REDACTED_BY_CLIENT" in messages
     finally:
         await env.close()
 

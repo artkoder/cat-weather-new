@@ -638,7 +638,7 @@ def register_upload_jobs(
                                     "asset_id": asset_id,
                                     "upload_id": upload_id,
                                     "exif_payload": bool(exif_payload),
-                                    "gps_payload": bool(gps_payload),
+                                    "gps_payload": gps_coordinates_present,
                                     "latitude": latitude,
                                     "longitude": longitude,
                                 },

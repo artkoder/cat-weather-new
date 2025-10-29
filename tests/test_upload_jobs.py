@@ -444,11 +444,18 @@ async def test_process_upload_job_success_records_asset(
     )
     assert raw_log.asset_id == row["asset_id"]
     assert raw_log.upload_id == upload_id
-    raw_sections = json.loads(raw_log.exif_sections_raw)
-    raw_zeroth = raw_sections.get("0th") or {}
-    raw_exif = raw_sections.get("Exif") or {}
-    raw_gps = raw_sections.get("GPS") or {}
-    raw_ifds = json.loads(raw_log.exif_ifds_raw)
+    assert raw_log.has_exif is True
+    assert raw_log.has_gps is True
+    assert len(raw_log.photo_meta_raw) <= 64 * 1024
+    photo_meta_raw = json.loads(raw_log.photo_meta_raw)
+    assert photo_meta_raw["has_exif"] is True
+    assert photo_meta_raw["has_gps"] is True
+    assert pytest.approx(photo_meta_raw["latitude"], rel=1e-6) == 55.5
+    assert pytest.approx(photo_meta_raw["longitude"], rel=1e-6) == 37.6
+    raw_exif_sections = photo_meta_raw.get("raw_exif") or {}
+    raw_zeroth = raw_exif_sections.get("0th") or {}
+    raw_exif = raw_exif_sections.get("Exif") or {}
+    raw_gps = photo_meta_raw.get("raw_gps") or {}
     assert raw_zeroth
     assert "Make" in raw_zeroth
     assert raw_exif
@@ -470,8 +477,6 @@ async def test_process_upload_job_success_records_asset(
     assert _decode(raw_gps.get("GPSLongitudeRef")) == "E"
     assert raw_gps.get("GPSLatitude") == [[55, 1], [30, 1], [0, 1]]
     assert raw_gps.get("GPSLongitude") == [[37, 1], [36, 1], [0, 1]]
-    gps_ifd = raw_ifds.get("GPS") or {}
-    assert gps_ifd == raw_gps
 
     mobile_done = next(
         record for record in caplog.records if record.message == "MOBILE_UPLOAD_DONE"
@@ -650,11 +655,13 @@ async def test_process_upload_marks_exif_present_without_gps(
     )
     assert raw_log.asset_id == row["asset_id"]
     assert raw_log.upload_id == upload_id
-    raw_sections = json.loads(raw_log.exif_sections_raw)
-    assert raw_sections.get("GPS") == {}
-    raw_ifds = json.loads(raw_log.exif_ifds_raw)
-    gps_ifd = raw_ifds.get("GPS") or {}
-    assert gps_ifd == {}
+    assert raw_log.has_exif is True
+    assert raw_log.has_gps is False
+    assert len(raw_log.photo_meta_raw) <= 64 * 1024
+    photo_meta_raw = json.loads(raw_log.photo_meta_raw)
+    assert photo_meta_raw["has_exif"] is True
+    assert photo_meta_raw["has_gps"] is False
+    assert photo_meta_raw.get("raw_gps") == {}
 
     metadata_log = next(
         record

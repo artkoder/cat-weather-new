@@ -587,33 +587,40 @@ def register_upload_jobs(
                                 update_kwargs["longitude"] = gps_payload.get("longitude")
                             latitude = update_kwargs.get("latitude")
                             longitude = update_kwargs.get("longitude")
-                            raw_sections_payload: dict[str, dict[str, Any]] = {}
+                            raw_exif_payload: dict[str, Any] = {}
+                            raw_gps_payload: dict[str, Any] = {}
                             if photo_meta:
-                                for ifd_name, raw_ifd in (photo_meta.raw_exif or {}).items():
-                                    raw_sections_payload[ifd_name] = dict(raw_ifd)
+                                if photo_meta.raw_exif:
+                                    raw_exif_payload = {
+                                        key: dict(value)
+                                        for key, value in photo_meta.raw_exif.items()
+                                    }
                                 if photo_meta.raw_gps:
-                                    raw_sections_payload["GPS"] = dict(photo_meta.raw_gps)
-                            if not raw_sections_payload:
-                                raw_sections_payload.update(exif_sections_payload)
-                            for required_ifd in ("0th", "Exif", "GPS"):
-                                raw_sections_payload.setdefault(required_ifd, {})
+                                    raw_gps_payload = dict(photo_meta.raw_gps)
+                            if not raw_exif_payload:
+                                raw_exif_payload = dict(exif_sections_payload.get("Exif") or {})
+                            if not raw_gps_payload:
+                                raw_gps_payload = dict(exif_sections_payload.get("GPS") or {})
+
+                            photo_meta_log_payload = {
+                                "has_exif": bool(raw_exif_payload),
+                                "has_gps": bool(raw_gps_payload),
+                                "latitude": latitude,
+                                "longitude": longitude,
+                                "altitude": photo_meta.altitude if photo_meta else None,
+                                "source": photo_meta.source if photo_meta else None,
+                                "raw_exif": raw_exif_payload,
+                                "raw_gps": raw_gps_payload,
+                            }
+
                             logging.info(
                                 "MOBILE_EXIF_RAW",
                                 extra={
                                     "asset_id": asset_id,
                                     "upload_id": upload_id,
-                                    "exif_sections_raw": json.dumps(
-                                        raw_sections_payload,
-                                        ensure_ascii=False,
-                                        sort_keys=True,
-                                        default=str,
-                                    ),
-                                    "exif_ifds_raw": json.dumps(
-                                        exif_ifds_payload,
-                                        ensure_ascii=False,
-                                        sort_keys=True,
-                                        default=str,
-                                    ),
+                                    "has_exif": photo_meta_log_payload["has_exif"],
+                                    "has_gps": photo_meta_log_payload["has_gps"],
+                                    "photo_meta_raw": _serialize_for_log(photo_meta_log_payload),
                                 },
                             )
 
@@ -778,3 +785,13 @@ def setup_upload_routes(
         app["uploads_config"] = config
     app.router.add_post("/v1/uploads", handle_create_upload)
     app.router.add_get("/v1/uploads/{id}/status", handle_get_upload_status)
+RAW_EXIF_LOG_MAX_LENGTH = 64 * 1024
+
+
+def _serialize_for_log(payload: Mapping[str, Any]) -> str:
+    """Serialize payload to JSON and trim overly large entries."""
+
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    if len(raw) > RAW_EXIF_LOG_MAX_LENGTH:
+        return raw[:RAW_EXIF_LOG_MAX_LENGTH]
+    return raw

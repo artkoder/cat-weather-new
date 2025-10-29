@@ -36,6 +36,7 @@ from tests.fixtures.ingestion_utils import (
     StorageStub,
     TelegramStub,
     create_sample_image,
+    create_sample_image_with_invalid_gps,
     create_sample_image_without_gps,
 )
 
@@ -833,8 +834,10 @@ async def test_process_upload_marks_exif_present_without_gps(
         recognition_channel_id=recognition_channel_id,
     )
     data = DataAccess(conn)
-    image_path = create_sample_image_without_gps(tmp_path / "asset-nogps.jpg")
-    file_key = "nogps-key"
+    image_path = create_sample_image_with_invalid_gps(
+        tmp_path / "asset-invalid-gps.jpg"
+    )
+    file_key = "invalid-gps-key"
     storage = StorageStub({file_key: image_path})
     telegram = TelegramStub()
     metrics = UploadMetricsRecorder()
@@ -879,8 +882,9 @@ async def test_process_upload_marks_exif_present_without_gps(
 
     metadata = asset.metadata or {}
     assert metadata.get("exif") == asset.exif
-    gps_metadata = metadata.get("gps")
-    assert not gps_metadata
+    gps_metadata = metadata.get("gps") or {}
+    assert "latitude" not in gps_metadata
+    assert "longitude" not in gps_metadata
     assert asset.latitude is None
     assert asset.longitude is None
     assert asset.exif_present is True
@@ -891,7 +895,7 @@ async def test_process_upload_marks_exif_present_without_gps(
     assert exif_log.asset_id == row["asset_id"]
     assert exif_log.upload_id == upload_id
     assert exif_log.exif_payload is True
-    assert exif_log.gps_payload is False
+    assert exif_log.gps_payload is True
     assert exif_log.latitude is None
     assert exif_log.longitude is None
 
@@ -902,20 +906,32 @@ async def test_process_upload_marks_exif_present_without_gps(
     assert raw_log.upload_id == upload_id
     assert raw_log.has_exif is True
     assert raw_log.has_gps is False
-    assert raw_log.gps_ifd_present is False
+    assert raw_log.gps_ifd_present is True
     assert len(raw_log.photo_meta_raw) <= 64 * 1024
     photo_meta_raw = json.loads(raw_log.photo_meta_raw)
     assert photo_meta_raw["has_exif"] is True
     assert photo_meta_raw["has_gps"] is False
-    assert photo_meta_raw["gps_ifd_present"] is False
-    assert photo_meta_raw.get("raw_gps") == {}
+    assert photo_meta_raw["gps_ifd_present"] is True
+    raw_gps = photo_meta_raw.get("raw_gps") or {}
+    assert raw_gps
+
+    def _decode(value: Any) -> Any:
+        if isinstance(value, str):
+            try:
+                return bytes.fromhex(value).decode("utf-8")
+            except ValueError:
+                return value
+        return value
+
+    assert _decode(raw_gps.get("GPSLatitudeRef")) == "Q"
+    assert _decode(raw_gps.get("GPSLongitudeRef")) == "R"
+    assert raw_gps.get("GPSLatitude") == [[55, 1], [30, 1], [0, 1]]
+    assert raw_gps.get("GPSLongitude") == [[37, 1], [36, 1], [0, 1]]
 
     metadata_log = next(
-        record
-        for record in caplog.records
-        if record.message == "MOBILE_IMAGE_METADATA" and record.gps_present is False
+        record for record in caplog.records if record.message == "MOBILE_IMAGE_METADATA"
     )
-    assert metadata_log.path.endswith("asset-nogps.jpg")
+    assert metadata_log.path.endswith("asset-invalid-gps.jpg")
 
 
 @pytest.mark.asyncio

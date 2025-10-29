@@ -51,6 +51,32 @@ def create_sample_image(path: Path) -> Path:
     return path
 
 
+def create_sample_image_with_invalid_gps(path: Path) -> Path:
+    """Create a JPEG image with EXIF metadata that contains invalid GPS tags."""
+
+    image = Image.new("RGB", (640, 480), color=(45, 55, 65))
+    exif_dict = {
+        "0th": {
+            piexif.ImageIFD.Make: "UnitTest".encode("utf-8"),
+            piexif.ImageIFD.Model: "BadGPS".encode("utf-8"),
+        },
+        "Exif": {
+            piexif.ExifIFD.DateTimeOriginal: "2023:12:24 15:30:45",
+        },
+        "GPS": {
+            piexif.GPSIFD.GPSLatitudeRef: "Q",
+            piexif.GPSIFD.GPSLatitude: [(55, 1), (30, 1), (0, 1)],
+            piexif.GPSIFD.GPSLongitudeRef: "R",
+            piexif.GPSIFD.GPSLongitude: [(37, 1), (36, 1), (0, 1)],
+        },
+        "1st": {},
+        "thumbnail": None,
+    }
+    exif_bytes = piexif.dump(exif_dict)
+    image.save(path, format="JPEG", exif=exif_bytes)
+    return path
+
+
 def create_sample_image_without_gps(path: Path) -> Path:
     """Create a JPEG image with EXIF metadata but without GPS information."""
 

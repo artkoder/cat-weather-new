@@ -62,6 +62,7 @@ def extract_metadata_from_file(
     exif_payload: dict[str, Any] = {}
     gps_info: dict[str, Any] = {}
     exif_ifds: dict[str, dict[str, Any]] = {}
+    raw_gps_snapshot: dict[str, Any] | None = None
     source = "unknown"
 
     exif_dict: dict[str, Any] | None = None
@@ -101,6 +102,11 @@ def extract_metadata_from_file(
         exif_payload, gps_info, exif_ifds = _extract_from_piexif(exif_dict)
         gps_issue = _validate_gps_payload(gps_info)
         if gps_issue:
+            raw_gps_snapshot = _capture_gps_snapshot(
+                raw_gps_snapshot,
+                exif_payload=exif_payload,
+                exif_ifds=exif_ifds,
+            )
             _clear_gps_blocks(exif_payload, exif_ifds)
             gps_info = {}
 
@@ -119,6 +125,11 @@ def extract_metadata_from_file(
                     retry_payload, retry_gps, retry_ifds = _extract_from_piexif(retry_exif_dict)
                     retry_issue = _validate_gps_payload(retry_gps)
                     if retry_issue:
+                        raw_gps_snapshot = _capture_gps_snapshot(
+                            raw_gps_snapshot,
+                            exif_payload=retry_payload,
+                            exif_ifds=retry_ifds,
+                        )
                         _clear_gps_blocks(retry_payload, retry_ifds)
                         exif_payload = _merge_exif_payloads(exif_payload, retry_payload)
                         exif_ifds = _merge_exif_ifds(
@@ -156,6 +167,11 @@ def extract_metadata_from_file(
                             )
                             fallback_gps.clear()
                             fallback_source = None
+                            raw_gps_snapshot = _capture_gps_snapshot(
+                                raw_gps_snapshot,
+                                exif_payload=fallback_payload,
+                                exif_ifds=fallback_ifds,
+                            )
                             _clear_gps_blocks(fallback_payload, fallback_ifds)
 
                 if retry_issue and (not fallback_gps) and exifread is not None:
@@ -179,6 +195,11 @@ def extract_metadata_from_file(
                                 )
                                 fallback_gps.clear()
                                 fallback_source = None
+                                raw_gps_snapshot = _capture_gps_snapshot(
+                                    raw_gps_snapshot,
+                                    exif_payload=fallback_payload,
+                                    exif_ifds=fallback_ifds,
+                                )
                                 _clear_gps_blocks(fallback_payload, fallback_ifds)
 
                 if fallback_payload:
@@ -233,6 +254,9 @@ def extract_metadata_from_file(
         exif_ifds=exif_ifds,
         source=source,
     )
+
+    if raw_gps_snapshot is not None and not photo_meta.raw_gps:
+        photo_meta.raw_gps = dict(raw_gps_snapshot)
 
     gps_payload = _build_gps_payload(photo_meta)
 
@@ -370,6 +394,30 @@ def _merge_exif_ifds(
         combined.update(ifd_values)
         merged[ifd_name] = combined
     return merged
+
+
+def _capture_gps_snapshot(
+    snapshot: dict[str, Any] | None,
+    *,
+    exif_payload: Mapping[str, Any],
+    exif_ifds: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    if snapshot:
+        return snapshot
+
+    gps_ifd = exif_ifds.get("GPS")
+    if isinstance(gps_ifd, Mapping):
+        return dict(gps_ifd)
+
+    gps_payload = exif_payload.get("GPS")
+    if isinstance(gps_payload, Mapping):
+        return dict(gps_payload)
+
+    gps_info_payload = exif_payload.get("GPSInfo")
+    if isinstance(gps_info_payload, Mapping):
+        return dict(gps_info_payload)
+
+    return snapshot
 
 
 def _clear_gps_blocks(

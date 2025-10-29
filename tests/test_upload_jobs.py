@@ -5,6 +5,7 @@ import logging
 import shutil
 import sqlite3
 import sys
+from copy import deepcopy
 from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
@@ -620,6 +621,97 @@ async def test_process_upload_serializes_complex_metadata(
     stats_payload = labels_payload.get("stats") or {}
     assert stats_payload.get("ratio") == pytest.approx(0.4, rel=1e-6)
     assert stats_payload.get("chunks") == ["0102"]
+
+
+@pytest.mark.asyncio
+async def test_process_upload_injects_exif_into_file_meta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recognition_channel_id = -42001
+    conn = _setup_connection(
+        asset_channel_id=recognition_channel_id,
+        recognition_channel_id=recognition_channel_id,
+    )
+    data = DataAccess(conn)
+    image_path = create_sample_image(tmp_path / "file-meta-exif.jpg")
+    file_key = "file-meta-exif"
+    storage = StorageStub({file_key: image_path})
+    telegram = TelegramStub()
+    metrics = UploadMetricsRecorder()
+    queue = JobQueue(conn)
+    config = UploadsConfig(
+        assets_channel_id=recognition_channel_id,
+        vision_enabled=False,
+    )
+
+    register_upload_jobs(
+        queue,
+        conn,
+        storage=storage,
+        data=data,
+        telegram=telegram,
+        metrics=metrics,
+        config=config,
+    )
+
+    upload_id = _prepare_upload(conn, file_key=file_key)
+
+    injected_exif: dict[str, Any] = {
+        "BinaryTag": b"\x00\x01",
+        "ExposureTime": (1, 200),
+        "FractionTag": Fraction(3, 2),
+        "GPS": {
+            "GPSLatitude": [(55, 1), (30, 1), (0, 1)],
+            "MakerNote": b"\x02\x03",
+        },
+    }
+
+    original_save_asset = DataAccess.save_asset
+
+    def save_asset_with_exif(self: DataAccess, *args: Any, **kwargs: Any) -> str:
+        file_meta = dict(kwargs.get("file_meta") or {})
+        file_meta["exif"] = deepcopy(injected_exif)
+        kwargs["file_meta"] = file_meta
+        return original_save_asset(self, *args, **kwargs)
+
+    monkeypatch.setattr(DataAccess, "save_asset", save_asset_with_exif)
+
+    job = Job(
+        id=99,
+        name="process_upload",
+        payload={"upload_id": upload_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await queue.handlers["process_upload"](job)
+
+    upload_row = conn.execute(
+        "SELECT status, error, asset_id FROM uploads WHERE id=?",
+        (upload_id,),
+    ).fetchone()
+    assert upload_row["status"] == "done"
+    assert upload_row["error"] is None
+    assert upload_row["asset_id"]
+
+    asset_row = conn.execute(
+        "SELECT exif_json FROM assets WHERE id=?",
+        (upload_row["asset_id"],),
+    ).fetchone()
+    assert asset_row is not None
+    assert asset_row["exif_json"]
+
+    exif_payload = json.loads(asset_row["exif_json"])
+    assert exif_payload["BinaryTag"] == "0001"
+    assert exif_payload["ExposureTime"] == pytest.approx(1 / 200, rel=1e-6)
+    assert exif_payload["FractionTag"] == pytest.approx(1.5, rel=1e-6)
+    gps_payload = exif_payload.get("GPS") or {}
+    assert gps_payload.get("GPSLatitude") == [55.0, 30.0, 0.0]
+    assert gps_payload.get("MakerNote") == "0203"
 
 
 @pytest.mark.asyncio

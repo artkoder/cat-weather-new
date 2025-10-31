@@ -2204,8 +2204,9 @@ class Bot:
         if state['active'] and state['storm_start']:
             start = datetime.fromisoformat(state['storm_start'])
             if now - start >= timedelta(hours=1):
-                start_str = self.format_time(start.isoformat(), TZ_OFFSET)
-                end_str = self.format_time(now.isoformat(), TZ_OFFSET)
+                tz_offset = self.get_default_tz_offset()
+                start_str = self.format_time(start.isoformat(), tz_offset)
+                end_str = self.format_time(now.isoformat(), tz_offset)
                 text = (
                     'Время собирать янтарь. Закончился шторм, длившийся с '
                     f'{start_str} по {end_str}, теперь в окрестностях Светлогорска, Отрадного, Донского и Балтийска можно идти собирать янтарь на пляже (вывоз за пределы региона по закону запрещён).\n\n'
@@ -2364,6 +2365,50 @@ class Bot:
         dt = datetime.fromisoformat(ts)
         dt += self.parse_offset(offset)
         return dt.strftime('%H:%M %d.%m.%Y')
+
+    def get_default_tz_offset(self) -> str:
+        """Return the timezone offset configured in settings or fallback to global default."""
+
+        def _extract(config: Mapping[str, Any] | None) -> str | None:
+            if not isinstance(config, Mapping):
+                return None
+            raw_value = config.get('tz')
+            if isinstance(raw_value, str):
+                candidate = raw_value.strip()
+                if candidate:
+                    try:
+                        self.parse_offset(candidate)
+                    except Exception:
+                        return None
+                    return candidate
+            return None
+
+        preferred_codes = (
+            'weather',
+            'weather_new',
+            'weather_daily',
+            'weather_hourly',
+        )
+        for code in preferred_codes:
+            try:
+                config = self.data.get_rubric_config(code)
+            except Exception:
+                continue
+            tz_value = _extract(config)
+            if tz_value:
+                return tz_value
+
+        try:
+            rubrics = self.data.list_rubrics()
+        except Exception:
+            rubrics = []
+        for rubric in rubrics:
+            config = self._normalize_rubric_config(rubric.config)
+            tz_value = _extract(config)
+            if tz_value:
+                return tz_value
+
+        return TZ_OFFSET
 
     def get_tz_offset(self, user_id: int) -> str:
         cur = self.db.execute('SELECT tz_offset FROM users WHERE user_id=?', (user_id,))

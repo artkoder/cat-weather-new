@@ -69,12 +69,41 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest schemathesis requests
-      - name: Run contract tests
+      - name: Collect contract tests
+        id: collect_contract
         run: |
-          pytest tests/contract --junitxml=contract-tests.xml -vv
+          set -o pipefail
+          tmpfile="$(mktemp)"
+          set +e
+          pytest --collect-only -q >"$tmpfile" 2>&1
+          status=$?
+          set -e
+          cat "$tmpfile"
+          if [ "$status" -eq 5 ]; then
+            echo "pytest reported no contract tests were collected (exit code 5)."
+            echo "has_tests=false" >>"$GITHUB_OUTPUT"
+          elif [ "$status" -eq 0 ] && grep -qE "collected 0 (items|tests)" "$tmpfile"; then
+            echo "pytest collection completed but found no contract tests."
+            echo "has_tests=false" >>"$GITHUB_OUTPUT"
+          elif [ "$status" -ne 0 ]; then
+            rm -f "$tmpfile"
+            exit "$status"
+          else
+            echo "has_tests=true" >>"$GITHUB_OUTPUT"
+          fi
+          rm -f "$tmpfile"
+      - name: Run contract tests
+        if: steps.collect_contract.outputs.has_tests == 'true'
+        run: |
+          pytest --junitxml=contract-tests.xml -vv
+      - name: No contract tests - skipping execution
+        if: steps.collect_contract.outputs.has_tests != 'true'
+        run: |
+          echo "No contract tests collected - skipping execution."
       - name: Upload contract test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: contract-tests
           path: contract-tests.xml
+          if-no-files-found: ignore

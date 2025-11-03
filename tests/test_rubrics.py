@@ -3527,110 +3527,229 @@ async def test_rubric_publish_cancel_resets_pending(tmp_path):
     await bot.close()
 
 
-def test_classify_wind():
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        (4.9, None),
+        (5.0, None),
+        (9.99, None),
+        (10.0, "strong"),
+        (12.5, "strong"),
+        (14.9, "strong"),
+        (15.0, "very_strong"),
+        (20.0, "very_strong"),
+    ],
+)
+def test_classify_wind(value, expected):
     from main import Bot
+
     bot = Bot("dummy", ":memory:")
-    assert bot._classify_wind(None) is None
-    assert bot._classify_wind(5.0) is None
-    assert bot._classify_wind(9.9) is None
-    assert bot._classify_wind(10.0) == "strong"
-    assert bot._classify_wind(12.5) == "strong"
-    assert bot._classify_wind(14.9) == "strong"
-    assert bot._classify_wind(15.0) == "very_strong"
-    assert bot._classify_wind(20.0) == "very_strong"
+    assert bot._classify_wind(value) == expected
 
 
-def test_pick_sea_asset():
+@pytest.mark.asyncio
+async def test_pick_sea_asset_prioritizes_tags_and_categories():
     from main import Bot
-    from data_access import Asset
+
     bot = Bot("dummy", ":memory:")
-    asset1 = Asset(
-        id="1",
-        upload_id=None,
-        file_ref=None,
-        content_type=None,
-        sha256=None,
-        width=None,
-        height=None,
-        exif_json=None,
-        labels_json=None,
-        tg_message_id=None,
-        payload_json=None,
-        created_at="2024-01-01T00:00:00",
-        _vision_results={"tags": ["sunset", "water"]},
+
+    def build(asset_id: str, *, tags: list[str] | None = None, categories: list[str] | None = None):
+        asset = _build_test_asset(
+            asset_id,
+            vision_category="sea",
+            vision_results={"tags": list(tags or [])},
+        )
+        if categories is not None:
+            asset.payload["categories"] = categories
+            asset.labels = categories
+            asset.labels_json = json.dumps(categories, ensure_ascii=False)
+        return asset
+
+    sunset_tag = build(101, tags=["sunset", "sea"])
+    sunset_category = build(102, categories=["Закат"])
+    storm_tag = build(103, tags=["storm", "waves"])
+    storm_category = build(104, tags=["sea"], categories=["Шторм"])
+
+    recent = datetime.utcnow().isoformat()
+    sunset_category.payload["last_used_at"] = recent
+    storm_category.payload["last_used_at"] = recent
+    sunset_tag.payload["last_used_at"] = "2023-01-01T00:00:00"
+    storm_tag.payload["last_used_at"] = "2023-01-01T00:00:00"
+
+    selected_calm = bot._pick_sea_asset(
+        [sunset_category], want_sunset=True, want_stormy=False
     )
-    asset2 = Asset(
-        id="2",
-        upload_id=None,
-        file_ref=None,
-        content_type=None,
-        sha256=None,
-        width=None,
-        height=None,
-        exif_json=None,
-        labels_json=None,
-        tg_message_id=None,
-        payload_json=None,
-        created_at="2024-01-02T00:00:00",
-        _vision_results={"tags": ["storm", "waves"]},
+    assert selected_calm is sunset_category
+
+    selected_calm_prefers_tag = bot._pick_sea_asset(
+        [sunset_category, sunset_tag], want_sunset=True, want_stormy=False
     )
-    asset3 = Asset(
-        id="3",
-        upload_id=None,
-        file_ref=None,
-        content_type=None,
-        sha256=None,
-        width=None,
-        height=None,
-        exif_json=None,
-        labels_json=None,
-        tg_message_id=None,
-        payload_json=None,
-        created_at="2024-01-03T00:00:00",
-        _vision_results={"tags": ["sea", "calm"]},
+    assert selected_calm_prefers_tag is sunset_tag
+
+    selected_storm_tag = bot._pick_sea_asset(
+        [sunset_tag, storm_tag], want_sunset=False, want_stormy=True
     )
-    selected = bot._pick_sea_asset([asset1, asset2, asset3], want_sunset=True, want_stormy=False)
-    assert selected is not None
-    assert selected.id == "1"
-    selected = bot._pick_sea_asset([asset1, asset2, asset3], want_sunset=False, want_stormy=True)
-    assert selected is not None
-    assert selected.id == "2"
-    selected = bot._pick_sea_asset([], want_sunset=True, want_stormy=False)
-    assert selected is None
+    assert selected_storm_tag is storm_tag
+
+    selected_storm_category = bot._pick_sea_asset(
+        [storm_category], want_sunset=False, want_stormy=True
+    )
+    assert selected_storm_category is storm_category
+
+    assert bot._pick_sea_asset([], want_sunset=True, want_stormy=False) is None
+
+    await bot.close()
 
 
-def test_update_asset_categories_merge():
+def test_update_asset_categories_merge_trims_and_preserves_order(tmp_path):
     from main import Bot
-    from data_access import Asset
-    bot = Bot("dummy", ":memory:")
-    _seed_weather(bot)
-    asset_id = "test-asset-123"
+
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    asset_id = bot.data.save_asset(
+        channel_id=-100,
+        message_id=1,
+        template=None,
+        hashtags=None,
+        tg_chat_id=-100,
+        caption=None,
+        kind="photo",
+        file_meta={
+            "file_id": "file-1",
+            "file_unique_id": "unique-1",
+            "file_name": "sea.jpg",
+            "mime_type": "image/jpeg",
+            "width": 640,
+            "height": 640,
+        },
+        origin="test",
+    )
+
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.categories == []
+
+    bot.data.update_asset_categories_merge(asset_id, ["   ", "Закат", "закат"])
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.categories == ["Закат"]
+
+    bot.data.update_asset_categories_merge(asset_id, [" шторм ", " ШТОРМ ", "  ЗАКАТ  ", "   "])
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.categories == ["Закат", "шторм"]
+
+    bot.data.update_asset_categories_merge(asset_id, ["  ", "sea"])
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.categories == ["Закат", "шторм", "sea"]
+
+
+@pytest.mark.asyncio
+async def test_publish_sea_soft_truncation_preserves_footer(tmp_path):
+    from main import Bot
+
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     now = datetime.utcnow().isoformat()
+    bot.db.execute("INSERT OR REPLACE INTO seas (id, name, lat, lon) VALUES (?, ?, ?, ?)", (1, "Балтика", 54.95, 20.2))
     bot.db.execute(
         """
-        INSERT INTO assets (id, upload_id, file_ref, content_type, sha256, width, height, 
-                            exif_json, labels_json, tg_message_id, created_at, payload_json)
-        VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, '[]', NULL, ?, '{}')
+        INSERT OR REPLACE INTO sea_cache (
+            sea_id, updated, current, morning, day, evening, night,
+            wave, morning_wave, day_wave, evening_wave, night_wave
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (asset_id, "test-file-ref", "image/jpeg", "test-sha256", 800, 600, now)
+        (1, now, 8.0, None, None, None, None, 0.4, None, None, None, None),
+    )
+    bot.db.execute(
+        "INSERT OR REPLACE INTO cities (id, name, lat, lon) VALUES (?, ?, ?, ?)",
+        (1, "Калининград", 54.7104, 20.4522),
+    )
+    bot.db.execute(
+        """
+        INSERT OR REPLACE INTO weather_cache_hour (
+            city_id, timestamp, temperature, weather_code, wind_speed, is_day
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (1, now, 10.0, 1, 4.0, 1),
     )
     bot.db.commit()
-    asset = bot.data.get_asset(asset_id)
-    assert asset is not None
-    initial_categories = asset.categories or []
-    assert "закат" not in initial_categories
-    bot.data.update_asset_categories_merge(asset_id, ["закат"])
-    asset = bot.data.get_asset(asset_id)
-    assert asset is not None
-    assert "закат" in asset.categories
-    bot.data.update_asset_categories_merge(asset_id, ["закат", "sea"])
-    asset = bot.data.get_asset(asset_id)
-    assert asset is not None
-    categories_lower = {c.lower() for c in asset.categories}
-    assert "закат" in categories_lower
-    assert "sea" in categories_lower
-    count_sunset = sum(1 for c in asset.categories if c.lower() == "закат")
-    assert count_sunset == 1
+
+    rubric = bot.data.get_rubric_by_code("sea")
+    assert rubric is not None
+
+    photo_path = tmp_path / "long-caption.jpg"
+    photo_path.write_bytes(b"image-bytes")
+    asset_id = bot.data.save_asset(
+        channel_id=-100,
+        message_id=10,
+        template=None,
+        hashtags=None,
+        tg_chat_id=-100,
+        caption=None,
+        kind="photo",
+        file_meta={
+            "file_id": "file-long",
+            "file_unique_id": "unique-long",
+            "file_name": "long-caption.jpg",
+            "mime_type": "image/jpeg",
+            "width": 800,
+            "height": 600,
+        },
+        rubric_id=rubric.id,
+        origin="test",
+    )
+    bot.data.update_asset(
+        asset_id,
+        vision_category="sea",
+        vision_results={"tags": ["sunset"]},
+        local_path=str(photo_path),
+        rubric_id=rubric.id,
+    )
+
+    long_caption = " ".join(["Очень длинное описание моря с мягким ветром." for _ in range(80)])
+
+    async def fake_generate_sea_copy(self, **kwargs):
+        return long_caption, ["#море"]
+
+    bot._generate_sea_copy = fake_generate_sea_copy.__get__(bot, Bot)
+
+    captured: dict[str, Any] = {}
+
+    async def fake_api_request(self, method, data=None, *, files=None):
+        if method == "sendPhoto":
+            captured["caption"] = data["caption"]
+            captured["files"] = files
+            return {"ok": True, "result": {"message_id": 555}}
+        if method == "deleteMessage":
+            return {"ok": True}
+        return {"ok": True}
+
+    bot.api_request = fake_api_request.__get__(bot, Bot)
+
+    async def fake_reverse_geocode(self, lat, lon):
+        return {}
+
+    bot._reverse_geocode = fake_reverse_geocode.__get__(bot, Bot)
+
+    success = await bot._publish_sea(rubric, channel_id=-100)
+    assert success
+    caption = captured["caption"]
+    files = captured["files"]
+    assert files and "photo" in files
+    photo_payload = files["photo"]
+    assert isinstance(photo_payload, tuple) and len(photo_payload) == 2
+    assert len(caption) < 1000
+    assert "#море" in caption
+    assert "#БалтийскоеМоре" in caption
+    assert "📂 Полюбить 39" in caption
+    segments = caption.split("\n\n")
+    assert segments[-1].strip().startswith("📂 Полюбить 39")
+    hashtag_block = next((part for part in segments if part.strip().startswith("#")), "")
+    assert "#море" in hashtag_block
+    assert "#БалтийскоеМоре" in hashtag_block
+
+    await bot.close()
 
 
 @pytest.mark.asyncio

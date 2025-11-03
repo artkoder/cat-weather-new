@@ -1,0 +1,21 @@
+language: python
+python_version: "3.11"
+
+setup:
+  - make install
+
+lint:
+  - make lint
+
+test:
+  - make test
+
+env:
+  TELEGRAM_BOT_TOKEN: "dummy"
+  WEBHOOK_URL: "https://example.com"
+  OPENAI_API_KEY: ""
+  SUPABASE_URL: ""
+  SUPABASE_KEY: ""
+  E2E_MODE: "false"
+  LOG_LEVEL: "WARNING"
+  DB_PATH: "/tmp/test_bot.db"

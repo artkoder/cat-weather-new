@@ -418,6 +418,7 @@ async def _signed_get(
     return response.status, payload
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_create_app_registers_process_upload_and_completes_flow(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -566,6 +567,7 @@ async def test_uploads_records_gps_headers(tmp_path: Path, caplog: pytest.LogCap
         await env.close()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_uploads_e2e_happy_path(tmp_path: Path):
     env = UploadTestEnv(tmp_path)
@@ -659,6 +661,7 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
         await env.close()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cleanup_flag", [False, True], ids=["retain", "cleanup"])
 async def test_process_upload_local_cleanup(tmp_path: Path, cleanup_flag: bool):
@@ -844,6 +847,7 @@ async def test_upload_status_returns_error_for_failed_upload(tmp_path: Path):
         await env.close()
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_upload_processing_with_vision(tmp_path: Path):
     env = UploadTestEnv(tmp_path)

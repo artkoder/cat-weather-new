@@ -319,16 +319,9 @@ async def handle_create_upload(request: web.Request) -> web.Response:
             request["upload_id"] = created_id
             existing = get_upload(conn, device_id=device_id, upload_id=created_id)
             payload: dict[str, Any] = {
-                "error": "conflict",
-                "message": "An upload with this idempotency key already exists.",
-                "id": created_id,
+                "upload_id": created_id,
+                "status": existing.get("status", "accepted") if existing else "accepted",
             }
-            if existing:
-                payload["status"] = existing.get("status")
-                if existing.get("error") is not None:
-                    payload["upload_error"] = existing.get("error")
-                if existing.get("asset_id") is not None:
-                    payload["asset_id"] = existing.get("asset_id")
             return web.json_response(payload, status=409)
 
         record_upload_created()
@@ -389,7 +382,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
-        return web.json_response({"id": upload_id, "status": "queued"}, status=202)
+        return web.json_response({"upload_id": upload_id, "status": "accepted"}, status=202)
 
 
 async def handle_get_upload_status(request: web.Request) -> web.Response:

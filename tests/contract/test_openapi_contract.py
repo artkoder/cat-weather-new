@@ -38,7 +38,7 @@ from main import apply_migrations, attach_device
 from storage import LocalStorage
 
 schemathesis = pytest.importorskip("schemathesis")
-schemathesis_loaders = pytest.importorskip("schemathesis.loaders")
+schemathesis_openapi = pytest.importorskip("schemathesis.openapi")
 requests = pytest.importorskip("requests")
 
 ASSET_CHANNEL_ID = -100123
@@ -177,12 +177,13 @@ async def _call_attach(
     openapi_schema,
     *,
     token: str,
-    name: str,
+    name: str | None = None,
 ):
     operation = openapi_schema["/v1/devices/attach"]["post"]
-    case = operation.make_case()
-    case.media_type = "application/json"
-    case.body = {"token": token, "name": name}
+    case = operation.Case(
+        body={"token": token},
+        media_type="application/json"
+    )
     response = await asyncio.to_thread(case.call, base_url=contract_server.base_url)
     case.validate_response(response)
     return response
@@ -242,7 +243,7 @@ async def _execute_upload_request(
         idempotency_key=key,
     )
     response = await asyncio.to_thread(_send_prepared, prepared)
-    case = upload_operation.make_case()
+    case = upload_operation.Case()
     case.validate_response(response)
     return response, key
 
@@ -274,7 +275,7 @@ async def _execute_status_request(
         idempotency_key=None,
     )
     response = await asyncio.to_thread(_send_prepared, prepared)
-    case = status_operation.make_case(path_parameters={"id": upload_id})
+    case = status_operation.Case(path_parameters={"id": upload_id})
     case.validate_response(response)
     return response
 
@@ -287,15 +288,7 @@ def openapi_schema() -> schemathesis.schemas.BaseSchema:
             "OpenAPI contract is unavailable; fetch api/contract submodule to run contract tests.",
             allow_module_level=True,
         )
-    try:
-        return schemathesis_loaders.from_path(
-            contract_path, validate_schema=False
-        )
-    except TypeError:
-        # Older Schemathesis versions don't support validate_schema.
-        # Fall back to the default behavior so local development with
-        # pinned dependencies keeps working.
-        return schemathesis_loaders.from_path(contract_path)
+    return schemathesis_openapi.from_path(contract_path)
 
 
 @pytest.fixture
@@ -384,9 +377,10 @@ def contract_server(
 async def test_contract_attach_device(contract_server: ContractServerContext, openapi_schema):
     token = contract_server.issue_pairing_token(user_id=1201, device_name="Spec Attach")
     operation = openapi_schema["/v1/devices/attach"]["post"]
-    case = operation.make_case()
-    case.media_type = "application/json"
-    case.body = {"token": token, "name": "Spec Attach"}
+    case = operation.Case(
+        body={"token": token},
+        media_type="application/json"
+    )
     response = await asyncio.to_thread(case.call, base_url=contract_server.base_url)
     case.validate_response(response)
     payload = response.json()
@@ -398,9 +392,10 @@ async def test_contract_attach_device(contract_server: ContractServerContext, op
 async def test_contract_upload_and_status(contract_server: ContractServerContext, openapi_schema):
     token = contract_server.issue_pairing_token(user_id=1301, device_name="Spec Upload")
     attach_operation = openapi_schema["/v1/devices/attach"]["post"]
-    attach_case = attach_operation.make_case()
-    attach_case.media_type = "application/json"
-    attach_case.body = {"token": token, "name": "Spec Upload"}
+    attach_case = attach_operation.Case(
+        body={"token": token},
+        media_type="application/json"
+    )
     attach_response = await asyncio.to_thread(attach_case.call, base_url=contract_server.base_url)
     attach_case.validate_response(attach_response)
     device_payload = attach_response.json()
@@ -433,11 +428,11 @@ async def test_contract_upload_and_status(contract_server: ContractServerContext
         idempotency_key=idempotency_key,
     )
     upload_response = await asyncio.to_thread(_send_prepared, prepared)
-    upload_case = upload_operation.make_case()
+    upload_case = upload_operation.Case()
     upload_case.validate_response(upload_response)
     assert upload_response.status_code == 202
     upload_payload = upload_response.json()
-    upload_id = upload_payload["id"]
+    upload_id = upload_payload["upload_id"]
     assert upload_payload["status"]
 
     status_operation = openapi_schema["/v1/uploads/{id}/status"]["get"]
@@ -459,7 +454,7 @@ async def test_contract_upload_and_status(contract_server: ContractServerContext
         idempotency_key=None,
     )
     status_response = await asyncio.to_thread(_send_prepared, prepared_status)
-    status_case = status_operation.make_case(path_parameters={"id": upload_id})
+    status_case = status_operation.Case(path_parameters={"id": upload_id})
     status_case.validate_response(status_response)
     status_payload = status_response.json()
     assert status_payload["id"] == upload_id
@@ -470,9 +465,10 @@ async def test_contract_upload_and_status(contract_server: ContractServerContext
 async def test_contract_rejects_bad_signature(contract_server: ContractServerContext, openapi_schema):
     token = contract_server.issue_pairing_token(user_id=1401, device_name="Spec Invalid")
     attach_operation = openapi_schema["/v1/devices/attach"]["post"]
-    attach_case = attach_operation.make_case()
-    attach_case.media_type = "application/json"
-    attach_case.body = {"token": token, "name": "Spec Invalid"}
+    attach_case = attach_operation.Case(
+        body={"token": token},
+        media_type="application/json"
+    )
     attach_response = await asyncio.to_thread(attach_case.call, base_url=contract_server.base_url)
     attach_case.validate_response(attach_response)
     device_payload = attach_response.json()
@@ -497,7 +493,7 @@ async def test_contract_rejects_bad_signature(contract_server: ContractServerCon
     )
     prepared.headers["X-Signature"] = "0" * 64
     response = await asyncio.to_thread(_send_prepared, prepared)
-    status_case = status_operation.make_case(path_parameters={"id": "123"})
+    status_case = status_operation.Case(path_parameters={"id": "123"})
     status_case.validate_response(response)
     assert response.status_code in {401, 403}
     error = response.json().get("error")

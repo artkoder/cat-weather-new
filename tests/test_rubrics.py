@@ -3068,7 +3068,7 @@ async def test_rubrics_overview_lists_configs(tmp_path):
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
     rubrics = bot.data.list_rubrics()
-    assert {r.code for r in rubrics} == {"flowers", "guess_arch"}
+    assert {r.code for r in rubrics} == {"flowers", "guess_arch", "sea"}
     bot.data.upsert_rubric(
         "flowers",
         "Flowers",
@@ -3524,4 +3524,137 @@ async def test_rubric_publish_cancel_resets_pending(tmp_path):
     ack_payloads = [payload for method, payload, _ in api_calls if method == "answerCallbackQuery"]
     assert any(payload and payload.get("callback_query_id") == "cb-cancel" for payload in ack_payloads)
 
+    await bot.close()
+
+
+def test_classify_wind():
+    from main import Bot
+    bot = Bot("dummy", ":memory:")
+    assert bot._classify_wind(None) is None
+    assert bot._classify_wind(5.0) is None
+    assert bot._classify_wind(9.9) is None
+    assert bot._classify_wind(10.0) == "strong"
+    assert bot._classify_wind(12.5) == "strong"
+    assert bot._classify_wind(14.9) == "strong"
+    assert bot._classify_wind(15.0) == "very_strong"
+    assert bot._classify_wind(20.0) == "very_strong"
+
+
+def test_pick_sea_asset():
+    from main import Bot
+    from data_access import Asset
+    bot = Bot("dummy", ":memory:")
+    asset1 = Asset(
+        id="1",
+        upload_id=None,
+        file_ref=None,
+        content_type=None,
+        sha256=None,
+        width=None,
+        height=None,
+        exif_json=None,
+        labels_json=None,
+        tg_message_id=None,
+        payload_json=None,
+        created_at="2024-01-01T00:00:00",
+        _vision_results={"tags": ["sunset", "water"]},
+    )
+    asset2 = Asset(
+        id="2",
+        upload_id=None,
+        file_ref=None,
+        content_type=None,
+        sha256=None,
+        width=None,
+        height=None,
+        exif_json=None,
+        labels_json=None,
+        tg_message_id=None,
+        payload_json=None,
+        created_at="2024-01-02T00:00:00",
+        _vision_results={"tags": ["storm", "waves"]},
+    )
+    asset3 = Asset(
+        id="3",
+        upload_id=None,
+        file_ref=None,
+        content_type=None,
+        sha256=None,
+        width=None,
+        height=None,
+        exif_json=None,
+        labels_json=None,
+        tg_message_id=None,
+        payload_json=None,
+        created_at="2024-01-03T00:00:00",
+        _vision_results={"tags": ["sea", "calm"]},
+    )
+    selected = bot._pick_sea_asset([asset1, asset2, asset3], want_sunset=True, want_stormy=False)
+    assert selected is not None
+    assert selected.id == "1"
+    selected = bot._pick_sea_asset([asset1, asset2, asset3], want_sunset=False, want_stormy=True)
+    assert selected is not None
+    assert selected.id == "2"
+    selected = bot._pick_sea_asset([], want_sunset=True, want_stormy=False)
+    assert selected is None
+
+
+def test_update_asset_categories_merge():
+    from main import Bot
+    import uuid
+    bot = Bot("dummy", ":memory:")
+    _seed_weather(bot)
+    upload_id = str(uuid.uuid4())
+    bot.db.execute(
+        "INSERT INTO uploads (id, device_id, created_at) VALUES (?, ?, ?)",
+        (upload_id, "test-device", datetime.utcnow().isoformat())
+    )
+    bot.db.commit()
+    asset_id = bot.data.create_asset(
+        upload_id=upload_id,
+        file_ref="test-file-ref",
+        content_type="image/jpeg",
+        sha256="test-sha256",
+        width=800,
+        height=600,
+    )
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    initial_categories = asset.categories or []
+    assert "закат" not in initial_categories
+    bot.data.update_asset_categories_merge(asset_id, ["закат"])
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    assert "закат" in asset.categories
+    bot.data.update_asset_categories_merge(asset_id, ["закат", "sea"])
+    asset = bot.data.get_asset(asset_id)
+    assert asset is not None
+    categories_lower = {c.lower() for c in asset.categories}
+    assert "закат" in categories_lower
+    assert "sea" in categories_lower
+    count_sunset = sum(1 for c in asset.categories if c.lower() == "закат")
+    assert count_sunset == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_sea_copy_fallback():
+    from main import Bot
+    bot = Bot("dummy", ":memory:")
+    caption, hashtags = await bot._generate_sea_copy(
+        storm_state="calm",
+        sunset_selected=True,
+        wind_class=None,
+        place_hashtag=None,
+    )
+    assert "закатом" in caption.lower() or "море" in caption.lower()
+    assert "#море" in [h.lower() for h in hashtags]
+    assert "#балтийскоеморе" in [h.lower() for h in hashtags]
+    caption_storm, hashtags_storm = await bot._generate_sea_copy(
+        storm_state="strong_storm",
+        sunset_selected=False,
+        wind_class="very_strong",
+        place_hashtag="#Зеленоградск",
+    )
+    assert "шторм" in caption_storm.lower() or "море" in caption_storm.lower()
+    assert "#море" in [h.lower() for h in hashtags_storm]
     await bot.close()

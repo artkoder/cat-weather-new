@@ -1295,6 +1295,37 @@ class DataAccess:
         if performed_write:
             self.conn.commit()
 
+    def update_asset_categories_merge(
+        self, asset_id: str | int, to_add: Iterable[str]
+    ) -> None:
+        row = self.get_asset(str(asset_id))
+        if not row:
+            logging.warning("Attempted to update categories for missing asset %s", asset_id)
+            return
+        payload = dict(row.payload)
+        current_categories = payload.get("categories")
+        if not isinstance(current_categories, list):
+            current_categories = []
+        existing = [str(c).strip() for c in current_categories if str(c).strip()]
+        existing_lower = {c.lower() for c in existing}
+        merged = list(existing)
+        for item in to_add:
+            normalized = str(item).strip()
+            if not normalized:
+                continue
+            if normalized.lower() not in existing_lower:
+                merged.append(normalized)
+                existing_lower.add(normalized.lower())
+        payload["categories"] = merged
+        payload["updated_at"] = datetime.utcnow().isoformat()
+        payload_json = self._encode_payload_blob(payload)
+        labels_json = json.dumps(merged, ensure_ascii=False)
+        self.conn.execute(
+            "UPDATE assets SET payload_json = ?, labels_json = ? WHERE id = ?",
+            (payload_json, labels_json, str(asset_id)),
+        )
+        self.conn.commit()
+
     def get_asset(self, asset_id: str | int) -> Asset | None:
         return self._fetch_asset("a.id = ?", (str(asset_id),))
 

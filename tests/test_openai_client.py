@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pytest
+from PIL import UnidentifiedImageError
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -245,7 +246,11 @@ def test_infer_image_mime_type_for_jpeg(tmp_path):
 
 def test_infer_image_mime_type_falls_back_to_jpeg(monkeypatch, tmp_path):
     client = OpenAIClient("test-key")
-    monkeypatch.setattr("openai_client.imghdr.what", lambda *args, **kwargs: None)
+
+    def _raise(*_args, **_kwargs):
+        raise UnidentifiedImageError("cannot identify image file")
+
+    monkeypatch.setattr("openai_client.Image.open", _raise)
     source = tmp_path / "sample"
     source.write_bytes(PNG_BYTES)
     assert client._infer_image_mime_type(source, PNG_BYTES) == "image/jpeg"

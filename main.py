@@ -14264,8 +14264,6 @@ async def attach_device(request: web.Request) -> web.Response:
         'device_id': device_id,
         'device_secret': secret,
     }
-    if effective_name:
-        payload['name'] = effective_name
 
     return web.json_response(payload)
 

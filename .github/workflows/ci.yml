@@ -55,8 +55,6 @@ jobs:
   contract-tests:
     runs-on: ubuntu-latest
     needs: python-ci
-    env:
-      DB_PATH: ${{ runner.temp }}/bot.db
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,8 +69,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest schemathesis requests
+      - name: Prepare test DB dir
+        run: mkdir -p .pytest_db
       - name: Collect contract tests
         id: collect_contract
+        env:
+          DB_PATH: ${{ github.workspace }}/.pytest_db/bot.db
         run: |
           set -o pipefail
           tmpfile="$(mktemp)"
@@ -96,6 +98,8 @@ jobs:
           rm -f "$tmpfile"
       - name: Run contract tests
         if: steps.collect_contract.outputs.has_tests == 'true'
+        env:
+          DB_PATH: ${{ github.workspace }}/.pytest_db/bot.db
         run: |
           pytest --junitxml=contract-tests.xml -vv
       - name: No contract tests - skipping execution

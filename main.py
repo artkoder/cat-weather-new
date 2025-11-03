@@ -615,6 +615,15 @@ DEFAULT_RUBRIC_PRESETS: dict[str, dict[str, Any]] = {
             "overlays_dir": "overlays",
         },
     },
+    "sea": {
+        "title": "Море / Закат на море",
+        "config": {
+            "enabled": False,
+            "schedules": [],
+            "assets": {"min": 1, "max": 1, "categories": ["sea"]},
+            "sea_id": 1,
+        },
+    },
 }
 
 
@@ -5170,6 +5179,11 @@ class Bot:
             if rubric_id is not None:
                 asset_update_kwargs["rubric_id"] = rubric_id
             self.data.update_asset(asset_id, **asset_update_kwargs)
+            if tags and any(t in {"sunset", "закат", "golden hour"} for t in tags):
+                try:
+                    self.data.update_asset_categories_merge(asset_id, ["закат"])
+                except Exception:
+                    logging.exception("Failed to add закат category to asset %s", asset_id)
             if ASSETS_DEBUG_EXIF and not self.dry_run and new_mid:
                 try:
                     debug_path: str | None = (
@@ -12251,6 +12265,174 @@ class Bot:
         await self._cleanup_assets(assets, extra_paths=overlay_paths)
         return True
 
+    async def _publish_sea(
+        self,
+        rubric: Rubric,
+        channel_id: int,
+        *,
+        test: bool = False,
+        job: Job | None = None,
+        initiator_id: int | None = None,
+        instructions: str | None = None,
+    ) -> bool:
+        config = rubric.config or {}
+        sea_id = int(config.get("sea_id") or 1)
+        sea_row = self.data.conn.execute(
+            "SELECT current, wave FROM sea_cache WHERE sea_id = ?", (sea_id,)
+        ).fetchone()
+        if not sea_row:
+            logging.warning("Sea cache data not found for sea_id %s", sea_id)
+            water_temp = None
+            wave = 0.0
+        else:
+            water_temp = sea_row["current"]
+            wave = sea_row["wave"] if sea_row["wave"] is not None else 0.0
+        if wave < 0.5:
+            storm_state = "calm"
+            want_stormy = False
+        elif wave < 1.5:
+            storm_state = "storm"
+            want_stormy = True
+        else:
+            storm_state = "strong_storm"
+            want_stormy = True
+        wind_speed, wind_class = self._get_sea_wind(sea_id)
+        candidates = self.data.fetch_assets_by_vision_category(
+            "sea",
+            rubric_id=rubric.id,
+            limit=24,
+            random_order=False,
+            mark_used=False,
+        )
+        if not candidates:
+            logging.warning("No sea assets available for rubric %s", rubric.code)
+            return False
+        want_sunset = storm_state == "calm"
+        selected_asset = self._pick_sea_asset(
+            candidates, want_sunset=want_sunset, want_stormy=want_stormy
+        )
+        if not selected_asset:
+            logging.warning("No suitable sea asset selected for rubric %s", rubric.code)
+            return False
+        place_hashtag: str | None = None
+        if selected_asset.latitude is not None and selected_asset.longitude is not None:
+            geo_data = await self._reverse_geocode(
+                selected_asset.latitude, selected_asset.longitude
+            )
+            if geo_data and geo_data.get("city"):
+                city_name = str(geo_data["city"]).strip()
+                if city_name:
+                    place_hashtag = f"#{city_name}"
+        sunset_selected = False
+        if selected_asset.vision_results and isinstance(
+            selected_asset.vision_results, dict
+        ):
+            raw_tags = selected_asset.vision_results.get("tags")
+            if isinstance(raw_tags, list):
+                tags_lower = {str(t).lower() for t in raw_tags}
+                sunset_selected = bool(
+                    {"sunset", "закат", "golden hour"}.intersection(tags_lower)
+                )
+        if not sunset_selected and selected_asset.categories:
+            categories_lower = {str(c).lower() for c in selected_asset.categories}
+            sunset_selected = bool({"закат"}.intersection(categories_lower))
+        caption_text, hashtags = await self._generate_sea_copy(
+            storm_state=storm_state,
+            sunset_selected=sunset_selected,
+            wind_class=wind_class,
+            place_hashtag=place_hashtag,
+            job=job,
+        )
+        hashtags_lower = {h.lower() for h in hashtags}
+        if "#море" not in hashtags_lower:
+            hashtags.append("#море")
+        if "#балтийскоеморе" not in hashtags_lower:
+            hashtags.append("#БалтийскоеМоре")
+        if place_hashtag and place_hashtag.lower() not in hashtags_lower:
+            hashtags.append(place_hashtag)
+        hashtags = self._deduplicate_hashtags(hashtags)
+        hashtag_list = self._prepare_hashtags(hashtags)
+        caption_parts = []
+        if caption_text:
+            caption_parts.append(caption_text.strip())
+        if hashtag_list:
+            caption_parts.append(" ".join(hashtag_list))
+        caption_parts.append("\n📂 Полюбить 39 https://t.me/addlist/sW-rkrslxqo1NTVi")
+        full_caption = "\n\n".join(part for part in caption_parts if part)
+        if len(full_caption) > 1000:
+            lines = caption_text.split("\n")
+            trimmed_lines = []
+            for line in lines:
+                if len("\n".join(trimmed_lines + [line])) > 700:
+                    break
+                trimmed_lines.append(line)
+            caption_text = "\n".join(trimmed_lines)
+            caption_parts[0] = caption_text.strip()
+            full_caption = "\n\n".join(part for part in caption_parts if part)
+        source_path, should_cleanup = await self._ensure_asset_source(selected_asset)
+        if not source_path:
+            logging.warning(
+                "Asset %s missing source file for sea publication", selected_asset.id
+            )
+            return False
+        try:
+            file_data = Path(source_path).read_bytes()
+        except Exception:
+            logging.exception("Failed to read source file for asset %s", selected_asset.id)
+            if should_cleanup:
+                self._remove_file(source_path)
+            return False
+        finally:
+            if should_cleanup:
+                self._remove_file(source_path)
+                try:
+                    self.data.update_asset(selected_asset.id, local_path=None)
+                except Exception:
+                    logging.exception(
+                        "Failed to clear local_path for asset %s after sea publication",
+                        selected_asset.id,
+                    )
+        response = await self.api_request(
+            "sendPhoto",
+            {
+                "chat_id": channel_id,
+                "caption": full_caption,
+            },
+            files={"photo": ("photo.jpg", file_data)},
+        )
+        if not response.get("ok"):
+            logging.error("Failed to publish sea rubric: %s", response)
+            return False
+        result_payload = response.get("result")
+        if isinstance(result_payload, dict):
+            message_id = int(result_payload.get("message_id") or 0)
+        else:
+            message_id = 0
+        self.data.mark_assets_used([selected_asset.id])
+        metadata = {
+            "rubric_code": rubric.code,
+            "asset_ids": [selected_asset.id],
+            "test": test,
+            "storm_state": storm_state,
+            "wave": wave,
+            "water_temp": water_temp,
+            "wind_speed": wind_speed,
+            "wind_class": wind_class,
+            "sunset_selected": sunset_selected,
+            "caption": caption_text,
+            "hashtags": hashtag_list,
+            "place_hashtag": place_hashtag,
+        }
+        self.data.record_post_history(
+            channel_id,
+            message_id,
+            selected_asset.id,
+            rubric.id,
+            metadata,
+        )
+        await self._cleanup_assets([selected_asset])
+        return True
+
     async def _generate_guess_arch_copy(
         self,
         rubric: Rubric,
@@ -12337,6 +12519,123 @@ class Bot:
             fallback_caption += f" {weather_text}"
         return fallback_caption, self._default_hashtags("guess_arch")
 
+    async def _generate_sea_copy(
+        self,
+        *,
+        storm_state: str,
+        sunset_selected: bool,
+        wind_class: str | None,
+        place_hashtag: str | None,
+        job: Job | None = None,
+    ) -> tuple[str, list[str]]:
+        default_hashtags = self._default_hashtags("sea")
+        if not self.openai or not self.openai.api_key:
+            if storm_state in ("storm", "strong_storm"):
+                fallback_caption = "Сегодня шторм на #море. Берегите себя!"
+            elif sunset_selected:
+                fallback_caption = "Порадую закатом над #море."
+            else:
+                fallback_caption = "Порадую вас #море."
+            return fallback_caption, default_hashtags
+        system_prompt = (
+            "Ты редактор телеграм-канала о погоде и море. "
+            "Пиши коротко, тепло и образно. "
+            "Береги длину: не больше 1000 символов. "
+            "Если шторм — сообщи об этом в первой фразе. "
+            "Если штиля — начни с доброжелательной вариации «Порадую вас…» или «Порадую закатом…» (если фото закатное). "
+            "Если передан сильный ветер — упомяни кратко и подбери уместные образные выражения (например, «сбивающий с ног»), но формулировки — на твой вкус. "
+            "Всегда используй русский язык."
+        )
+        user_prompt_parts = [
+            "Сгенерируй JSON:\n{ \"caption\": string, \"hashtags\": string[] }\n",
+            f"storm_state: {storm_state}",
+            f"sunset_selected: {sunset_selected}",
+            f"wind_strength: {wind_class if wind_class else 'null'}",
+            f"place_hashtag: {place_hashtag if place_hashtag else 'null'}",
+            "\nТребования:",
+        ]
+        if storm_state != "calm":
+            user_prompt_parts.append(
+                "- Если storm_state != \"calm\", первая фраза — про шторм на #море."
+            )
+        else:
+            if sunset_selected:
+                user_prompt_parts.append(
+                    "- Если storm_state == \"calm\" и sunset_selected — вариация «Порадую закатом над #море…»"
+                )
+            else:
+                user_prompt_parts.append(
+                    "- Если storm_state == \"calm\" и не sunset_selected — вариация «Порадую вас #море…»"
+                )
+        user_prompt_parts.append(
+            "- В массиве hashtags обязательно должны быть \"#море\" и \"#БалтийскоеМоре\"."
+        )
+        if place_hashtag:
+            user_prompt_parts.append(
+                f"- Если place_hashtag задан — добавь его в массив hashtags: {place_hashtag}"
+            )
+        user_prompt_parts.append("- Итоговая длина < 1000 символов.")
+        user_prompt = "\n".join(user_prompt_parts)
+        schema = {
+            "type": "object",
+            "properties": {
+                "caption": {"type": "string"},
+                "hashtags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+            },
+            "required": ["caption", "hashtags"],
+        }
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            temperature = self._creative_temperature()
+            try:
+                logging.info(
+                    "Запрос генерации текста для sea: модель=%s temperature=%.2f top_p=0.9 попытка %s/%s",
+                    "gpt-4o",
+                    temperature,
+                    attempt,
+                    attempts,
+                )
+                self._enforce_openai_limit(job, "gpt-4o")
+                response = await self.openai.generate_json(
+                    model="gpt-4o",
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    schema=schema,
+                    temperature=temperature,
+                    top_p=0.9,
+                )
+            except Exception:
+                logging.exception("Failed to generate sea caption (attempt %s)", attempt)
+                response = None
+            if response:
+                await self._record_openai_usage("gpt-4o", response, job=job)
+            if not response or not isinstance(response.content, dict):
+                continue
+            caption = str(response.content.get("caption") or "").strip()
+            raw_hashtags = response.content.get("hashtags") or []
+            hashtags = self._deduplicate_hashtags(raw_hashtags)
+            if not caption or not hashtags:
+                continue
+            if self._is_duplicate_rubric_copy("sea", "caption", caption, hashtags):
+                logging.info(
+                    "Получен повторяющийся текст для рубрики sea, пробуем снова (%s/%s)",
+                    attempt,
+                    attempts,
+                )
+                continue
+            return caption, hashtags
+        if storm_state in ("storm", "strong_storm"):
+            fallback_caption = "Сегодня шторм на #море. Берегите себя!"
+        elif sunset_selected:
+            fallback_caption = "Порадую закатом над #море."
+        else:
+            fallback_caption = "Порадую вас #море."
+        return fallback_caption, default_hashtags
+
     def _prepare_hashtags(self, tags: Iterable[str]) -> list[str]:
         prepared: list[str] = []
         for tag in tags:
@@ -12352,8 +12651,51 @@ class Bot:
         mapping = {
             "flowers": ["#котопогода", "#цветы"],
             "guess_arch": ["#угадайархитектуру", "#калининград", "#котопогода"],
+            "sea": ["#котопогода", "#море", "#БалтийскоеМоре"],
         }
         return mapping.get(code, ["#котопогода"])
+
+    def _pick_sea_asset(
+        self, assets: list[Asset], *, want_sunset: bool, want_stormy: bool
+    ) -> Asset | None:
+        if not assets:
+            return None
+        sunset_synonyms = {"sunset", "закат", "golden hour"}
+        storm_synonyms = {"storm", "шторм", "waves", "буря", "surf", "whitecaps"}
+        scored: list[tuple[float, Asset]] = []
+        for asset in assets:
+            score = 0.0
+            tags_set: set[str] = set()
+            if asset.vision_results and isinstance(asset.vision_results, dict):
+                raw_tags = asset.vision_results.get("tags")
+                if isinstance(raw_tags, list):
+                    tags_set.update(str(t).lower() for t in raw_tags)
+            categories_set: set[str] = set()
+            if asset.categories:
+                categories_set.update(str(c).lower() for c in asset.categories)
+            has_sunset = bool(sunset_synonyms.intersection(tags_set | categories_set))
+            has_storm = bool(storm_synonyms.intersection(tags_set))
+            if want_stormy:
+                if has_storm:
+                    score += 2
+                if not has_sunset:
+                    score += 1
+            else:
+                if has_sunset:
+                    score += 2
+                if not has_storm:
+                    score += 1
+            last_used_str = asset.payload.get("last_used_at") if asset.payload else None
+            if last_used_str:
+                try:
+                    last_used_dt = datetime.fromisoformat(str(last_used_str))
+                    age_days = (datetime.utcnow() - last_used_dt).days
+                    score += age_days * 0.001
+                except Exception:
+                    pass
+            scored.append((score, asset))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored[0][1] if scored else None
 
     async def _cleanup_assets(
         self, assets: Iterable[Asset], *, extra_paths: Iterable[str] | None = None
@@ -12573,6 +12915,63 @@ class Bot:
     def _get_city_weather_summary(self, city_name: str) -> str | None:
         summary, _ = self._get_city_weather_info(city_name)
         return summary
+
+    def _classify_wind(self, wind_mps: float | None) -> str | None:
+        if wind_mps is None or wind_mps < 10:
+            return None
+        if wind_mps < 15:
+            return "strong"
+        return "very_strong"
+
+    def _get_sea_wind(self, sea_id: int) -> tuple[float | None, str | None]:
+        sea_row = self.data.conn.execute(
+            "SELECT lat, lon FROM seas WHERE id = ?", (sea_id,)
+        ).fetchone()
+        if not sea_row:
+            return None, None
+        sea_lat = sea_row["lat"]
+        sea_lon = sea_row["lon"]
+        city_rows = self.data.conn.execute(
+            "SELECT id, name, lat, lon FROM cities"
+        ).fetchall()
+        if not city_rows:
+            return None, None
+        min_distance = None
+        closest_city_id = None
+        for row in city_rows:
+            city_lat = row["lat"]
+            city_lon = row["lon"]
+            dlat = math.radians(city_lat - sea_lat)
+            dlon = math.radians(city_lon - sea_lon)
+            a = (
+                math.sin(dlat / 2) ** 2
+                + math.cos(math.radians(sea_lat))
+                * math.cos(math.radians(city_lat))
+                * math.sin(dlon / 2) ** 2
+            )
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+            distance = 6371 * c
+            if min_distance is None or distance < min_distance:
+                min_distance = distance
+                closest_city_id = row["id"]
+        if closest_city_id is None:
+            return None, None
+        now_utc = datetime.utcnow()
+        wind_row = self.data.conn.execute(
+            """
+            SELECT wind_speed
+            FROM weather_cache_hour
+            WHERE city_id = ? AND timestamp <= ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (closest_city_id, now_utc.isoformat()),
+        ).fetchone()
+        if not wind_row or wind_row["wind_speed"] is None:
+            return None, None
+        wind_speed = float(wind_row["wind_speed"])
+        wind_class = self._classify_wind(wind_speed)
+        return wind_speed, wind_class
 
     def _format_temperature_value(self, value: float | None) -> str | None:
         if value is None:

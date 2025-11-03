@@ -7,3 +7,5 @@ pillow-heif>=0.16
 psutil>=5.9.8
 prometheus_client>=0.20.0
 qrcode[pil]>=7.4.2
+requests>=2.32.3
+schemathesis>=3.27.6

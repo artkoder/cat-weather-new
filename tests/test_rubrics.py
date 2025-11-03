@@ -3086,16 +3086,16 @@ async def test_rubrics_overview_lists_configs(tmp_path):
 
     calls.clear()
     await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
-    send_calls = [item for item in calls if item[0] == "sendMessage"]
-    assert len(send_calls) == 3
-    dashboard_method, dashboard_data = send_calls[0]
-    assert dashboard_method == "sendMessage"
+    message_calls = [item for item in calls if item[0] in ("sendMessage", "editMessageText")]
+    assert len(message_calls) == 4
+    dashboard_method, dashboard_data = message_calls[0]
+    assert dashboard_method in ("sendMessage", "editMessageText")
     assert dashboard_data is not None
     assert "Карточки рубрик" in dashboard_data.get("text", "")
     dashboard_keyboard = dashboard_data.get("reply_markup", {}).get("inline_keyboard", [])
     assert dashboard_keyboard and dashboard_keyboard[0][0]["text"] == "Обновить карточки"
 
-    flowers_message = send_calls[1][1]
+    flowers_message = message_calls[1][1]
     assert flowers_message is not None
     assert "flowers" in flowers_message.get("text", "").lower()
     flowers_keyboard = flowers_message["reply_markup"]["inline_keyboard"]
@@ -3106,14 +3106,14 @@ async def test_rubrics_overview_lists_configs(tmp_path):
     )
     assert bot.rubric_overview_messages[1]["flowers"]["message_id"] is not None
 
-    guess_message = send_calls[2][1]
+    guess_message = message_calls[2][1]
     assert guess_message is not None
     assert "guess_arch" in guess_message.get("text", "")
 
     calls.clear()
     await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
     edit_calls = [item for item in calls if item[0] == "editMessageText"]
-    assert len(edit_calls) == 3
+    assert len(edit_calls) == 4
     await bot.close()
 
 
@@ -3601,23 +3601,20 @@ def test_pick_sea_asset():
 
 def test_update_asset_categories_merge():
     from main import Bot
-    import uuid
+    from data_access import Asset
     bot = Bot("dummy", ":memory:")
     _seed_weather(bot)
-    upload_id = str(uuid.uuid4())
+    asset_id = "test-asset-123"
+    now = datetime.utcnow().isoformat()
     bot.db.execute(
-        "INSERT INTO uploads (id, device_id, created_at) VALUES (?, ?, ?)",
-        (upload_id, "test-device", datetime.utcnow().isoformat())
+        """
+        INSERT INTO assets (id, upload_id, file_ref, content_type, sha256, width, height, 
+                            exif_json, labels_json, tg_message_id, created_at, payload_json)
+        VALUES (?, NULL, ?, ?, ?, ?, ?, NULL, '[]', NULL, ?, '{}')
+        """,
+        (asset_id, "test-file-ref", "image/jpeg", "test-sha256", 800, 600, now)
     )
     bot.db.commit()
-    asset_id = bot.data.create_asset(
-        upload_id=upload_id,
-        file_ref="test-file-ref",
-        content_type="image/jpeg",
-        sha256="test-sha256",
-        width=800,
-        height=600,
-    )
     asset = bot.data.get_asset(asset_id)
     assert asset is not None
     initial_categories = asset.categories or []

@@ -406,9 +406,13 @@ async def handle_get_upload_status(request: web.Request) -> web.Response:
     payload = {
         "id": record["id"],
         "status": record["status"],
-        "error": record["error"],
-        "asset_id": record.get("asset_id"),
     }
+    error_value = record.get("error")
+    if error_value is not None:
+        payload["error"] = error_value
+    asset_id_value = record.get("asset_id")
+    if asset_id_value is not None:
+        payload["asset_id"] = asset_id_value
     logging.info(
         "UPLOAD_STATUS id=%s status=%s 200",
         payload["id"],

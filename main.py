@@ -4750,6 +4750,79 @@ class Bot:
             normalized_tag_set = {tag.lower() for tag in tags if tag}
             if normalized_tag_set.intersection({"flowers", "flower"}):
                 flower_varieties = [obj for obj in objects if obj]
+            
+            sea_wave_score_data: dict[str, Any] | None = None
+            is_sea_asset = (
+                category == "sea" or 
+                normalized_tag_set.intersection({"sea", "ocean"})
+            )
+            if is_sea_asset and self.openai and self.openai.api_key and local_path and os.path.exists(local_path):
+                try:
+                    sea_wave_prompt = (
+                        "Analyze the sea/ocean in this image and return a JSON with sea wave intensity score. "
+                        "Score criteria: 0 = calm/flat, 1-3 = small waves, 4-6 = moderate waves/storm, "
+                        "7-8 = strong storm (many whitecaps), 9-10 = very strong storm (massive whitecaps, foam, spray everywhere). "
+                        "Evaluate only the sea/ocean visible. Return: {\"sea_wave_score\": 0-10 (integer), \"confidence\": 0.0-1.0 (float)}"
+                    )
+                    sea_wave_schema = {
+                        "type": "object",
+                        "properties": {
+                            "sea_wave_score": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 10,
+                            },
+                            "confidence": {
+                                "type": "number",
+                                "minimum": 0.0,
+                                "maximum": 1.0,
+                            },
+                        },
+                        "required": ["sea_wave_score", "confidence"],
+                    }
+                    logging.info(
+                        "Vision job %s calling 4o-mini for sea_wave_score on asset %s",
+                        job.id,
+                        asset_id,
+                    )
+                    self._enforce_openai_limit(job, "gpt-4o-mini")
+                    sea_wave_response = await self.openai.classify_image(
+                        model="gpt-4o-mini",
+                        system_prompt="You are analyzing sea/ocean conditions. Return only the requested JSON.",
+                        user_prompt=sea_wave_prompt,
+                        image_path=Path(local_path),
+                        schema=sea_wave_schema,
+                        schema_name="sea_wave_score_v1",
+                    )
+                    if sea_wave_response and isinstance(sea_wave_response.content, dict):
+                        wave_score_raw = sea_wave_response.content.get("sea_wave_score")
+                        confidence_raw = sea_wave_response.content.get("confidence")
+                        if isinstance(wave_score_raw, int) and isinstance(confidence_raw, (int, float)):
+                            wave_score = max(0, min(10, wave_score_raw))
+                            confidence = max(0.0, min(1.0, float(confidence_raw)))
+                            sea_wave_score_data = {
+                                "value": wave_score,
+                                "confidence": confidence,
+                                "model": "gpt-4o-mini",
+                            }
+                            logging.info(
+                                "Sea wave score for asset %s: score=%s conf=%.2f",
+                                asset_id,
+                                wave_score,
+                                confidence,
+                            )
+                            await self._record_openai_usage(
+                                "gpt-4o-mini",
+                                sea_wave_response,
+                                job=job,
+                                record_supabase=True,
+                            )
+                except Exception:
+                    logging.exception(
+                        "Failed to get sea_wave_score for asset %s, continuing without it",
+                        asset_id,
+                    )
+            
             location_parts: list[str] = []
             existing_lower: set[str] = set()
             if asset.city:
@@ -4866,6 +4939,10 @@ class Bot:
                 caption_lines.append("Объекты: " + ", ".join(remaining_objects))
             if tags:
                 caption_lines.append("Теги: " + ", ".join(tags))
+            if sea_wave_score_data:
+                wave_val = sea_wave_score_data["value"]
+                wave_conf = sea_wave_score_data["confidence"]
+                caption_lines.append(f"Волнение моря: {wave_val}/10 (conf={wave_conf:.2f})")
             if nsfw_flag:
                 caption_lines.append(
                     "⚠️ Чувствительный контент: "
@@ -4943,6 +5020,8 @@ class Bot:
             }
             if rubric_id is not None:
                 result_payload["rubric_id"] = rubric_id
+            if sea_wave_score_data:
+                result_payload["sea_wave_score"] = sea_wave_score_data
             logging.info(
                 "Vision job %s classified asset %s: scene=%s, arch=%s, tags=%s, weather_tag=%s",
                 job.id,
@@ -12289,27 +12368,30 @@ class Bot:
             wave = sea_row["wave"] if sea_row["wave"] is not None else 0.0
         if wave < 0.5:
             storm_state = "calm"
-            want_stormy = False
         elif wave < 1.5:
             storm_state = "storm"
-            want_stormy = True
         else:
             storm_state = "strong_storm"
-            want_stormy = True
+        
+        desired_wave_score = self._interpolate_wave_to_score(wave)
+        desired_sky = self._get_sea_weather_sky(sea_id)
+        
         wind_speed, wind_class = self._get_sea_wind(sea_id)
         candidates = self.data.fetch_assets_by_vision_category(
             "sea",
             rubric_id=rubric.id,
-            limit=24,
+            limit=48,
             random_order=False,
             mark_used=False,
         )
         if not candidates:
             logging.warning("No sea assets available for rubric %s", rubric.code)
             return False
-        want_sunset = storm_state == "calm"
+        
         selected_asset = self._pick_sea_asset(
-            candidates, want_sunset=want_sunset, want_stormy=want_stormy
+            candidates,
+            desired_wave_score=desired_wave_score,
+            desired_sky=desired_sky,
         )
         if not selected_asset:
             logging.warning("No suitable sea asset selected for rubric %s", rubric.code)
@@ -12655,16 +12737,109 @@ class Bot:
         }
         return mapping.get(code, ["#котопогода"])
 
+    def _interpolate_wave_to_score(self, wave: float) -> int:
+        """Convert wave height (m) to desired sea wave score 0-10."""
+        if wave <= 0.0:
+            return 0
+        if wave <= 0.5:
+            return int(round(wave * 4))
+        if wave <= 1.0:
+            return int(round(2 + (wave - 0.5) * 4))
+        if wave <= 1.5:
+            return int(round(4 + (wave - 1.0) * 6))
+        if wave <= 2.0:
+            return int(round(7 + (wave - 1.5) * 4))
+        return 10
+
+    def _extract_asset_sky(self, vision_results: dict[str, Any] | None) -> str | None:
+        """Extract asset sky (sunny/cloudy) from vision results tags."""
+        if not vision_results or not isinstance(vision_results, dict):
+            return None
+        
+        sunny_syn = {
+            "sunny", "clear", "sun", "sunlight", "bright", "blue_sky",
+            "ясно", "солнечно", "голубое_небо", "blue sky"
+        }
+        cloudy_syn = {
+            "cloudy", "overcast", "rain", "storm clouds",
+            "пасмурно", "облачно", "дождь"
+        }
+        
+        tags = vision_results.get("tags")
+        if not isinstance(tags, list):
+            return None
+        
+        tags_lower = {str(t).lower() for t in tags}
+        has_cloudy = bool(tags_lower.intersection(cloudy_syn))
+        has_sunny = bool(tags_lower.intersection(sunny_syn))
+        
+        if has_cloudy:
+            return "cloudy"
+        if has_sunny:
+            return "sunny"
+        
+        weather_image = vision_results.get("weather_image")
+        if isinstance(weather_image, str):
+            weather_lower = weather_image.lower()
+            if weather_lower in {"rain", "overcast", "snow"}:
+                return "cloudy"
+            if weather_lower in {"sunny", "clear"}:
+                return "sunny"
+        
+        return None
+
+    def _get_asset_wave_score_with_fallback(self, asset: Asset) -> int:
+        """Get asset wave score from vision_results or fallback to tag-based heuristic."""
+        if asset.vision_results and isinstance(asset.vision_results, dict):
+            sea_wave_score = asset.vision_results.get("sea_wave_score")
+            if isinstance(sea_wave_score, dict):
+                value = sea_wave_score.get("value")
+                if isinstance(value, int):
+                    return max(0, min(10, value))
+            
+            tags = asset.vision_results.get("tags")
+            if isinstance(tags, list):
+                tags_lower = {str(t).lower() for t in tags}
+                if tags_lower.intersection({"whitecaps", "surf", "шторм", "gale", "spray", "foam"}):
+                    return random.randint(8, 9)
+                if "storm" in tags_lower:
+                    return random.randint(6, 7)
+                if "waves" in tags_lower:
+                    return random.randint(4, 5)
+        
+        return random.randint(1, 2)
+
     def _pick_sea_asset(
-        self, assets: list[Asset], *, want_sunset: bool, want_stormy: bool
+        self,
+        assets: list[Asset],
+        *,
+        desired_wave_score: int,
+        desired_sky: str | None,
     ) -> Asset | None:
         if not assets:
             return None
+        
         sunset_synonyms = {"sunset", "закат", "golden hour"}
-        storm_synonyms = {"storm", "шторм", "waves", "буря", "surf", "whitecaps"}
-        scored: list[tuple[float, Asset]] = []
+        storm_synonyms = {"storm", "шторм", "waves", "буря", "surf", "whitecaps", "gale", "spray", "foam"}
+        
+        scored: list[tuple[float, float, float, Asset]] = []
         for asset in assets:
-            score = 0.0
+            asset_score = self._get_asset_wave_score_with_fallback(asset)
+            d_wave = abs(asset_score - desired_wave_score)
+            
+            asset_sky = self._extract_asset_sky(asset.vision_results)
+            sky_bonus = 0.0
+            if desired_sky and asset_sky:
+                if desired_sky == asset_sky:
+                    sky_bonus = -1.0
+                else:
+                    sky_bonus = 0.5
+            elif not asset_sky:
+                sky_bonus = 0.0
+            
+            sunset_bonus = 0.0
+            storm_bonus = 0.0
+            
             tags_set: set[str] = set()
             if asset.vision_results and isinstance(asset.vision_results, dict):
                 raw_tags = asset.vision_results.get("tags")
@@ -12673,29 +12848,33 @@ class Bot:
             categories_set: set[str] = set()
             if asset.categories:
                 categories_set.update(str(c).lower() for c in asset.categories)
+            
             has_sunset = bool(sunset_synonyms.intersection(tags_set | categories_set))
             has_storm = bool(storm_synonyms.intersection(tags_set))
-            if want_stormy:
-                if has_storm:
-                    score += 2
-                if not has_sunset:
-                    score += 1
-            else:
-                if has_sunset:
-                    score += 2
-                if not has_storm:
-                    score += 1
+            
+            if desired_wave_score <= 2 and has_sunset:
+                sunset_bonus = -1.0
+            
+            if desired_wave_score >= 6 and has_storm:
+                storm_bonus = -0.5
+            
+            recency_score = 0.0
             last_used_str = asset.payload.get("last_used_at") if asset.payload else None
             if last_used_str:
                 try:
                     last_used_dt = datetime.fromisoformat(str(last_used_str))
                     age_days = (datetime.utcnow() - last_used_dt).days
-                    score += age_days * 0.001
+                    recency_score = age_days * 0.001
                 except Exception:
                     pass
-            scored.append((score, asset))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return scored[0][1] if scored else None
+            
+            tie_break = random.random() * 0.0001
+            total_score = d_wave + sky_bonus + sunset_bonus + storm_bonus
+            
+            scored.append((total_score, -recency_score, tie_break, asset))
+        
+        scored.sort(key=lambda x: (x[0], x[1], x[2]))
+        return scored[0][3] if scored else None
 
     async def _cleanup_assets(
         self, assets: Iterable[Asset], *, extra_paths: Iterable[str] | None = None
@@ -12922,6 +13101,63 @@ class Bot:
         if wind_mps < 15:
             return "strong"
         return "very_strong"
+
+    def _get_sea_weather_sky(self, sea_id: int) -> str | None:
+        """Get desired_sky (sunny/cloudy) from nearest city weather to sea_id."""
+        sea_row = self.data.conn.execute(
+            "SELECT lat, lon FROM seas WHERE id = ?", (sea_id,)
+        ).fetchone()
+        if not sea_row:
+            return None
+        sea_lat = sea_row["lat"]
+        sea_lon = sea_row["lon"]
+        city_rows = self.data.conn.execute(
+            "SELECT id, name, lat, lon FROM cities"
+        ).fetchall()
+        if not city_rows:
+            return None
+        min_distance = None
+        closest_city_id = None
+        for row in city_rows:
+            city_lat = row["lat"]
+            city_lon = row["lon"]
+            dlat = math.radians(city_lat - sea_lat)
+            dlon = math.radians(city_lon - sea_lon)
+            a = (
+                math.sin(dlat / 2) ** 2
+                + math.cos(math.radians(sea_lat))
+                * math.cos(math.radians(city_lat))
+                * math.sin(dlon / 2) ** 2
+            )
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+            distance = 6371 * c
+            if min_distance is None or distance < min_distance:
+                min_distance = distance
+                closest_city_id = row["id"]
+        if closest_city_id is None:
+            return None
+        now_utc = datetime.utcnow()
+        weather_row = self.data.conn.execute(
+            """
+            SELECT weather_code
+            FROM weather_cache_hour
+            WHERE city_id = ? AND timestamp <= ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+            (closest_city_id, now_utc.isoformat()),
+        ).fetchone()
+        if not weather_row or weather_row["weather_code"] is None:
+            return None
+        weather_code = int(weather_row["weather_code"])
+        weather_class = self._classify_weather_code(weather_code)
+        if not weather_class:
+            return None
+        if weather_class in {"rain", "overcast", "snow", "fog"}:
+            return "cloudy"
+        if weather_class in {"sunny", "partly_cloudy"}:
+            return "sunny"
+        return None
 
     def _get_sea_wind(self, sea_id: int) -> tuple[float | None, str | None]:
         sea_row = self.data.conn.execute(

@@ -3,15 +3,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import gc
-import imghdr
 import json
 import logging
 import mimetypes
 import os
 import time
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict
+
+from PIL import Image, UnidentifiedImageError
 
 
 
@@ -288,9 +290,27 @@ class OpenAIClient:
     def _infer_image_mime_type(self, image_path: Path, data: bytes) -> str:
         mime_type, _ = mimetypes.guess_type(image_path.name)
         if not mime_type or not mime_type.startswith("image/"):
-            detected = imghdr.what(None, h=data)
-            if detected:
-                mime_type = f"image/{detected}"
+            detected_format: str | None = None
+            try:
+                with Image.open(BytesIO(data)) as image:
+                    detected_format = image.format
+            except (UnidentifiedImageError, OSError):
+                detected_format = None
+            if detected_format:
+                format_key = detected_format.lower()
+                if format_key:
+                    pil_mime_map = {
+                        "jpeg": "image/jpeg",
+                        "jpg": "image/jpeg",
+                        "png": "image/png",
+                        "webp": "image/webp",
+                        "gif": "image/gif",
+                        "tiff": "image/tiff",
+                        "bmp": "image/bmp",
+                        "heif": "image/heif",
+                        "heic": "image/heic",
+                    }
+                    mime_type = pil_mime_map.get(format_key) or f"image/{format_key}"
         if not mime_type or not mime_type.startswith("image/"):
             mime_type = "image/jpeg"
         if mime_type.endswith("/jpg"):

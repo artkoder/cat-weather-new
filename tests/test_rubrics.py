@@ -3578,26 +3578,26 @@ async def test_pick_sea_asset_prioritizes_tags_and_categories():
     storm_tag.payload["last_used_at"] = "2023-01-01T00:00:00"
 
     selected_calm = bot._pick_sea_asset(
-        [sunset_category], want_sunset=True, want_stormy=False
+        [sunset_category], desired_wave_score=2, desired_sky=None
     )
     assert selected_calm is sunset_category
 
     selected_calm_prefers_tag = bot._pick_sea_asset(
-        [sunset_category, sunset_tag], want_sunset=True, want_stormy=False
+        [sunset_category, sunset_tag], desired_wave_score=2, desired_sky=None
     )
     assert selected_calm_prefers_tag is sunset_tag
 
     selected_storm_tag = bot._pick_sea_asset(
-        [sunset_tag, storm_tag], want_sunset=False, want_stormy=True
+        [sunset_tag, storm_tag], desired_wave_score=7, desired_sky=None
     )
     assert selected_storm_tag is storm_tag
 
     selected_storm_category = bot._pick_sea_asset(
-        [storm_category], want_sunset=False, want_stormy=True
+        [storm_category], desired_wave_score=7, desired_sky=None
     )
     assert selected_storm_category is storm_category
 
-    assert bot._pick_sea_asset([], want_sunset=True, want_stormy=False) is None
+    assert bot._pick_sea_asset([], desired_wave_score=2, desired_sky=None) is None
 
     await bot.close()
 

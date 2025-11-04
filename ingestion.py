@@ -236,6 +236,8 @@ class CreateAssetPayload(TypedDict, total=False):
     tg_message_id: str | int | None
     tg_chat_id: int | None
     source: str
+    shot_at_utc: int | None
+    shot_doy: int | None
 
 
 class SaveAssetPayload(TypedDict, total=False):
@@ -261,6 +263,8 @@ class SaveAssetPayload(TypedDict, total=False):
     latitude: float | None
     longitude: float | None
     exif_present: bool | None
+    shot_at_utc: int | None
+    shot_doy: int | None
 
 
 @dataclass(slots=True)
@@ -647,6 +651,23 @@ def _decode_exif_datetime_value(value: Any) -> str | None:
     return None
 
 
+def _parse_iso_to_utc(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 def extract_exif_datetimes(image_source: str | Path | BinaryIO) -> dict[str, str]:
     try:
         with Image.open(image_source, mode="r") as img:
@@ -959,6 +980,22 @@ async def _ingest_photo_internal(
                 gps_payload["captured_at"] = capture_candidate
         exif_ifds = extracted_ifds
 
+        capture_dt = None
+        if photo_meta and photo_meta.captured_at:
+            capture_dt = photo_meta.captured_at
+        elif gps_payload.get("captured_at") is not None:
+            capture_dt = _parse_iso_to_utc(gps_payload.get("captured_at"))
+        if capture_dt is not None:
+            if capture_dt.tzinfo is None:
+                capture_dt = capture_dt.replace(tzinfo=UTC)
+            else:
+                capture_dt = capture_dt.astimezone(UTC)
+            shot_at_utc_value = int(capture_dt.timestamp())
+            shot_doy_value = capture_dt.timetuple().tm_yday
+        else:
+            shot_at_utc_value = None
+            shot_doy_value = None
+
         if inputs.max_image_side:
             processed_path, processed_cleanup = _downscale_image_if_needed(
                 inputs.file.path, max_side=inputs.max_image_side
@@ -1097,6 +1134,8 @@ async def _ingest_photo_internal(
                     "tg_message_id": message_identifier,
                     "tg_chat_id": inputs.channel_id,
                     "source": source_value,
+                    "shot_at_utc": shot_at_utc_value,
+                    "shot_doy": shot_doy_value,
                 }
             )
         elif inputs.source != "upload" and callbacks.save_asset:
@@ -1159,6 +1198,8 @@ async def _ingest_photo_internal(
                 "latitude": gps_payload.get("latitude"),
                 "longitude": gps_payload.get("longitude"),
                 "exif_present": bool(exif_payload) or bool(gps_payload),
+                "shot_at_utc": shot_at_utc_value,
+                "shot_doy": shot_doy_value,
             }
             asset_id = callbacks.save_asset(save_payload)
 

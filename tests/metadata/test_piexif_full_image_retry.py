@@ -14,7 +14,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from metadata.extractor import extract_metadata_from_file
+from metadata.extractor import extract_metadata_from_file  # noqa: E402
 
 
 @pytest.fixture()
@@ -23,8 +23,8 @@ def mobile_like_photo_bytes(tmp_path: Path) -> bytes:
     image = Image.new("RGB", (200, 100), color=(180, 140, 90))
     exif_dict = {
         "0th": {
-            piexif.ImageIFD.Make: "PhoneMaker".encode("utf-8"),
-            piexif.ImageIFD.Model: "PhoneCam".encode("utf-8"),
+            piexif.ImageIFD.Make: b"PhoneMaker",
+            piexif.ImageIFD.Model: b"PhoneCam",
         },
         "Exif": {
             piexif.ExifIFD.DateTimeOriginal: "2024:05:06 07:08:09",

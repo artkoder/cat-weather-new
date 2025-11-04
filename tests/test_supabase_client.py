@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import AsyncMock
 
 import httpx
@@ -19,7 +19,7 @@ async def test_insert_token_usage_success(monkeypatch):
     post_mock = AsyncMock(return_value=response)
     monkeypatch.setattr(client._client, "post", post_mock)
 
-    meta = {"source": "test", "time": datetime(2024, 1, 1, tzinfo=timezone.utc)}
+    meta = {"source": "test", "time": datetime(2024, 1, 1, tzinfo=UTC)}
     success, payload, error = await client.insert_token_usage(
         model="gpt-4o",
         prompt_tokens=10,

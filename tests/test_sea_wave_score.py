@@ -116,7 +116,7 @@ def test_get_asset_wave_score_fallback_default():
 
 def test_pick_sea_asset_by_wave_score():
     bot = main_module.Bot(token="dummy", db_path=":memory:")
-    
+
     asset_calm = Mock()
     asset_calm.id = 1
     asset_calm.vision_results = {
@@ -125,7 +125,7 @@ def test_pick_sea_asset_by_wave_score():
     }
     asset_calm.categories = None
     asset_calm.payload = {}
-    
+
     asset_stormy = Mock()
     asset_stormy.id = 2
     asset_stormy.vision_results = {
@@ -134,7 +134,7 @@ def test_pick_sea_asset_by_wave_score():
     }
     asset_stormy.categories = None
     asset_stormy.payload = {}
-    
+
     asset_moderate = Mock()
     asset_moderate.id = 3
     asset_moderate.vision_results = {
@@ -143,7 +143,7 @@ def test_pick_sea_asset_by_wave_score():
     }
     asset_moderate.categories = None
     asset_moderate.payload = {}
-    
+
     selected = bot._pick_sea_asset(
         [asset_calm, asset_stormy, asset_moderate],
         desired_wave_score=8,
@@ -154,7 +154,7 @@ def test_pick_sea_asset_by_wave_score():
 
 def test_pick_sea_asset_by_sky_match():
     bot = main_module.Bot(token="dummy", db_path=":memory:")
-    
+
     asset_sunny = Mock()
     asset_sunny.id = 1
     asset_sunny.vision_results = {
@@ -163,7 +163,7 @@ def test_pick_sea_asset_by_sky_match():
     }
     asset_sunny.categories = None
     asset_sunny.payload = {}
-    
+
     asset_cloudy = Mock()
     asset_cloudy.id = 2
     asset_cloudy.vision_results = {
@@ -172,7 +172,7 @@ def test_pick_sea_asset_by_sky_match():
     }
     asset_cloudy.categories = None
     asset_cloudy.payload = {}
-    
+
     selected = bot._pick_sea_asset(
         [asset_sunny, asset_cloudy],
         desired_wave_score=5,
@@ -183,7 +183,7 @@ def test_pick_sea_asset_by_sky_match():
 
 def test_pick_sea_asset_sunset_bonus_calm():
     bot = main_module.Bot(token="dummy", db_path=":memory:")
-    
+
     asset_regular = Mock()
     asset_regular.id = 1
     asset_regular.vision_results = {
@@ -192,7 +192,7 @@ def test_pick_sea_asset_sunset_bonus_calm():
     }
     asset_regular.categories = None
     asset_regular.payload = {}
-    
+
     asset_sunset = Mock()
     asset_sunset.id = 2
     asset_sunset.vision_results = {
@@ -201,7 +201,7 @@ def test_pick_sea_asset_sunset_bonus_calm():
     }
     asset_sunset.categories = None
     asset_sunset.payload = {}
-    
+
     selected = bot._pick_sea_asset(
         [asset_regular, asset_sunset],
         desired_wave_score=2,
@@ -212,7 +212,7 @@ def test_pick_sea_asset_sunset_bonus_calm():
 
 def test_pick_sea_asset_storm_bonus():
     bot = main_module.Bot(token="dummy", db_path=":memory:")
-    
+
     asset_regular = Mock()
     asset_regular.id = 1
     asset_regular.vision_results = {
@@ -221,7 +221,7 @@ def test_pick_sea_asset_storm_bonus():
     }
     asset_regular.categories = None
     asset_regular.payload = {}
-    
+
     asset_storm = Mock()
     asset_storm.id = 2
     asset_storm.vision_results = {
@@ -230,7 +230,7 @@ def test_pick_sea_asset_storm_bonus():
     }
     asset_storm.categories = None
     asset_storm.payload = {}
-    
+
     selected = bot._pick_sea_asset(
         [asset_regular, asset_storm],
         desired_wave_score=7,

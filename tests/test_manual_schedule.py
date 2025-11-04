@@ -1,7 +1,8 @@
 import os
 import sys
-import pytest
 from datetime import datetime, timedelta
+
+import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from main import Bot

@@ -1,5 +1,5 @@
-import json
 import importlib.util
+import json
 import sqlite3
 import sys
 from pathlib import Path

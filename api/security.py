@@ -5,9 +5,9 @@ import binascii
 import hashlib
 import hmac
 import logging
-from datetime import datetime, timezone
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from time import perf_counter
-from typing import Mapping, Sequence
 from urllib.parse import quote
 
 from aiohttp import web
@@ -16,7 +16,6 @@ from multidict import MultiMapping
 
 from data_access import get_device_secret, register_nonce
 from observability import record_hmac_failure
-
 
 _CANONICAL_EMPTY_BODY_SHA = hashlib.sha256(b"").hexdigest()
 _ALLOWED_PATH_PREFIX = "/v1/"
@@ -43,7 +42,7 @@ def _normalize_path(path: str) -> str:
 def _canonical_query(params: MultiMapping[str] | Mapping[str, Sequence[str]]) -> str:
     items: list[tuple[str, str]] = []
     if isinstance(params, MultiMapping):
-        keys = sorted({k for k in params})
+        keys = sorted(set(params))
         for key in keys:
             values = sorted(params.getall(key))  # type: ignore[attr-defined]
             for value in values:
@@ -178,7 +177,7 @@ def create_hmac_middleware(conn) -> web.middleware:
             record_hmac_failure("invalid_timestamp")
             return _json_error(400, "invalid_headers", "X-Timestamp must be an integer.")
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if abs(int(now.timestamp()) - timestamp) > _TIME_WINDOW_SECONDS:
             logging.warning("SEC reject stale m=%s p=%s ts=%s", method, path, timestamp)
             record_hmac_failure("timestamp_window")

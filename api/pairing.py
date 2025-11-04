@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import re
-from typing import Mapping
+from collections.abc import Mapping
 from urllib.parse import parse_qs, urlparse
-
 
 _PAIRING_TOKEN_PATTERN = re.compile(r"^[A-Z2-9]{6,8}$")
 

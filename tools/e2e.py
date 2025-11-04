@@ -7,8 +7,8 @@ import os
 import random
 import sqlite3
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 from data_access import create_pairing_token
 

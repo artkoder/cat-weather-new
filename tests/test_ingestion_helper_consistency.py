@@ -13,18 +13,16 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from api.uploads import UploadMetricsRecorder, UploadsConfig, register_upload_jobs
 from data_access import DataAccess, create_device, insert_upload
+from ingestion import extract_categories
 from jobs import Job, JobQueue
 from main import Bot, apply_migrations
-
-from ingestion import extract_categories
-
 from tests.fixtures.ingestion_utils import (
+    DEFAULT_VISION_PAYLOAD,
     OpenAIStub,
     StorageStub,
     TelegramStub,
     compute_sha256,
     create_sample_image,
-    DEFAULT_VISION_PAYLOAD,
 )
 
 

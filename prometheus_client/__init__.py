@@ -18,9 +18,9 @@ class _Metric:
         self.documentation = documentation
         self.metric_type = metric_type
         self._labelnames = labelnames
-        self._samples: Dict[Tuple[Any, ...], _MetricSample] = {}
+        self._samples: dict[tuple[Any, ...], _MetricSample] = {}
 
-    def labels(self, *args: Any, **kwargs: Any) -> "_MetricChild":
+    def labels(self, *args: Any, **kwargs: Any) -> _MetricChild:
         if args and kwargs:
             raise TypeError("Cannot mix args and kwargs for labels")
         if kwargs:
@@ -48,7 +48,7 @@ class _Metric:
             if self.metric_type == "histogram":
                 label_pairs = ",".join(
                     f"{label}=\"{value}\""
-                    for label, value in zip(self._labelnames, label_values)
+                    for label, value in zip(self._labelnames, label_values, strict=True)
                 )
                 prefix = f"{self.name}_"
                 suffix = f"{{{label_pairs}}}" if label_pairs else ""
@@ -56,7 +56,7 @@ class _Metric:
                 lines.append(f"{prefix}count{suffix} {sample.count}")
             else:
                 labels = ",".join(
-                    f"{label}=\"{value}\"" for label, value in zip(self._labelnames, label_values)
+                    f"{label}=\"{value}\"" for label, value in zip(self._labelnames, label_values, strict=True)
                 )
                 rendered = f"{self.name}"
                 if labels:
@@ -72,7 +72,7 @@ class _Metric:
 
 
 class _MetricChild:
-    def __init__(self, parent: _Metric, key: Tuple[Any, ...], sample: _MetricSample) -> None:
+    def __init__(self, parent: _Metric, key: tuple[Any, ...], sample: _MetricSample) -> None:
         self._parent = parent
         self._key = key
         self._sample = sample

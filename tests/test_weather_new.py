@@ -1,5 +1,8 @@
+import copy
+import hashlib
 import json
 import os
+import sqlite3
 import sys
 import types
 from datetime import datetime, timedelta
@@ -8,17 +11,14 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-import copy
-import hashlib
 import piexif
 import pytest
-import sqlite3
 from PIL import Image
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import observability
-from api.uploads import _extract_image_metadata
 from data_access import DataAccess, create_device, insert_upload
+from ingestion import extract_image_metadata as _extract_image_metadata
 from main import Bot, Job
 from openai_client import OpenAIResponse
 
@@ -50,7 +50,7 @@ async def _run_vision_job_collect_calls(
     if exif_month is not None:
         exif_dict = {
             'Exif': {
-                piexif.ExifIFD.DateTimeOriginal: f"2023:{exif_month:02d}:15 12:00:00".encode('utf-8')
+                piexif.ExifIFD.DateTimeOriginal: f"2023:{exif_month:02d}:15 12:00:00".encode()
             }
         }
         exif_bytes = piexif.dump(exif_dict)

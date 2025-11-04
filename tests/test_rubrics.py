@@ -2,6 +2,7 @@ import html
 import json
 import os
 import random
+import re
 import sys
 from collections.abc import Sequence
 from copy import deepcopy
@@ -17,8 +18,9 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import data_access
 from data_access import Asset, Rubric
 from jobs import Job
-from main import FLOWERS_PREVIEW_MAX_LENGTH, Bot
+from main import FLOWERS_PREVIEW_MAX_LENGTH, LOVE_COLLECTION_LINK, Bot
 from openai_client import OpenAIResponse
+from tests.fixtures.sea import create_sea_asset, create_stub_image, seed_sea_environment
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 
@@ -3743,12 +3745,200 @@ async def test_publish_sea_soft_truncation_preserves_footer(tmp_path):
     assert "#БалтийскоеМоре" in caption
     assert "📂 Полюбить 39" in caption
     segments = caption.split("\n\n")
-    assert segments[-1].strip().startswith("📂 Полюбить 39")
+    assert segments[-1] == LOVE_COLLECTION_LINK
     hashtag_block = next((part for part in segments if part.strip().startswith("#")), "")
     assert "#море" in hashtag_block
     assert "#БалтийскоеМоре" in hashtag_block
 
     await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_sea_caption_clickable_love_link(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "sea_clickable.db"))
+    try:
+        rubric = bot.data.get_rubric_by_code("sea")
+        assert rubric is not None
+        seed_sea_environment(bot, sea_id=1, wind_speed=5.0)
+        photo_path = create_stub_image(tmp_path, "sea-clickable.jpg")
+        create_sea_asset(
+            bot,
+            rubric_id=rubric.id,
+            message_id=4101,
+            file_name="sea-clickable.jpg",
+            local_path=photo_path,
+        )
+
+        async def fake_generate(self, **_kwargs):
+            return "Порадую вас морем — вечерний бриз.", ["#море", "#БалтийскоеМоре"]
+
+        bot._generate_sea_caption = fake_generate.__get__(bot, Bot)
+
+        captured: dict[str, Any] = {}
+
+        async def fake_api_request(self, method, data=None, *, files=None):
+            if method == "sendPhoto":
+                captured["data"] = data
+                captured["caption"] = data["caption"]
+                captured["files"] = files
+                return {"ok": True, "result": {"message_id": 777}}
+            return {"ok": True}
+
+        bot.api_request = fake_api_request.__get__(bot, Bot)
+
+        success = await bot._publish_sea(rubric, channel_id=-100500)
+        assert success
+        assert captured["data"]["parse_mode"] == "HTML"
+        caption = captured["caption"]
+        assert LOVE_COLLECTION_LINK in caption
+        assert 'href="https://t.me/addlist/sW-rkrslxqo1NTVi"' in caption
+        assert "📂 Полюбить 39 https://" not in caption
+        assert captured["files"] and "photo" in captured["files"]
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_sea_caption_no_numbers_and_no_cloud_words(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "sea_sanitize.db"))
+    try:
+        rubric = bot.data.get_rubric_by_code("sea")
+        assert rubric is not None
+        seed_sea_environment(bot, sea_id=1, wind_speed=12.0)
+        photo_path = create_stub_image(tmp_path, "sea-sanitize.jpg")
+        create_sea_asset(
+            bot,
+            rubric_id=rubric.id,
+            message_id=4102,
+            file_name="sea-sanitize.jpg",
+            local_path=photo_path,
+        )
+        raw_caption = (
+            "Сегодня шторм на море — ветер 18 м/с и 65 км/ч. "
+            "Облачность 90% и солнечно по краю. Ещё вдохновляющая мысль у побережья."
+        )
+
+        async def fake_generate(self, **_kwargs):
+            return raw_caption, ["#море", "#БалтийскоеМоре", "#шторм"]
+
+        bot._generate_sea_caption = fake_generate.__get__(bot, Bot)
+
+        captured: dict[str, Any] = {}
+
+        async def fake_api_request(self, method, data=None, *, files=None):
+            if method == "sendPhoto":
+                captured["caption"] = data["caption"]
+                captured["data"] = data
+                captured["files"] = files
+                return {"ok": True, "result": {"message_id": 778}}
+            return {"ok": True}
+
+        bot.api_request = fake_api_request.__get__(bot, Bot)
+
+        success = await bot._publish_sea(rubric, channel_id=-100501)
+        assert success
+        caption = captured["caption"]
+        main_html = caption.split("\n\n")[0]
+        main_text = html.unescape(main_html)
+        assert len(main_text) <= 350
+        assert re.search(r"\d", main_text) is None
+        assert re.search(r"облачн|солнеч", main_text, re.IGNORECASE) is None
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_sea_caption_keep_hashtags_and_footer(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "sea_structure.db"))
+    try:
+        rubric = bot.data.get_rubric_by_code("sea")
+        assert rubric is not None
+        seed_sea_environment(bot, sea_id=1, wind_speed=8.0)
+        photo_path = create_stub_image(tmp_path, "sea-structure.jpg")
+        create_sea_asset(
+            bot,
+            rubric_id=rubric.id,
+            message_id=4103,
+            file_name="sea-structure.jpg",
+            local_path=photo_path,
+        )
+        raw_caption = " ".join(["На побережье тихо и хочется задержаться." for _ in range(25)])
+
+        async def fake_generate(self, **_kwargs):
+            return raw_caption, ["#море", "#БалтийскоеМоре", "#Балтика"]
+
+        bot._generate_sea_caption = fake_generate.__get__(bot, Bot)
+
+        captured: dict[str, Any] = {}
+
+        async def fake_api_request(self, method, data=None, *, files=None):
+            if method == "sendPhoto":
+                captured["caption"] = data["caption"]
+                captured["data"] = data
+                captured["files"] = files
+                return {"ok": True, "result": {"message_id": 779}}
+            return {"ok": True}
+
+        bot.api_request = fake_api_request.__get__(bot, Bot)
+
+        success = await bot._publish_sea(rubric, channel_id=-100502)
+        assert success
+        caption = captured["caption"]
+        segments = caption.split("\n\n")
+        assert len(segments) >= 3
+        assert segments[-1] == LOVE_COLLECTION_LINK
+        hashtags_block = html.unescape(segments[-2])
+        assert hashtags_block.startswith("#море")
+        assert "#БалтийскоеМоре" in hashtags_block
+        assert len(caption) < 1000
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_operator_test_message_contains_wind(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "sea_test_message.db"))
+    try:
+        rubric = bot.data.get_rubric_by_code("sea")
+        assert rubric is not None
+        seed_sea_environment(bot, sea_id=1, wind_speed=7.2)
+        photo_path = create_stub_image(tmp_path, "sea-test-message.jpg")
+        create_sea_asset(
+            bot,
+            rubric_id=rubric.id,
+            message_id=4104,
+            file_name="sea-test-message.jpg",
+            local_path=photo_path,
+        )
+
+        async def fake_generate(self, **_kwargs):
+            return "Сегодня шторм на море — ветер ощутимо шумит у побережья.", ["#море", "#БалтийскоеМоре"]
+
+        bot._generate_sea_caption = fake_generate.__get__(bot, Bot)
+
+        captured_requests: list[dict[str, Any]] = []
+
+        async def fake_api_request(self, method, data=None, *, files=None):
+            captured_requests.append({"method": method, "data": data})
+            if method == "sendPhoto":
+                return {"ok": True, "result": {"message_id": 780}}
+            return {"ok": True}
+
+        bot.api_request = fake_api_request.__get__(bot, Bot)
+
+        success = await bot._publish_sea(
+            rubric,
+            channel_id=-100503,
+            test=True,
+            initiator_id=12345,
+        )
+        assert success
+        send_messages = [entry for entry in captured_requests if entry["method"] == "sendMessage"]
+        assert send_messages
+        message_text = send_messages[0]["data"]["text"]
+        assert "• Ветер: 26 км/ч (7.2 м/с, strong)" in message_text
+    finally:
+        await bot.close()
 
 
 @pytest.mark.asyncio

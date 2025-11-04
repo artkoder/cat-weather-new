@@ -60,3 +60,14 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
         tables = _table_names(conn)
         expected_tables = {"devices", "pairing_tokens", "nonces", "uploads", "assets"}
         assert expected_tables.issubset(tables)
+
+
+def test_sea_conditions_table_exists(tmp_path: Path) -> None:
+    db_path = tmp_path / "sea.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        apply_migrations(conn)
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='sea_conditions'"
+        ).fetchone()
+        assert exists is not None

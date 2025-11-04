@@ -4,6 +4,7 @@ Test suite for sea picker type normalization fixes.
 Tests edge cases where sorting keys contain mixed types (str, int, float, datetime).
 """
 import json
+import logging
 import os
 import sys
 from datetime import datetime
@@ -13,6 +14,7 @@ import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+import main as main_module
 from main import Bot
 
 
@@ -240,9 +242,8 @@ def test_pick_sea_asset_with_invalid_last_used_at():
         desired_wave_score=5,
         desired_sky=None
     )
-    # asset1 will have float('inf') (treat as never used), asset2 has a valid date
-    # asset1 with inf is treated as "never used before" which means it should be preferred
-    # (higher priority for unused assets in LRU)
+    # asset1 falls back to timestamp 0.0 (treated as the oldest), asset2 has a valid date
+    # Older assets have higher priority in the LRU component, so asset1 should be preferred.
     assert selected.id == 1
 
 
@@ -294,6 +295,116 @@ def test_pick_sea_asset_mixed_type_consistency():
     assert selected.id == "201"
 
 
+@pytest.mark.parametrize("desired_wave_score", ["7", 7, 7.0, None])
+@pytest.mark.parametrize("asset_wave_score", ["7", 7, 7.0, None])
+@pytest.mark.parametrize("last_used_at", ["2025-11-04T08:50:00", "", None])
+def test_pick_sea_asset_handles_mixed_numeric_inputs(
+    desired_wave_score, asset_wave_score, last_used_at
+):
+    bot = Bot(token="dummy", db_path=":memory:")
+
+    asset = Mock()
+    asset.id = "101"
+    vision_results = {"tags": ["sea"]}
+    if asset_wave_score is not None:
+        vision_results["sea_wave_score"] = {"value": asset_wave_score}
+    asset.vision_results = vision_results
+    asset.categories = None
+    if last_used_at is None:
+        asset.payload = None
+    else:
+        asset.payload = {"last_used_at": last_used_at}
+    selected = bot._pick_sea_asset(
+        [asset],
+        desired_wave_score=desired_wave_score,
+        desired_sky=None
+    )
+    assert selected is asset
+
+
+def test_pick_sea_asset_fallback_to_id_on_exception(monkeypatch, caplog):
+    bot = Bot(token="dummy", db_path=":memory:")
+
+    asset = Mock()
+    asset.id = "bad"
+    asset.vision_results = {"sea_wave_score": {"value": "5"}, "tags": ["sea"]}
+    asset.categories = None
+    asset.payload = {"last_used_at": "2024-01-01T00:00:00"}
+
+    def boom(*_args, **_kwargs):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(bot, "_extract_asset_sky", boom)
+
+    with caplog.at_level(logging.ERROR):
+        selected = bot._pick_sea_asset(
+            [asset],
+            desired_wave_score="5",
+            desired_sky=None
+        )
+
+    assert selected is asset
+    assert any(
+        "Failed to build sea picker key" in record.message for record in caplog.records
+    )
+
+
+def test_pick_sea_asset_debug_logging_numeric_types(monkeypatch, caplog):
+    bot = Bot(token="dummy", db_path=":memory:")
+
+    monkeypatch.setattr(main_module, "DEBUG_SEA_PICK", True)
+
+    asset_primary = Mock()
+    asset_primary.id = "101"
+    asset_primary.vision_results = {
+        "sea_wave_score": {"value": "7"},
+        "tags": ["sea", "sunset", "sunny"],
+    }
+    asset_primary.categories = ["Закат"]
+    asset_primary.payload = {"last_used_at": "2025-11-04T08:50:00"}
+
+    asset_secondary = Mock()
+    asset_secondary.id = 202
+    asset_secondary.vision_results = {
+        "sea_wave_score": {"value": 5},
+        "tags": ["sea", "waves"],
+    }
+    asset_secondary.categories = None
+    asset_secondary.payload = {"last_used_at": "2024-11-04T08:50:00"}
+
+    with caplog.at_level(logging.INFO):
+        selected = bot._pick_sea_asset(
+            [asset_primary, asset_secondary],
+            desired_wave_score="2",
+            desired_sky="sunny"
+        )
+
+    assert selected is asset_primary
+    log_records = [
+        record for record in caplog.records if "sea_picker_debug" in record.message
+    ]
+    assert log_records, "Expected diagnostic log when DEBUG_SEA_PICK is enabled"
+    debug_payload = log_records[-1].args[-1]
+    assert isinstance(debug_payload, list)
+    assert debug_payload, "Expected candidate payloads in debug log"
+
+    for entry in debug_payload:
+        assert entry["types"] == ("int", "int", "float", "float", "float", "int")
+        assert isinstance(entry["lru_ts"], float)
+        assert isinstance(entry["wave_penalty"], float)
+        assert isinstance(entry["key"], tuple)
+        assert isinstance(entry["id"], int)
+
+    primary_entry = next(entry for entry in debug_payload if entry["id"] == 101)
+    assert isinstance(primary_entry["asset_score"], float)
+    assert primary_entry["has_sunset_tag"] == 1
+    assert primary_entry["has_sunset_category"] == 1
+    assert isinstance(primary_entry["desired_wave_score"], (float, type(None)))
+    if isinstance(primary_entry["desired_wave_score"], float):
+        assert primary_entry["desired_wave_score"] == pytest.approx(2.0)
+
+
+
 def test_pick_sea_asset_deterministic_with_same_scores():
     """Test that sea picker is deterministic when assets have identical scores."""
     bot = Bot(token="dummy", db_path=":memory:")
@@ -310,9 +421,8 @@ def test_pick_sea_asset_deterministic_with_same_scores():
     asset2.categories = None
     asset2.payload = {}
 
-    # When all else is equal (same scores, both have inf LRU), the tiebreaker is -asset_id
-    # Since sort key uses -asset_id, -200 < -100, so asset1 (id=100) wins in max()
-    # This is because max() with negative values prefers the less negative (higher absolute value)
+    # When all else is equal (same scores, both fall back to an LRU timestamp of 0.0),
+    # the tiebreaker is the -asset_id component. Because -200 < -100, asset1 (id=100) wins.
     selected = bot._pick_sea_asset(
         [asset1, asset2],
         desired_wave_score=5,

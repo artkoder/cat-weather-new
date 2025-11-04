@@ -156,6 +156,7 @@ DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 TZ_OFFSET = os.getenv("TZ_OFFSET", "+00:00")
 SCHED_INTERVAL_SEC = int(os.getenv("SCHED_INTERVAL_SEC", "30"))
 ASSETS_DEBUG_EXIF = _env_flag(os.getenv("ASSETS_DEBUG_EXIF", "0"))
+DEBUG_SEA_PICK = _env_flag(os.getenv("DEBUG_SEA_PICK", "0"))
 VISION_CONCURRENCY_RAW = os.getenv("VISION_CONCURRENCY", "1")
 try:
     VISION_CONCURRENCY = max(1, int(VISION_CONCURRENCY_RAW))
@@ -12366,7 +12367,9 @@ class Bot:
             wave = 0.0
         else:
             water_temp = sea_row["current"]
-            wave = sea_row["wave"] if sea_row["wave"] is not None else 0.0
+            wave = self._safe_float(sea_row["wave"], default=0.0)
+            if wave is None:
+                wave = 0.0
         if wave < 0.5:
             storm_state = "calm"
         elif wave < 1.5:
@@ -12374,7 +12377,11 @@ class Bot:
         else:
             storm_state = "strong_storm"
 
-        desired_wave_score = self._interpolate_wave_to_score(wave)
+        desired_wave_score = self._safe_float(
+            self._interpolate_wave_to_score(wave), default=0.0
+        )
+        if desired_wave_score is None:
+            desired_wave_score = 0.0
         desired_sky = self._get_sea_weather_sky(sea_id)
 
         wind_speed, wind_class = self._get_sea_wind(sea_id)
@@ -12873,104 +12880,219 @@ class Bot:
         self,
         assets: list[Asset],
         *,
-        desired_wave_score: int,
+        desired_wave_score: float | int | str | None,
         desired_sky: str | None,
     ) -> Asset | None:
         if not assets:
             return None
 
-        def norm(s: str | None) -> str:
-            return (s or "").strip().lower()
+        def norm(value: str | None) -> str:
+            return (value or "").strip().lower()
+
+        def _safe_float(value: Any, default: float | None = None) -> float | None:
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _safe_int(value: Any, default: int = 0) -> int:
+            if value is None:
+                return default
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                try:
+                    return int(float(value))
+                except (TypeError, ValueError):
+                    return default
+
+        def _lru_ts(asset: Asset) -> float:
+            payload = getattr(asset, "payload", None)
+            if isinstance(payload, dict):
+                last_used = payload.get("last_used_at")
+                if isinstance(last_used, datetime):
+                    return last_used.timestamp()
+                if isinstance(last_used, (int, float)):
+                    return float(last_used)
+                if isinstance(last_used, str):
+                    ts_text = last_used.strip()
+                    if not ts_text:
+                        return 0.0
+                    try:
+                        return datetime.fromisoformat(ts_text).timestamp()
+                    except ValueError:
+                        numeric_ts = _safe_float(ts_text, default=None)
+                        if numeric_ts is not None:
+                            return float(numeric_ts)
+            return 0.0
 
         def extract_tags(asset: Asset) -> set[str]:
             tags_set: set[str] = set()
-            if asset.vision_results and isinstance(asset.vision_results, dict):
-                raw_tags = asset.vision_results.get("tags")
+            vision_results = getattr(asset, "vision_results", None)
+            if vision_results and isinstance(vision_results, dict):
+                raw_tags = vision_results.get("tags")
                 if isinstance(raw_tags, list):
-                    tags_set.update(norm(str(t)) for t in raw_tags)
+                    tags_set.update(norm(str(tag)) for tag in raw_tags)
             return tags_set
 
         def extract_categories(asset: Asset) -> set[str]:
             categories_set: set[str] = set()
-            if asset.categories:
-                categories_set.update(norm(str(c)) for c in asset.categories)
+            categories = getattr(asset, "categories", None)
+            if categories:
+                categories_set.update(norm(str(category)) for category in categories)
             return categories_set
 
-        def has_sunset_tag(asset: Asset) -> bool:
-            tags = extract_tags(asset)
-            return "sunset" in tags
+        def _extract_wave_score(asset: Asset, tags: set[str]) -> float:
+            vision_results = getattr(asset, "vision_results", None) or {}
+            if not isinstance(vision_results, dict):
+                vision_results = {}
+            sea_wave_score = vision_results.get("sea_wave_score")
+            value: float | None = None
+            if isinstance(sea_wave_score, dict):
+                value = _safe_float(sea_wave_score.get("value"))
+            elif sea_wave_score is not None:
+                value = _safe_float(sea_wave_score)
+            if value is not None:
+                return value
+            if {"whitecaps", "surf", "шторм", "gale", "spray", "foam"} & tags:
+                return 9.0
+            if "storm" in tags:
+                return 7.0
+            if "waves" in tags:
+                return 5.0
+            return 1.0
 
-        def has_sunset_category(asset: Asset) -> bool:
-            cats = extract_categories(asset)
-            return ("закат" in cats) or ("sunset" in cats)
+        desired_wave_score_value = _safe_float(desired_wave_score, default=None)
+        desired_sky_normalized = norm(desired_sky)
+        if not desired_sky_normalized:
+            desired_sky_normalized = None
+        debug_enabled = DEBUG_SEA_PICK
+        debug_records: list[dict[str, Any]] = []
+        storm_synonyms = {
+            "storm",
+            "шторм",
+            "waves",
+            "буря",
+            "surf",
+            "whitecaps",
+            "gale",
+            "spray",
+            "foam",
+        }
 
-        def has_storm_tag(asset: Asset) -> bool:
-            tags = extract_tags(asset)
-            storm_synonyms = {"storm", "шторм", "waves", "буря", "surf", "whitecaps", "gale", "spray", "foam"}
-            return bool(storm_synonyms.intersection(tags))
+        def build_sort_key(asset: Asset) -> tuple[int, int, float, float, float, int]:
+            asset_id_int = _safe_int(getattr(asset, "id", None))
+            record: dict[str, Any] = {
+                "id": asset_id_int,
+                "has_sunset_tag": 0,
+                "has_sunset_category": 0,
+                "asset_score": None,
+                "desired_wave_score": desired_wave_score_value,
+                "wave_penalty": 0.0,
+                "lru_ts": 0.0,
+                "thematic_bias": 0.0,
+            }
+            sunset_tag_priority = 0
+            sunset_category_priority = 0
+            try:
+                tags = extract_tags(asset)
+                categories = extract_categories(asset)
+                sunset_tag = "sunset" in tags
+                sunset_category = bool({"закат", "sunset"} & categories)
+                prefer_sunsets = (
+                    desired_wave_score_value is not None
+                    and desired_wave_score_value <= 2.0
+                )
+                if prefer_sunsets and sunset_tag:
+                    sunset_tag_priority = 1
+                if prefer_sunsets and sunset_category:
+                    sunset_category_priority = 1
+                record["has_sunset_tag"] = sunset_tag_priority
+                record["has_sunset_category"] = sunset_category_priority
 
-        def compute_wave_penalty(asset: Asset) -> float:
-            asset_score = self._get_asset_wave_score_with_fallback(asset)
-            return -abs(asset_score - desired_wave_score)
-
-        def compute_sky_bonus(asset: Asset) -> float:
-            asset_sky = self._extract_asset_sky(asset.vision_results)
-            if desired_sky and asset_sky:
-                if desired_sky == asset_sky:
-                    return 1.0
+                asset_score = _extract_wave_score(asset, tags)
+                record["asset_score"] = asset_score
+                if desired_wave_score_value is None or asset_score is None:
+                    wave_penalty = 0.0
                 else:
-                    return -0.5
-            return 0.0
+                    wave_penalty = -abs(asset_score - desired_wave_score_value)
+                record["wave_penalty"] = wave_penalty
 
-        def compute_lru_score(asset: Asset) -> float:
-            """Compute LRU score for sorting. Returns negative timestamp (older is higher score)."""
-            last_used_str = asset.payload.get("last_used_at") if asset.payload else None
-            if not last_used_str:
-                return float('inf')
+                thematic_bias = 0.0
+                asset_sky = self._extract_asset_sky(
+                    getattr(asset, "vision_results", None)
+                )
+                if desired_sky_normalized and asset_sky:
+                    if desired_sky_normalized == asset_sky:
+                        thematic_bias += 1.0
+                    else:
+                        thematic_bias -= 0.5
+                if desired_wave_score_value is not None:
+                    if desired_wave_score_value <= 2.0:
+                        if sunset_tag:
+                            thematic_bias += 2.0
+                        elif sunset_category:
+                            thematic_bias += 1.0
+                    if (
+                        desired_wave_score_value >= 6.0
+                        and storm_synonyms.intersection(tags)
+                    ):
+                        storm_bonus = max(0.0, 0.5 + wave_penalty)
+                        if storm_bonus:
+                            thematic_bias += storm_bonus
+                record["thematic_bias"] = thematic_bias
 
-            # Use safe datetime parser
-            last_used_dt = self._parse_datetime_iso(last_used_str)
-            if last_used_dt == datetime.min:
-                return float('inf')
+                lru_component = _lru_ts(asset)
+                record["lru_ts"] = lru_component
+                sort_key = (
+                    sunset_tag_priority,
+                    sunset_category_priority,
+                    float(thematic_bias),
+                    float(wave_penalty),
+                    -float(lru_component),
+                    -int(asset_id_int),
+                )
+            except Exception:
+                logging.exception(
+                    "Failed to build sea picker key for asset %s",
+                    getattr(asset, "id", None),
+                )
+                sort_key = (
+                    sunset_tag_priority,
+                    sunset_category_priority,
+                    0.0,
+                    0.0,
+                    0.0,
+                    -int(asset_id_int),
+                )
+            if debug_enabled and len(debug_records) < 5:
+                record["key"] = sort_key
+                record["types"] = tuple(
+                    type(component).__name__ for component in sort_key
+                )
+                debug_records.append(record)
+            return sort_key
 
-            return -last_used_dt.timestamp()
+        scored_assets = [(asset, build_sort_key(asset)) for asset in assets]
+        if not scored_assets:
+            return None
 
-        def compute_score(asset: Asset) -> tuple[float, int, int, float, int]:
-            """Compute sort key tuple with all numeric types."""
-            sunset_tag = has_sunset_tag(asset)
-            sunset_cat = has_sunset_category(asset)
-
-            # All penalties and bonuses are float
-            wave_penalty = compute_wave_penalty(asset)  # float
-            sky_bonus = compute_sky_bonus(asset)  # float
-
-            wave_and_sky_score = float(wave_penalty + sky_bonus)
-
-            if desired_wave_score <= 2:
-                if sunset_tag:
-                    wave_and_sky_score += 2.0
-                elif sunset_cat:
-                    wave_and_sky_score += 1.0
-
-            if desired_wave_score >= 6 and has_storm_tag(asset):
-                wave_and_sky_score += 0.5
-
-            # LRU score is float
-            lru_score = compute_lru_score(asset)
-
-            # Asset ID must be int
-            asset_id = self._safe_int(asset.id, default=0)
-
-            # Return tuple with consistent types: (float, int, int, float, int)
-            return (
-                float(wave_and_sky_score),
-                int(sunset_tag),
-                int(sunset_cat),
-                float(lru_score),
-                -int(asset_id),
+        winner_asset, winner_key = max(scored_assets, key=lambda item: item[1])
+        if debug_enabled and debug_records:
+            logging.info(
+                (
+                    "sea_picker_debug desired_wave_score=%s desired_sky=%s "
+                    "winner_id=%s winner_key=%s candidates=%s"
+                ),
+                desired_wave_score_value,
+                desired_sky_normalized,
+                _safe_int(getattr(winner_asset, "id", None)),
+                winner_key,
+                debug_records,
             )
-
-        return max(assets, key=compute_score)
+        return winner_asset
 
     async def _cleanup_assets(
         self, assets: Iterable[Asset], *, extra_paths: Iterable[str] | None = None

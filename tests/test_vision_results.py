@@ -304,17 +304,36 @@ def test_asset_vision_schema_definition():
             "weather_image": {
                 "type": "string",
                 "description": (
-                "Краткое описание погодных условий на фото (на английском). Выбирай из категорий: sunny, partly_cloudy, overcast, rain, snow, fog, night."
-            ),
-            "enum": [
-                "sunny",
-                "partly_cloudy",
-                "overcast",
-                "rain",
-                "snow",
-                "fog",
-                "night",
-            ],
+                    "Краткое описание погодных условий на фото (на английском). Выбирай из категорий: sunny, partly_cloudy, overcast, rain, snow, fog, night."
+                ),
+                "enum": [
+                    "sunny",
+                    "partly_cloudy",
+                    "overcast",
+                    "rain",
+                    "snow",
+                    "fog",
+                    "night",
+                ],
+            },
+            "is_sea": {
+                "type": "boolean",
+                "description": "True, если на фото море, океан, пляж или береговая линия.",
+            },
+            "sea_wave_score": {
+                "type": ["number", "null"],
+                "description": "Оценка волнения моря по шкале 0..10 (0 — гладь, 10 — сильный шторм).",
+                "minimum": 0,
+                "maximum": 10,
+            },
+            "photo_sky": {
+                "type": "string",
+                "description": "Класс неба на снимке.",
+                "enum": ["sunny", "partly_cloudy", "mostly_cloudy", "overcast", "night"],
+            },
+            "is_sunset": {
+                "type": "boolean",
+                "description": "True, если на фото закат или выраженные закатные оттенки.",
             },
             "season_guess": {
                 "type": ["string", "null"],
@@ -371,6 +390,10 @@ def test_asset_vision_schema_definition():
             "architecture_close_up",
             "architecture_wide",
             "weather_image",
+            "is_sea",
+            "sea_wave_score",
+            "photo_sky",
+            "is_sunset",
             "season_guess",
             "safety",
         ],

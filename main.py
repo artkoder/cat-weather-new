@@ -394,6 +394,95 @@ SEASON_ADJACENCY: dict[str, set[str]] = {
 }
 
 
+def map_wave_height_to_score(height: float | None) -> float:
+    if height is None:
+        return 0.0
+    try:
+        value = float(height)
+    except (TypeError, ValueError):
+        return 0.0
+    if value <= 0:
+        return 0.0
+    points = [
+        (0.0, 0.0),
+        (0.5, 3.0),
+        (1.0, 5.0),
+        (1.5, 7.0),
+        (2.0, 8.5),
+        (3.0, 10.0),
+    ]
+    for idx in range(len(points) - 1):
+        left_x, left_y = points[idx]
+        right_x, right_y = points[idx + 1]
+        if value <= right_x:
+            if right_x == left_x:
+                return right_y
+            ratio = (value - left_x) / (right_x - left_x)
+            return left_y + (right_y - left_y) * ratio
+    return 10.0
+
+
+def classify_wind_kph(speed_kmh: float | None) -> str | None:
+    if speed_kmh is None:
+        return None
+    try:
+        value = float(speed_kmh)
+    except (TypeError, ValueError):
+        return None
+    if value >= 35.0:
+        return "very_strong"
+    if value >= 25.0:
+        return "strong"
+    if value >= 0:
+        return "normal"
+    return None
+
+
+def bucket_clouds(cloud_pct: float | None) -> str | None:
+    if cloud_pct is None:
+        return None
+    try:
+        value = float(cloud_pct)
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        value = 0.0
+    if value <= 20:
+        return "clear"
+    if value <= 40:
+        return "mostly_clear"
+    if value <= 60:
+        return "partly_cloudy"
+    if value <= 80:
+        return "mostly_cloudy"
+    return "overcast"
+
+
+def compatible_skies(bucket: str | None) -> set[str]:
+    mapping = {
+        "clear": {"sunny", "partly_cloudy"},
+        "mostly_clear": {"sunny", "partly_cloudy"},
+        "partly_cloudy": {"sunny", "partly_cloudy", "mostly_cloudy"},
+        "mostly_cloudy": {"mostly_cloudy", "overcast"},
+        "overcast": {"mostly_cloudy", "overcast"},
+    }
+    return set(mapping.get(bucket, {"sunny", "partly_cloudy", "mostly_cloudy", "overcast"}))
+
+
+def compute_season_window(reference: date, window_days: int = 45) -> set[str]:
+    seasons: set[str] = set()
+    for offset in range(-window_days, window_days + 1):
+        candidate = reference + timedelta(days=offset)
+        seasons.add(SEASON_BY_MONTH.get(candidate.month, "winter"))
+    return seasons
+
+
+def season_match(season_guess: str | None, allowed: set[str]) -> bool:
+    if not season_guess:
+        return False
+    normalized = str(season_guess).strip().lower()
+    return normalized in allowed
+
 
 
 ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
@@ -501,6 +590,31 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
                 "night",
             ],
         },
+        "is_sea": {
+            "type": "boolean",
+            "description": "True, если на фото море, океан, пляж или береговая линия.",
+        },
+        "sea_wave_score": {
+            "type": ["number", "null"],
+            "description": "Оценка волнения моря по шкале 0..10 (0 — гладь, 10 — сильный шторм).",
+            "minimum": 0,
+            "maximum": 10,
+        },
+        "photo_sky": {
+            "type": "string",
+            "description": "Класс неба на снимке.",
+            "enum": [
+                "sunny",
+                "partly_cloudy",
+                "mostly_cloudy",
+                "overcast",
+                "night",
+            ],
+        },
+        "is_sunset": {
+            "type": "boolean",
+            "description": "True, если на фото закат или выраженные закатные оттенки.",
+        },
         "season_guess": {
             "type": ["string", "null"],
             "description": "Предполагаемый сезон (spring, summer, autumn, winter) или null, если неясно.",
@@ -565,6 +679,10 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
         "architecture_close_up",
         "architecture_wide",
         "weather_image",
+        "is_sea",
+        "sea_wave_score",
+        "photo_sky",
+        "is_sunset",
         "season_guess",
         "safety",
     ],
@@ -747,9 +865,16 @@ CREATE_TABLES = [
             evening_wave REAL,
             night_wave REAL
         )""",
+    """CREATE TABLE IF NOT EXISTS sea_conditions (
+            sea_id INTEGER PRIMARY KEY,
+            updated TEXT,
+            wave_height_m REAL,
+            wind_speed_10m_ms REAL,
+            cloud_cover_pct REAL
+        )""",
 
-    """CREATE TABLE IF NOT EXISTS weather_posts (
-            id INTEGER PRIMARY KEY,
+     """CREATE TABLE IF NOT EXISTS weather_posts (
+
             chat_id BIGINT NOT NULL,
             message_id BIGINT NOT NULL,
             template TEXT NOT NULL,
@@ -1967,10 +2092,35 @@ class Bot:
             return None
         return data
 
+    async def fetch_open_meteo_sea_conditions(self, lat: float, lon: float) -> dict | None:
+        url = (
+            "https://api.open-meteo.com/v1/forecast?latitude="
+            f"{lat}&longitude={lon}"
+            "&current=wind_speed_10m,cloud_cover"
+            "&timezone=auto"
+        )
+        logging.info("Sea weather API request: %s", url)
+        try:
+            async with self.session.get(url) as resp:
+                text = await resp.text()
+        except Exception:
+            logging.exception("Failed to fetch sea weather")
+            return None
+        logging.info("Sea weather raw response: %s", text)
+        if resp.status != 200:
+            logging.error("Open-Meteo sea weather HTTP %s", resp.status)
+            return None
+        try:
+            data = json.loads(text)
+        except Exception:
+            logging.exception("Invalid sea weather JSON")
+            return None
+        return data
+
     async def collect_weather(self, force: bool = False):
 
         cur = self.db.execute("SELECT id, lat, lon, name FROM cities")
-        updated: set[int] = set()
+
         for c in cur.fetchall():
             try:
                 row = self.db.execute(
@@ -2142,6 +2292,13 @@ class Bot:
                 waves = [0.0 for _ in temps]
             current = temps[0]
             current_wave = data.get("current", {}).get("wave_height")
+            conditions_payload = await self.fetch_open_meteo_sea_conditions(s["lat"], s["lon"])
+            wind_speed_ms = None
+            cloud_cover_pct = None
+            if conditions_payload:
+                current_conditions = conditions_payload.get("current") or {}
+                wind_speed_ms = self._safe_float(current_conditions.get("wind_speed_10m"))
+                cloud_cover_pct = self._safe_float(current_conditions.get("cloud_cover"))
             tomorrow = date.today() + timedelta(days=1)
             morn = day_temp = eve = night = None
             mwave = dwave = ewave = nwave = None
@@ -2166,6 +2323,10 @@ class Bot:
                 ):
                     break
 
+            wave_height_for_cache = self._safe_float(current_wave)
+            if wave_height_for_cache is None and waves:
+                wave_height_for_cache = self._safe_float(waves[0])
+
             self.db.execute(
                 "INSERT OR REPLACE INTO sea_cache (sea_id, updated, current, morning, day, evening, night, wave, morning_wave, day_wave, evening_wave, night_wave) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -2176,14 +2337,34 @@ class Bot:
                     day_temp,
                     eve,
                     night,
-                    current_wave,
+                    wave_height_for_cache,
                     mwave,
                     dwave,
                     ewave,
                     nwave,
                 ),
             )
+            self.db.execute(
+                "INSERT OR REPLACE INTO sea_conditions (sea_id, updated, wave_height_m, wind_speed_10m_ms, cloud_cover_pct) VALUES (?, ?, ?, ?, ?)",
+                (
+                    s["id"],
+                    now.isoformat(),
+                    wave_height_for_cache,
+                    wind_speed_ms,
+                    cloud_cover_pct,
+                ),
+            )
             self.db.commit()
+            wave_log = f"{wave_height_for_cache:.3f}" if isinstance(wave_height_for_cache, (int, float)) else "None"
+            wind_log = f"{wind_speed_ms:.2f}" if isinstance(wind_speed_ms, (int, float)) else "None"
+            cloud_log = f"{cloud_cover_pct:.1f}" if isinstance(cloud_cover_pct, (int, float)) else "None"
+            logging.info(
+                "Sea cache updated sea_id=%s wave_m=%s wind_ms=%s cloud_pct=%s",
+                s["id"],
+                wave_log,
+                wind_log,
+                cloud_log,
+            )
             updated.add(s["id"])
         if updated:
             await self.update_weather_posts()
@@ -2503,9 +2684,23 @@ class Bot:
             (sea_id,),
         ).fetchone()
 
+    def _get_sea_conditions(self, sea_id: int) -> dict[str, Any] | None:
+        row = self.db.execute(
+            "SELECT wave_height_m, wind_speed_10m_ms, cloud_cover_pct, updated FROM sea_conditions WHERE sea_id=?",
+            (sea_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "wave_height_m": self._safe_float(row["wave_height_m"]),
+            "wind_speed_10m_ms": self._safe_float(row["wind_speed_10m_ms"]),
+            "cloud_cover_pct": self._safe_float(row["cloud_cover_pct"]),
+            "updated": row["updated"],
+        }
+
     @staticmethod
     def strip_header(text: str | None) -> str | None:
-        """Remove an existing weather header from text if detected."""
+
         if not text:
             return text
         if WEATHER_SEPARATOR not in text:
@@ -4392,12 +4587,16 @@ class Bot:
                 "weather_image описывает нюансы погоды и выбирается из sunny, partly_cloudy, overcast, rain, snow, fog, night. "
                 "season_guess — spring, summer, autumn, winter или null. arch_style либо null, либо объект с label (название стиля на английском) и confidence (0..1). "
                 "В objects перечисляй заметные элементы, цветы называй видами. В tags используй английские слова в нижнем регистре и обязательно включай погодный тег. "
-                "Поле safety содержит nsfw:boolean и reason:string, где reason всегда непустая строка на русском."
+                "Поле safety содержит nsfw:boolean и reason:string, где reason всегда непустая строка на русском. "
+                "Дополнительно определи, есть ли море, океан, пляж или береговая линия — поле is_sea. "
+                "Если is_sea=true, оцени sea_wave_score по шкале 0..10 (0 — гладь, 10 — шквал), укажи photo_sky одной из категорий sunny/partly_cloudy/mostly_cloudy/overcast/night и выставь is_sunset=true, когда заметен закат. "
+                "Если моря нет, sea_wave_score ставь null, но всё равно классифицируй photo_sky по видимому небу."
             )
             user_prompt = (
                 "Опиши сцену, перечисли объекты, теги, достопримечательности, архитектуру и безопасность фото. Укажи кадровку (framing), "
                 "наличие архитектуры крупным планом и панорам, погодный тег (weather_image), сезон и стиль архитектуры (если можно). "
-                "Если локация неочевидна, ставь guess_country/guess_city = null и указывай низкую числовую уверенность."
+                "Если локация неочевидна, ставь guess_country/guess_city = null и указывай низкую числовую уверенность. "
+                "Отдельно отметь, присутствует ли море/океан/пляж (is_sea), оцени sea_wave_score 0..10, классифицируй небо photo_sky и укажи is_sunset для закатных кадров."
             )
             self._enforce_openai_limit(job, "gpt-4o-mini")
             logging.info(
@@ -12358,117 +12557,346 @@ class Bot:
     ) -> bool:
         config = rubric.config or {}
         sea_id = int(config.get("sea_id") or 1)
-        sea_row = self.data.conn.execute(
-            "SELECT current, wave FROM sea_cache WHERE sea_id = ?", (sea_id,)
-        ).fetchone()
-        if not sea_row:
-            logging.warning("Sea cache data not found for sea_id %s", sea_id)
-            water_temp = None
-            wave = 0.0
-        else:
-            water_temp = sea_row["current"]
-            wave = self._safe_float(sea_row["wave"], default=0.0)
-            if wave is None:
-                wave = 0.0
-        if wave < 0.5:
+        conditions = self._get_sea_conditions(sea_id) or {}
+        cache_row = self._get_sea_cache(sea_id)
+        water_temp = cache_row["current"] if cache_row and "current" in cache_row.keys() else None
+        wave_height_value = self._safe_float(conditions.get("wave_height_m"))
+        if wave_height_value is None and cache_row:
+            wave_height_value = self._safe_float(cache_row["wave"])
+        wave_score = map_wave_height_to_score(wave_height_value)
+        wave_reference = wave_height_value if wave_height_value is not None else 0.0
+        if wave_reference <= 0.5:
             storm_state = "calm"
-        elif wave < 1.5:
+        elif wave_reference <= 1.5:
             storm_state = "storm"
         else:
             storm_state = "strong_storm"
+        wind_ms = self._safe_float(conditions.get("wind_speed_10m_ms"))
+        wind_kmh = wind_ms * 3.6 if wind_ms is not None else None
+        wind_class = classify_wind_kph(wind_kmh)
+        cloud_cover_pct = self._safe_float(conditions.get("cloud_cover_pct"))
+        sky_bucket = bucket_clouds(cloud_cover_pct) or "partly_cloudy"
+        allowed_photo_skies = compatible_skies(sky_bucket)
+        want_sunset = storm_state == "calm" and sky_bucket in {"clear", "mostly_clear", "partly_cloudy"}
 
-        desired_wave_score = self._safe_float(
-            self._interpolate_wave_to_score(wave), default=0.0
+        now = datetime.utcnow()
+        season_window = compute_season_window(now.date())
+        logging.info(
+            "SEA_RUBRIC input sea_id=%s wave_height=%.3f wave_score=%.2f storm_state=%s wind_ms=%s wind_kmh=%s wind_class=%s cloud_pct=%s sky_bucket=%s allowed_skies=%s want_sunset=%s",
+            sea_id,
+            wave_height_value if wave_height_value is not None else float("nan"),
+            wave_score,
+            storm_state,
+            wind_ms,
+            wind_kmh,
+            wind_class,
+            cloud_cover_pct,
+            sky_bucket,
+            sorted(allowed_photo_skies),
+            want_sunset,
         )
-        if desired_wave_score is None:
-            desired_wave_score = 0.0
-        desired_sky = self._get_sea_weather_sky(sea_id)
 
-        wind_speed, wind_class = self._get_sea_wind(sea_id)
-        candidates = self.data.fetch_assets_by_vision_category(
-            "sea",
-            rubric_id=rubric.id,
-            limit=48,
-            random_order=False,
-            mark_used=False,
-        )
+        candidates = self.data.fetch_sea_candidates(rubric.id, limit=48)
         if not candidates:
-            logging.warning("No sea assets available for rubric %s", rubric.code)
+            logging.warning("SEA_RUBRIC no_candidates sea_id=%s", sea_id)
             return False
 
-        selected_asset = self._pick_sea_asset(
-            candidates,
-            desired_wave_score=desired_wave_score,
-            desired_sky=desired_sky,
+        for candidate in candidates:
+            candidate["season_match"] = season_match(candidate.get("season_guess"), season_window)
+        season_matches = sum(1 for candidate in candidates if candidate["season_match"])
+        logging.info(
+            "SEA_RUBRIC season_window=%s matches=%s total=%s",
+            sorted(season_window),
+            season_matches,
+            len(candidates),
         )
-        if not selected_asset:
-            logging.warning("No suitable sea asset selected for rubric %s", rubric.code)
-            return False
+
+        working_candidates = [candidate for candidate in candidates if candidate["season_match"]]
+        season_filter_removed = False
+        if not working_candidates:
+            season_filter_removed = True
+            working_candidates = candidates
+            logging.info("SEA_RUBRIC season filter removed sea_id=%s reason=no_match", sea_id)
+
+        def compute_corridor(expand: float) -> tuple[float, float]:
+            if storm_state == "calm":
+                base_low, base_high = 0.0, 3.5
+            elif storm_state == "storm":
+                base_low = max(4.0, wave_score - 1.0)
+                base_high = min(7.5, wave_score + 1.0)
+            else:
+                base_low, base_high = 8.0, 10.0
+            low = max(0.0, base_low - expand)
+            high = min(10.0, base_high + expand)
+            if low > high:
+                low, high = high, low
+            return low, high
+
+        def evaluate_candidate(
+            candidate: dict[str, Any],
+            low: float,
+            high: float,
+            *,
+            enforce_sky: bool,
+            sunset_priority: bool,
+        ) -> tuple[float, dict[str, Any], dict[str, Any]] | None:
+            photo_sky = candidate.get("photo_sky")
+            if enforce_sky and (not photo_sky or photo_sky not in allowed_photo_skies):
+                return None
+            reasons: dict[str, Any] = {
+                "wave_corridor": (round(low, 2), round(high, 2)),
+                "season_match": candidate.get("season_match"),
+            }
+            score = 0.0
+            wave_value = candidate.get("wave_score")
+            if wave_value is not None:
+                try:
+                    wave_value_float = float(wave_value)
+                except (TypeError, ValueError):
+                    wave_value_float = None
+                else:
+                    reasons["wave_value"] = round(wave_value_float, 2)
+                    if low <= wave_value_float <= high:
+                        score += 5.0
+                        reasons["wave_bonus"] = 5.0
+                        reasons["wave_in_range"] = True
+                    else:
+                        dist = min(abs(wave_value_float - low), abs(wave_value_float - high))
+                        bonus = max(0.0, 3.0 - dist)
+                        score += bonus
+                        reasons["wave_bonus"] = round(bonus, 2)
+                        reasons["wave_in_range"] = False
+                        reasons["wave_distance"] = round(dist, 2)
+            if "wave_bonus" not in reasons:
+                reasons["wave_bonus"] = 0.0
+                reasons["wave_in_range"] = False
+
+            if photo_sky:
+                reasons["photo_sky"] = photo_sky
+                primary_map = {
+                    "clear": "sunny",
+                    "mostly_clear": "partly_cloudy",
+                    "partly_cloudy": "partly_cloudy",
+                    "mostly_cloudy": "mostly_cloudy",
+                    "overcast": "overcast",
+                }
+                primary = primary_map.get(sky_bucket)
+                if primary and photo_sky == primary:
+                    score += 2.0
+                    reasons["sky_bonus"] = 2.0
+                    reasons["sky_match"] = "exact"
+                elif photo_sky in allowed_photo_skies:
+                    score += 1.0
+                    reasons["sky_bonus"] = 1.0
+                    reasons["sky_match"] = "compatible"
+                else:
+                    score -= 2.0
+                    reasons["sky_bonus"] = -2.0
+                    reasons["sky_match"] = "mismatch"
+                    if enforce_sky:
+                        return None
+            else:
+                reasons["photo_sky"] = None
+                reasons["sky_bonus"] = 0.0
+                reasons["sky_match"] = "unknown"
+                if enforce_sky:
+                    return None
+
+            sunset_bonus = 0.0
+            if sunset_priority and candidate.get("is_sunset"):
+                if want_sunset:
+                    sunset_bonus = 2.0
+                elif storm_state != "calm":
+                    sunset_bonus = -0.5
+            score += sunset_bonus
+            reasons["sunset_bonus"] = sunset_bonus
+
+            age_bonus_val = float(candidate.get("age_bonus") or 0.0)
+            score += age_bonus_val
+            reasons["age_bonus"] = round(age_bonus_val, 2)
+
+            if season_filter_removed and candidate.get("season_match"):
+                score += 1.0
+                reasons["season_bonus"] = 1.0
+            else:
+                reasons["season_bonus"] = 0.0
+
+            return score, reasons, candidate
+
+        stages = [
+            {"name": "baseline", "enforce_sky": True, "wave_expand": 0.0, "sunset_priority": True},
+            {"name": "any_sky", "enforce_sky": False, "wave_expand": 0.0, "sunset_priority": True},
+            {"name": "wide_wave", "enforce_sky": False, "wave_expand": 1.0, "sunset_priority": True},
+            {"name": "no_sunset_bias", "enforce_sky": False, "wave_expand": 1.0, "sunset_priority": False},
+        ]
+
+        selected_candidate: dict[str, Any] | None = None
+        selected_details: dict[str, Any] = {}
+        for stage in stages:
+            low, high = compute_corridor(stage["wave_expand"])
+            stage_results: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+            for candidate in working_candidates:
+                result = evaluate_candidate(
+                    candidate,
+                    low,
+                    high,
+                    enforce_sky=stage["enforce_sky"],
+                    sunset_priority=stage["sunset_priority"],
+                )
+                if result is None:
+                    continue
+                stage_results.append(result)
+            logging.info("SEA_RUBRIC stage=%s candidates=%s", stage["name"], len(stage_results))
+            if stage_results:
+                def _ordering(item: tuple[float, dict[str, Any], dict[str, Any]]) -> tuple[float, float, int]:
+                    score_value, _reason_payload, candidate_payload = item
+                    age_value = float(candidate_payload.get("age_bonus") or 0.0)
+                    asset_obj = candidate_payload["asset"]
+                    try:
+                        asset_id_int = int(str(asset_obj.id))
+                    except Exception:
+                        asset_id_int = 0
+                    return (round(score_value, 4), round(age_value, 4), -asset_id_int)
+
+                best_score, best_reasons, best_candidate = max(stage_results, key=_ordering)
+                best_reasons["allowed_skies"] = sorted(allowed_photo_skies)
+                best_reasons["stage"] = stage["name"]
+                selected_candidate = best_candidate
+                selected_details = {
+                    "score": best_score,
+                    "reasons": best_reasons,
+                    "stage": stage["name"],
+                    "corridor": (low, high),
+                }
+                break
+
+        if selected_candidate is None:
+            logging.info("SEA_RUBRIC stage=fallback_age candidates=%s", len(working_candidates))
+            if not working_candidates:
+                logging.warning("SEA_RUBRIC fallback_no_candidates sea_id=%s", sea_id)
+                return False
+
+            def _fallback_key(candidate: dict[str, Any]) -> datetime:
+                last_used_at = candidate.get("last_used_at")
+                if isinstance(last_used_at, datetime):
+                    return last_used_at
+                return datetime.min
+
+            selected_candidate = min(working_candidates, key=_fallback_key)
+            selected_details = {
+                "score": 0.0,
+                "reasons": {"fallback": "age_priority", "allowed_skies": sorted(allowed_photo_skies)},
+                "stage": "fallback_age",
+                "corridor": compute_corridor(1.0),
+            }
+
+        asset = selected_candidate["asset"]
+        sunset_selected = bool(selected_candidate.get("is_sunset"))
+        logging.info(
+            "SEA_RUBRIC selected stage=%s asset_id=%s score=%.2f wave_score=%s photo_sky=%s season_match=%s reasons=%s",
+            selected_details.get("stage"),
+            asset.id,
+            selected_details.get("score"),
+            selected_candidate.get("wave_score"),
+            selected_candidate.get("photo_sky"),
+            selected_candidate.get("season_match"),
+            json.dumps(selected_details.get("reasons"), ensure_ascii=False),
+        )
+
         place_hashtag: str | None = None
-        if selected_asset.latitude is not None and selected_asset.longitude is not None:
-            geo_data = await self._reverse_geocode(
-                selected_asset.latitude, selected_asset.longitude
-            )
+        if asset.latitude is not None and asset.longitude is not None:
+            geo_data = await self._reverse_geocode(asset.latitude, asset.longitude)
             if geo_data and geo_data.get("city"):
                 city_name = str(geo_data["city"]).strip()
                 if city_name:
                     place_hashtag = f"#{city_name}"
-        sunset_selected = False
-        if selected_asset.vision_results and isinstance(
-            selected_asset.vision_results, dict
-        ):
-            raw_tags = selected_asset.vision_results.get("tags")
-            if isinstance(raw_tags, list):
-                tags_lower = {str(t).lower() for t in raw_tags}
-                sunset_selected = bool(
-                    {"sunset", "закат", "golden hour"}.intersection(tags_lower)
-                )
-        if not sunset_selected and selected_asset.categories:
-            categories_lower = {str(c).lower() for c in selected_asset.categories}
-            sunset_selected = bool({"закат"}.intersection(categories_lower))
-        caption_text, hashtags = await self._generate_sea_copy(
+
+        clouds_label_map = {
+            "clear": "ясное небо",
+            "mostly_clear": "почти ясное небо",
+            "partly_cloudy": "переменная облачность",
+            "mostly_cloudy": "пасмурно",
+            "overcast": "сплошная облачность",
+        }
+        clouds_label = clouds_label_map.get(sky_bucket, "облачность неопределена")
+
+        def soft_trim(text: str, limit: int) -> str:
+            if len(text) <= limit:
+                return text
+            sentences = re.split(r"(?<=[.!?…])\s+", text.strip())
+            trimmed = ""
+            for sentence in sentences:
+                candidate_sentence = (trimmed + " " + sentence).strip() if trimmed else sentence.strip()
+                if len(candidate_sentence) > limit:
+                    break
+                trimmed = candidate_sentence
+            if trimmed:
+                return trimmed
+            fallback = text[:limit].rsplit(" ", 1)[0].strip()
+            if fallback:
+                return fallback
+            return text[:limit].strip()
+
+        caption_text, model_hashtags = await self._generate_sea_caption(
             storm_state=storm_state,
-            sunset_selected=sunset_selected,
+            wave_height_m=wave_height_value,
+            wave_score=wave_score,
             wind_class=wind_class,
+            wind_ms=wind_ms,
+            wind_kmh=wind_kmh,
+            clouds_label=clouds_label,
+            sunset_selected=sunset_selected,
             place_hashtag=place_hashtag,
             job=job,
         )
-        hashtags_lower = {h.lower() for h in hashtags}
-        if "#море" not in hashtags_lower:
-            hashtags.append("#море")
-        if "#балтийскоеморе" not in hashtags_lower:
-            hashtags.append("#БалтийскоеМоре")
-        if place_hashtag and place_hashtag.lower() not in hashtags_lower:
-            hashtags.append(place_hashtag)
-        hashtags = self._deduplicate_hashtags(hashtags)
-        hashtag_list = self._prepare_hashtags(hashtags)
-        caption_parts = []
-        if caption_text:
-            caption_parts.append(caption_text.strip())
-        if hashtag_list:
-            caption_parts.append(" ".join(hashtag_list))
-        caption_parts.append("\n📂 Полюбить 39 https://t.me/addlist/sW-rkrslxqo1NTVi")
-        full_caption = "\n\n".join(part for part in caption_parts if part)
-        if len(full_caption) > 1000:
-            lines = caption_text.split("\n")
-            trimmed_lines = []
-            for line in lines:
-                if len("\n".join(trimmed_lines + [line])) > 700:
-                    break
-                trimmed_lines.append(line)
-            caption_text = "\n".join(trimmed_lines)
-            caption_parts[0] = caption_text.strip()
-            full_caption = "\n\n".join(part for part in caption_parts if part)
-        source_path, should_cleanup = await self._ensure_asset_source(selected_asset)
+        caption_text = soft_trim(caption_text.strip(), 900) if caption_text else ""
+
+        deduped_model_tags = self._deduplicate_hashtags(model_hashtags or [])
+        seen_tags: set[str] = set()
+        final_hashtags: list[str] = []
+
+        def append_tag(tag: str) -> None:
+            normalized = tag if tag.startswith("#") else f"#{tag.lstrip('#')}"
+            key = normalized.lower()
+            if not key or key in seen_tags:
+                return
+            seen_tags.add(key)
+            final_hashtags.append(normalized)
+
+        append_tag("#море")
+        append_tag("#БалтийскоеМоре")
+        if place_hashtag:
+            append_tag(place_hashtag)
+        for tag in deduped_model_tags:
+            append_tag(tag)
+
+        hashtags_line = " ".join(final_hashtags)
+        caption_lines = [caption_text] if caption_text else []
+        caption_lines.append(hashtags_line)
+        caption_lines.append("")
+        caption_lines.append("📂 Полюбить 39 https://t.me/addlist/sW-rkrslxqo1NTVi")
+        full_caption = "\n".join(caption_lines)
+
+        if len(full_caption) > 1000 and caption_text:
+            available = max(600, 1000 - (len(full_caption) - len(caption_text)))
+            caption_text = soft_trim(caption_text, available)
+            caption_lines[0] = caption_text
+            full_caption = "\n".join(caption_lines)
+        if len(full_caption) > 1000 and caption_text:
+            caption_text = soft_trim(caption_text, 750)
+            caption_lines[0] = caption_text
+            full_caption = "\n".join(caption_lines)
+
+        logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
+
+        source_path, should_cleanup = await self._ensure_asset_source(asset)
         if not source_path:
-            logging.warning(
-                "Asset %s missing source file for sea publication", selected_asset.id
-            )
+            logging.warning("Asset %s missing source file for sea publication", asset.id)
             return False
         try:
             file_data = Path(source_path).read_bytes()
         except Exception:
-            logging.exception("Failed to read source file for asset %s", selected_asset.id)
+            logging.exception("Failed to read source file for asset %s", asset.id)
             if should_cleanup:
                 self._remove_file(source_path)
             return False
@@ -12476,12 +12904,13 @@ class Bot:
             if should_cleanup:
                 self._remove_file(source_path)
                 try:
-                    self.data.update_asset(selected_asset.id, local_path=None)
+                    self.data.update_asset(asset.id, local_path=None)
                 except Exception:
                     logging.exception(
                         "Failed to clear local_path for asset %s after sea publication",
-                        selected_asset.id,
+                        asset.id,
                     )
+
         response = await self.api_request(
             "sendPhoto",
             {
@@ -12498,30 +12927,200 @@ class Bot:
             message_id = int(result_payload.get("message_id") or 0)
         else:
             message_id = 0
-        self.data.mark_assets_used([selected_asset.id])
+
+        self.data.mark_assets_used([asset.id])
+        scoring_payload = dict(selected_details.get("reasons") or {})
+        corridor_values = scoring_payload.get("wave_corridor")
+        if isinstance(corridor_values, tuple):
+            scoring_payload["wave_corridor"] = [round(value, 2) for value in corridor_values]
+
         metadata = {
             "rubric_code": rubric.code,
-            "asset_ids": [selected_asset.id],
+            "asset_ids": [asset.id],
             "test": test,
             "storm_state": storm_state,
-            "wave": wave,
+            "wave_height_m": wave_height_value,
+            "wave_score": wave_score,
             "water_temp": water_temp,
-            "wind_speed": wind_speed,
+            "wind_speed_ms": wind_ms,
+            "wind_speed_kmh": wind_kmh,
             "wind_class": wind_class,
+            "cloud_cover_pct": cloud_cover_pct,
+            "sky_bucket": sky_bucket,
+            "allowed_photo_sky": sorted(allowed_photo_skies),
+            "selected_photo_sky": selected_candidate.get("photo_sky"),
+            "want_sunset": want_sunset,
             "sunset_selected": sunset_selected,
+            "season_match": selected_candidate.get("season_match"),
+            "score": selected_details.get("score"),
+            "scoring": scoring_payload,
+            "stage": selected_details.get("stage"),
+            "wave_corridor": [round(val, 2) for val in selected_details.get("corridor", [])],
             "caption": caption_text,
-            "hashtags": hashtag_list,
+            "hashtags": final_hashtags,
             "place_hashtag": place_hashtag,
         }
         self.data.record_post_history(
             channel_id,
             message_id,
-            selected_asset.id,
+            asset.id,
             rubric.id,
             metadata,
         )
-        await self._cleanup_assets([selected_asset])
+        await self._cleanup_assets([asset])
+
+        if test and initiator_id:
+            wave_text = f"{wave_height_value:.2f}" if wave_height_value is not None else "н/д"
+            wind_kmh_text = f"{wind_kmh:.1f}" if wind_kmh is not None else "н/д"
+            wind_ms_text = f"{wind_ms:.1f}" if wind_ms is not None else "н/д"
+            wind_class_text = wind_class or "не указано"
+            summary = (
+                "🧪 Тестовая публикация «Море / Закат на море» успешно.\n"
+                f"Волна {wave_text} м ({storm_state}).\n"
+                f"Ветер {wind_kmh_text} км/ч ({wind_ms_text} м/с, {wind_class_text}).\n"
+                f"Облачность {clouds_label}."
+            )
+            notify_response = await self.api_request(
+                "sendMessage",
+                {"chat_id": initiator_id, "text": summary},
+            )
+            if notify_response.get("ok"):
+                logging.info("SEA_RUBRIC test_notify sent to %s", initiator_id)
+            else:
+                logging.warning(
+                    "SEA_RUBRIC test_notify failed for %s: %s",
+                    initiator_id,
+                    notify_response,
+                )
+
         return True
+
+    async def _generate_sea_caption(
+        self,
+        *,
+        storm_state: str,
+        wave_height_m: float | None,
+        wave_score: float,
+        wind_class: str | None,
+        wind_ms: float | None,
+        wind_kmh: float | None,
+        clouds_label: str,
+        sunset_selected: bool,
+        place_hashtag: str | None,
+        job: Job | None = None,
+    ) -> tuple[str, list[str]]:
+        default_hashtags = self._default_hashtags("sea")
+
+        def fallback_caption() -> str:
+            pieces: list[str] = []
+            if storm_state == "strong_storm":
+                pieces.append("Балтика кипит: мощные волны бьют о берег и грохочут в воздухе.")
+            elif storm_state == "storm":
+                pieces.append("На Балтике штормит, но волны выглядят завораживающе и дышат силой моря.")
+            else:
+                if sunset_selected:
+                    pieces.append("Тихий закат над Балтийским морем — волна едва касается берега.")
+                else:
+                    pieces.append("Море сегодня спокойное: волна мягко шепчет у берега.")
+            if wind_class in {"strong", "very_strong"}:
+                wind_phrase = "ветер бодрит" if wind_class == "strong" else "ветер по-настоящему сильный"
+                pieces.append(f"{wind_phrase}, но море всё равно притягивает взгляд.")
+            if clouds_label:
+                pieces.append(f"Над горизонтом {clouds_label}.")
+            return " ".join(pieces).strip()
+
+        if not self.openai or not self.openai.api_key:
+            return fallback_caption(), default_hashtags
+
+        system_prompt = (
+            "Ты редактор телеграм-канала о Балтийском море. "
+            "Пиши на русском языке, тепло и образно. Основной текст — до 900 символов. "
+            "Если шторм_state = 'storm', описывай шторм мягко и без пугающих слов. "
+            "Если шторм_state = 'strong_storm', допускается более экспрессивный тон. "
+            "Если ветер классифицирован как strong или very_strong, упомяни его кратко. "
+            "При спокойном море с закатом подчеркни уют заката. "
+            "Не добавляй хэштеги в текст — верни их отдельным массивом."
+        )
+        prompt_payload = {
+            "storm_state": storm_state,
+            "wave_height_m": round(wave_height_m, 2) if wave_height_m is not None else None,
+            "wave_score": round(wave_score, 2),
+            "wind_class": wind_class,
+            "wind_ms": round(wind_ms, 1) if wind_ms is not None else None,
+            "wind_kmh": round(wind_kmh, 1) if wind_kmh is not None else None,
+            "clouds_label": clouds_label,
+            "sunset_selected": sunset_selected,
+            "place_hashtag": place_hashtag,
+        }
+        payload_text = json.dumps(prompt_payload, ensure_ascii=False, separators=(",", ": "))
+        user_prompt = (
+            "Параметры сцены (JSON):\n"
+            f"{payload_text}\n"
+            "Требования:\n"
+            "- Составь поэтичную, но сдержанную подпись о Балтийском море (до 900 символов).\n"
+            "- Отрази характер волн и неба, опираясь на параметры.\n"
+            "- При storm_state='storm' используй мягкий тон и избегай пугающих формулировок.\n"
+            "- При storm_state='strong_storm' допускается больше драматизма.\n"
+            "- Если ветер strong/very_strong, коротко упомяни его.\n"
+            "- Если sunset_selected=true и штиль, подчеркни уют заката.\n"
+            "- Не вставляй хэштеги в текст, верни их отдельным массивом hashtags.\n"
+            "Ответ строго в формате JSON: {\"caption\": string, \"hashtags\": string[]}."
+        )
+        schema = {
+            "type": "object",
+            "properties": {
+                "caption": {"type": "string"},
+                "hashtags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 2,
+                },
+            },
+            "required": ["caption", "hashtags"],
+        }
+
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            temperature = self._creative_temperature()
+            try:
+                logging.info(
+                    "Запрос генерации текста для sea: модель=%s temperature=%.2f top_p=0.9 попытка %s/%s",
+                    "gpt-4o",
+                    temperature,
+                    attempt,
+                    attempts,
+                )
+                self._enforce_openai_limit(job, "gpt-4o")
+                response = await self.openai.generate_json(
+                    model="gpt-4o",
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    schema=schema,
+                    temperature=temperature,
+                    top_p=0.9,
+                )
+            except Exception:
+                logging.exception("Failed to generate sea caption (attempt %s)", attempt)
+                response = None
+            if response:
+                await self._record_openai_usage("gpt-4o", response, job=job)
+            if not response or not isinstance(response.content, dict):
+                continue
+            caption = str(response.content.get("caption") or "").strip()
+            raw_hashtags = response.content.get("hashtags") or []
+            hashtags = self._deduplicate_hashtags(raw_hashtags)
+            if not caption:
+                continue
+            if self._is_duplicate_rubric_copy("sea", "caption", caption, hashtags):
+                logging.info(
+                    "Получен повторяющийся текст для рубрики sea, пробуем снова (%s/%s)",
+                    attempt,
+                    attempts,
+                )
+                continue
+            return caption, hashtags
+
+        return fallback_caption(), default_hashtags
 
     async def _generate_guess_arch_copy(
         self,

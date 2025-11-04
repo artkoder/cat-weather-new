@@ -1601,7 +1601,86 @@ class DataAccess:
             mark_used=mark_used,
         )
 
+    @staticmethod
+    def compute_age_bonus(last_used_at: str | None, now: datetime | None = None) -> float:
+        reference = now or datetime.utcnow()
+        if not last_used_at:
+            return 2.0
+        try:
+            timestamp = datetime.fromisoformat(last_used_at)
+        except Exception:
+            return 1.0
+        delta = reference - timestamp
+        if delta.total_seconds() <= 0:
+            return 0.5
+        days = delta.total_seconds() / 86400.0
+        return max(0.5, min(3.0, days / 3.0))
+
+    def fetch_sea_candidates(
+        self,
+        rubric_id: int,
+        *,
+        limit: int = 48,
+    ) -> list[dict[str, Any]]:
+        assets = self.fetch_assets_by_vision_category(
+            "sea",
+            rubric_id=rubric_id,
+            limit=limit,
+            random_order=False,
+            mark_used=False,
+        )
+        now = datetime.utcnow()
+        candidates: list[dict[str, Any]] = []
+        for asset in assets:
+            vision = asset.vision_results or {}
+            raw_wave = vision.get("sea_wave_score")
+            if isinstance(raw_wave, dict):
+                raw_wave = raw_wave.get("value")
+            try:
+                wave_score = float(raw_wave) if raw_wave is not None else None
+            except (TypeError, ValueError):
+                wave_score = None
+            photo_sky_raw = vision.get("photo_sky")
+            photo_sky = str(photo_sky_raw).strip().lower() if isinstance(photo_sky_raw, str) else None
+            is_sunset = bool(vision.get("is_sunset"))
+            season_guess_raw = vision.get("season_guess")
+            season_guess = (
+                str(season_guess_raw).strip().lower()
+                if isinstance(season_guess_raw, str) and season_guess_raw.strip()
+                else None
+            )
+            tags_raw = vision.get("tags")
+            if isinstance(tags_raw, list):
+                tags = {str(tag).strip().lower() for tag in tags_raw if str(tag).strip()}
+            else:
+                tags = set()
+            payload_data = asset.payload if isinstance(asset.payload, dict) else {}
+            last_used_value = payload_data.get("last_used_at") if payload_data else None
+            last_used_dt: datetime | None
+            if isinstance(last_used_value, str) and last_used_value.strip():
+                try:
+                    last_used_dt = datetime.fromisoformat(last_used_value)
+                except ValueError:
+                    last_used_dt = None
+            else:
+                last_used_dt = None
+            age_bonus = self.compute_age_bonus(last_used_value if isinstance(last_used_value, str) else None, now=now)
+            candidates.append(
+                {
+                    "asset": asset,
+                    "wave_score": wave_score,
+                    "photo_sky": photo_sky,
+                    "is_sunset": is_sunset,
+                    "season_guess": season_guess,
+                    "tags": tags,
+                    "last_used_at": last_used_dt,
+                    "age_bonus": age_bonus,
+                }
+            )
+        return candidates
+
     def mark_assets_used(self, asset_ids: Iterable[str | int]) -> None:
+
         ids = [str(asset_id) for asset_id in asset_ids]
         if not ids:
             return
@@ -1701,7 +1780,16 @@ class DataAccess:
             )
             if not category and normalized_tags:
                 category = normalized_tags[0]
+            is_sea_flag = bool(result.get("is_sea"))
+            if not is_sea_flag and normalized_tag_set.intersection(
+                {"sea", "ocean", "beach", "coast", "shore", "shoreline", "seaside", "coastal"}
+            ):
+                is_sea_flag = True
+            if is_sea_flag:
+                category = "sea"
             category = self._normalize_vision_category(category)
+            if category == "sunset":
+                category = "sea" if is_sea_flag else None
             arch_view_value = result.get("arch_view")
             if isinstance(arch_view_value, bool):
                 arch_view = "yes" if arch_view_value else ""

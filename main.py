@@ -12738,6 +12738,62 @@ class Bot:
         }
         return mapping.get(code, ["#котопогода"])
 
+    def _safe_int(self, value: Any, default: int = 0) -> int:
+        """Safely convert any value to int with fallback."""
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return default
+            try:
+                return int(text)
+            except ValueError:
+                try:
+                    return int(float(text))
+                except ValueError:
+                    logging.warning("Cannot convert '%s' to int, using default %s", value, default)
+                    return default
+        logging.warning("Unexpected type %s for int conversion, using default %s", type(value).__name__, default)
+        return default
+
+    def _safe_float(self, value: Any, default: float | None = None) -> float | None:
+        """Safely convert any value to float with fallback."""
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return default
+            try:
+                return float(text)
+            except ValueError:
+                logging.warning("Cannot convert '%s' to float, using default %s", value, default)
+                return default
+        logging.warning("Unexpected type %s for float conversion, using default %s", type(value).__name__, default)
+        return default
+
+    def _parse_datetime_iso(self, value: str | None) -> datetime:
+        """Parse ISO8601 datetime string, return datetime.min on failure."""
+        if not value:
+            return datetime.min
+        if not isinstance(value, str):
+            logging.warning("Expected string for datetime parsing, got %s", type(value).__name__)
+            return datetime.min
+        try:
+            return datetime.fromisoformat(str(value))
+        except (ValueError, AttributeError) as e:
+            logging.debug("Failed to parse datetime '%s': %s", value, e)
+            return datetime.min
+
     def _interpolate_wave_to_score(self, wave: float) -> int:
         """Convert wave height (m) to desired sea wave score 0-10."""
         if wave <= 0.0:
@@ -12795,8 +12851,11 @@ class Bot:
             sea_wave_score = asset.vision_results.get("sea_wave_score")
             if isinstance(sea_wave_score, dict):
                 value = sea_wave_score.get("value")
-                if isinstance(value, int):
-                    return max(0, min(10, value))
+                if value is not None:
+                    # Handle both int and string values
+                    int_value = self._safe_int(value, default=-1)
+                    if int_value >= 0:
+                        return max(0, min(10, int_value))
 
             tags = asset.vision_results.get("tags")
             if isinstance(tags, list):
@@ -12864,23 +12923,28 @@ class Bot:
             return 0.0
 
         def compute_lru_score(asset: Asset) -> float:
+            """Compute LRU score for sorting. Returns negative timestamp (older is higher score)."""
             last_used_str = asset.payload.get("last_used_at") if asset.payload else None
             if not last_used_str:
                 return float('inf')
-            try:
-                last_used_dt = datetime.fromisoformat(str(last_used_str))
-                return -last_used_dt.timestamp()
-            except Exception:
+
+            # Use safe datetime parser
+            last_used_dt = self._parse_datetime_iso(last_used_str)
+            if last_used_dt == datetime.min:
                 return float('inf')
 
+            return -last_used_dt.timestamp()
+
         def compute_score(asset: Asset) -> tuple[float, int, int, float, int]:
+            """Compute sort key tuple with all numeric types."""
             sunset_tag = has_sunset_tag(asset)
             sunset_cat = has_sunset_category(asset)
 
-            wave_penalty = compute_wave_penalty(asset)
-            sky_bonus = compute_sky_bonus(asset)
+            # All penalties and bonuses are float
+            wave_penalty = compute_wave_penalty(asset)  # float
+            sky_bonus = compute_sky_bonus(asset)  # float
 
-            wave_and_sky_score = wave_penalty + sky_bonus
+            wave_and_sky_score = float(wave_penalty + sky_bonus)
 
             if desired_wave_score <= 2:
                 if sunset_tag:
@@ -12891,24 +12955,19 @@ class Bot:
             if desired_wave_score >= 6 and has_storm_tag(asset):
                 wave_and_sky_score += 0.5
 
+            # LRU score is float
             lru_score = compute_lru_score(asset)
 
-            try:
-                if isinstance(asset.id, int):
-                    asset_id = asset.id
-                elif isinstance(asset.id, str):
-                    asset_id = int(asset.id) if asset.id.isdigit() else 0
-                else:
-                    asset_id = 0
-            except (ValueError, AttributeError):
-                asset_id = 0
+            # Asset ID must be int
+            asset_id = self._safe_int(asset.id, default=0)
 
+            # Return tuple with consistent types: (float, int, int, float, int)
             return (
-                wave_and_sky_score,
+                float(wave_and_sky_score),
                 int(sunset_tag),
                 int(sunset_cat),
-                lru_score,
-                -asset_id,
+                float(lru_score),
+                -int(asset_id),
             )
 
         return max(assets, key=compute_score)

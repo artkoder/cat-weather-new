@@ -438,6 +438,28 @@ def classify_wind_kph(speed_kmh: float | None) -> str | None:
     return None
 
 
+def resolve_wind_speed(value: Any, units: str | None) -> tuple[float | None, float | None]:
+    if value is None:
+        return None, None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None, None
+    unit = (units or "").strip().lower()
+    if unit in {"km/h", "kmh", "kilometres_per_hour", "kilometers_per_hour"}:
+        kmh = numeric
+        ms = kmh / 3.6
+        return kmh, ms
+    if unit in {"m/s", "ms", "meter_per_second", "metres_per_second", "meters_per_second"}:
+        ms = numeric
+        kmh = ms * 3.6
+        return kmh, ms
+    # Default to treating the value as km/h when units are unknown
+    kmh = numeric
+    ms = kmh / 3.6
+    return kmh, ms
+
+
 def bucket_clouds(cloud_pct: float | None) -> str | None:
     if cloud_pct is None:
         return None
@@ -475,6 +497,25 @@ def compute_season_window(reference: date, window_days: int = 45) -> set[str]:
         candidate = reference + timedelta(days=offset)
         seasons.add(SEASON_BY_MONTH.get(candidate.month, "winter"))
     return seasons
+
+
+def within_shot_window(shot_doy: int | None, reference: date, window_days: int = 45) -> bool | None:
+    if shot_doy is None:
+        return None
+    try:
+        doy_value = int(shot_doy)
+    except (TypeError, ValueError):
+        return None
+    if doy_value < 1 or doy_value > 366:
+        return None
+    ref_doy = reference.timetuple().tm_yday
+    cycle = 366
+    diff = abs(doy_value - ref_doy)
+    if diff <= window_days:
+        return True
+    if cycle - diff <= window_days:
+        return True
+    return False
 
 
 def season_match(season_guess: str | None, allowed: set[str]) -> bool:
@@ -870,6 +911,12 @@ CREATE_TABLES = [
             updated TEXT,
             wave_height_m REAL,
             wind_speed_10m_ms REAL,
+            wind_speed_10m_kmh REAL,
+            wind_gusts_10m_ms REAL,
+            wind_gusts_10m_kmh REAL,
+            wind_units TEXT,
+            wind_gusts_units TEXT,
+            wind_time_ref TEXT,
             cloud_cover_pct REAL
         )""",
 
@@ -2030,7 +2077,7 @@ class Bot:
             "https://api.open-meteo.com/v1/forecast?latitude="
             f"{lat}&longitude={lon}&current_weather=true"
             "&hourly=temperature_2m,weather_code,wind_speed_10m,is_day"
-            "&forecast_days=2&timezone=auto"
+            "&forecast_days=2&timezone=auto&wind_speed_unit=kmh"
         )
         try:
             async with self.session.get(url) as resp:
@@ -2071,7 +2118,7 @@ class Bot:
             "&hourly=wave_height,wind_wave_height,swell_wave_height,"
             "sea_surface_temperature"
             "&daily=wave_height_max,wind_wave_height_max,swell_wave_height_max"
-            "&forecast_days=2&timezone=auto"
+            "&forecast_days=2&timezone=auto&wind_speed_unit=kmh"
         )
         logging.info("Sea API request: %s", url)
         try:
@@ -2096,8 +2143,10 @@ class Bot:
         url = (
             "https://api.open-meteo.com/v1/forecast?latitude="
             f"{lat}&longitude={lon}"
-            "&current=wind_speed_10m,cloud_cover"
-            "&timezone=auto"
+            "&current=wind_speed_10m,wind_gusts_10m,cloud_cover"
+            "&hourly=wind_speed_10m,wind_gusts_10m,cloudcover"
+            "&past_hours=3&forecast_hours=0"
+            "&timezone=auto&wind_speed_unit=kmh"
         )
         logging.info("Sea weather API request: %s", url)
         try:
@@ -2293,12 +2342,58 @@ class Bot:
             current = temps[0]
             current_wave = data.get("current", {}).get("wave_height")
             conditions_payload = await self.fetch_open_meteo_sea_conditions(s["lat"], s["lon"])
-            wind_speed_ms = None
+            wind_speed_ms: float | None = None
+            wind_speed_kmh: float | None = None
+            wind_gust_ms: float | None = None
+            wind_gust_kmh: float | None = None
+            wind_units: str | None = None
+            wind_gust_units: str | None = None
+            wind_time_ref: str | None = None
             cloud_cover_pct = None
             if conditions_payload:
                 current_conditions = conditions_payload.get("current") or {}
-                wind_speed_ms = self._safe_float(current_conditions.get("wind_speed_10m"))
+                current_units = conditions_payload.get("current_units") or {}
+                hourly_units = conditions_payload.get("hourly_units") or {}
+
+                raw_wind_units = current_units.get("wind_speed_10m") or hourly_units.get("wind_speed_10m")
+                if raw_wind_units is not None:
+                    wind_units = str(raw_wind_units).strip() or None
+                raw_gust_units = current_units.get("wind_gusts_10m") or hourly_units.get("wind_gusts_10m")
+                if raw_gust_units is not None:
+                    wind_gust_units = str(raw_gust_units).strip() or None
+
+                wind_value = current_conditions.get("wind_speed_10m")
+                gust_value = current_conditions.get("wind_gusts_10m")
+                wind_speed_kmh, wind_speed_ms = resolve_wind_speed(wind_value, wind_units)
+                wind_gust_kmh, wind_gust_ms = resolve_wind_speed(gust_value, wind_gust_units)
+                if wind_speed_ms is None and wind_speed_kmh is not None:
+                    wind_speed_ms = wind_speed_kmh / 3.6
+                if wind_speed_kmh is None and wind_speed_ms is not None:
+                    wind_speed_kmh = wind_speed_ms * 3.6
+                if wind_gust_ms is None and wind_gust_kmh is not None:
+                    wind_gust_ms = wind_gust_kmh / 3.6
+                if wind_gust_kmh is None and wind_gust_ms is not None:
+                    wind_gust_kmh = wind_gust_ms * 3.6
+
                 cloud_cover_pct = self._safe_float(current_conditions.get("cloud_cover"))
+                wind_time_ref = (
+                    current_conditions.get("time")
+                    or (conditions_payload.get("current_weather") or {}).get("time")
+                )
+
+                logging.info(
+                    "SEA_RUBRIC weather: wind_source=wind_speed_10m units=%s gusts_units=%s time_ref=%s",
+                    wind_units or "unknown",
+                    wind_gust_units or "unknown",
+                    wind_time_ref or "unknown",
+                )
+            else:
+                logging.info(
+                    "SEA_RUBRIC weather: wind_source=wind_speed_10m units=%s gusts_units=%s time_ref=%s",
+                    "missing",
+                    "missing",
+                    "missing",
+                )
             tomorrow = date.today() + timedelta(days=1)
             morn = day_temp = eve = night = None
             mwave = dwave = ewave = nwave = None
@@ -2345,12 +2440,18 @@ class Bot:
                 ),
             )
             self.db.execute(
-                "INSERT OR REPLACE INTO sea_conditions (sea_id, updated, wave_height_m, wind_speed_10m_ms, cloud_cover_pct) VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO sea_conditions (sea_id, updated, wave_height_m, wind_speed_10m_ms, wind_speed_10m_kmh, wind_gusts_10m_ms, wind_gusts_10m_kmh, wind_units, wind_gusts_units, wind_time_ref, cloud_cover_pct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     s["id"],
                     now.isoformat(),
                     wave_height_for_cache,
                     wind_speed_ms,
+                    wind_speed_kmh,
+                    wind_gust_ms,
+                    wind_gust_kmh,
+                    wind_units,
+                    wind_gust_units,
+                    wind_time_ref,
                     cloud_cover_pct,
                 ),
             )

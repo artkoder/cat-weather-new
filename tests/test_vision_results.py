@@ -77,6 +77,20 @@ def _load_schema(conn: sqlite3.Connection) -> None:
         spec_sources.loader.exec_module(module_sources)
         if hasattr(module_sources, "run"):
             module_sources.run(conn)
+    sea_conditions_path = Path(__file__).resolve().parents[1] / "migrations" / "0023_sea_conditions.py"
+    spec_sea = importlib.util.spec_from_file_location("_migration_0023_sea_conditions", sea_conditions_path)
+    if spec_sea and spec_sea.loader:
+        module_sea = importlib.util.module_from_spec(spec_sea)
+        spec_sea.loader.exec_module(module_sea)
+        if hasattr(module_sea, "run"):
+            module_sea.run(conn)
+    sea_assets_path = Path(__file__).resolve().parents[1] / "migrations" / "0024_sea_assets_shot.py"
+    spec_sea_assets = importlib.util.spec_from_file_location("_migration_0024_sea_assets_shot", sea_assets_path)
+    if spec_sea_assets and spec_sea_assets.loader:
+        module_sea_assets = importlib.util.module_from_spec(spec_sea_assets)
+        spec_sea_assets.loader.exec_module(module_sea_assets)
+        if hasattr(module_sea_assets, "run"):
+            module_sea_assets.run(conn)
 
 
 @pytest.fixture

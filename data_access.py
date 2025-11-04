@@ -35,6 +35,8 @@ class Asset:
     tg_message_id: str | None
     payload_json: str | None
     created_at: str
+    shot_at_utc: int | None = None
+    shot_doy: int | None = None
     source: str | None = None
     exif: dict[str, Any] | None = None
     labels: Any | None = None
@@ -547,6 +549,8 @@ class DataAccess:
         tg_message_id: str | int | None = None,
         tg_chat_id: int | None = None,
         source: str = "mobile",
+        shot_at_utc: int | None = None,
+        shot_doy: int | None = None,
     ) -> str:
         """Create a new asset entry tied to an upload and return its UUID."""
 
@@ -600,8 +604,10 @@ class DataAccess:
                 tg_message_id,
                 payload_json,
                 created_at,
-                source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source,
+                shot_at_utc,
+                shot_doy
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -617,6 +623,8 @@ class DataAccess:
                 payload_json,
                 now,
                 source,
+                shot_at_utc,
+                shot_doy,
             ),
         )
         self.conn.commit()
@@ -945,6 +953,8 @@ class DataAccess:
         rubric_id: int | None = None,
         origin: str = "weather",
         source: str = "telegram",
+        shot_at_utc: int | None = None,
+        shot_doy: int | None = None,
     ) -> str:
         """Insert or update asset metadata."""
 
@@ -954,6 +964,12 @@ class DataAccess:
         file_meta = file_meta or {}
 
         existing = self.get_asset_by_message(tg_chat_id, message_id)
+        shot_at_value = shot_at_utc if shot_at_utc is not None else (
+            existing.shot_at_utc if existing else None
+        )
+        shot_doy_value = shot_doy if shot_doy is not None else (
+            existing.shot_doy if existing else None
+        )
         if categories_list:
             labels_json = json.dumps(categories_list, ensure_ascii=False)
         elif existing:
@@ -1042,6 +1058,8 @@ class DataAccess:
                        exif_json=?,
                        labels_json=?,
                        tg_message_id=?,
+                       shot_at_utc=?,
+                       shot_doy=?,
                        payload_json=?
                  WHERE id=?
                 """,
@@ -1054,6 +1072,8 @@ class DataAccess:
                     exif_json_value,
                     labels_json,
                     tg_identifier,
+                    shot_at_value,
+                    shot_doy_value,
                     payload_json,
                     existing.id,
                 ),
@@ -1079,8 +1099,10 @@ class DataAccess:
                 tg_message_id,
                 payload_json,
                 created_at,
-                source
-            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source,
+                shot_at_utc,
+                shot_doy
+            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -1095,6 +1117,8 @@ class DataAccess:
                 payload_json,
                 now,
                 source,
+                shot_at_value,
+                shot_doy_value,
             ),
         )
         self.conn.commit()
@@ -1154,6 +1178,8 @@ class DataAccess:
         local_path: str | None | object = _UNSET,
         vision_caption: str | None = None,
         origin: str | None = None,
+        shot_at_utc: int | None = None,
+        shot_doy: int | None = None,
     ) -> None:
         """Update selected asset fields while preserving unset values."""
 
@@ -1245,6 +1271,12 @@ class DataAccess:
             payload_updates["city"] = city
         if country is not None:
             payload_updates["country"] = country
+        if shot_at_utc is not None:
+            columns["shot_at_utc"] = int(shot_at_utc)
+            column_dirty = True
+        if shot_doy is not None:
+            columns["shot_doy"] = int(shot_doy)
+            column_dirty = True
         if exif_present is not None:
             payload_updates["exif_present"] = bool(exif_present)
         if local_path is not _UNSET:
@@ -1453,6 +1485,11 @@ class DataAccess:
         else:
             payload_json_text = json.dumps(payload_json, ensure_ascii=False)
 
+        shot_at_utc_val = Asset._to_int(row_dict.get("shot_at_utc"))
+        shot_doy_val = Asset._to_int(row_dict.get("shot_doy"))
+        if shot_doy_val is not None and not (1 <= shot_doy_val <= 366):
+            shot_doy_val = None
+
         return Asset(
             id=str(row_dict.get("id")),
             upload_id=row_dict.get("upload_id"),
@@ -1466,6 +1503,8 @@ class DataAccess:
             tg_message_id=tg_message_id,
             payload_json=payload_json_text,
             created_at=created_at,
+            shot_at_utc=shot_at_utc_val,
+            shot_doy=shot_doy_val,
             source=(
                 str(row_dict.get("source"))
                 if row_dict.get("source") is not None
@@ -1631,6 +1670,47 @@ class DataAccess:
         )
         now = datetime.utcnow()
         candidates: list[dict[str, Any]] = []
+
+        def normalize_sky(value: Any) -> str | None:
+            if value is None:
+                return None
+            text = str(value).strip().lower()
+            if not text:
+                return None
+            token = text.replace("-", "_").replace(" ", "_")
+            mapping = {
+                "sunny": "sunny",
+                "clear": "sunny",
+                "mostly_clear": "sunny",
+                "mostly_sunny": "sunny",
+                "day_clear": "sunny",
+                "day_sunny": "sunny",
+                "partly_cloudy": "partly_cloudy",
+                "partly_sunny": "partly_cloudy",
+                "scattered_clouds": "partly_cloudy",
+                "few_clouds": "partly_cloudy",
+                "broken_clouds": "mostly_cloudy",
+                "mostly_cloudy": "mostly_cloudy",
+                "cloudy": "mostly_cloudy",
+                "overcast": "overcast",
+                "rain": "overcast",
+                "snow": "overcast",
+                "fog": "overcast",
+                "storm": "overcast",
+                "stormy": "overcast",
+                "night": "night",
+                "night_clear": "night",
+                "night_partly_cloudy": "night",
+                "night_mostly_cloudy": "night",
+                "night_overcast": "night",
+                "twilight": "night",
+            }
+            if token in mapping:
+                return mapping[token]
+            if token.endswith("_night"):
+                return "night"
+            return None
+
         for asset in assets:
             vision = asset.vision_results or {}
             raw_wave = vision.get("sea_wave_score")
@@ -1640,8 +1720,10 @@ class DataAccess:
                 wave_score = float(raw_wave) if raw_wave is not None else None
             except (TypeError, ValueError):
                 wave_score = None
-            photo_sky_raw = vision.get("photo_sky")
-            photo_sky = str(photo_sky_raw).strip().lower() if isinstance(photo_sky_raw, str) else None
+            photo_sky_candidate = normalize_sky(vision.get("photo_sky"))
+            if photo_sky_candidate is None:
+                photo_sky_candidate = normalize_sky(vision.get("weather_image"))
+            photo_sky = photo_sky_candidate
             is_sunset = bool(vision.get("is_sunset"))
             season_guess_raw = vision.get("season_guess")
             season_guess = (
@@ -1675,6 +1757,8 @@ class DataAccess:
                     "tags": tags,
                     "last_used_at": last_used_dt,
                     "age_bonus": age_bonus,
+                    "shot_at_utc": asset.shot_at_utc,
+                    "shot_doy": asset.shot_doy,
                 }
             )
         return candidates

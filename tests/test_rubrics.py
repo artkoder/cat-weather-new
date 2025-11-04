@@ -1,14 +1,13 @@
 import html
 import json
-import json
 import os
-import sys
-from copy import deepcopy
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
-from typing import Any, Sequence
 import random
+import sys
+from collections.abc import Sequence
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
 
 import pytest
 from PIL import Image
@@ -18,7 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import data_access
 from data_access import Asset, Rubric
 from jobs import Job
-from main import Bot, FLOWERS_PREVIEW_MAX_LENGTH
+from main import FLOWERS_PREVIEW_MAX_LENGTH, Bot
 from openai_client import OpenAIResponse
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
@@ -260,7 +259,7 @@ def _build_test_asset(
         labels_json=labels_json,
         tg_message_id=tg_message_id,
         payload_json=json.dumps(payload, ensure_ascii=False),
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
         exif=None,
         labels=labels_list,
         payload=payload,

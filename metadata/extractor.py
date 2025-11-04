@@ -6,7 +6,7 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -701,7 +701,7 @@ def _combine_gps_timestamp(gps_info: Mapping[str, Any]) -> datetime | None:
         int(minutes),
         seconds_int,
         microsecond,
-        tzinfo=timezone.utc,
+        tzinfo=UTC,
     )
 
 
@@ -751,7 +751,7 @@ def _parse_exif_datetime(value: Any) -> datetime | None:
             parsed = datetime.strptime(text, fmt)
         except ValueError:
             continue
-        return parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=UTC)
     return None
 
 

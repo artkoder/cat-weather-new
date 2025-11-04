@@ -6,8 +6,8 @@ import logging
 import math
 import os
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Callable, Iterable
 
 from aiohttp import web
 

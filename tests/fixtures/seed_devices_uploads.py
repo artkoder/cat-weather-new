@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import secrets
 import sqlite3
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable
 
 from main import apply_migrations
 
@@ -66,7 +66,7 @@ def _insert_devices(conn: sqlite3.Connection) -> list[str]:
 
 def _insert_pairing_tokens(conn: sqlite3.Connection, device_ids: Iterable[str]) -> None:
     now = datetime.utcnow()
-    for idx, device_id in enumerate(device_ids, start=1):
+    for idx, _device_id in enumerate(device_ids, start=1):
         conn.execute(
             """
             INSERT INTO pairing_tokens (code, user_id, device_name, created_at, expires_at, used_at)

@@ -26,7 +26,6 @@ from api.security import (
 from data_access import create_device
 from main import apply_migrations
 
-
 DEVICE_ID = "dev-test"
 DEVICE_SECRET = "a0" * 32
 

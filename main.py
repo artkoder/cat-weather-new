@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import gc
-import io
 import contextlib
+import gc
 import html
+import io
 import json
 import logging
 import math
@@ -12,24 +12,24 @@ import mimetypes
 import os
 import random
 import re
+import secrets
 import sqlite3
 import tempfile
-import time
 import unicodedata
-import secrets
-from time import perf_counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
-from datetime import datetime, date, timedelta, timezone, time as dtime
-from pathlib import Path
-
 from dataclasses import dataclass, replace
-
-from typing import Any, BinaryIO, Iterable, Mapping, Sequence, TYPE_CHECKING, Callable
+from datetime import UTC, date, datetime, timedelta, timezone
+from datetime import time as dtime
+from pathlib import Path
+from time import perf_counter
+from typing import TYPE_CHECKING, Any, BinaryIO
 from uuid import uuid4
 
-from aiohttp import web, ClientSession, FormData
-from PIL import Image, ImageDraw, ImageFont, ImageOps
 import psutil
+from aiohttp import ClientSession, FormData, web
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
 try:  # pragma: no cover - optional dependency fallback
     import qrcode  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - fallback to text image
@@ -40,24 +40,15 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover - fallback when LittleCMS is unavailable
     ImageCms = None  # type: ignore[assignment]
 import piexif
+
 try:  # pragma: no cover - optional dependency
     import exifread  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - fallback when exifread is unavailable
     exifread = None  # type: ignore[assignment]
 
-from data_access import (
-    Asset,
-    DataAccess,
-    Rubric,
-    create_device,
-    create_pairing_token,
-    consume_pairing_token,
-    get_asset_channel_id,
-    get_recognition_channel_id,
-    list_user_devices,
-    revoke_device,
-    rotate_device_secret,
-)
+from api.pairing import PairingTokenError, normalize_pairing_token
+from api.rate_limit import TokenBucketLimiter, create_rate_limit_middleware
+from api.security import create_hmac_middleware
 from api.uploads import (
     UploadMetricsRecorder,
     UploadsConfig,
@@ -65,34 +56,44 @@ from api.uploads import (
     register_upload_jobs,
     setup_upload_routes,
 )
-from api.security import create_hmac_middleware
-from api.pairing import PairingTokenError, normalize_pairing_token
-from api.rate_limit import TokenBucketLimiter, create_rate_limit_middleware
-from observability import (
-    context,
-    observe_health_latency,
-    observability_middleware,
-    record_mobile_photo_ingested,
-    record_rate_limit_drop,
-    setup_logging,
-    metrics_handler,
+from data_access import (
+    Asset,
+    DataAccess,
+    Rubric,
+    consume_pairing_token,
+    create_device,
+    create_pairing_token,
+    get_asset_channel_id,
+    get_recognition_channel_id,
+    list_user_devices,
+    revoke_device,
+    rotate_device_secret,
 )
 from flowers_patterns import (
     FlowerKnowledgeBase,
     FlowerPattern,
     load_flowers_knowledge,
 )
-from jobs import Job, JobDelayed, JobQueue, cleanup_expired_records
-from openai_client import OpenAIClient
-from supabase_client import SupabaseClient
-from storage import create_storage_from_env
-from weather_migration import migrate_weather_publish_channels
 from ingestion import (
     IngestionCallbacks,
     UploadIngestionContext,
     extract_exif_datetimes,
     ingest_photo,
 )
+from jobs import Job, JobDelayed, JobQueue, cleanup_expired_records
+from observability import (
+    context,
+    metrics_handler,
+    observability_middleware,
+    observe_health_latency,
+    record_mobile_photo_ingested,
+    record_rate_limit_drop,
+    setup_logging,
+)
+from openai_client import OpenAIClient
+from storage import create_storage_from_env
+from supabase_client import SupabaseClient
+from weather_migration import migrate_weather_publish_channels
 
 if TYPE_CHECKING:
     from openai_client import OpenAIResponse
@@ -191,9 +192,9 @@ WMO_EMOJI = {
 
 def _isoformat_utc(dt: datetime) -> str:
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     else:
-        dt = dt.astimezone(timezone.utc)
+        dt = dt.astimezone(UTC)
     return dt.isoformat().replace("+00:00", "Z")
 
 
@@ -1112,9 +1113,9 @@ class Bot:
                         ttl_text = f"{days} дн {hours} ч"
             expiry_dt = expires_at
             if expiry_dt.tzinfo is None:
-                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+                expiry_dt = expiry_dt.replace(tzinfo=UTC)
             else:
-                expiry_dt = expiry_dt.astimezone(timezone.utc)
+                expiry_dt = expiry_dt.astimezone(UTC)
             expires_text = expiry_dt.strftime("%Y-%m-%d %H:%M UTC")
             ttl_line = f"Действует ещё {ttl_text} (до {expires_text})."
 
@@ -1157,8 +1158,8 @@ class Bot:
             except ValueError:
                 return None
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
         if devices:
             if _can_append(""):
@@ -1650,7 +1651,7 @@ class Bot:
             resume_at = self._next_usage_reset(tz_offset=tz_offset)
             tzinfo = self._parse_tz_offset(tz_offset)
             resume_local = (
-                resume_at.replace(tzinfo=timezone.utc).astimezone(tzinfo)
+                resume_at.replace(tzinfo=UTC).astimezone(tzinfo)
                 if resume_at.tzinfo is None
                 else resume_at.astimezone(tzinfo)
             )
@@ -1665,7 +1666,7 @@ class Bot:
     async def _record_openai_usage(
         self,
         model: str,
-        response: "OpenAIResponse" | None,
+        response: OpenAIResponse | None,
         *,
         job: Job | None = None,
         record_supabase: bool = True,
@@ -4050,7 +4051,7 @@ class Bot:
         class _TelegramReuseAdapter:
             def __init__(
                 self,
-                bot: "Bot",
+                bot: Bot,
                 *,
                 message_id: int | None,
                 chat_id: int | None,
@@ -4750,10 +4751,10 @@ class Bot:
             normalized_tag_set = {tag.lower() for tag in tags if tag}
             if normalized_tag_set.intersection({"flowers", "flower"}):
                 flower_varieties = [obj for obj in objects if obj]
-            
+
             sea_wave_score_data: dict[str, Any] | None = None
             is_sea_asset = (
-                category == "sea" or 
+                category == "sea" or
                 normalized_tag_set.intersection({"sea", "ocean"})
             )
             if is_sea_asset and self.openai and self.openai.api_key and local_path and os.path.exists(local_path):
@@ -4822,7 +4823,7 @@ class Bot:
                         "Failed to get sea_wave_score for asset %s, continuing without it",
                         asset_id,
                     )
-            
+
             location_parts: list[str] = []
             existing_lower: set[str] = set()
             if asset.city:
@@ -8941,7 +8942,7 @@ class Bot:
             hours = int(hours_str or "0")
             minutes = int(minutes_str or "0")
         except ValueError:
-            return timezone.utc
+            return UTC
         delta = timedelta(hours=hours, minutes=minutes)
         return timezone(sign * delta)
 
@@ -9018,7 +9019,7 @@ class Bot:
     ) -> datetime:
         tzinfo = self._parse_tz_offset(tz_offset)
         if reference.tzinfo is None:
-            local_ref = reference.replace(tzinfo=timezone.utc).astimezone(tzinfo)
+            local_ref = reference.replace(tzinfo=UTC).astimezone(tzinfo)
         else:
             local_ref = reference.astimezone(tzinfo)
         try:
@@ -9032,7 +9033,7 @@ class Bot:
         while candidate <= local_ref or candidate.weekday() not in allowed_days:
             candidate = candidate + timedelta(days=1)
             candidate = candidate.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        return candidate.astimezone(timezone.utc).replace(tzinfo=None)
+        return candidate.astimezone(UTC).replace(tzinfo=None)
 
     @staticmethod
     def _parse_positive_int(value: Any) -> int | None:
@@ -12372,10 +12373,10 @@ class Bot:
             storm_state = "storm"
         else:
             storm_state = "strong_storm"
-        
+
         desired_wave_score = self._interpolate_wave_to_score(wave)
         desired_sky = self._get_sea_weather_sky(sea_id)
-        
+
         wind_speed, wind_class = self._get_sea_wind(sea_id)
         candidates = self.data.fetch_assets_by_vision_category(
             "sea",
@@ -12387,7 +12388,7 @@ class Bot:
         if not candidates:
             logging.warning("No sea assets available for rubric %s", rubric.code)
             return False
-        
+
         selected_asset = self._pick_sea_asset(
             candidates,
             desired_wave_score=desired_wave_score,
@@ -12755,7 +12756,7 @@ class Bot:
         """Extract asset sky (sunny/cloudy) from vision results tags."""
         if not vision_results or not isinstance(vision_results, dict):
             return None
-        
+
         sunny_syn = {
             "sunny", "clear", "sun", "sunlight", "bright", "blue_sky",
             "ясно", "солнечно", "голубое_небо", "blue sky"
@@ -12764,20 +12765,20 @@ class Bot:
             "cloudy", "overcast", "rain", "storm clouds",
             "пасмурно", "облачно", "дождь"
         }
-        
+
         tags = vision_results.get("tags")
         if not isinstance(tags, list):
             return None
-        
+
         tags_lower = {str(t).lower() for t in tags}
         has_cloudy = bool(tags_lower.intersection(cloudy_syn))
         has_sunny = bool(tags_lower.intersection(sunny_syn))
-        
+
         if has_cloudy:
             return "cloudy"
         if has_sunny:
             return "sunny"
-        
+
         weather_image = vision_results.get("weather_image")
         if isinstance(weather_image, str):
             weather_lower = weather_image.lower()
@@ -12785,7 +12786,7 @@ class Bot:
                 return "cloudy"
             if weather_lower in {"sunny", "clear"}:
                 return "sunny"
-        
+
         return None
 
     def _get_asset_wave_score_with_fallback(self, asset: Asset) -> int:
@@ -12796,7 +12797,7 @@ class Bot:
                 value = sea_wave_score.get("value")
                 if isinstance(value, int):
                     return max(0, min(10, value))
-            
+
             tags = asset.vision_results.get("tags")
             if isinstance(tags, list):
                 tags_lower = {str(t).lower() for t in tags}
@@ -12806,7 +12807,7 @@ class Bot:
                     return random.randint(6, 7)
                 if "waves" in tags_lower:
                     return random.randint(4, 5)
-        
+
         return random.randint(1, 2)
 
     def _pick_sea_asset(
@@ -12818,10 +12819,10 @@ class Bot:
     ) -> Asset | None:
         if not assets:
             return None
-        
+
         def norm(s: str | None) -> str:
             return (s or "").strip().lower()
-        
+
         def extract_tags(asset: Asset) -> set[str]:
             tags_set: set[str] = set()
             if asset.vision_results and isinstance(asset.vision_results, dict):
@@ -12829,30 +12830,30 @@ class Bot:
                 if isinstance(raw_tags, list):
                     tags_set.update(norm(str(t)) for t in raw_tags)
             return tags_set
-        
+
         def extract_categories(asset: Asset) -> set[str]:
             categories_set: set[str] = set()
             if asset.categories:
                 categories_set.update(norm(str(c)) for c in asset.categories)
             return categories_set
-        
+
         def has_sunset_tag(asset: Asset) -> bool:
             tags = extract_tags(asset)
             return "sunset" in tags
-        
+
         def has_sunset_category(asset: Asset) -> bool:
             cats = extract_categories(asset)
             return ("закат" in cats) or ("sunset" in cats)
-        
+
         def has_storm_tag(asset: Asset) -> bool:
             tags = extract_tags(asset)
             storm_synonyms = {"storm", "шторм", "waves", "буря", "surf", "whitecaps", "gale", "spray", "foam"}
             return bool(storm_synonyms.intersection(tags))
-        
+
         def compute_wave_penalty(asset: Asset) -> float:
             asset_score = self._get_asset_wave_score_with_fallback(asset)
             return -abs(asset_score - desired_wave_score)
-        
+
         def compute_sky_bonus(asset: Asset) -> float:
             asset_sky = self._extract_asset_sky(asset.vision_results)
             if desired_sky and asset_sky:
@@ -12861,7 +12862,7 @@ class Bot:
                 else:
                     return -0.5
             return 0.0
-        
+
         def compute_lru_score(asset: Asset) -> float:
             last_used_str = asset.payload.get("last_used_at") if asset.payload else None
             if not last_used_str:
@@ -12871,27 +12872,27 @@ class Bot:
                 return -last_used_dt.timestamp()
             except Exception:
                 return float('inf')
-        
+
         def compute_score(asset: Asset) -> tuple[float, int, int, float, int]:
             sunset_tag = has_sunset_tag(asset)
             sunset_cat = has_sunset_category(asset)
-            
+
             wave_penalty = compute_wave_penalty(asset)
             sky_bonus = compute_sky_bonus(asset)
-            
+
             wave_and_sky_score = wave_penalty + sky_bonus
-            
+
             if desired_wave_score <= 2:
                 if sunset_tag:
                     wave_and_sky_score += 2.0
                 elif sunset_cat:
                     wave_and_sky_score += 1.0
-            
+
             if desired_wave_score >= 6 and has_storm_tag(asset):
                 wave_and_sky_score += 0.5
-            
+
             lru_score = compute_lru_score(asset)
-            
+
             try:
                 if isinstance(asset.id, int):
                     asset_id = asset.id
@@ -12901,7 +12902,7 @@ class Bot:
                     asset_id = 0
             except (ValueError, AttributeError):
                 asset_id = 0
-            
+
             return (
                 wave_and_sky_score,
                 int(sunset_tag),
@@ -12909,7 +12910,7 @@ class Bot:
                 lru_score,
                 -asset_id,
             )
-        
+
         return max(assets, key=compute_score)
 
     async def _cleanup_assets(
@@ -14344,10 +14345,10 @@ async def health_handler(request: web.Request) -> web.Response:
             }
             status = 503
 
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
     started = started_at
     if started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
+        started = started.replace(tzinfo=UTC)
     uptime_s = max(0.0, (now_utc - started).total_seconds())
 
     config_payload: dict[str, Any] = {"ok": config_ok}
@@ -14514,7 +14515,7 @@ async def attach_device(request: web.Request) -> web.Response:
             secret=secret,
         )
 
-    event_time = datetime.now(timezone.utc).isoformat()
+    event_time = datetime.now(UTC).isoformat()
     with context(device_id=device_id, source="mobile"):
         logging.info(
             "MOBILE_ATTACH_OK",
@@ -14569,7 +14570,7 @@ def create_app():
     )
     app['bot'] = bot
     app['uploads_config'] = uploads_config
-    app['started_at'] = datetime.now(timezone.utc)
+    app['started_at'] = datetime.now(UTC)
     app['version'] = APP_VERSION
     app['attach_user_rate_limiter'] = TokenBucketLimiter(
         _env_int('RL_ATTACH_USER_PER_MIN', 3),

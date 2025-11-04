@@ -2,15 +2,15 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
 from aiohttp import web
-from datetime import datetime, timedelta
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from main import create_app, Bot
 from data_access import create_device, insert_upload, revoke_device, set_upload_status
+from main import Bot, create_app
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 os.environ.setdefault("WEBHOOK_URL", "https://example.com")

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
 import os
 import sys
+from datetime import UTC, datetime, timezone
+from pathlib import Path
+from typing import Any
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
@@ -33,8 +33,8 @@ def _create_heic_with_exif(path: Path) -> Path:
 
     exif_dict = {
         "0th": {
-            piexif.ImageIFD.Make: "HeifMaker".encode("utf-8"),
-            piexif.ImageIFD.Model: "HeifCam".encode("utf-8"),
+            piexif.ImageIFD.Make: b"HeifMaker",
+            piexif.ImageIFD.Model: b"HeifCam",
         },
         "Exif": {
             piexif.ExifIFD.DateTimeOriginal: "2024:01:02 03:04:05",
@@ -56,8 +56,8 @@ def _create_heic_with_exif(path: Path) -> Path:
 def _create_webp_with_exif(path: Path) -> Path:
     exif_dict = {
         "0th": {
-            piexif.ImageIFD.Make: "WebpMaker".encode("utf-8"),
-            piexif.ImageIFD.Model: "WebpCam".encode("utf-8"),
+            piexif.ImageIFD.Make: b"WebpMaker",
+            piexif.ImageIFD.Model: b"WebpCam",
         },
         "Exif": {
             piexif.ExifIFD.DateTimeOriginal: "2024:04:05 06:07:08",
@@ -77,7 +77,7 @@ def _create_webp_with_exif(path: Path) -> Path:
 def _create_gps_timestamp_exif() -> dict[str, Any]:
     return {
         "0th": {
-            piexif.ImageIFD.Make: "GPSMaker".encode("utf-8"),
+            piexif.ImageIFD.Make: b"GPSMaker",
         },
         "Exif": {
             piexif.ExifIFD.DateTimeOriginal: "2024:06:01 02:03:04",
@@ -154,9 +154,9 @@ def test_extract_metadata_combines_gps_timestamp(tmp_path: Path) -> None:
     photo_meta, _, gps_payload, _ = extract_metadata_from_file(image_path)
 
     assert photo_meta.captured_at is not None
-    assert photo_meta.captured_at.tzinfo == timezone.utc
+    assert photo_meta.captured_at.tzinfo == UTC
     assert gps_payload["captured_at"] == photo_meta.captured_at.isoformat()
-    expected = datetime(2024, 6, 2, 12, 34, 56, 789000, tzinfo=timezone.utc)
+    expected = datetime(2024, 6, 2, 12, 34, 56, 789000, tzinfo=UTC)
     assert photo_meta.captured_at == expected
 
 

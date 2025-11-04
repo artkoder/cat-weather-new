@@ -1,7 +1,8 @@
+import json
 import os
 import sys
-import json
-from datetime import datetime, timedelta, date
+from datetime import date, datetime, timedelta
+
 import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))

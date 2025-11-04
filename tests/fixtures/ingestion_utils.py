@@ -1,18 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO
 
-import hashlib
-import json
-
 import piexif
 from PIL import Image
 
 from openai_client import OpenAIResponse
-
 
 DEFAULT_VISION_PAYLOAD: dict[str, Any] = {
     "caption": "Солнечный кот во дворе",
@@ -31,7 +29,7 @@ def create_sample_image(path: Path) -> Path:
     image = Image.new("RGB", (640, 480), color=(10, 20, 30))
     exif_dict = {
         "0th": {
-            piexif.ImageIFD.Make: "UnitTest".encode("utf-8"),
+            piexif.ImageIFD.Make: b"UnitTest",
             piexif.ImageIFD.DateTime: "2023:12:24 15:30:45",
         },
         "Exif": {
@@ -58,8 +56,8 @@ def create_sample_image_with_invalid_gps(path: Path) -> Path:
     image = Image.new("RGB", (640, 480), color=(45, 55, 65))
     exif_dict = {
         "0th": {
-            piexif.ImageIFD.Make: "UnitTest".encode("utf-8"),
-            piexif.ImageIFD.Model: "BadGPS".encode("utf-8"),
+            piexif.ImageIFD.Make: b"UnitTest",
+            piexif.ImageIFD.Model: b"BadGPS",
         },
         "Exif": {
             piexif.ExifIFD.DateTimeOriginal: "2023:12:24 15:30:45",
@@ -84,11 +82,11 @@ def create_sample_image_without_gps(path: Path) -> Path:
     image = Image.new("RGB", (640, 480), color=(40, 50, 60))
     exif_dict = {
         "0th": {
-            piexif.ImageIFD.Make: "UnitTest".encode("utf-8"),
-            piexif.ImageIFD.Model: "NoGPS".encode("utf-8"),
+            piexif.ImageIFD.Make: b"UnitTest",
+            piexif.ImageIFD.Model: b"NoGPS",
         },
         "Exif": {
-            piexif.ExifIFD.LensMake: "LensCo".encode("utf-8"),
+            piexif.ExifIFD.LensMake: b"LensCo",
         },
         "GPS": {},
         "1st": {},

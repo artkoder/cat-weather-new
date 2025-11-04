@@ -1,7 +1,7 @@
+import json
 import os
 import sys
-import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -52,7 +52,7 @@ def _make_asset(asset_id: int | str, city: str, varieties: list[str]) -> Asset:
         labels_json=labels_json,
         tg_message_id=f"1:{payload['message_id']}",
         payload_json=json.dumps(payload, ensure_ascii=False),
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
         exif=None,
         labels=json.loads(labels_json),
         payload=payload,
@@ -85,7 +85,7 @@ async def test_flowers_loader_and_plan_deterministic(monkeypatch, tmp_path):
             base = cls.utcnow()
             if tz is None:
                 return base
-            return base.replace(tzinfo=timezone.utc).astimezone(tz)
+            return base.replace(tzinfo=UTC).astimezone(tz)
 
     import main as main_module
 
@@ -141,7 +141,7 @@ async def test_flowers_plan_uses_detected_colors(monkeypatch, tmp_path):
             base = cls.utcnow()
             if tz is None:
                 return base
-            return base.replace(tzinfo=timezone.utc).astimezone(tz)
+            return base.replace(tzinfo=UTC).astimezone(tz)
 
     import main as main_module
 
@@ -185,7 +185,7 @@ async def test_flowers_plan_skips_recent_duplicate_pattern(monkeypatch, tmp_path
             base = cls.utcnow()
             if tz is None:
                 return base
-            return base.replace(tzinfo=timezone.utc).astimezone(tz)
+            return base.replace(tzinfo=UTC).astimezone(tz)
 
     import main as main_module
 

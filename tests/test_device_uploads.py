@@ -9,9 +9,9 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from data_access import (
     DataAccess,
+    consume_pairing_token,
     create_device,
     create_pairing_token,
-    consume_pairing_token,
     fetch_upload_record,
     insert_upload,
     link_upload_asset,

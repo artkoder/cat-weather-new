@@ -6,20 +6,19 @@ import hmac
 import os
 import secrets
 import sqlite3
+import sys
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Iterable
 from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 from PIL import Image
-
-import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 

@@ -1,24 +1,23 @@
 from __future__ import annotations
 
 import contextlib
-import io
-import re
 import hashlib
+import io
 import logging
-import os
-import tempfile
+import re
+from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping as MappingABC
+from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
-from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
-from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Mapping, Protocol, Sequence, TypedDict
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypedDict
 
-from PIL import ExifTags, Image, ImageOps
 import piexif
+from PIL import ExifTags, Image, ImageOps
 
 from metadata.extractor import PhotoMeta, extract_metadata_from_file
-
 from observability import context as telemetry_context
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -709,7 +708,7 @@ def _extract_capture_datetime(exif: dict[str, Any]) -> str | None:
                 dt = datetime.strptime(text, fmt)
             except ValueError:
                 continue
-            return dt.replace(tzinfo=timezone.utc).isoformat()
+            return dt.replace(tzinfo=UTC).isoformat()
         return text
     return None
 
@@ -1195,11 +1194,11 @@ async def _ingest_photo_internal(
 
 async def ingest_photo(
     *,
-    data: "DataAccess",
+    data: DataAccess,
     telegram: TelegramClient,
     openai: OpenAIClient | None,
     supabase: SupabaseClient | None,
-    config: "UploadsConfig",
+    config: UploadsConfig,
     context: UploadIngestionContext,
     file_path: Path,
     cleanup_file: bool = False,

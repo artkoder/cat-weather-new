@@ -6,11 +6,11 @@ import json
 import logging
 import os
 import tempfile
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, ContextManager, Mapping
+from typing import Any
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
@@ -21,13 +21,23 @@ from data_access import (
     DataAccess,
     fetch_upload_record,
     get_asset_channel_id,
-    get_recognition_channel_id,
     get_device,
+    get_recognition_channel_id,
     get_upload,
     insert_upload,
     link_upload_asset,
     set_upload_status,
 )
+from ingestion import (
+    TelegramClient,
+    UploadIngestionContext,
+    UploadMetricsRecorder,
+    ingest_photo,
+)
+from ingestion import (
+    extract_exif_datetimes as _extract_exif_datetimes,
+)
+from jobs import Job, JobQueue
 from observability import (
     context,
     record_job_processed,
@@ -36,20 +46,9 @@ from observability import (
     record_upload_created,
     record_upload_status_change,
 )
-from jobs import Job, JobQueue
 from openai_client import OpenAIClient
 from storage import LocalStorage, Storage
 from supabase_client import SupabaseClient
-
-
-from ingestion import (
-    TelegramClient,
-    UploadIngestionContext,
-    UploadMetricsRecorder,
-    extract_exif_datetimes as _extract_exif_datetimes,
-    extract_image_metadata as _extract_image_metadata,
-    ingest_photo,
-)
 
 
 @dataclass(slots=True)
@@ -255,7 +254,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
             extra={
                 "device_id": device_id,
                 "source": "mobile",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
         return _json_error(
@@ -282,7 +281,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
 
     upload_id = str(uuid4())
     request["upload_id"] = upload_id
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     storage_key = f"{now:%Y/%m}/{upload_id}"
 
     with context(device_id=device_id, upload_id=upload_id, source="mobile"):
@@ -386,7 +385,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
                 "upload_id": upload_id,
                 "device_id": device_id,
                 "size_bytes": stats.size,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             },
         )
         return web.json_response({"id": upload_id, "status": "queued"}, status=202)
@@ -491,7 +490,7 @@ def register_upload_jobs(
                                 "upload_id": upload_id,
                                 "device_id": device_id_str,
                                 "source": "mobile",
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "timestamp": datetime.now(UTC).isoformat(),
                             },
                         )
                         set_upload_status(
@@ -774,7 +773,7 @@ def register_upload_jobs(
                                 "tg_chat_id": asset_channel_id,
                                 "source": "mobile",
                                 "size_bytes": size_bytes,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "timestamp": datetime.now(UTC).isoformat(),
                             },
                         )
                         record_job_processed("process_upload", "ok")
@@ -787,7 +786,7 @@ def register_upload_jobs(
                                 "upload_id": upload_id,
                                 "device_id": device_id_str,
                                 "size_bytes": size_bytes,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "timestamp": datetime.now(UTC).isoformat(),
                                 "error": str(exc),
                             },
                         )

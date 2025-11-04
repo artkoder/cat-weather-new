@@ -11,10 +11,9 @@ import time
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from PIL import Image, UnidentifiedImageError
-
 
 
 def _ensure_list_with_null(type_value: Any) -> Any:
@@ -103,9 +102,9 @@ import httpx
 
 @dataclass
 class OpenAIResponse:
-    content: Dict[str, Any]
-    usage: Dict[str, Any]
-    meta: Dict[str, Any] | None = None
+    content: dict[str, Any]
+    usage: dict[str, Any]
+    meta: dict[str, Any] | None = None
 
     def _usage_int(self, key: str) -> int | None:
         value = self.usage.get(key)
@@ -328,7 +327,7 @@ class OpenAIClient:
             return value
         return value[: limit - 3] + "..."
 
-    async def _submit_request(self, payload: Dict[str, Any]) -> OpenAIResponse:
+    async def _submit_request(self, payload: dict[str, Any]) -> OpenAIResponse:
         endpoint_path = "/v1/responses"
         url = f"{self.base_url}/responses"
         headers = {
@@ -505,7 +504,7 @@ class OpenAIClient:
             message_text = content_item
         else:
             message_text = None
-        parsed: Dict[str, Any]
+        parsed: dict[str, Any]
         if message_text:
             try:
                 parsed = json.loads(message_text)
@@ -513,7 +512,7 @@ class OpenAIClient:
                 parsed = {"raw": message_text}
         else:
             parsed = {}
-        usage_payload: Dict[str, Any] = {
+        usage_payload: dict[str, Any] = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
@@ -524,7 +523,7 @@ class OpenAIClient:
             usage_payload["response_id"] = response_id
         if not usage_payload.get("request_id") and response_id:
             usage_payload["request_id"] = response_id
-        meta: Dict[str, Any] | None = {
+        meta: dict[str, Any] | None = {
             "model": payload.get("model"),
             "duration_ms": round(duration * 1000, 2),
             "status_code": response.status_code,

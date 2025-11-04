@@ -1,33 +1,30 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
-import hashlib
-import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import sqlite3
 import sys
 import time
-import logging
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Any
 from types import MethodType, SimpleNamespace
+from typing import Any
 
+import piexif
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from PIL import Image
-import piexif
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import main as main_module
-
+from api.rate_limit import create_rate_limit_middleware
 from api.security import (
     _body_sha256,
     _canonical_query,
@@ -36,7 +33,6 @@ from api.security import (
     _normalize_path,
     create_hmac_middleware,
 )
-from api.rate_limit import create_rate_limit_middleware
 from api.uploads import (
     UploadMetricsRecorder,
     UploadsConfig,
@@ -44,11 +40,10 @@ from api.uploads import (
     setup_upload_routes,
 )
 from data_access import DataAccess, create_device, insert_upload, set_upload_status
-from main import apply_migrations
 from jobs import JobQueue
+from main import apply_migrations
 from openai_client import OpenAIResponse
 from storage import LocalStorage
-
 
 DEVICE_SECRET = "ab" * 32
 
@@ -215,7 +210,7 @@ class UploadTestEnv:
         vision_enabled: bool | None = None,
         vision_model: str = "test-vision",
         cleanup_local_after_publish: bool | None = None,
-    ) -> "UploadTestEnv":
+    ) -> UploadTestEnv:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")

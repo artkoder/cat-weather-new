@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Protocol
+from typing import Protocol
 
 from supabase_client import SupabaseClient
 

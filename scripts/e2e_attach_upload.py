@@ -13,9 +13,10 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -394,8 +395,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         creds = _attach_device(client, base_url, code, args.device_name)
         attach_duration = time.perf_counter() - attach_start
         _log(
-            "Attached device %s (id=%s) in %.2fs"
-            % (creds.name, creds.device_id, attach_duration)
+            f"Attached device {creds.name} (id={creds.device_id}) in {attach_duration:.2f}s"
         )
 
         filename, content_type, file_bytes = make_test_image()
@@ -407,8 +407,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         idempotency_key = str(uuid4())
         body_sha = hashlib.sha256(body).hexdigest()
         _log(
-            "Uploading generated %s (%d bytes, sha=%s) with idempotency %s"
-            % (filename, len(file_bytes), body_sha, idempotency_key)
+            f"Uploading generated {filename} ({len(file_bytes)} bytes, sha={body_sha}) with idempotency {idempotency_key}"
         )
         upload_start = time.perf_counter()
         response = _build_signed_request(
@@ -443,8 +442,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         )
         status_duration = time.perf_counter() - status_start
         _log(
-            "Upload %s completed with asset %s in %.2fs"
-            % (status.upload_id, status.asset_id, status_duration)
+            f"Upload {status.upload_id} completed with asset {status.asset_id} in {status_duration:.2f}s"
         )
 
         record = _fetch_asset_record(args.db_path, upload_id)
@@ -471,8 +469,7 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     total_duration = time.perf_counter() - overall_start
     _log(
-        "E2E flow succeeded in %.2fs (attach %.2fs, upload %.2fs, status %.2fs)"
-        % (total_duration, attach_duration, upload_duration, status_duration)
+        f"E2E flow succeeded in {total_duration:.2f}s (attach {attach_duration:.2f}s, upload {upload_duration:.2f}s, status {status_duration:.2f}s)"
     )
     return 0
 

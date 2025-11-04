@@ -5,12 +5,12 @@ import contextlib
 import inspect
 import json
 import logging
+import sqlite3
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Awaitable, Callable, Dict
-
-import sqlite3
+from typing import Any
 
 from data_access import UPLOAD_IDEMPOTENCY_TTL_SECONDS
 from observability import context, log_exc, record_job_processed, set_queue_depth
@@ -58,7 +58,7 @@ class JobQueue:
         self.concurrency = max(1, concurrency)
         self.poll_interval = poll_interval
         self.max_attempts = max_attempts
-        self.handlers: Dict[str, JobHandler] = {}
+        self.handlers: dict[str, JobHandler] = {}
         self._queue: asyncio.Queue[Job] = asyncio.Queue()
         self._workers: list[asyncio.Task] = []
         self._loader: asyncio.Task | None = None

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
-import json
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 try:  # pragma: no cover - optional dependency
     import yaml  # type: ignore

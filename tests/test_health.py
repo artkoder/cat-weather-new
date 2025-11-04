@@ -1,8 +1,7 @@
 import os
-import os
 import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from aiohttp import web
@@ -11,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from main import apply_migrations, health_handler
+
 
 def _init_db(
     *, asset_channel_id: int | None = None, recognition_channel_id: int | None = None
@@ -59,7 +59,7 @@ class DummyBot:
 async def _call_health(bot: DummyBot):
     app = web.Application()
     app["bot"] = bot
-    app["started_at"] = datetime.now(timezone.utc) - timedelta(seconds=5)
+    app["started_at"] = datetime.now(UTC) - timedelta(seconds=5)
     app["version"] = "test-version"
     app.router.add_get("/v1/health", health_handler)
 

@@ -2,8 +2,9 @@ import base64
 import json
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 from PIL import UnidentifiedImageError
@@ -11,7 +12,6 @@ from PIL import UnidentifiedImageError
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from openai_client import OpenAIClient, strictify_schema
-
 
 PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="

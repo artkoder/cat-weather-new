@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+
 def pytest_sessionstart(session):
     # Set a safe DB path for tests BEFORE imports
     if "DB_PATH" not in os.environ:

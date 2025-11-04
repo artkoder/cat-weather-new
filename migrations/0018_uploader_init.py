@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sqlite3
 
-
 DDL = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;

@@ -9,8 +9,8 @@ from copy import deepcopy
 from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
 from types import SimpleNamespace
+from typing import Any
 
 import piexif
 import pytest
@@ -22,13 +22,10 @@ import observability
 from api.uploads import (
     UploadMetricsRecorder,
     UploadsConfig,
-    _extract_image_metadata,
     _serialize_for_log,
     register_upload_jobs,
 )
 from data_access import DataAccess, create_device, insert_upload
-from jobs import Job, JobQueue
-from main import Bot, apply_migrations
 from ingestion import (
     ImageMetadataResult,
     IngestionCallbacks,
@@ -36,6 +33,11 @@ from ingestion import (
     UploadIngestionContext,
     ingest_photo,
 )
+from ingestion import (
+    extract_image_metadata as _extract_image_metadata,
+)
+from jobs import Job, JobQueue
+from main import Bot, apply_migrations
 from openai_client import OpenAIResponse
 from tests.fixtures.ingestion_utils import (
     OpenAIStub,

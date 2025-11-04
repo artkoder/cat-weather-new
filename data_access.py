@@ -3,20 +3,18 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
-import os
 import random
 import secrets
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any
 from uuid import uuid4
-
 
 _UNSET = object()
 
 import sqlite3
-
 
 PAIRING_TOKEN_TTL_SECONDS = 600
 NONCE_TTL_SECONDS = 600

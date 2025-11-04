@@ -7,24 +7,23 @@ import logging
 import os
 import re
 import time
-from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Deque, Iterable, Mapping, MutableMapping
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from aiohttp import web
+
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
     Gauge,
+    GCCollector,
     Histogram,
-    ProcessCollector,
     PlatformCollector,
+    ProcessCollector,
     generate_latest,
 )
-from prometheus_client import GCCollector
-
 
 _LOG_CONTEXT: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
     "log_context", default={}
@@ -127,7 +126,7 @@ class ContextFilter(logging.Filter):
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         base: dict[str, Any] = {
-            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "ts": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
         }
         message = record.getMessage()
@@ -195,7 +194,7 @@ class JsonFormatter(logging.Formatter):
 
 class PrettyFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        ts = datetime.fromtimestamp(record.created, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%fZ")
+        ts = datetime.fromtimestamp(record.created, tz=UTC).strftime("%Y-%m-%d %H:%M:%S.%fZ")
         message = _redact_value("msg", record.getMessage())
         parts = [f"[{ts}]", record.levelname.ljust(5), str(message)]
         extras: list[str] = []

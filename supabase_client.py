@@ -5,8 +5,8 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
@@ -29,8 +29,8 @@ def _strict_meta(meta: Any) -> Any:
 
 @dataclass
 class SupabaseConfig:
-    url: Optional[str]
-    key: Optional[str]
+    url: str | None
+    key: str | None
 
 
 class SupabaseClient:
@@ -84,9 +84,9 @@ class SupabaseClient:
         total_tokens: int | None,
         request_id: str | None,
         endpoint: str = "/v1/responses",
-        meta: Dict[str, Any] | None = None,
-    ) -> Tuple[bool, Dict[str, Any], str | None]:
-        payload: Dict[str, Any] = {
+        meta: dict[str, Any] | None = None,
+    ) -> tuple[bool, dict[str, Any], str | None]:
+        payload: dict[str, Any] = {
             "bot": bot,
             "model": model,
             "prompt_tokens": prompt_tokens,
@@ -95,7 +95,7 @@ class SupabaseClient:
             "request_id": request_id,
             "endpoint": endpoint,
             "meta": _strict_meta(meta),
-            "at": datetime.now(timezone.utc).isoformat(),
+            "at": datetime.now(UTC).isoformat(),
         }
         if not self._client:
             logging.debug("Supabase client disabled; skipping token usage upload")

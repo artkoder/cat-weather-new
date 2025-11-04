@@ -1,6 +1,6 @@
 import os
 import sys
-from datetime import datetime, date, timezone
+from datetime import UTC, date, datetime, timezone
 
 import pytest
 
@@ -16,7 +16,7 @@ async def test_next_usage_reset_uses_local_midnight(tmp_path):
     tz_offset = "+03:00"
     reset = bot._next_usage_reset(now=reference, tz_offset=tz_offset)  # type: ignore[attr-defined]
     assert reset == datetime(2024, 6, 1, 21, 5)
-    local_reset = reset.replace(tzinfo=timezone.utc).astimezone(  # type: ignore[attr-defined]
+    local_reset = reset.replace(tzinfo=UTC).astimezone(  # type: ignore[attr-defined]
         bot._parse_tz_offset(tz_offset)  # type: ignore[attr-defined]
     )
     assert local_reset.hour == 0

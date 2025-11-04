@@ -12819,62 +12819,98 @@ class Bot:
         if not assets:
             return None
         
-        sunset_synonyms = {"sunset", "закат", "golden hour"}
-        storm_synonyms = {"storm", "шторм", "waves", "буря", "surf", "whitecaps", "gale", "spray", "foam"}
+        def norm(s: str | None) -> str:
+            return (s or "").strip().lower()
         
-        scored: list[tuple[float, float, float, Asset]] = []
-        for asset in assets:
-            asset_score = self._get_asset_wave_score_with_fallback(asset)
-            d_wave = abs(asset_score - desired_wave_score)
-            
-            asset_sky = self._extract_asset_sky(asset.vision_results)
-            sky_bonus = 0.0
-            if desired_sky and asset_sky:
-                if desired_sky == asset_sky:
-                    sky_bonus = -1.0
-                else:
-                    sky_bonus = 0.5
-            elif not asset_sky:
-                sky_bonus = 0.0
-            
-            sunset_bonus = 0.0
-            storm_bonus = 0.0
-            
+        def extract_tags(asset: Asset) -> set[str]:
             tags_set: set[str] = set()
             if asset.vision_results and isinstance(asset.vision_results, dict):
                 raw_tags = asset.vision_results.get("tags")
                 if isinstance(raw_tags, list):
-                    tags_set.update(str(t).lower() for t in raw_tags)
+                    tags_set.update(norm(str(t)) for t in raw_tags)
+            return tags_set
+        
+        def extract_categories(asset: Asset) -> set[str]:
             categories_set: set[str] = set()
             if asset.categories:
-                categories_set.update(str(c).lower() for c in asset.categories)
-            
-            has_sunset = bool(sunset_synonyms.intersection(tags_set | categories_set))
-            has_storm = bool(storm_synonyms.intersection(tags_set))
-            
-            if desired_wave_score <= 2 and has_sunset:
-                sunset_bonus = -1.0
-            
-            if desired_wave_score >= 6 and has_storm:
-                storm_bonus = -0.5
-            
-            recency_score = 0.0
-            last_used_str = asset.payload.get("last_used_at") if asset.payload else None
-            if last_used_str:
-                try:
-                    last_used_dt = datetime.fromisoformat(str(last_used_str))
-                    age_days = (datetime.utcnow() - last_used_dt).days
-                    recency_score = age_days * 0.001
-                except Exception:
-                    pass
-            
-            tie_break = random.random() * 0.0001
-            total_score = d_wave + sky_bonus + sunset_bonus + storm_bonus
-            
-            scored.append((total_score, -recency_score, tie_break, asset))
+                categories_set.update(norm(str(c)) for c in asset.categories)
+            return categories_set
         
-        scored.sort(key=lambda x: (x[0], x[1], x[2]))
-        return scored[0][3] if scored else None
+        def has_sunset_tag(asset: Asset) -> bool:
+            tags = extract_tags(asset)
+            return "sunset" in tags
+        
+        def has_sunset_category(asset: Asset) -> bool:
+            cats = extract_categories(asset)
+            return ("закат" in cats) or ("sunset" in cats)
+        
+        def has_storm_tag(asset: Asset) -> bool:
+            tags = extract_tags(asset)
+            storm_synonyms = {"storm", "шторм", "waves", "буря", "surf", "whitecaps", "gale", "spray", "foam"}
+            return bool(storm_synonyms.intersection(tags))
+        
+        def compute_wave_penalty(asset: Asset) -> float:
+            asset_score = self._get_asset_wave_score_with_fallback(asset)
+            return -abs(asset_score - desired_wave_score)
+        
+        def compute_sky_bonus(asset: Asset) -> float:
+            asset_sky = self._extract_asset_sky(asset.vision_results)
+            if desired_sky and asset_sky:
+                if desired_sky == asset_sky:
+                    return 1.0
+                else:
+                    return -0.5
+            return 0.0
+        
+        def compute_lru_score(asset: Asset) -> float:
+            last_used_str = asset.payload.get("last_used_at") if asset.payload else None
+            if not last_used_str:
+                return float('inf')
+            try:
+                last_used_dt = datetime.fromisoformat(str(last_used_str))
+                return -last_used_dt.timestamp()
+            except Exception:
+                return float('inf')
+        
+        def compute_score(asset: Asset) -> tuple[float, int, int, float, int]:
+            sunset_tag = has_sunset_tag(asset)
+            sunset_cat = has_sunset_category(asset)
+            
+            wave_penalty = compute_wave_penalty(asset)
+            sky_bonus = compute_sky_bonus(asset)
+            
+            wave_and_sky_score = wave_penalty + sky_bonus
+            
+            if desired_wave_score <= 2:
+                if sunset_tag:
+                    wave_and_sky_score += 2.0
+                elif sunset_cat:
+                    wave_and_sky_score += 1.0
+            
+            if desired_wave_score >= 6 and has_storm_tag(asset):
+                wave_and_sky_score += 0.5
+            
+            lru_score = compute_lru_score(asset)
+            
+            try:
+                if isinstance(asset.id, int):
+                    asset_id = asset.id
+                elif isinstance(asset.id, str):
+                    asset_id = int(asset.id) if asset.id.isdigit() else 0
+                else:
+                    asset_id = 0
+            except (ValueError, AttributeError):
+                asset_id = 0
+            
+            return (
+                wave_and_sky_score,
+                int(sunset_tag),
+                int(sunset_cat),
+                lru_score,
+                -asset_id,
+            )
+        
+        return max(assets, key=compute_score)
 
     async def _cleanup_assets(
         self, assets: Iterable[Asset], *, extra_paths: Iterable[str] | None = None

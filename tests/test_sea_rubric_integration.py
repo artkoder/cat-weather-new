@@ -244,12 +244,13 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
         assert len(send_calls) == 2
         storm_caption = send_calls[1]["data"]["caption"]
         assert "шторм" in storm_caption.lower()
-        assert "сбивающий" in storm_caption.lower()
+        lowered = storm_caption.lower()
+        assert ("сбивающ" in lowered) or ("ураган" in lowered)
         assert "#море #БалтийскоеМоре" in storm_caption
         assert "#Зеленоградск" not in storm_caption
         storm_meta = fetch_history()[-1]
         assert storm_meta["storm_state"] == "strong_storm"
-        assert storm_meta["wind_class"] == "strong"
+        assert storm_meta["wind_class"] == "very_strong"
         assert storm_meta["place_hashtag"] is None
         assert storm_meta["wind_speed_ms"] == pytest.approx(12.0)
         assert bot.data.get_asset(storm_id) is None

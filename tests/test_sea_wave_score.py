@@ -36,8 +36,8 @@ def test_map_wave_height_to_score(wave: float, expected: float) -> None:
 @pytest.mark.parametrize(
     "speed,expected",
     [
-        (10.0, "normal"),
-        (24.9, "normal"),
+        (10.0, None),
+        (24.9, None),
         (25.0, "strong"),
         (34.9, "strong"),
         (35.0, "very_strong"),

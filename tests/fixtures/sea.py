@@ -19,6 +19,7 @@ def seed_sea_environment(
     city_lat: float = 54.9604,
     city_lon: float = 20.4721,
     wind_speed: float = 5.0,
+    cloud_cover: float = 35.0,
     timestamp: datetime | None = None,
 ) -> str:
     """Seed reference sea, city, and weather rows for integration tests."""
@@ -37,6 +38,14 @@ def seed_sea_environment(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (sea_id, ts, water_temp, None, None, None, None, wave, None, None, None, None),
+    )
+    bot.db.execute(
+        """
+        INSERT OR REPLACE INTO sea_conditions (
+            sea_id, updated, wave_height_m, wind_speed_10m_ms, cloud_cover_pct
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (sea_id, ts, wave, wind_speed, cloud_cover),
     )
     bot.db.execute(
         "INSERT OR REPLACE INTO cities (id, name, lat, lon) VALUES (?, ?, ?, ?)",
@@ -74,6 +83,10 @@ def create_sea_asset(
     latitude: float | None = None,
     longitude: float | None = None,
     channel_id: int = -1000,
+    sea_wave_score: float = 2.0,
+    photo_sky: str = "partly_cloudy",
+    is_sunset: bool = False,
+    season_guess: str = "summer",
 ) -> str:
     """Persist a sea asset with the provided metadata and local source."""
 
@@ -97,10 +110,18 @@ def create_sea_asset(
         rubric_id=rubric_id,
         origin="sea_fixture",
     )
+    vision_payload = {
+        "tags": list(tags or []),
+        "is_sea": True,
+        "sea_wave_score": sea_wave_score,
+        "photo_sky": photo_sky,
+        "is_sunset": is_sunset,
+        "season_guess": season_guess,
+    }
     bot.data.update_asset(
         asset_id,
         vision_category="sea",
-        vision_results={"tags": list(tags or [])},
+        vision_results=vision_payload,
         local_path=str(local_path),
         latitude=latitude,
         longitude=longitude,

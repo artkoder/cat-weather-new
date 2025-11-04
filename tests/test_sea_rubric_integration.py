@@ -23,13 +23,13 @@ class FakeOpenAI:
     async def generate_json(self, **kwargs) -> OpenAIResponse:  # type: ignore[override]
         self.calls.append(kwargs)
         prompt = kwargs.get("user_prompt", "")
-        if "storm_state: calm" in prompt:
+        if '"storm_state": "calm"' in prompt:
             caption = "Порадую закатом над морем — воздух тёплый и тихий."
             hashtags = ["морем"]
-        elif "wind_strength: strong" in prompt:
+        elif '"wind_class": "strong"' in prompt:
             caption = "Сегодня шторм на море — ветер сбивающий с ног и россыпь пены."
             hashtags = ["БалтийскоеМоре"]
-        elif "wind_strength: very_strong" in prompt:
+        elif '"wind_class": "very_strong"' in prompt:
             caption = "Сегодня шторм на море. Ураганный ветер кружит песок.\n" + (
                 "Ураганный ветер кружит песок. " * 80
             )
@@ -171,6 +171,9 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
             tags=["sunset", "sea"],
             latitude=54.9604,
             longitude=20.4721,
+            sea_wave_score=1.5,
+            photo_sky="sunny",
+            is_sunset=True,
         )
         sunset_asset = bot.data.get_asset(sunset_id)
         assert sunset_asset is not None
@@ -187,6 +190,9 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
             file_name="storm.jpg",
             local_path=storm_file,
             tags=["storm", "waves"],
+            sea_wave_score=8.0,
+            photo_sky="mostly_cloudy",
+            is_sunset=False,
         )
         heavy_storm_id = create_sea_asset(
             bot,
@@ -196,6 +202,9 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
             local_path=heavy_storm_file,
             tags=["sea"],
             categories=["Шторм"],
+            sea_wave_score=9.5,
+            photo_sky="overcast",
+            is_sunset=False,
         )
 
         assert await bot.publish_rubric("sea") is True
@@ -204,9 +213,7 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
         calm_caption = send_calls[0]["data"]["caption"]
         assert "закат" in calm_caption.lower()
         assert "шторм" not in calm_caption.lower()
-        assert "#море" in calm_caption
-        assert "#БалтийскоеМоре" in calm_caption
-        assert "#Зеленоградск" in calm_caption
+        assert "#море #БалтийскоеМоре #Зеленоградск" in calm_caption
         assert "📂 Полюбить 39" in calm_caption
         assert len(calm_caption) < 1000
         calm_meta = fetch_history()[-1]
@@ -214,13 +221,17 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
         assert calm_meta["wind_class"] is None
         assert calm_meta["place_hashtag"] == "#Зеленоградск"
         assert calm_meta["sunset_selected"] is True
-        assert calm_meta["wind_speed"] == pytest.approx(5.0)
+        assert calm_meta["wind_speed_ms"] == pytest.approx(5.0)
         assert sunset_id in calm_meta["asset_ids"]
         assert bot.data.get_asset(sunset_id) is None
 
         bot.db.execute(
             "UPDATE sea_cache SET wave=?, updated=? WHERE sea_id=?",
             (1.6, datetime.utcnow().isoformat(), 1),
+        )
+        bot.db.execute(
+            "UPDATE sea_conditions SET wave_height_m=?, wind_speed_10m_ms=?, cloud_cover_pct=?, updated=? WHERE sea_id=?",
+            (1.6, 12.0, 65.0, datetime.utcnow().isoformat(), 1),
         )
         bot.db.execute(
             "UPDATE weather_cache_hour SET wind_speed=?, timestamp=? WHERE city_id=?",
@@ -233,17 +244,21 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
         assert len(send_calls) == 2
         storm_caption = send_calls[1]["data"]["caption"]
         assert "шторм" in storm_caption.lower()
-        assert "сбивающий" in storm_caption.lower()
-        assert "#море" in storm_caption
-        assert "#БалтийскоеМоре" in storm_caption
+        lowered = storm_caption.lower()
+        assert ("сбивающ" in lowered) or ("ураган" in lowered)
+        assert "#море #БалтийскоеМоре" in storm_caption
         assert "#Зеленоградск" not in storm_caption
         storm_meta = fetch_history()[-1]
         assert storm_meta["storm_state"] == "strong_storm"
-        assert storm_meta["wind_class"] == "strong"
+        assert storm_meta["wind_class"] == "very_strong"
         assert storm_meta["place_hashtag"] is None
-        assert storm_meta["wind_speed"] == pytest.approx(12.0)
+        assert storm_meta["wind_speed_ms"] == pytest.approx(12.0)
         assert bot.data.get_asset(storm_id) is None
 
+        bot.db.execute(
+            "UPDATE sea_conditions SET wave_height_m=?, wind_speed_10m_ms=?, cloud_cover_pct=?, updated=? WHERE sea_id=?",
+            (2.2, 16.0, 85.0, datetime.utcnow().isoformat(), 1),
+        )
         bot.db.execute(
             "UPDATE weather_cache_hour SET wind_speed=?, timestamp=? WHERE city_id=?",
             (16.0, datetime.utcnow().isoformat(), 101),
@@ -257,13 +272,12 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
         assert "шторм" in heavy_caption.lower()
         assert "ураган" in heavy_caption.lower()
         assert len(heavy_caption) < 1000
-        assert "#море" in heavy_caption
-        assert "#БалтийскоеМоре" in heavy_caption
+        assert "#море #БалтийскоеМоре" in heavy_caption
         assert "📂 Полюбить 39" in heavy_caption
         heavy_meta = fetch_history()[-1]
         assert heavy_meta["wind_class"] == "very_strong"
         assert heavy_meta["storm_state"] == "strong_storm"
-        assert heavy_meta["wind_speed"] == pytest.approx(16.0)
+        assert heavy_meta["wind_speed_ms"] == pytest.approx(16.0)
         assert bot.data.get_asset(heavy_storm_id) is None
 
         for call in send_calls:

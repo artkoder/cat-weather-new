@@ -190,6 +190,8 @@ WMO_EMOJI = {
     99: "\u26c8\ufe0f",
 }
 
+LOVE_COLLECTION_LINK = '<a href="https://t.me/addlist/sW-rkrslxqo1NTVi">📂 Полюбить 39</a>'
+
 
 def _isoformat_utc(dt: datetime) -> str:
     if dt.tzinfo is None:
@@ -12847,7 +12849,64 @@ class Bot:
             place_hashtag=place_hashtag,
             job=job,
         )
-        caption_text = soft_trim(caption_text.strip(), 900) if caption_text else ""
+        raw_caption_text = (caption_text or "").strip()
+
+        def sanitize_caption_text(text: str, *, limit: int = 350) -> str:
+            cleaned = (text or "").strip()
+            if not cleaned:
+                return ""
+            sentences = [
+                segment.strip()
+                for segment in re.split(r"(?<=[.!?…])\s+", cleaned)
+                if segment.strip()
+            ]
+            if sentences:
+                cleaned = " ".join(sentences[:3])
+            measurement_pattern = re.compile(
+                r"\d+[.,]?\d*\s*(?:км/ч|м/с|км|м|мм|см|проц(?:ент(?:ов|а)?)?|%|°[CF]?|°|бал(?:л(?:ов|а)?)?)",
+                re.IGNORECASE,
+            )
+            number_pattern = re.compile(r"\d+[.,]?\d*", re.IGNORECASE)
+            unit_pattern = re.compile(
+                r"\b(?:км/ч|м/с|км|метр(?:ов|а)?|метры|мм|см|проц(?:ент(?:ов|а)?)?|°[CF]?|°|узл(?:ов|а)?|бал(?:л(?:ов|а)?)?)\b",
+                re.IGNORECASE,
+            )
+            cloud_pattern = re.compile(r"\b[\w-]*(?:облачн|солнеч)[\w-]*\b", re.IGNORECASE)
+            cleaned = measurement_pattern.sub("", cleaned)
+            cleaned = number_pattern.sub("", cleaned)
+            cleaned = unit_pattern.sub("", cleaned)
+            cleaned = cloud_pattern.sub("", cleaned)
+            cleaned = re.sub(r"\s*—\s*", " — ", cleaned)
+            cleaned = re.sub(r"\s{2,}", " ", cleaned)
+            cleaned = re.sub(r"\s+([,.;!?…])", r"\1", cleaned)
+            cleaned = cleaned.replace(" ,", ",").replace(" .", ".").replace(" !", "!").replace(" ?", "?")
+            trimmed = soft_trim(cleaned.strip(), limit) if cleaned else ""
+            if not trimmed:
+                return ""
+            trimmed = measurement_pattern.sub("", trimmed)
+            trimmed = number_pattern.sub("", trimmed)
+            trimmed = unit_pattern.sub("", trimmed)
+            trimmed = cloud_pattern.sub("", trimmed)
+            trimmed = re.sub(r"\s*—\s*", " — ", trimmed)
+            trimmed = re.sub(r"\s{2,}", " ", trimmed)
+            trimmed = re.sub(r"\s+([,.;!?…])", r"\1", trimmed)
+            trimmed = trimmed.replace(" ,", ",").replace(" .", ".").replace(" !", "!").replace(" ?", "?")
+            return trimmed.strip()
+
+        fallback_seed = ""
+        if storm_state == "strong_storm":
+            fallback_seed = "Сегодня сильный шторм на море — волны гремят у самого берега."
+        elif storm_state == "storm":
+            fallback_seed = "Сегодня шторм на море — волны упрямо разбиваются о берег."
+        elif sunset_selected:
+            fallback_seed = "Порадую закатом над морем — побережье дышит теплом."
+        else:
+            fallback_seed = "Порадую вас морем — побережье зовёт вдохнуть глубже."
+        if wind_class == "very_strong":
+            fallback_seed += " Ветер срывает шапки на набережной."
+        elif wind_class == "strong":
+            fallback_seed += " Ветер ощутимо тянет к морю."
+        fallback_caption_plain = sanitize_caption_text(fallback_seed, limit=350)
 
         deduped_model_tags = self._deduplicate_hashtags(model_hashtags or [])
         seen_tags: set[str] = set()
@@ -12869,25 +12928,37 @@ class Bot:
             append_tag(tag)
 
         hashtags_line = " ".join(final_hashtags)
-        caption_lines: list[str] = []
-        if caption_text:
-            caption_lines.append(caption_text)
-            caption_lines.append("")
-        caption_lines.append(hashtags_line)
-        caption_lines.append("")
-        caption_lines.append("📂 Полюбить 39 https://t.me/addlist/sW-rkrslxqo1NTVi")
-        full_caption = "\n".join(caption_lines)
+        hashtags_html = html.escape(hashtags_line) if hashtags_line else ""
 
-        if len(full_caption) > 1000 and caption_text:
-            available = max(600, 1000 - (len(full_caption) - len(caption_text)))
-            caption_text = soft_trim(caption_text, available)
-            caption_lines[0] = caption_text
-            full_caption = "\n".join(caption_lines)
-        if len(full_caption) > 1000 and caption_text:
-            caption_text = soft_trim(caption_text, 750)
-            caption_lines[0] = caption_text
-            full_caption = "\n".join(caption_lines)
+        def compose_caption(main_plain: str) -> str:
+            main_html = html.escape(main_plain) if main_plain else ""
+            lines: list[str] = []
+            if main_html:
+                lines.append(main_html)
+            if hashtags_html:
+                if lines:
+                    lines.append("")
+                lines.append(hashtags_html)
+            if lines:
+                lines.append("")
+            lines.append(LOVE_COLLECTION_LINK)
+            return "\n".join(lines)
 
+        caption_text_clean = ""
+        full_caption = compose_caption("")
+        for limit in (350, 300, 260, 220, 180, 140, 120, 100, 80):
+            candidate = sanitize_caption_text(raw_caption_text, limit=limit)
+            if not candidate and fallback_caption_plain:
+                candidate = sanitize_caption_text(fallback_caption_plain, limit=limit)
+            full_candidate = compose_caption(candidate)
+            caption_text_clean = candidate
+            full_caption = full_candidate
+            if len(full_candidate) <= 1000 or not candidate:
+                break
+        if len(full_caption) > 1000:
+            logging.warning("SEA_RUBRIC caption_trimmed length=%s", len(full_caption))
+
+        caption_text = caption_text_clean
         logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
 
         source_path, should_cleanup = await self._ensure_asset_source(asset)
@@ -12917,6 +12988,7 @@ class Bot:
             {
                 "chat_id": channel_id,
                 "caption": full_caption,
+                "parse_mode": "HTML",
             },
             files={"photo": ("photo.jpg", file_data)},
         )
@@ -12973,14 +13045,42 @@ class Bot:
 
         if test and initiator_id:
             wave_text = f"{wave_height_value:.2f}" if wave_height_value is not None else "н/д"
-            wind_kmh_text = f"{wind_kmh:.1f}" if wind_kmh is not None else "н/д"
-            wind_ms_text = f"{wind_ms:.1f}" if wind_ms is not None else "н/д"
-            wind_class_text = wind_class or "не указано"
+            resolved_wind_ms = wind_ms
+            resolved_wind_kmh = wind_kmh
+            resolved_wind_class = wind_class
+            if resolved_wind_ms is None or resolved_wind_kmh is None:
+                fallback_speed, fallback_class = self._get_sea_wind(sea_id)
+                if fallback_speed is not None:
+                    logging.warning(
+                        "SEA_RUBRIC test_wind_fallback sea_id=%s source=nearest_cache",
+                        sea_id,
+                    )
+                    resolved_wind_ms = fallback_speed
+                    resolved_wind_kmh = fallback_speed * 3.6
+                    resolved_wind_class = (
+                        fallback_class
+                        or classify_wind_kph(resolved_wind_kmh)
+                    )
+                else:
+                    logging.warning(
+                        "SEA_RUBRIC test_wind_cache_missing sea_id=%s",
+                        sea_id,
+                    )
+            if resolved_wind_ms is None or resolved_wind_kmh is None:
+                logging.warning("SEA_RUBRIC test_wind_zero_fallback sea_id=%s", sea_id)
+                resolved_wind_ms = 0.0
+                resolved_wind_kmh = 0.0
+                resolved_wind_class = "n/a"
+            wind_class_display = resolved_wind_class or "n/a"
+            wind_line = (
+                f"• Ветер: {resolved_wind_kmh:.0f} км/ч ({resolved_wind_ms:.1f} м/с, "
+                f"{wind_class_display})"
+            )
             summary = (
                 "🧪 Тестовая публикация «Море / Закат на море» успешно.\n"
-                f"Волна {wave_text} м ({storm_state}).\n"
-                f"Ветер {wind_kmh_text} км/ч ({wind_ms_text} м/с, {wind_class_text}).\n"
-                f"Облачность {clouds_label}."
+                f"• Волна: {wave_text} м ({storm_state}).\n"
+                f"{wind_line}\n"
+                f"• Облачность: {clouds_label}."
             )
             notify_response = await self.api_request(
                 "sendMessage",
@@ -13015,31 +13115,43 @@ class Bot:
 
         def fallback_caption() -> str:
             if storm_state == "strong_storm":
-                opening = "Сегодня сильный шторм на море — волны ревут и грохочут о берег."
+                opening = "Сегодня сильный шторм на море — волны гремят у самого берега."
             elif storm_state == "storm":
-                opening = "Сегодня шторм на море — волны дышат силой у самого побережья."
+                opening = "Сегодня шторм на море — волны упрямо разбиваются о кромку."
             else:
                 opening = (
-                    "Порадую закатом над морем — гладь дышит теплом." if sunset_selected else "Порадую вас морем — волна мягко шепчет у берега."
+                    "Порадую закатом над морем — побережье дышит теплом."
+                    if sunset_selected
+                    else "Порадую вас морем — побережье зовёт вдохнуть глубже."
                 )
-            extras: list[str] = [opening]
-            if wind_class in {"strong", "very_strong"}:
-                wind_phrase = "ветер сбивает с ног" if wind_class == "very_strong" else "ветер бодрит у самого моря"
-                extras.append(wind_phrase + ".")
-            if clouds_label:
-                extras.append(f"Над горизонтом {clouds_label}.")
-            return " ".join(extras).strip()
+            lines: list[str] = [opening]
+            if wind_class == "very_strong":
+                lines.append("Ветер срывает шапки на набережной.")
+            elif wind_class == "strong":
+                lines.append("Ветер ощутимо тянет к морю.")
+            elif storm_state == "calm":
+                lines.append("На побережье спокойно и хочется задержаться.")
+            text = " ".join(lines).strip()
+            sentences = [
+                segment.strip()
+                for segment in re.split(r"(?<=[.!?…])\s+", text)
+                if segment.strip()
+            ]
+            return " ".join(sentences[:3])
 
         if not self.openai or not self.openai.api_key:
             return fallback_caption(), default_hashtags
 
         system_prompt = (
             "Ты редактор телеграм-канала о Балтийском море. "
-            "Пиши по-русски, тепло и образно, но без излишней многословности. Основной текст — до 900 символов. "
+            "Пиши по-русски, тепло и естественно. "
+            "Ограничивайся 1–2 короткими предложениями, допускается ещё одно вдохновляющее. "
+            "Избегай клише и не используй цифры или единицы измерения. "
+            "Не описывай облачность или солнце — это видно по фото. "
             "Если storm_state='storm', начни подпись с фразы вида «Сегодня шторм на море…» и избегай пугающих выражений. "
             "Если storm_state='strong_storm', начни с «Сегодня сильный шторм на море…» и допускай более экспрессивный тон. "
-            "Если море спокойно, начни с «Порадую закатом над морем…» при закатном кадре или «Порадую вас морем…» иначе. "
-            "Если ветер классифицирован как strong или very_strong, упомяни его кратко и образно. "
+            "Если море спокойно, начни с «Порадую закатом над морем…» при закате или «Порадую вас морем…» иначе. "
+            "Ветер описывай только качественно, особенно при сильном ветре. "
             "Можно упоминать побережье. Хэштеги в текст не вставляй — верни их отдельным массивом."
         )
         prompt_payload = {
@@ -13052,17 +13164,21 @@ class Bot:
             "clouds_label": clouds_label,
             "sunset_selected": sunset_selected,
             "place_hashtag": place_hashtag,
+            "blog_tone": True,
         }
         payload_text = json.dumps(prompt_payload, ensure_ascii=False, separators=(",", ": "))
         user_prompt = (
             "Параметры сцены (JSON):\n"
             f"{payload_text}\n"
             "Требования:\n"
-            "- Сделай живую подпись о Балтийском море (до 900 символов для основного текста).\n"
-            "- Отрази настроение волн и неба по данным.\n"
+            "- 1–2 коротких предложения (допускается третье вдохновляющее).\n"
+            "- Не используй цифры и единицы измерения.\n"
+            "- Не описывай облачность или солнце.\n"
+            "- Отрази настроение моря и побережья по данным.\n"
             "- Выполни указанные начальные фразы для storm_state.\n"
-            "- Если ветер strong/very_strong, упомяни его (в м/с и/или км/ч) коротко.\n"
+            "- Ветер при strong/very_strong опиши только качественно, без чисел.\n"
             "- При спокойном море с закатом мягко подчеркни закат.\n"
+            "- Основной текст держи в пределах 350 символов.\n"
             "- Хэштеги возвращай только в массиве hashtags, в самом тексте их быть не должно.\n"
             "Ответ строго в формате JSON: {\"caption\": string, \"hashtags\": string[]}."
         )

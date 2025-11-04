@@ -85,6 +85,7 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
             return {"ok": True, "result": {"ok": True}}
         if method == "sendPhoto":
             assert files and "photo" in files
+            assert data and data.get("parse_mode") == "HTML"
             counter = sum(1 for item in requests_log if item["method"] == "sendPhoto")
             return {"ok": True, "result": {"message_id": 100 + counter}}
         if method == "deleteMessage":

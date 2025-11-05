@@ -22,8 +22,11 @@ def _iter_fact_lines(content: Iterable[str]) -> Iterable[str]:
                 yield text
 
 
-def load_baltic_facts(path: str | Path = "facts/baltic_facts.md") -> list[Fact]:
-    file_path = Path(path)
+def load_baltic_facts(path: str | Path | None = None) -> list[Fact]:
+    if path is None:
+        file_path = Path(__file__).with_name("baltic_facts.md")
+    else:
+        file_path = Path(path)
     try:
         lines = file_path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:

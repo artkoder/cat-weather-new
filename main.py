@@ -74,6 +74,7 @@ from flowers_patterns import (
     FlowerPattern,
     load_flowers_knowledge,
 )
+from facts.loader import Fact, load_baltic_facts
 from ingestion import (
     IngestionCallbacks,
     UploadIngestionContext,
@@ -783,6 +784,7 @@ DEFAULT_RUBRIC_PRESETS: dict[str, dict[str, Any]] = {
             "schedules": [],
             "assets": {"min": 1, "max": 1, "categories": ["sea"]},
             "sea_id": 1,
+            "enable_facts": True,
         },
     },
 }
@@ -2798,6 +2800,138 @@ class Bot:
             "cloud_cover_pct": self._safe_float(row["cloud_cover_pct"]),
             "updated": row["updated"],
         }
+
+    def _select_baltic_fact(
+        self,
+        facts: Sequence[Fact],
+        *,
+        now: datetime,
+        rng: random.Random | None = None,
+    ) -> tuple[Fact | None, dict[str, Any]]:
+        if not facts:
+            return None, {"reason": "empty"}
+        total = len(facts)
+        window_days = max(7, min(21, math.ceil(total * 0.6)))
+        now_dt = now.astimezone(UTC) if now.tzinfo else now.replace(tzinfo=UTC)
+        now_ts = int(now_dt.timestamp())
+        day_utc = now_ts // 86400
+        start_day = day_utc - window_days + 1
+        recent_rows = self.data.get_fact_rollout_range(start_day, end_day=day_utc - 1)
+        recent_ids = {fact_id for _day, fact_id in recent_rows}
+        candidates = [fact for fact in facts if fact.id not in recent_ids]
+        fallback_reason: str | None = None
+        if not candidates:
+            fallback_reason = "window_relaxed"
+            yesterday_id = self.data.get_fact_rollout_for_day(day_utc - 1)
+            if yesterday_id:
+                candidates = [fact for fact in facts if fact.id != yesterday_id]
+            else:
+                candidates = list(facts)
+        if not candidates:
+            info = {
+                "window_days": window_days,
+                "recent_ids": sorted(recent_ids),
+                "candidates": [],
+            }
+            if fallback_reason:
+                info["fallback"] = fallback_reason
+            return None, info
+        rng_obj: Any = rng or random
+        usage_map = self.data.get_fact_usage_map()
+        weights: list[float] = []
+        fact_ids: list[str] = []
+        weight_map: dict[str, float] = {}
+        for fact in candidates:
+            uses_count, _last_used = usage_map.get(fact.id, (0, None))
+            weight = 1.0 / (1.0 + float(uses_count))
+            if weight <= 0:
+                weight = 1e-6
+            weights.append(weight)
+            fact_ids.append(fact.id)
+            weight_map[fact.id] = weight
+        try:
+            selected = rng_obj.choices(candidates, weights=weights, k=1)[0]
+        except Exception:
+            logging.exception("SEA_RUBRIC facts weighted_choice_failed")
+            selected = rng_obj.choice(candidates)
+        self.data.record_fact_selection(selected.id, now_ts, day_utc)
+        info = {
+            "window_days": window_days,
+            "recent_ids": sorted(recent_ids),
+            "candidates": fact_ids,
+            "weights": weight_map,
+            "chosen_id": selected.id,
+            "chosen_preview": selected.text[:80],
+        }
+        if fallback_reason:
+            info["fallback"] = fallback_reason
+        return selected, info
+
+    def _prepare_sea_fact(
+        self,
+        *,
+        sea_id: int,
+        storm_state: str,
+        enable_facts: bool,
+        now: datetime,
+        rng: random.Random | None = None,
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
+        if not enable_facts:
+            logging.info("SEA_RUBRIC facts skip reason=disabled")
+            return None, None, {"reason": "disabled"}
+        if storm_state == "strong_storm":
+            logging.info("SEA_RUBRIC facts skip reason=strong_storm")
+            return None, None, {"reason": "strong_storm"}
+        facts = load_baltic_facts()
+        if not facts:
+            logging.warning("SEA_RUBRIC facts skip reason=no_facts")
+            return None, None, {"reason": "empty"}
+        selected, info = self._select_baltic_fact(facts, now=now, rng=rng)
+        if selected is None:
+            logging.info(
+                "SEA_RUBRIC facts choose_failed window_days=%s candidates=%s",
+                info.get("window_days"),
+                len(info.get("candidates") or []),
+            )
+            return None, None, info
+        preview = selected.text.replace("\n", " ")[:80]
+        logging.info(
+            "SEA_RUBRIC facts choose window_days=%s candidates=%s chosen={id:%s, preview:\"%s\"} reason=\"lowest uses_count, rnd\"",
+            info.get("window_days"),
+            len(info.get("candidates") or []),
+            selected.id,
+            preview,
+        )
+        return selected.text, selected.id, info
+
+    def _is_storm_persisting(
+        self,
+        sea_id: int,
+        *,
+        now: datetime,
+        current_state: str,
+    ) -> bool:
+        if current_state not in {"storm", "strong_storm"}:
+            return False
+        now_dt = now.astimezone(UTC) if now.tzinfo else now.replace(tzinfo=UTC)
+        try:
+            lookup_time = now_dt - timedelta(minutes=1)
+            record = self.data.get_last_sea_post_entry(sea_id, before=lookup_time)
+        except Exception:
+            logging.exception("SEA_RUBRIC storm_persist lookup_failed sea_id=%s", sea_id)
+            return False
+        if not record:
+            return False
+        prev_published_at, prev_metadata = record
+        prev_state = str(prev_metadata.get("storm_state") or "").strip()
+        if prev_state not in {"storm", "strong_storm"}:
+            return False
+        prev_dt = prev_published_at.astimezone(UTC) if prev_published_at.tzinfo else prev_published_at.replace(tzinfo=UTC)
+        prev_day = int(prev_dt.timestamp()) // 86400
+        current_day = int(now_dt.timestamp()) // 86400
+        if current_day - prev_day == 1:
+            return True
+        return False
 
     @staticmethod
     def strip_header(text: str | None) -> str | None:
@@ -12657,6 +12791,7 @@ class Bot:
         instructions: str | None = None,
     ) -> bool:
         config = rubric.config or {}
+        enable_facts = bool(config.get("enable_facts", True))
         sea_id = int(config.get("sea_id") or 1)
         conditions = self._get_sea_conditions(sea_id) or {}
         cache_row = self._get_sea_cache(sea_id)
@@ -12681,9 +12816,14 @@ class Bot:
         want_sunset = storm_state == "calm" and sky_bucket in {"clear", "mostly_clear", "partly_cloudy"}
 
         now = datetime.utcnow()
+        storm_persisting = self._is_storm_persisting(
+            sea_id,
+            now=now,
+            current_state=storm_state,
+        )
         season_window = compute_season_window(now.date())
         logging.info(
-            "SEA_RUBRIC input sea_id=%s wave_height=%.3f wave_score=%.2f storm_state=%s wind_ms=%s wind_kmh=%s wind_class=%s cloud_pct=%s sky_bucket=%s allowed_skies=%s want_sunset=%s",
+            "SEA_RUBRIC input sea_id=%s wave_height=%.3f wave_score=%.2f storm_state=%s wind_ms=%s wind_kmh=%s wind_class=%s cloud_pct=%s sky_bucket=%s allowed_skies=%s want_sunset=%s storm_persisting=%s",
             sea_id,
             wave_height_value if wave_height_value is not None else float("nan"),
             wave_score,
@@ -12695,6 +12835,7 @@ class Bot:
             sky_bucket,
             sorted(allowed_photo_skies),
             want_sunset,
+            storm_persisting,
         )
 
         candidates = self.data.fetch_sea_candidates(rubric.id, limit=48)
@@ -12893,14 +13034,30 @@ class Bot:
 
         asset = selected_candidate["asset"]
         sunset_selected = bool(selected_candidate.get("is_sunset"))
+        if enable_facts:
+            fact_sentence_value, fact_id_value, fact_info = self._prepare_sea_fact(
+                sea_id=sea_id,
+                storm_state=storm_state,
+                enable_facts=enable_facts,
+                now=now,
+            )
+            fact_sentence = fact_sentence_value.strip() if fact_sentence_value else None
+            fact_id = fact_id_value
+        else:
+            logging.info("SEA_RUBRIC facts skip reason=disabled")
+            fact_sentence = None
+            fact_id = None
+            fact_info = {"reason": "disabled"}
         logging.info(
-            "SEA_RUBRIC selected stage=%s asset_id=%s score=%.2f wave_score=%s photo_sky=%s season_match=%s reasons=%s",
+            "SEA_RUBRIC selected stage=%s asset_id=%s score=%.2f wave_score=%s photo_sky=%s season_match=%s storm_persisting=%s fact_id=%s reasons=%s",
             selected_details.get("stage"),
             asset.id,
             selected_details.get("score"),
             selected_candidate.get("wave_score"),
             selected_candidate.get("photo_sky"),
             selected_candidate.get("season_match"),
+            storm_persisting,
+            fact_id,
             json.dumps(selected_details.get("reasons"), ensure_ascii=False),
         )
 
@@ -12940,6 +13097,7 @@ class Bot:
 
         caption_text, model_hashtags = await self._generate_sea_caption(
             storm_state=storm_state,
+            storm_persisting=storm_persisting,
             wave_height_m=wave_height_value,
             wave_score=wave_score,
             wind_class=wind_class,
@@ -12948,6 +13106,7 @@ class Bot:
             clouds_label=clouds_label,
             sunset_selected=sunset_selected,
             place_hashtag=place_hashtag,
+            fact_sentence=fact_sentence,
             job=job,
         )
         raw_caption_text = (caption_text or "").strip()
@@ -12967,14 +13126,12 @@ class Bot:
                 r"\d+[.,]?\d*\s*(?:км/ч|м/с|км|м|мм|см|проц(?:ент(?:ов|а)?)?|%|°[CF]?|°|бал(?:л(?:ов|а)?)?)",
                 re.IGNORECASE,
             )
-            number_pattern = re.compile(r"\d+[.,]?\d*", re.IGNORECASE)
             unit_pattern = re.compile(
                 r"\b(?:км/ч|м/с|км|метр(?:ов|а)?|метры|мм|см|проц(?:ент(?:ов|а)?)?|°[CF]?|°|узл(?:ов|а)?|бал(?:л(?:ов|а)?)?)\b",
                 re.IGNORECASE,
             )
             cloud_pattern = re.compile(r"\b[\w-]*(?:облачн|солнеч)[\w-]*\b", re.IGNORECASE)
             cleaned = measurement_pattern.sub("", cleaned)
-            cleaned = number_pattern.sub("", cleaned)
             cleaned = unit_pattern.sub("", cleaned)
             cleaned = cloud_pattern.sub("", cleaned)
             cleaned = re.sub(r"\s*—\s*", " — ", cleaned)
@@ -12985,7 +13142,6 @@ class Bot:
             if not trimmed:
                 return ""
             trimmed = measurement_pattern.sub("", trimmed)
-            trimmed = number_pattern.sub("", trimmed)
             trimmed = unit_pattern.sub("", trimmed)
             trimmed = cloud_pattern.sub("", trimmed)
             trimmed = re.sub(r"\s*—\s*", " — ", trimmed)
@@ -12998,7 +13154,10 @@ class Bot:
         if storm_state == "strong_storm":
             fallback_seed = "Сегодня сильный шторм на море — волны гремят у самого берега."
         elif storm_state == "storm":
-            fallback_seed = "Сегодня шторм на море — волны упрямо разбиваются о берег."
+            if storm_persisting:
+                fallback_seed = "Продолжает штормить на море — волны всё ещё бьют о берег."
+            else:
+                fallback_seed = "Сегодня шторм на море — волны упрямо разбиваются о берег."
         elif sunset_selected:
             fallback_seed = "Порадую закатом над морем — побережье дышит теплом."
         else:
@@ -13007,6 +13166,8 @@ class Bot:
             fallback_seed += " Ветер срывает шапки на набережной."
         elif wind_class == "strong":
             fallback_seed += " Ветер ощутимо тянет к морю."
+        if fact_sentence:
+            fallback_seed += f" {fact_sentence}"
         fallback_caption_plain = sanitize_caption_text(fallback_seed, limit=350)
 
         deduped_model_tags = self._deduplicate_hashtags(model_hashtags or [])
@@ -13112,7 +13273,10 @@ class Bot:
             "rubric_code": rubric.code,
             "asset_ids": [asset.id],
             "test": test,
+            "sea_id": sea_id,
+            "enable_facts": enable_facts,
             "storm_state": storm_state,
+            "storm_persisting": storm_persisting,
             "wave_height_m": wave_height_value,
             "wave_score": wave_score,
             "water_temp": water_temp,
@@ -13134,6 +13298,9 @@ class Bot:
             "caption": caption_text,
             "hashtags": final_hashtags,
             "place_hashtag": place_hashtag,
+            "fact_id": fact_id,
+            "fact_text": fact_sentence,
+            "facts_info": fact_info,
         }
         self.data.record_post_history(
             channel_id,
@@ -13202,6 +13369,7 @@ class Bot:
         self,
         *,
         storm_state: str,
+        storm_persisting: bool,
         wave_height_m: float | None,
         wave_score: float,
         wind_class: str | None,
@@ -13210,6 +13378,7 @@ class Bot:
         clouds_label: str,
         sunset_selected: bool,
         place_hashtag: str | None,
+        fact_sentence: str | None,
         job: Job | None = None,
     ) -> tuple[str, list[str]]:
         default_hashtags = self._default_hashtags("sea")
@@ -13218,7 +13387,10 @@ class Bot:
             if storm_state == "strong_storm":
                 opening = "Сегодня сильный шторм на море — волны гремят у самого берега."
             elif storm_state == "storm":
-                opening = "Сегодня шторм на море — волны упрямо разбиваются о кромку."
+                if storm_persisting:
+                    opening = "Продолжает штормить на море — волны всё ещё бьют о берег."
+                else:
+                    opening = "Сегодня шторм на море — волны упрямо разбиваются о кромку."
             else:
                 opening = (
                     "Порадую закатом над морем — побережье дышит теплом."
@@ -13232,6 +13404,8 @@ class Bot:
                 lines.append("Ветер ощутимо тянет к морю.")
             elif storm_state == "calm":
                 lines.append("На побережье спокойно и хочется задержаться.")
+            if fact_sentence:
+                lines.append(fact_sentence.strip())
             text = " ".join(lines).strip()
             sentences = [
                 segment.strip()
@@ -13245,26 +13419,31 @@ class Bot:
 
         system_prompt = (
             "Ты редактор телеграм-канала о Балтийском море. "
-            "Пиши по-русски, тепло и естественно. "
-            "Ограничивайся 1–2 короткими предложениями, допускается ещё одно вдохновляющее. "
-            "Избегай клише и не используй цифры или единицы измерения. "
+            "Пиши очень коротко и по-блогерски: 1–2 предложения, допускается ещё одно вдохновляющее. "
+            "Избегай клише и не используй цифры и единицы измерения в описании погоды; числа из факта допустимы. "
             "Не описывай облачность или солнце — это видно по фото. "
-            "Если storm_state='storm', начни подпись с фразы вида «Сегодня шторм на море…» и избегай пугающих выражений. "
-            "Если storm_state='strong_storm', начни с «Сегодня сильный шторм на море…» и допускай более экспрессивный тон. "
-            "Если море спокойно, начни с «Порадую закатом над морем…» при закате или «Порадую вас морем…» иначе. "
-            "Ветер описывай только качественно, особенно при сильном ветре. "
-            "Можно упоминать побережье. Хэштеги в текст не вставляй — верни их отдельным массивом."
+            "Если storm_state='storm' и storm_persisting=true — начни подпись с вариации «Продолжает штормить…». "
+            "Если storm_state='storm' и шторм не продолжается — мягко скажи, что штормит сегодня. "
+            "Если storm_state='strong_storm' — начни с «Сегодня сильный шторм на море…» и допускай более экспрессивный тон. "
+            "Если море спокойно и sunset_selected=true — начни с вариации «Порадую закатом над морем…». "
+            "Если море спокойно без заката — начни с вариации «Порадую вас морем…». "
+            "Ветер описывай только образно, без чисел. "
+            "Если передан fact_sentence — добавь ровно одно дополнительное короткое предложение, живо пересказывая факт и без словосочетания «интересный факт». "
+            "Хэштеги #море и #БалтийскоеМоре добавятся позже — не вставляй хэштеги в основной текст."
         )
+        wind_label = wind_class if wind_class in {"strong", "very_strong"} else "none"
         prompt_payload = {
             "storm_state": storm_state,
+            "storm_persisting": storm_persisting,
             "wave_height_m": round(wave_height_m, 2) if wave_height_m is not None else None,
             "wave_score": round(wave_score, 2),
-            "wind_class": wind_class,
+            "wind_class": wind_label,
             "wind_ms": round(wind_ms, 1) if wind_ms is not None else None,
             "wind_kmh": round(wind_kmh, 1) if wind_kmh is not None else None,
             "clouds_label": clouds_label,
             "sunset_selected": sunset_selected,
             "place_hashtag": place_hashtag,
+            "fact_sentence": fact_sentence,
             "blog_tone": True,
         }
         payload_text = json.dumps(prompt_payload, ensure_ascii=False, separators=(",", ": "))
@@ -13272,15 +13451,15 @@ class Bot:
             "Параметры сцены (JSON):\n"
             f"{payload_text}\n"
             "Требования:\n"
-            "- 1–2 коротких предложения (допускается третье вдохновляющее).\n"
-            "- Не используй цифры и единицы измерения.\n"
+            "- 1–2 очень коротких предложения (допускается третье вдохновляющее).\n"
+            "- Не используй числа и единицы измерения в погодной части; числа из факта допустимы.\n"
             "- Не описывай облачность или солнце.\n"
-            "- Отрази настроение моря и побережья по данным.\n"
-            "- Выполни указанные начальные фразы для storm_state.\n"
-            "- Ветер при strong/very_strong опиши только качественно, без чисел.\n"
-            "- При спокойном море с закатом мягко подчеркни закат.\n"
-            "- Основной текст держи в пределах 350 символов.\n"
-            "- Хэштеги возвращай только в массиве hashtags, в самом тексте их быть не должно.\n"
+            "- Соблюдай правила вступления из system_prompt для штормов, сильного шторма и заката.\n"
+            "- Если wind_class=strong или very_strong — опиши ветер только образно, без чисел.\n"
+            "- Если storm_persisting=true и storm_state='storm' — начни с вариации «Продолжает штормить…».\n"
+            "- Если fact_sentence не null — добавь ровно одно короткое предложение, живо пересказывающее факт и без слов «интересный факт».\n"
+            "- Основной текст держи в пределах 350 символов, тон дружелюбный, блогерский.\n"
+            "- Хэштеги возвращай только в массиве hashtags — в тексте их быть не должно.\n"
             "Ответ строго в формате JSON: {\"caption\": string, \"hashtags\": string[]}."
         )
         schema = {

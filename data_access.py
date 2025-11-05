@@ -2021,6 +2021,133 @@ class DataAccess:
         )
         self.conn.commit()
 
+    def get_fact_usage_map(self) -> dict[str, tuple[int, int | None]]:
+        rows = self.conn.execute(
+            "SELECT fact_id, uses_count, last_used_at FROM facts_usage"
+        ).fetchall()
+        usage: dict[str, tuple[int, int | None]] = {}
+        for row in rows:
+            fact_raw = row["fact_id"] if "fact_id" in row.keys() else row[0]
+            if fact_raw is None:
+                continue
+            fact_id = str(fact_raw)
+            uses_raw = row["uses_count"] if "uses_count" in row.keys() else row[1]
+            try:
+                uses_count = int(uses_raw)
+            except (TypeError, ValueError):
+                uses_count = 0
+            last_raw = row["last_used_at"] if "last_used_at" in row.keys() else row[2]
+            try:
+                last_int = int(last_raw)
+            except (TypeError, ValueError):
+                last_int = None
+            usage[fact_id] = (uses_count, last_int)
+        return usage
+
+    def get_fact_rollout_range(
+        self,
+        start_day: int,
+        *,
+        end_day: int | None = None,
+    ) -> list[tuple[int, str]]:
+        query = "SELECT day_utc, fact_id FROM facts_rollout WHERE day_utc >= ?"
+        params: list[Any] = [int(start_day)]
+        if end_day is not None:
+            query += " AND day_utc <= ?"
+            params.append(int(end_day))
+        query += " ORDER BY day_utc DESC"
+        rows = self.conn.execute(query, params).fetchall()
+        result: list[tuple[int, str]] = []
+        for row in rows:
+            day_value = row["day_utc"] if "day_utc" in row.keys() else row[0]
+            fact_value = row["fact_id"] if "fact_id" in row.keys() else row[1]
+            if fact_value is None:
+                continue
+            try:
+                day_int = int(day_value)
+            except (TypeError, ValueError):
+                continue
+            result.append((day_int, str(fact_value)))
+        return result
+
+    def get_fact_rollout_for_day(self, day_utc: int) -> str | None:
+        row = self.conn.execute(
+            "SELECT fact_id FROM facts_rollout WHERE day_utc=?",
+            (int(day_utc),),
+        ).fetchone()
+        if not row:
+            return None
+        fact_value = row["fact_id"] if "fact_id" in row.keys() else row[0]
+        return str(fact_value) if fact_value is not None else None
+
+    def record_fact_selection(self, fact_id: str, now_ts: int, day_utc: int) -> None:
+        normalized_id = str(fact_id)
+        timestamp = int(now_ts)
+        day_value = int(day_utc)
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT INTO facts_usage (fact_id, last_used_at, uses_count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(fact_id) DO UPDATE SET
+                    last_used_at=excluded.last_used_at,
+                    uses_count=facts_usage.uses_count + 1
+                """,
+                (normalized_id, timestamp),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO facts_rollout (day_utc, fact_id)
+                VALUES (?, ?)
+                ON CONFLICT(day_utc) DO UPDATE SET fact_id=excluded.fact_id
+                """,
+                (day_value, normalized_id),
+            )
+
+    def get_last_sea_post_entry(
+        self,
+        sea_id: int,
+        *,
+        before: datetime | None = None,
+        limit: int = 10,
+    ) -> tuple[datetime, dict[str, Any]] | None:
+        params: list[Any] = ["sea"]
+        query = (
+            "SELECT ph.metadata, ph.published_at "
+            "FROM posts_history AS ph "
+            "JOIN rubrics AS r ON ph.rubric_id = r.id "
+            "WHERE r.code = ?"
+        )
+        if before is not None:
+            query += " AND ph.published_at < ?"
+            params.append(before.isoformat())
+        query += " ORDER BY ph.published_at DESC, ph.id DESC LIMIT ?"
+        params.append(int(limit))
+        rows = self.conn.execute(query, params).fetchall()
+        for row in rows:
+            raw_meta = row["metadata"] if "metadata" in row.keys() else row[0]
+            try:
+                metadata = json.loads(raw_meta) if raw_meta else {}
+            except json.JSONDecodeError:
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            meta_sea_id = metadata.get("sea_id")
+            if meta_sea_id is not None:
+                try:
+                    meta_sea_int = int(meta_sea_id)
+                except (TypeError, ValueError):
+                    meta_sea_int = None
+                if meta_sea_int is not None and meta_sea_int != sea_id:
+                    continue
+            published_raw = row["published_at"] if "published_at" in row.keys() else row[1]
+            try:
+                published_at = datetime.fromisoformat(str(published_raw))
+            except Exception:
+                continue
+            return published_at, metadata
+        return None
+
     def get_recent_rubric_metadata(self, rubric_code: str, limit: int = 5) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """

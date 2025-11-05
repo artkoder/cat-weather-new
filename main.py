@@ -69,12 +69,12 @@ from data_access import (
     revoke_device,
     rotate_device_secret,
 )
+from facts.loader import Fact, load_baltic_facts
 from flowers_patterns import (
     FlowerKnowledgeBase,
     FlowerPattern,
     load_flowers_knowledge,
 )
-from facts.loader import Fact, load_baltic_facts
 from ingestion import (
     IngestionCallbacks,
     UploadIngestionContext,
@@ -2910,28 +2910,203 @@ class Bot:
         *,
         now: datetime,
         current_state: str,
-    ) -> bool:
-        if current_state not in {"storm", "strong_storm"}:
-            return False
+    ) -> tuple[bool, str | None]:
+        normalized_state = str(current_state or "").strip().lower()
+        storm_states = {"storm", "strong_storm", "heavy_storm"}
+        if normalized_state not in storm_states:
+            return False, None
+
         now_dt = now.astimezone(UTC) if now.tzinfo else now.replace(tzinfo=UTC)
+        threshold = now_dt - timedelta(hours=36)
+
         try:
             lookup_time = now_dt - timedelta(minutes=1)
             record = self.data.get_last_sea_post_entry(sea_id, before=lookup_time)
         except Exception:
             logging.exception("SEA_RUBRIC storm_persist lookup_failed sea_id=%s", sea_id)
-            return False
-        if not record:
-            return False
-        prev_published_at, prev_metadata = record
-        prev_state = str(prev_metadata.get("storm_state") or "").strip()
-        if prev_state not in {"storm", "strong_storm"}:
-            return False
-        prev_dt = prev_published_at.astimezone(UTC) if prev_published_at.tzinfo else prev_published_at.replace(tzinfo=UTC)
-        prev_day = int(prev_dt.timestamp()) // 86400
-        current_day = int(now_dt.timestamp()) // 86400
-        if current_day - prev_day == 1:
-            return True
-        return False
+            record = None
+
+        if record:
+            prev_published_at, prev_metadata = record
+            prev_state = str(prev_metadata.get("storm_state") or "").strip().lower()
+            if prev_state in storm_states:
+                prev_dt = (
+                    prev_published_at.astimezone(UTC)
+                    if prev_published_at.tzinfo
+                    else prev_published_at.replace(tzinfo=UTC)
+                )
+                if prev_dt >= threshold:
+                    return True, f"found in publish_history at {prev_dt.isoformat()}"
+
+        weather_hit = self._find_recent_sea_storm_event(sea_id, since=threshold)
+        if weather_hit:
+            ts, _state = weather_hit
+            return True, f"found in weather_history at {ts.isoformat()}"
+
+        return False, None
+
+    def _find_recent_sea_storm_event(
+        self,
+        sea_id: int,
+        *,
+        since: datetime,
+    ) -> tuple[datetime, str] | None:
+        def _to_utc(dt: datetime | None) -> datetime | None:
+            if dt is None:
+                return None
+            if dt.tzinfo:
+                return dt.astimezone(UTC)
+            return dt.replace(tzinfo=UTC)
+
+        def _classify_wave(value: Any) -> str | None:
+            try:
+                wave_height = float(value)
+            except (TypeError, ValueError):
+                return None
+            if wave_height > 1.5:
+                return "strong_storm"
+            if wave_height > 0.5:
+                return "storm"
+            return None
+
+        conn = self.data.conn
+        since_utc = since.astimezone(UTC) if since.tzinfo else since.replace(tzinfo=UTC)
+        since_iso = since_utc.isoformat()
+        history_tables: list[str] = []
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'sea_%history%'"
+            ).fetchall()
+        except Exception:
+            rows = []
+        for row in rows:
+            table_name = row["name"] if "name" in row.keys() else row[0]
+            if not table_name:
+                continue
+            safe_table_name = table_name.replace("'", "''")
+            safe_table_quoted = table_name.replace('"', '""')
+            try:
+                pragma = conn.execute(
+                    f"PRAGMA table_info('{safe_table_name}')"
+                ).fetchall()
+            except Exception:
+                continue
+            column_names = {
+                str(col["name"] if "name" in col.keys() else col[1]) for col in pragma
+            }
+            if "sea_id" not in column_names:
+                continue
+            ts_column = next(
+                (
+                    candidate
+                    for candidate in (
+                        "observed_at",
+                        "timestamp",
+                        "recorded_at",
+                        "created_at",
+                        "updated",
+                    )
+                    if candidate in column_names
+                ),
+                None,
+            )
+            if not ts_column:
+                continue
+            state_column = next(
+                (
+                    candidate
+                    for candidate in (
+                        "storm_state",
+                        "state",
+                        "storm",
+                        "status",
+                    )
+                    if candidate in column_names
+                ),
+                None,
+            )
+            wave_column = next(
+                (
+                    candidate
+                    for candidate in (
+                        "wave_height_m",
+                        "wave",
+                        "wave_height",
+                        "sea_wave_height",
+                    )
+                    if candidate in column_names
+                ),
+                None,
+            )
+            if not state_column and not wave_column:
+                continue
+            ts_quoted = ts_column.replace('"', '""')
+            select_parts = [f'"{ts_quoted}" AS ts']
+            if state_column:
+                state_quoted = state_column.replace('"', '""')
+                select_parts.append(f'"{state_quoted}" AS state')
+            if wave_column:
+                wave_quoted = wave_column.replace('"', '""')
+                select_parts.append(f'"{wave_quoted}" AS wave')
+            query = (
+                f"SELECT {', '.join(select_parts)} FROM \"{safe_table_quoted}\" "
+                f'WHERE "sea_id"=? AND "{ts_quoted}" >= ? '
+                f'ORDER BY "{ts_quoted}" DESC LIMIT 20'
+            )
+            try:
+                history_rows = conn.execute(query, (sea_id, since_iso)).fetchall()
+            except Exception:
+                continue
+            for history_row in history_rows:
+                ts_raw = history_row["ts"] if "ts" in history_row.keys() else history_row[0]
+                try:
+                    parsed = datetime.fromisoformat(str(ts_raw))
+                except Exception:
+                    continue
+                ts_utc = _to_utc(parsed)
+                if ts_utc is None or ts_utc < since_utc:
+                    continue
+                state_value: str | None = None
+                if "state" in history_row.keys():
+                    state_value = str(history_row["state"] or "").strip().lower() or None
+                if state_value in {"storm", "heavy_storm", "strong_storm"}:
+                    normalized = "strong_storm" if state_value != "storm" else "storm"
+                    return ts_utc, normalized
+                if "wave" in history_row.keys():
+                    guess = _classify_wave(history_row["wave"])
+                    if guess:
+                        return ts_utc, guess
+
+        # Fallback to cached conditions
+        for table_name, ts_column, wave_column in (
+            ("sea_conditions", "updated", "wave_height_m"),
+            ("sea_cache", "updated", "wave"),
+        ):
+            table_quoted = table_name.replace('"', '""')
+            ts_quoted = ts_column.replace('"', '""')
+            wave_quoted = wave_column.replace('"', '""')
+            try:
+                row = conn.execute(
+                    f'SELECT "{ts_quoted}" AS ts, "{wave_quoted}" AS wave FROM "{table_quoted}" WHERE "sea_id"=?',
+                    (sea_id,),
+                ).fetchone()
+            except Exception:
+                continue
+            if not row:
+                continue
+            ts_raw = row["ts"] if "ts" in row.keys() else row[0]
+            try:
+                parsed = datetime.fromisoformat(str(ts_raw))
+            except Exception:
+                continue
+            ts_utc = _to_utc(parsed)
+            if ts_utc is None or ts_utc < since_utc:
+                continue
+            guess = _classify_wave(row["wave"] if "wave" in row.keys() else row[1])
+            if guess:
+                return ts_utc, guess
+
+        return None
 
     @staticmethod
     def strip_header(text: str | None) -> str | None:
@@ -12816,14 +12991,14 @@ class Bot:
         want_sunset = storm_state == "calm" and sky_bucket in {"clear", "mostly_clear", "partly_cloudy"}
 
         now = datetime.utcnow()
-        storm_persisting = self._is_storm_persisting(
+        storm_persisting, storm_persisting_reason = self._is_storm_persisting(
             sea_id,
             now=now,
             current_state=storm_state,
         )
         season_window = compute_season_window(now.date())
         logging.info(
-            "SEA_RUBRIC input sea_id=%s wave_height=%.3f wave_score=%.2f storm_state=%s wind_ms=%s wind_kmh=%s wind_class=%s cloud_pct=%s sky_bucket=%s allowed_skies=%s want_sunset=%s storm_persisting=%s",
+            "SEA_RUBRIC input sea_id=%s wave_height=%.3f wave_score=%.2f storm_state=%s wind_ms=%s wind_kmh=%s wind_class=%s cloud_pct=%s sky_bucket=%s allowed_skies=%s want_sunset=%s storm_persisting=%s storm_reason=%s",
             sea_id,
             wave_height_value if wave_height_value is not None else float("nan"),
             wave_score,
@@ -12836,6 +13011,7 @@ class Bot:
             sorted(allowed_photo_skies),
             want_sunset,
             storm_persisting,
+            storm_persisting_reason,
         )
 
         candidates = self.data.fetch_sea_candidates(rubric.id, limit=48)
@@ -13049,7 +13225,7 @@ class Bot:
             fact_id = None
             fact_info = {"reason": "disabled"}
         logging.info(
-            "SEA_RUBRIC selected stage=%s asset_id=%s score=%.2f wave_score=%s photo_sky=%s season_match=%s storm_persisting=%s fact_id=%s reasons=%s",
+            "SEA_RUBRIC selected stage=%s asset_id=%s score=%.2f wave_score=%s photo_sky=%s season_match=%s storm_persisting=%s storm_reason=%s fact_id=%s reasons=%s",
             selected_details.get("stage"),
             asset.id,
             selected_details.get("score"),
@@ -13057,6 +13233,7 @@ class Bot:
             selected_candidate.get("photo_sky"),
             selected_candidate.get("season_match"),
             storm_persisting,
+            storm_persisting_reason,
             fact_id,
             json.dumps(selected_details.get("reasons"), ensure_ascii=False),
         )
@@ -13109,7 +13286,8 @@ class Bot:
             fact_sentence=fact_sentence,
             job=job,
         )
-        raw_caption_text = (caption_text or "").strip()
+        stripped_caption = self.strip_header(caption_text)
+        raw_caption_text = (stripped_caption or caption_text or "").strip()
 
         def sanitize_caption_text(text: str, *, limit: int = 350) -> str:
             cleaned = (text or "").strip()
@@ -13277,6 +13455,7 @@ class Bot:
             "enable_facts": enable_facts,
             "storm_state": storm_state,
             "storm_persisting": storm_persisting,
+            "storm_persisting_reason": storm_persisting_reason,
             "wave_height_m": wave_height_value,
             "wave_score": wave_score,
             "water_temp": water_temp,
@@ -13415,7 +13594,10 @@ class Bot:
             return " ".join(sentences[:3])
 
         if not self.openai or not self.openai.api_key:
-            return fallback_caption(), default_hashtags
+            raw_fallback = fallback_caption()
+            cleaned = self.strip_header(raw_fallback)
+            fallback_text = cleaned.strip() if cleaned else raw_fallback.strip()
+            return fallback_text, default_hashtags
 
         system_prompt = (
             "Ты редактор телеграм-канала о Балтийском море. "
@@ -13502,7 +13684,9 @@ class Bot:
                 await self._record_openai_usage("gpt-4o", response, job=job)
             if not response or not isinstance(response.content, dict):
                 continue
-            caption = str(response.content.get("caption") or "").strip()
+            caption_raw = str(response.content.get("caption") or "")
+            cleaned_caption = self.strip_header(caption_raw)
+            caption = cleaned_caption.strip() if cleaned_caption else caption_raw.strip()
             raw_hashtags = response.content.get("hashtags") or []
             hashtags = self._deduplicate_hashtags(raw_hashtags)
             if not caption:
@@ -13516,7 +13700,10 @@ class Bot:
                 continue
             return caption, hashtags
 
-        return fallback_caption(), default_hashtags
+        raw_fallback = fallback_caption()
+        cleaned = self.strip_header(raw_fallback)
+        fallback_text = cleaned.strip() if cleaned else raw_fallback.strip()
+        return fallback_text, default_hashtags
 
     async def _generate_guess_arch_copy(
         self,
@@ -13621,6 +13808,8 @@ class Bot:
                 fallback_caption = "Порадую закатом над #море."
             else:
                 fallback_caption = "Порадую вас #море."
+            cleaned_fallback = self.strip_header(fallback_caption)
+            fallback_caption = cleaned_fallback.strip() if cleaned_fallback else fallback_caption
             return fallback_caption, default_hashtags
         system_prompt = (
             "Ты редактор телеграм-канала о погоде и море. "
@@ -13700,7 +13889,9 @@ class Bot:
                 await self._record_openai_usage("gpt-4o", response, job=job)
             if not response or not isinstance(response.content, dict):
                 continue
-            caption = str(response.content.get("caption") or "").strip()
+            caption_raw = str(response.content.get("caption") or "")
+            cleaned_caption = self.strip_header(caption_raw)
+            caption = cleaned_caption.strip() if cleaned_caption else caption_raw.strip()
             raw_hashtags = response.content.get("hashtags") or []
             hashtags = self._deduplicate_hashtags(raw_hashtags)
             if not caption or not hashtags:
@@ -13719,6 +13910,8 @@ class Bot:
             fallback_caption = "Порадую закатом над #море."
         else:
             fallback_caption = "Порадую вас #море."
+        cleaned_fallback = self.strip_header(fallback_caption)
+        fallback_caption = cleaned_fallback.strip() if cleaned_fallback else fallback_caption
         return fallback_caption, default_hashtags
 
     def _prepare_hashtags(self, tags: Iterable[str]) -> list[str]:

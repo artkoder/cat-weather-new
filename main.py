@@ -12990,6 +12990,15 @@ class Bot:
         allowed_photo_skies = compatible_skies(sky_bucket)
         want_sunset = storm_state == "calm" and sky_bucket in {"clear", "mostly_clear", "partly_cloudy"}
 
+        clouds_label_map = {
+            "clear": "ясное небо",
+            "mostly_clear": "почти ясное небо",
+            "partly_cloudy": "переменная облачность",
+            "mostly_cloudy": "пасмурно",
+            "overcast": "сплошная облачность",
+        }
+        clouds_label = clouds_label_map.get(sky_bucket, "облачность неопределена")
+
         now = datetime.utcnow()
         storm_persisting, storm_persisting_reason = self._is_storm_persisting(
             sea_id,
@@ -13017,7 +13026,25 @@ class Bot:
         candidates = self.data.fetch_sea_candidates(rubric.id, limit=48)
         if not candidates:
             logging.warning("SEA_RUBRIC no_candidates sea_id=%s", sea_id)
-            return False
+            await self._handle_sea_no_candidates(
+                rubric,
+                channel_id,
+                sea_id=sea_id,
+                storm_state=storm_state,
+                storm_persisting=storm_persisting,
+                storm_reason=storm_persisting_reason,
+                wave_height=wave_height_value,
+                wave_score=wave_score,
+                wind_ms=wind_ms,
+                wind_kmh=wind_kmh,
+                wind_class=wind_class,
+                clouds_label=clouds_label,
+                sky_bucket=sky_bucket,
+                want_sunset=want_sunset,
+                test=test,
+                initiator_id=initiator_id,
+            )
+            return True
 
         for candidate in candidates:
             candidate["season_match"] = season_match(candidate.get("season_guess"), season_window)
@@ -13245,15 +13272,6 @@ class Bot:
                 city_name = str(geo_data["city"]).strip()
                 if city_name:
                     place_hashtag = f"#{city_name}"
-
-        clouds_label_map = {
-            "clear": "ясное небо",
-            "mostly_clear": "почти ясное небо",
-            "partly_cloudy": "переменная облачность",
-            "mostly_cloudy": "пасмурно",
-            "overcast": "сплошная облачность",
-        }
-        clouds_label = clouds_label_map.get(sky_bucket, "облачность неопределена")
 
         def soft_trim(text: str, limit: int) -> str:
             if len(text) <= limit:
@@ -13543,6 +13561,98 @@ class Bot:
                 )
 
         return True
+
+    async def _handle_sea_no_candidates(
+        self,
+        rubric: Rubric,
+        channel_id: int,
+        *,
+        sea_id: int,
+        storm_state: str,
+        storm_persisting: bool,
+        storm_reason: str | None,
+        wave_height: float | None,
+        wave_score: float,
+        wind_ms: float | None,
+        wind_kmh: float | None,
+        wind_class: str | None,
+        clouds_label: str,
+        sky_bucket: str,
+        want_sunset: bool,
+        test: bool,
+        initiator_id: int | None,
+    ) -> None:
+        logging.info(
+            "SEA_RUBRIC skip_no_assets sea_id=%s storm_state=%s storm_persisting=%s",
+            sea_id,
+            storm_state,
+            storm_persisting,
+        )
+
+        metadata = {
+            "rubric_code": rubric.code,
+            "asset_ids": [],
+            "test": test,
+            "sea_id": sea_id,
+            "skip_reason": "no_candidates",
+            "storm_state": storm_state,
+            "storm_persisting": storm_persisting,
+            "storm_persisting_reason": storm_reason,
+            "wave_height_m": wave_height,
+            "wave_score": wave_score,
+            "wind_speed_ms": wind_ms,
+            "wind_speed_kmh": wind_kmh,
+            "wind_class": wind_class,
+            "clouds_label": clouds_label,
+            "sky_bucket": sky_bucket,
+            "want_sunset": want_sunset,
+        }
+        self.data.record_post_history(channel_id, 0, None, rubric.id, metadata)
+
+        recipient_id = initiator_id if initiator_id is not None else None
+        if recipient_id is None:
+            return
+
+        state_display = {
+            "calm": "штиль",
+            "storm": "шторм",
+            "strong_storm": "сильный шторм",
+        }.get(storm_state, storm_state)
+        wave_text = f"{wave_height:.2f}" if wave_height is not None else "н/д"
+        wind_parts: list[str] = []
+        if wind_kmh is not None:
+            wind_parts.append(f"{wind_kmh:.0f} км/ч")
+        if wind_ms is not None:
+            wind_parts.append(f"{wind_ms:.1f} м/с")
+        wind_class_display = wind_class or "n/a"
+        if wind_parts:
+            primary = wind_parts[0]
+            extra = wind_parts[1:] + [wind_class_display]
+            wind_line = f"• Ветер: {primary} ({', '.join(extra)})"
+        else:
+            wind_line = "• Ветер: н/д"
+
+        heading = "🧪 Тестовая публикация" if test else "⚠️ Публикация"
+        summary_lines = [
+            f"{heading} «Море / Закат на море» пропущена.",
+            "Причина: не нашлось подходящих фотографий моря.",
+            f"• Волна: {wave_text} м ({state_display}).",
+            wind_line + "." if not wind_line.endswith(".") else wind_line,
+            f"• Облачность: {clouds_label}.",
+        ]
+        message_text = "\n".join(summary_lines)
+        response = await self.api_request(
+            "sendMessage",
+            {"chat_id": recipient_id, "text": message_text},
+        )
+        if response.get("ok"):
+            logging.info("SEA_RUBRIC skip_notify sent to %s", recipient_id)
+        else:
+            logging.warning(
+                "SEA_RUBRIC skip_notify failed recipient=%s response=%s",
+                recipient_id,
+                response,
+            )
 
     async def _generate_sea_caption(
         self,

@@ -3942,6 +3942,49 @@ async def test_operator_test_message_contains_wind(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_publish_sea_handles_no_candidates(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "sea_no_assets.db"))
+    try:
+        rubric = bot.data.get_rubric_by_code("sea")
+        assert rubric is not None
+        seed_sea_environment(bot, sea_id=1, wind_speed=8.4)
+
+        captured_requests: list[dict[str, Any]] = []
+
+        async def fake_api_request(self, method, data=None, *, files=None):
+            captured_requests.append({"method": method, "data": data, "files": files})
+            return {"ok": True, "result": {"message_id": 0}}
+
+        bot.api_request = fake_api_request.__get__(bot, Bot)
+
+        success = await bot._publish_sea(
+            rubric,
+            channel_id=-100504,
+            test=True,
+            initiator_id=54321,
+        )
+        assert success
+
+        photo_calls = [entry for entry in captured_requests if entry["method"] == "sendPhoto"]
+        assert not photo_calls
+        message_calls = [entry for entry in captured_requests if entry["method"] == "sendMessage"]
+        assert message_calls
+        message_text = message_calls[0]["data"]["text"]
+        assert "пропущена" in message_text.lower()
+        assert "подходящих фотографий" in message_text.lower()
+
+        row = bot.db.execute(
+            "SELECT metadata FROM posts_history WHERE rubric_id=?", (rubric.id,)
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(row["metadata"])
+        assert payload.get("skip_reason") == "no_candidates"
+        assert payload.get("asset_ids") == []
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_generate_sea_copy_fallback():
     from main import Bot
     bot = Bot("dummy", ":memory:")

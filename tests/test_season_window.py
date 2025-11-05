@@ -105,7 +105,7 @@ def test_season_window_leap_day_normalization():
     # Distance from 60 to 365: forward = 305, backward = 60
     # min is 60, which is > 45
     assert is_in_season_window(366, today_doy=today_doy, window=45) is False
-    
+
     # Today is Dec 20 (day 354)
     today_doy = 354
     # Shot on leap day: day 366 → 365
@@ -148,7 +148,7 @@ def test_season_window_custom_window_size():
     assert is_in_season_window(110, today_doy=today_doy, window=10) is True
     assert is_in_season_window(89, today_doy=today_doy, window=10) is False
     assert is_in_season_window(111, today_doy=today_doy, window=10) is False
-    
+
     # With window=90
     assert is_in_season_window(10, today_doy=today_doy, window=90) is True
     assert is_in_season_window(190, today_doy=today_doy, window=90) is True
@@ -163,7 +163,7 @@ def test_season_window_opposite_side_of_year():
     # December 1 (day 335) is ~183 days away
     # Distance: forward = 183, backward = 182
     assert is_in_season_window(335, today_doy=today_doy, window=45) is False
-    
+
     # Today is December 1 (day 335)
     today_doy = 335
     # June 1 (day 152) is ~183 days away
@@ -175,13 +175,13 @@ def test_season_window_real_dates():
     # November 5 (typically day 309 in non-leap year)
     nov_5 = date(2023, 11, 5)
     today_doy = nov_5.timetuple().tm_yday  # 309
-    
+
     # October 12 (typically day 285)
     oct_12 = date(2023, 10, 12)
     shot_doy_oct = oct_12.timetuple().tm_yday  # 285
     # Distance: 309 - 285 = 24 days
     assert is_in_season_window(shot_doy_oct, today_doy=today_doy, window=45) is True
-    
+
     # March 10 (typically day 69)
     mar_10 = date(2023, 3, 10)
     shot_doy_mar = mar_10.timetuple().tm_yday  # 69
@@ -195,7 +195,7 @@ def test_season_window_new_year_transition_real_dates():
     # January 5 (day 5)
     jan_5 = date(2024, 1, 5)
     today_doy = jan_5.timetuple().tm_yday  # 5
-    
+
     # December 20 of previous year (day 355 in leap year, 354 in non-leap)
     # For 2023 (non-leap): day 354
     dec_20 = date(2023, 12, 20)

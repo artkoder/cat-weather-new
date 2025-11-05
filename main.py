@@ -25,6 +25,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, BinaryIO
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import psutil
 from aiohttp import ClientSession, FormData, web
@@ -503,12 +504,12 @@ def compute_season_window(reference: date, window_days: int = 45) -> set[str]:
 def is_in_season_window(shot_doy: int | None, *, today_doy: int, window: int = 45) -> bool:
     """
     Check if a shot day-of-year falls within a seasonal window around today.
-    
+
     Args:
         shot_doy: Day of year when photo was taken (1-366), or None
         today_doy: Current day of year (1-366)
         window: Number of days before and after today to include (default 45)
-    
+
     Returns:
         True if shot_doy is within the window, False otherwise (including when shot_doy is None)
     """
@@ -13031,10 +13032,9 @@ class Bot:
         if wave_height_value is None and cache_row:
             wave_height_value = self._safe_float(cache_row["wave"])
         wave_score = map_wave_height_to_score(wave_height_value)
-        wave_reference = wave_height_value if wave_height_value is not None else 0.0
-        if wave_reference <= 0.5:
+        if wave_score <= 3.5:
             storm_state = "calm"
-        elif wave_reference <= 1.5:
+        elif wave_score < 6.0:
             storm_state = "storm"
         else:
             storm_state = "strong_storm"
@@ -13062,7 +13062,8 @@ class Bot:
         cloud_cover_pct = self._safe_float(conditions.get("cloud_cover_pct"))
         sky_bucket = bucket_clouds(cloud_cover_pct) or "partly_cloudy"
         allowed_photo_skies = compatible_skies(sky_bucket)
-        want_sunset = storm_state == "calm" and sky_bucket in {"clear", "mostly_clear", "partly_cloudy"}
+        clear_guard_hard = cloud_cover_pct is not None and cloud_cover_pct <= 10.0
+        clear_guard_soft = cloud_cover_pct is not None and cloud_cover_pct <= 20.0
 
         clouds_label_map = {
             "clear": "ясное небо",
@@ -13079,7 +13080,9 @@ class Bot:
             now=now,
             current_state=storm_state,
         )
-        today_doy = now.timetuple().tm_yday
+        kaliningrad_tz = ZoneInfo("Europe/Kaliningrad")
+        now_local = now.replace(tzinfo=UTC).astimezone(kaliningrad_tz)
+        today_doy = now_local.timetuple().tm_yday
         season_window_days = 45
 
         def _normalize_for_log(value: Any) -> Any:
@@ -13099,7 +13102,6 @@ class Bot:
                 "sea_id": sea_id,
                 "storm_state": storm_state,
                 "storm_persisting": storm_persisting,
-                "want_sunset": want_sunset,
             }
             if storm_persisting_reason:
                 payload["storm_reason"] = storm_persisting_reason
@@ -13141,6 +13143,7 @@ class Bot:
                 clouds_label=clouds_label,
             )
             logging.warning("SEA_RUBRIC no_candidates sea_id=%s", sea_id)
+            temp_want_sunset = storm_state != "strong_storm" and sky_bucket in {"clear", "mostly_clear", "partly_cloudy"}
             await self._handle_sea_no_candidates(
                 rubric,
                 channel_id,
@@ -13155,19 +13158,32 @@ class Bot:
                 wind_class=wind_class,
                 clouds_label=clouds_label,
                 sky_bucket=sky_bucket,
-                want_sunset=want_sunset,
+                want_sunset=temp_want_sunset,
                 test=test,
                 initiator_id=initiator_id,
             )
             return True
 
         # Apply seasonal filter based on day-of-year
+        doy_low = (today_doy - season_window_days) % 365 + 1
+        doy_high = (today_doy + season_window_days - 1) % 365 + 1
+
+        kept_asset_ids: list[int] = []
+        removed_asset_ids: list[int] = []
+        null_doy_asset_ids: list[int] = []
+
         for candidate in candidates:
-            candidate["season_match"] = is_in_season_window(
-                candidate.get("shot_doy"),
-                today_doy=today_doy,
-                window=season_window_days,
-            )
+            shot_doy = candidate.get("shot_doy")
+            if shot_doy is None:
+                candidate["season_match"] = True
+                null_doy_asset_ids.append(candidate["asset"].id)
+            else:
+                match = is_in_season_window(shot_doy, today_doy=today_doy, window=season_window_days)
+                candidate["season_match"] = match
+                if match:
+                    kept_asset_ids.append(candidate["asset"].id)
+                else:
+                    removed_asset_ids.append(candidate["asset"].id)
 
         season_matches = sum(1 for candidate in candidates if candidate["season_match"])
         filtered_count = len(candidates) - season_matches
@@ -13191,28 +13207,30 @@ class Bot:
             working_candidates = candidates
 
         sea_log(
-            "season_window",
+            "season",
+            doy_now=today_doy,
+            doy_range=[doy_low, doy_high],
+            kept=kept_asset_ids,
+            removed=removed_asset_ids,
+            null_doy=null_doy_asset_ids,
+            season_removed=season_filter_removed,
             total_candidates=len(candidates),
             matched=season_matches,
             filtered=filtered_count,
-            filter_removed=season_filter_removed,
-            removal_reason=season_removal_reason,
-            season_window_days=season_window_days,
-            today_doy=today_doy,
         )
 
-        def compute_corridor(expand: float) -> tuple[float, float]:
+        def compute_corridor(broaden: float = 0.0) -> tuple[float, float]:
             if storm_state == "calm":
-                base_low, base_high = 0.0, 3.5
+                center = 1.75
+                halfwidth = 1.75 + broaden
             elif storm_state == "storm":
-                base_low = max(4.0, wave_score - 1.0)
-                base_high = min(7.5, wave_score + 1.0)
+                center = wave_score
+                halfwidth = 1.0 + broaden
             else:
-                base_low, base_high = 8.0, 10.0
-            low = max(0.0, base_low - expand)
-            high = min(10.0, base_high + expand)
-            if low > high:
-                low, high = high, low
+                center = 9.0
+                halfwidth = 1.0 + broaden
+            low = max(0.0, center - halfwidth)
+            high = min(10.0, center + halfwidth)
             return low, high
 
         def evaluate_candidate(
@@ -13220,129 +13238,123 @@ class Bot:
             low: float,
             high: float,
             *,
-            enforce_sky: bool,
-            sunset_priority: bool,
+            sky_policy: str,
+            allow_missing_wave: bool,
             stage_name: str,
-            attempt_index: int,
-        ) -> tuple[float, dict[str, Any], dict[str, Any]] | None:
+        ) -> tuple[float, dict[str, Any]] | None:
             asset_obj = candidate.get("asset")
             photo_sky = candidate.get("photo_sky")
-            if enforce_sky and (not photo_sky or photo_sky not in allowed_photo_skies):
-                return None
-            reasons: dict[str, Any] = {
-                "wave_corridor": (round(low, 2), round(high, 2)),
-                "season_match": candidate.get("season_match"),
-            }
-            score = 0.0
+            sky_visible = candidate.get("sky_visible", True)
             wave_value = candidate.get("wave_score")
-            if wave_value is None and storm_state != "calm":
-                sea_log(
-                    "candidate_discard",
-                    reason="wave_missing",
-                    asset_id=getattr(asset_obj, "id", None),
-                    stage=stage_name,
-                    attempt=attempt_index,
-                )
-                return None
-            if wave_value is not None:
-                try:
-                    wave_value_float = float(wave_value)
-                except (TypeError, ValueError):
-                    wave_value_float = None
-                else:
-                    reasons["wave_value"] = round(wave_value_float, 2)
-                    if low <= wave_value_float <= high:
-                        score += 5.0
-                        reasons["wave_bonus"] = 5.0
-                        reasons["wave_in_range"] = True
-                    else:
-                        dist = min(abs(wave_value_float - low), abs(wave_value_float - high))
-                        bonus = max(0.0, 3.0 - dist)
-                        score += bonus
-                        reasons["wave_bonus"] = round(bonus, 2)
-                        reasons["wave_in_range"] = False
-                        reasons["wave_distance"] = round(dist, 2)
-            if "wave_bonus" not in reasons:
-                reasons["wave_bonus"] = 0.0
-                reasons["wave_in_range"] = False
 
-            if photo_sky:
-                reasons["photo_sky"] = photo_sky
-                primary_map = {
-                    "clear": "sunny",
-                    "mostly_clear": "partly_cloudy",
-                    "partly_cloudy": "partly_cloudy",
-                    "mostly_cloudy": "mostly_cloudy",
-                    "overcast": "overcast",
-                }
-                primary = primary_map.get(sky_bucket)
-                if primary and photo_sky == primary:
-                    score += 2.0
-                    reasons["sky_bonus"] = 2.0
-                    reasons["sky_match"] = "exact"
-                elif photo_sky in allowed_photo_skies:
-                    score += 1.0
-                    reasons["sky_bonus"] = 1.0
-                    reasons["sky_match"] = "compatible"
+            if wave_value is None:
+                if storm_state == "calm" and allow_missing_wave:
+                    pass
+                elif allow_missing_wave:
+                    pass
                 else:
-                    score -= 2.0
-                    reasons["sky_bonus"] = -2.0
-                    reasons["sky_match"] = "mismatch"
-                    if enforce_sky:
-                        return None
-            else:
-                reasons["photo_sky"] = None
-                reasons["sky_bonus"] = 0.0
-                reasons["sky_match"] = "unknown"
-                if enforce_sky:
                     return None
 
-            sunset_bonus = 0.0
-            if sunset_priority and candidate.get("is_sunset"):
-                if want_sunset:
-                    sunset_bonus = 2.0
-                elif storm_state != "calm":
-                    sunset_bonus = -0.5
-            score += sunset_bonus
-            reasons["sunset_bonus"] = sunset_bonus
+            halfwidth = (high - low) / 2.0
+            center = (low + high) / 2.0
 
+            penalty = 0.0
+            wave_penalty = 0.0
+            if wave_value is not None:
+                try:
+                    wave_float = float(wave_value)
+                except (TypeError, ValueError):
+                    wave_float = None
+                if wave_float is not None:
+                    distance_from_range = max(0.0, abs(wave_float - center) - halfwidth)
+                    wave_penalty = distance_from_range * 0.75
+                    penalty += wave_penalty
+            elif storm_state == "calm":
+                penalty -= 1.0
+
+            sky_penalty = 0.0
+            sky_match_type: str | None = None
+            if sky_visible and photo_sky and photo_sky != "unknown":
+                if sky_policy == "B0":
+                    if photo_sky == "sunny" and sky_bucket in {"clear", "mostly_clear"}:
+                        sky_match_type = "exact"
+                    elif photo_sky in allowed_photo_skies:
+                        sky_match_type = "compatible"
+                    else:
+                        return None
+                elif sky_policy == "B1":
+                    if photo_sky not in allowed_photo_skies:
+                        return None
+                elif sky_policy == "B2":
+                    if photo_sky == "overcast" and sky_bucket in {"clear", "mostly_clear"}:
+                        return None
+                elif sky_policy == "AN":
+                    pass
+                else:
+                    pass
+
+                if photo_sky == "sunny" and sky_bucket in {"clear", "mostly_clear"}:
+                    sky_penalty = -0.5
+                elif photo_sky in allowed_photo_skies:
+                    sky_penalty = 0.0
+                else:
+                    sky_penalty = 1.0
+                penalty += sky_penalty
+            elif not sky_visible or photo_sky in (None, "unknown"):
+                pass
+            elif sky_policy in {"B0", "B1"}:
+                return None
+
+            score = -penalty
             age_bonus_val = float(candidate.get("age_bonus") or 0.0)
             score += age_bonus_val
-            reasons["age_bonus"] = round(age_bonus_val, 2)
 
-            if season_filter_removed and candidate.get("season_match"):
-                score += 1.0
-                reasons["season_bonus"] = 1.0
-            else:
-                reasons["season_bonus"] = 0.0
+            reasons = {
+                "wave_corridor": (round(low, 2), round(high, 2)),
+                "wave_penalty": round(wave_penalty, 3),
+                "sky_penalty": round(sky_penalty, 3),
+                "sky_policy": sky_policy,
+                "sky_visible": sky_visible,
+                "penalty_total": round(penalty, 3),
+                "age_bonus": round(age_bonus_val, 2),
+                "season_match": candidate.get("season_match"),
+            }
 
-            return score, reasons, candidate
+            return score, reasons
 
         stages = [
-            {"name": "baseline", "enforce_sky": True, "wave_expand": 0.0, "sunset_priority": True},
-            {"name": "any_sky", "enforce_sky": False, "wave_expand": 0.0, "sunset_priority": True},
-            {"name": "wide_wave", "enforce_sky": False, "wave_expand": 1.0, "sunset_priority": True},
-            {"name": "no_sunset_bias", "enforce_sky": False, "wave_expand": 1.0, "sunset_priority": False},
+            {"name": "season", "sky": "B0", "wave_broaden": 0.0, "allow_missing_wave": False},
+            {"name": "wave", "sky": "B0", "wave_broaden": 0.0, "allow_missing_wave": True},
+            {"name": "B1", "sky": "B1", "wave_broaden": 0.0, "allow_missing_wave": True},
+            {"name": "wave+broaden", "sky": "B1", "wave_broaden": 0.8, "allow_missing_wave": True},
+            {"name": "B2", "sky": "B2", "wave_broaden": 0.8, "allow_missing_wave": True},
+            {"name": "AN", "sky": "AN", "wave_broaden": 0.8, "allow_missing_wave": True},
         ]
 
         selected_candidate: dict[str, Any] | None = None
         selected_details: dict[str, Any] = {}
+        sky_critical_mismatch = False
+        pool_counts: dict[str, int] = {}
+
         for attempt_index, stage in enumerate(stages, start=1):
-            low, high = compute_corridor(stage["wave_expand"])
+            low, high = compute_corridor(stage["wave_broaden"])
             stage_results: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
             for candidate in working_candidates:
                 result = evaluate_candidate(
                     candidate,
                     low,
                     high,
-                    enforce_sky=stage["enforce_sky"],
-                    sunset_priority=stage["sunset_priority"],
+                    sky_policy=stage["sky"],
+                    allow_missing_wave=stage["allow_missing_wave"],
                     stage_name=stage["name"],
-                    attempt_index=attempt_index,
                 )
                 if result is None:
                     continue
-                stage_results.append(result)
+                score, reasons = result
+                stage_results.append((score, reasons, candidate))
+
+            pool_key = f"pool_after_{stage['name']}"
+            pool_counts[pool_key] = len(stage_results)
 
             if stage_results:
                 def _ordering(item: tuple[float, dict[str, Any], dict[str, Any]]) -> tuple[float, float, int]:
@@ -13365,28 +13377,23 @@ class Bot:
                 top_entries.append(
                     {
                         "id": getattr(asset_obj, "id", None),
-                        "wave_score": _normalize_for_log(candidate_payload.get("wave_score")),
+                        "wave": _normalize_for_log(candidate_payload.get("wave_score")),
                         "sky": candidate_payload.get("photo_sky"),
-                        "shot_doy": candidate_payload.get("shot_doy"),
-                        "season_match": candidate_payload.get("season_match"),
-                        "sunset": candidate_payload.get("is_sunset"),
+                        "penalties": _normalize_for_log(reason_payload),
                         "score": _normalize_for_log(score_value),
-                        "reasons": _normalize_for_log(reason_payload),
                     }
                 )
 
             sea_log(
-                "stage_shortlist",
-                attempt=attempt_index,
+                "stage",
                 stage=stage["name"],
-                candidate_total=len(sorted_results),
+                pool_size=len(sorted_results),
                 top5=top_entries,
                 wave_corridor=(round(low, 2), round(high, 2)),
             )
 
             if sorted_results:
                 best_score, best_reasons, best_candidate = sorted_results[0]
-                best_reasons["allowed_skies"] = sorted(allowed_photo_skies)
                 best_reasons["stage"] = stage["name"]
                 selected_candidate = best_candidate
                 selected_details = {
@@ -13395,6 +13402,12 @@ class Bot:
                     "stage": stage["name"],
                     "corridor": (low, high),
                 }
+
+                if stage["name"] == "AN" and clear_guard_hard:
+                    chosen_sky = best_candidate.get("photo_sky")
+                    if chosen_sky in {"mostly_cloudy", "overcast"}:
+                        sky_critical_mismatch = True
+
                 break
 
         if selected_candidate is None:
@@ -13417,13 +13430,21 @@ class Bot:
             selected_candidate = min(working_candidates, key=_fallback_key)
             selected_details = {
                 "score": 0.0,
-                "reasons": {"fallback": "age_priority", "allowed_skies": sorted(allowed_photo_skies)},
+                "reasons": {"fallback": "age_priority"},
                 "stage": "fallback_age",
-                "corridor": compute_corridor(1.0),
+                "corridor": compute_corridor(0.8),
             }
 
         asset = selected_candidate["asset"]
         sunset_selected = bool(selected_candidate.get("is_sunset"))
+        sky_visible = selected_candidate.get("sky_visible", True)
+        chosen_photo_sky = selected_candidate.get("photo_sky")
+
+        want_sunset = (
+            storm_state != "strong_storm"
+            and sky_visible
+            and not (clear_guard_hard and chosen_photo_sky in {"mostly_cloudy", "overcast"})
+        )
         if enable_facts:
             fact_sentence_value, fact_id_value, fact_info = self._prepare_sea_fact(
                 sea_id=sea_id,
@@ -13448,10 +13469,16 @@ class Bot:
             photo_sky=selected_candidate.get("photo_sky"),
             season_match=selected_candidate.get("season_match"),
             sunset_selected=sunset_selected,
+            want_sunset=want_sunset,
+            storm_persisting=storm_persisting,
             wave_corridor=selected_details.get("corridor"),
+            sky_penalty=selected_details.get("reasons", {}).get("sky_penalty"),
+            sky_visible=sky_visible,
+            sky_critical_mismatch=sky_critical_mismatch,
             reasons=selected_details.get("reasons"),
             fact_id=fact_id,
             fact_info=fact_info,
+            pool_counts=pool_counts,
         )
 
         place_hashtag: str | None = None
@@ -13685,9 +13712,13 @@ class Bot:
             "wind_time_ref": wind_time_ref,
             "wind_class": wind_class,
             "cloud_cover_pct": cloud_cover_pct,
+            "clear_guard_hard": clear_guard_hard,
+            "clear_guard_soft": clear_guard_soft,
             "sky_bucket": sky_bucket,
             "allowed_photo_sky": sorted(allowed_photo_skies),
             "selected_photo_sky": selected_candidate.get("photo_sky"),
+            "sky_visible": sky_visible,
+            "sky_critical_mismatch": sky_critical_mismatch,
             "want_sunset": want_sunset,
             "sunset_selected": sunset_selected,
             "season_match": selected_candidate.get("season_match"),
@@ -13695,6 +13726,7 @@ class Bot:
             "scoring": scoring_payload,
             "stage": selected_details.get("stage"),
             "wave_corridor": [round(val, 2) for val in selected_details.get("corridor", [])],
+            "pool_counts": pool_counts,
             "caption": caption_text,
             "hashtags": final_hashtags,
             "place_hashtag": place_hashtag,

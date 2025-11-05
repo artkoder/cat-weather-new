@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import sys
-from datetime import UTC, datetime, date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -128,24 +128,24 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
 
         # Today is November 5 (day 309 in non-leap year)
         today = date(2024, 11, 5)  # 2024 is a leap year, so day 310
-        today_doy = today.timetuple().tm_yday
-        
+        _ = today.timetuple().tm_yday
+
         # Create assets with different shot dates
         # 1. Asset from October 12 (within window, ~24 days before)
         oct_date = date(2019, 10, 12)  # Old year, but same season
         oct_timestamp = int(datetime(2019, 10, 12, 12, 0, 0).timestamp())
         oct_doy = oct_date.timetuple().tm_yday  # day 285
-        
+
         # 2. Asset from March 10 (outside window, ~125 days away)
         mar_date = date(2020, 3, 10)  # Different year, different season
         mar_timestamp = int(datetime(2020, 3, 10, 12, 0, 0).timestamp())
         mar_doy = mar_date.timetuple().tm_yday  # day 70
-        
+
         # 3. Asset from December 20 (within window due to year wraparound)
         dec_date = date(2018, 12, 20)  # Old year, but close due to wraparound
         dec_timestamp = int(datetime(2018, 12, 20, 12, 0, 0).timestamp())
         dec_doy = dec_date.timetuple().tm_yday  # day 354
-        
+
         oct_file = create_stub_image(tmp_path, "oct.jpg")
         mar_file = create_stub_image(tmp_path, "mar.jpg")
         dec_file = create_stub_image(tmp_path, "dec.jpg")
@@ -167,7 +167,7 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
             "UPDATE assets SET shot_at_utc=?, shot_doy=? WHERE id=?",
             (oct_timestamp, oct_doy, oct_id),
         )
-        
+
         mar_id = create_sea_asset(
             bot,
             rubric_id=rubric.id,
@@ -183,7 +183,7 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
             "UPDATE assets SET shot_at_utc=?, shot_doy=? WHERE id=?",
             (mar_timestamp, mar_doy, mar_id),
         )
-        
+
         dec_id = create_sea_asset(
             bot,
             rubric_id=rubric.id,
@@ -199,16 +199,16 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
             "UPDATE assets SET shot_at_utc=?, shot_doy=? WHERE id=?",
             (dec_timestamp, dec_doy, dec_id),
         )
-        
+
         bot.db.commit()
 
         # Instead of mocking time, let's just test the is_in_season_window function directly
         # with the specific day-of-year values to verify our logic
         from main import is_in_season_window
-        
+
         # November 5 is day 310 in 2024 (leap year)
         nov_5_doy = 310
-        
+
         # Verify filtering logic
         assert is_in_season_window(oct_doy, today_doy=nov_5_doy, window=45) is True, \
             f"October (doy {oct_doy}) should be within window of Nov 5 (doy {nov_5_doy})"
@@ -216,11 +216,11 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
             f"March (doy {mar_doy}) should be outside window of Nov 5 (doy {nov_5_doy})"
         assert is_in_season_window(dec_doy, today_doy=nov_5_doy, window=45) is True, \
             f"December (doy {dec_doy}) should be within window of Nov 5 (doy {nov_5_doy})"
-        
+
         # Now let's verify the actual candidates are filtered correctly
         candidates = bot.data.fetch_sea_candidates(rubric.id, limit=10)
         assert len(candidates) == 3, "Should have 3 candidates"
-        
+
         # Apply the same filtering logic as the main code
         current_doy = datetime.utcnow().timetuple().tm_yday
         for candidate in candidates:
@@ -229,7 +229,7 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
                 today_doy=current_doy,
                 window=45
             )
-        
+
         # At least some candidates should have season_match depending on current date
         # We can't predict exact matches without knowing the test run date,
         # but we can verify the function exists and runs without error
@@ -322,18 +322,18 @@ async def test_sea_rubric_seasonal_window_year_wraparound(monkeypatch, tmp_path)
 
         # Today is January 5 (day 5)
         today = date(2024, 1, 5)
-        today_doy = today.timetuple().tm_yday  # 5
-        
+        _ = today.timetuple().tm_yday  # 5
+
         # Asset from December 20 of previous year (should match due to wraparound)
         dec_date = date(2023, 12, 20)
         dec_timestamp = int(datetime(2023, 12, 20, 12, 0, 0).timestamp())
         dec_doy = dec_date.timetuple().tm_yday  # 354
-        
+
         # Asset from June (should NOT match - too far away)
         jun_date = date(2023, 6, 15)
         jun_timestamp = int(datetime(2023, 6, 15, 12, 0, 0).timestamp())
         jun_doy = jun_date.timetuple().tm_yday  # ~166
-        
+
         dec_file = create_stub_image(tmp_path, "dec2.jpg")
         jun_file = create_stub_image(tmp_path, "jun.jpg")
 
@@ -352,7 +352,7 @@ async def test_sea_rubric_seasonal_window_year_wraparound(monkeypatch, tmp_path)
             "UPDATE assets SET shot_at_utc=?, shot_doy=? WHERE id=?",
             (dec_timestamp, dec_doy, dec_id),
         )
-        
+
         jun_id = create_sea_asset(
             bot,
             rubric_id=rubric.id,
@@ -368,25 +368,25 @@ async def test_sea_rubric_seasonal_window_year_wraparound(monkeypatch, tmp_path)
             "UPDATE assets SET shot_at_utc=?, shot_doy=? WHERE id=?",
             (jun_timestamp, jun_doy, jun_id),
         )
-        
+
         bot.db.commit()
 
         # Test the wraparound logic directly
         from main import is_in_season_window
-        
+
         # January 5 is day 5
         jan_5_doy = 5
-        
+
         # Verify wraparound filtering logic
         assert is_in_season_window(dec_doy, today_doy=jan_5_doy, window=45) is True, \
             f"December 20 (doy {dec_doy}) should be within window of Jan 5 (doy {jan_5_doy}) due to wraparound"
         assert is_in_season_window(jun_doy, today_doy=jan_5_doy, window=45) is False, \
             f"June (doy {jun_doy}) should be outside window of Jan 5 (doy {jan_5_doy})"
-        
+
         # Verify candidates are fetched and can be filtered
         candidates = bot.data.fetch_sea_candidates(rubric.id, limit=10)
         assert len(candidates) == 2, "Should have 2 candidates"
-        
+
         # Apply filtering
         current_doy = datetime.utcnow().timetuple().tm_yday
         for candidate in candidates:
@@ -395,7 +395,7 @@ async def test_sea_rubric_seasonal_window_year_wraparound(monkeypatch, tmp_path)
                 today_doy=current_doy,
                 window=45
             )
-        
+
         # Verify the filtering function works without error
         # The actual season_match values will depend on when the test runs
 

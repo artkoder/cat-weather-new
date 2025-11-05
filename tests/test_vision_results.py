@@ -548,7 +548,7 @@ def test_vision_sea_forcing_when_is_sea_true(db_connection):
 def test_vision_sky_visible_false_preserved_for_rubric(db_connection):
     """Test that candidates with sky_visible=False are preserved for rubric selection."""
     data = DataAccess(db_connection)
-    
+
     # Create asset with sky_visible=False and photo_sky="unknown"
     asset_id = data.save_asset(
         channel_id=1,

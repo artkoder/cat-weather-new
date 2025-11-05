@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- Sea selection rework with Kaliningrad timezone-based seasonal windows, wave-score storm classification (≤3.5 calm, <6 storm, ≥6 strong_storm), penalty-based candidate evaluation, and coastal cloud acceptance matrix (B0/B1/B2/AN) with clear guard enforcement.
+- Sky visibility integration (`sky_visible`) that skips sky penalties and disables sunset prioritization for assets without visible sky or with `photo_sky="unknown"`.
+- Comprehensive sea selection logging with season metadata (doy_now, doy_range, kept/removed assets), pool counts per stage, top-5 scoring dump, and final selection payload including want_sunset, storm_persisting, wave_corridor, sky_penalty, and sky_critical_mismatch.
+- Test suite covering season window day-of-year matching, wave mapping and corridor computation, sky visibility filtering, coastal cloud policy, sunset logic with clear guard violations, and storm persistence with new wave-score classes.
 - `/mobile` command that lets operators pair devices through the `MOBILE_PAIR_UI` flow and trigger mobile-first
   publication without relying on the legacy admin panel.
 - Prometheus counter `mobile_photos_total` that tracks the number of mobile uploads processed end-to-end for
@@ -28,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Schemathesis-powered contract test suite that exercises the latest API surface to guard against regressions in mobile attach, upload, and webhook flows.
 
 ### Changed
+- Sea rubric seasonal window now uses Europe/Kaliningrad timezone instead of UTC for day-of-year calculations, ensuring accurate seasonal matching for the local region.
+- Sea rubric storm state classification now based on wave scores (≤3.5 calm, <6 storm, ≥6 strong_storm) instead of raw wave heights for more nuanced weather state determination.
+- Sea rubric candidate evaluation redesigned with penalty-based scoring (penalty = max(0, |score−s|−halfwidth)*0.75) that allows calm-day assets without wave scores (−1.0 bonus) and implements staged fallback progression (season → wave → B1 → wave+broaden → B2 → AN).
+- Sea rubric sunset logic now requires visible sky and enforces clear guard violations (want_sunset = (storm_state != strong_storm) and sky_visible and not (clear_guard_hard & chosen_sky in {mostly_cloudy, overcast})).
 - Device attach flow now follows [API contract v1.4.1](https://github.com/artkoder/kotopogoda-api-contract/tree/v1.4.1):
   normalizes attach tokens (with legacy `code` support), returns
   `device_id`/`device_secret` alongside deprecated `id`/`secret`, emits

@@ -1725,6 +1725,11 @@ class DataAccess:
                 photo_sky_candidate = normalize_sky(vision.get("weather_image"))
             photo_sky = photo_sky_candidate
             is_sunset = bool(vision.get("is_sunset"))
+            sky_visible_raw = vision.get("sky_visible")
+            if sky_visible_raw is None:
+                sky_visible = photo_sky not in (None, "unknown") if photo_sky != "unknown" else False
+            else:
+                sky_visible = bool(sky_visible_raw)
             season_guess_raw = vision.get("season_guess")
             season_guess = (
                 str(season_guess_raw).strip().lower()
@@ -1753,6 +1758,7 @@ class DataAccess:
                     "wave_score": wave_score,
                     "photo_sky": photo_sky,
                     "is_sunset": is_sunset,
+                    "sky_visible": sky_visible,
                     "season_guess": season_guess,
                     "tags": tags,
                     "last_used_at": last_used_dt,

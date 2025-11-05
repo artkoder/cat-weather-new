@@ -84,7 +84,7 @@ async def test_facts_nonrepeating(tmp_path, monkeypatch):
         day_next = int(next_time.timestamp()) // 86400
         day_far = int(window_time.timestamp()) // 86400
         rollout_entries = bot.data.get_fact_rollout_range(day_start, end_day=day_far)
-        rollout_map = {day: fid for day, fid in rollout_entries}
+        rollout_map = dict(rollout_entries)
         assert rollout_map.get(day_start) == fact_id1
         assert rollout_map.get(day_next) == fact_id2
     finally:

@@ -3848,7 +3848,7 @@ async def test_sea_caption_no_numbers_and_no_cloud_words(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sea_caption_keep_hashtags_and_footer(tmp_path):
+async def test_caption_blocks(tmp_path):
     bot = Bot("dummy", str(tmp_path / "sea_structure.db"))
     try:
         rubric = bot.data.get_rubric_by_code("sea")
@@ -3861,6 +3861,8 @@ async def test_sea_caption_keep_hashtags_and_footer(tmp_path):
             message_id=4103,
             file_name="sea-structure.jpg",
             local_path=photo_path,
+            latitude=54.9,
+            longitude=20.3,
         )
         raw_caption = " ".join(["На побережье тихо и хочется задержаться." for _ in range(25)])
 
@@ -3868,6 +3870,11 @@ async def test_sea_caption_keep_hashtags_and_footer(tmp_path):
             return raw_caption, ["#море", "#БалтийскоеМоре", "#Балтика"]
 
         bot._generate_sea_caption = fake_generate.__get__(bot, Bot)
+
+        async def fake_reverse_geocode(self, lat, lon):
+            return {"city": "Светлый Пляж"}
+
+        bot._reverse_geocode = fake_reverse_geocode.__get__(bot, Bot)
 
         captured: dict[str, Any] = {}
 
@@ -3887,21 +3894,24 @@ async def test_sea_caption_keep_hashtags_and_footer(tmp_path):
         segments = caption.split("\n\n")
         assert len(segments) >= 3
         assert segments[-1] == LOVE_COLLECTION_LINK
+        main_block = html.unescape(segments[0])
+        assert len(main_block) <= 350
         hashtags_block = html.unescape(segments[-2])
-        assert hashtags_block.startswith("#море")
-        assert "#БалтийскоеМоре" in hashtags_block
-        assert len(caption) < 1000
+        assert hashtags_block.startswith("#море #БалтийскоеМоре")
+        assert "#СветлыйПляж" in hashtags_block
+        assert "#Балтика" in hashtags_block
+        assert len(caption) <= 1000
     finally:
         await bot.close()
 
 
 @pytest.mark.asyncio
-async def test_operator_test_message_contains_wind(tmp_path):
+async def test_operator_message_has_wind_two_units_and_gusts(tmp_path):
     bot = Bot("dummy", str(tmp_path / "sea_test_message.db"))
     try:
         rubric = bot.data.get_rubric_by_code("sea")
         assert rubric is not None
-        seed_sea_environment(bot, sea_id=1, wind_speed=7.2)
+        seed_sea_environment(bot, sea_id=1, wind_speed=7.2, wind_gust=14.0)
         photo_path = create_stub_image(tmp_path, "sea-test-message.jpg")
         create_sea_asset(
             bot,
@@ -3936,7 +3946,15 @@ async def test_operator_test_message_contains_wind(tmp_path):
         send_messages = [entry for entry in captured_requests if entry["method"] == "sendMessage"]
         assert send_messages
         message_text = send_messages[0]["data"]["text"]
-        assert "• Ветер: 26 км/ч (7.2 м/с, strong)" in message_text
+        assert "26 км/ч" in message_text
+        assert "7.2 м/с" in message_text
+        assert "порывы до 50 км/ч" in message_text
+
+        row = bot.db.execute("SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1").fetchone()
+        assert row is not None
+        metadata = json.loads(row["metadata"])
+        assert metadata.get("wind_gust_kmh") == pytest.approx(50.4, rel=0.05)
+        assert metadata.get("wind_gust_units") == "m/s"
     finally:
         await bot.close()
 

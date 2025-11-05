@@ -2819,14 +2819,40 @@ class Bot:
 
     def _get_sea_conditions(self, sea_id: int) -> dict[str, Any] | None:
         row = self.db.execute(
-            "SELECT wave_height_m, wind_speed_10m_ms, cloud_cover_pct, updated FROM sea_conditions WHERE sea_id=?",
+            """
+            SELECT
+                wave_height_m,
+                wind_speed_10m_ms,
+                wind_speed_10m_kmh,
+                wind_gusts_10m_ms,
+                wind_gusts_10m_kmh,
+                wind_units,
+                wind_gusts_units,
+                wind_time_ref,
+                cloud_cover_pct,
+                updated
+            FROM sea_conditions
+            WHERE sea_id=?
+            """,
             (sea_id,),
         ).fetchone()
         if not row:
             return None
+
+        keys = set(row.keys()) if hasattr(row, "keys") else set()
+
+        def _get(name: str) -> Any:
+            return row[name] if name in keys else None
+
         return {
             "wave_height_m": self._safe_float(row["wave_height_m"]),
             "wind_speed_10m_ms": self._safe_float(row["wind_speed_10m_ms"]),
+            "wind_speed_10m_kmh": self._safe_float(_get("wind_speed_10m_kmh")),
+            "wind_gusts_10m_ms": self._safe_float(_get("wind_gusts_10m_ms")),
+            "wind_gusts_10m_kmh": self._safe_float(_get("wind_gusts_10m_kmh")),
+            "wind_units": (_get("wind_units") or None),
+            "wind_gusts_units": (_get("wind_gusts_units") or None),
+            "wind_time_ref": _get("wind_time_ref"),
             "cloud_cover_pct": self._safe_float(row["cloud_cover_pct"]),
             "updated": row["updated"],
         }
@@ -13013,7 +13039,25 @@ class Bot:
         else:
             storm_state = "strong_storm"
         wind_ms = self._safe_float(conditions.get("wind_speed_10m_ms"))
-        wind_kmh = wind_ms * 3.6 if wind_ms is not None else None
+        wind_kmh = self._safe_float(conditions.get("wind_speed_10m_kmh"))
+        if wind_ms is not None:
+            wind_kmh = wind_ms * 3.6
+        elif wind_kmh is not None:
+            wind_ms = wind_kmh / 3.6
+        wind_gust_ms = self._safe_float(conditions.get("wind_gusts_10m_ms"))
+        wind_gust_kmh = self._safe_float(conditions.get("wind_gusts_10m_kmh"))
+        if wind_gust_ms is not None:
+            wind_gust_kmh = wind_gust_ms * 3.6
+        elif wind_gust_kmh is not None:
+            wind_gust_ms = wind_gust_kmh / 3.6
+        wind_units_raw = conditions.get("wind_units")
+        wind_units = wind_units_raw.strip() if isinstance(wind_units_raw, str) else None
+        wind_units = wind_units or None
+        gust_units_raw = conditions.get("wind_gusts_units")
+        wind_gust_units = gust_units_raw.strip() if isinstance(gust_units_raw, str) else None
+        wind_gust_units = wind_gust_units or None
+        wind_time_ref = conditions.get("wind_time_ref")
+
         wind_class = classify_wind_kph(wind_kmh)
         cloud_cover_pct = self._safe_float(conditions.get("cloud_cover_pct"))
         sky_bucket = bucket_clouds(cloud_cover_pct) or "partly_cloudy"
@@ -13037,27 +13081,65 @@ class Bot:
         )
         today_doy = now.timetuple().tm_yday
         season_window_days = 45
-        logging.info(
-            "SEA_RUBRIC input sea_id=%s wave_height=%.3f wave_score=%.2f storm_state=%s wind_ms=%s wind_kmh=%s wind_class=%s cloud_pct=%s sky_bucket=%s allowed_skies=%s want_sunset=%s storm_persisting=%s storm_reason=%s today_doy=%s season_window=±%s",
-            sea_id,
-            wave_height_value if wave_height_value is not None else float("nan"),
-            wave_score,
-            storm_state,
-            wind_ms,
-            wind_kmh,
-            wind_class,
-            cloud_cover_pct,
-            sky_bucket,
-            sorted(allowed_photo_skies),
-            want_sunset,
-            storm_persisting,
-            storm_persisting_reason,
-            today_doy,
-            season_window_days,
+
+        def _normalize_for_log(value: Any) -> Any:
+            if isinstance(value, float):
+                return round(value, 3)
+            if isinstance(value, dict):
+                return {key: _normalize_for_log(val) for key, val in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_normalize_for_log(item) for item in value]
+            if isinstance(value, set):
+                return [_normalize_for_log(item) for item in sorted(value)]
+            return value
+
+        def sea_log(event: str, **details: Any) -> None:
+            payload: dict[str, Any] = {
+                "event": event,
+                "sea_id": sea_id,
+                "storm_state": storm_state,
+                "storm_persisting": storm_persisting,
+                "want_sunset": want_sunset,
+            }
+            if storm_persisting_reason:
+                payload["storm_reason"] = storm_persisting_reason
+            payload.update(details)
+            logging.info("SEA_RUBRIC %s", json.dumps(_normalize_for_log(payload), ensure_ascii=False))
+
+        sea_log(
+            "conditions",
+            wave_height_m=wave_height_value,
+            wave_score=wave_score,
+            wind_ms=wind_ms,
+            wind_kmh=wind_kmh,
+            wind_gust_ms=wind_gust_ms,
+            wind_gust_kmh=wind_gust_kmh,
+            wind_class=wind_class,
+            wind_units=wind_units,
+            wind_gust_units=wind_gust_units,
+            wind_time_ref=wind_time_ref,
+            cloud_cover_pct=cloud_cover_pct,
+            sky_bucket=sky_bucket,
+            allowed_skies=sorted(allowed_photo_skies),
+            today_doy=today_doy,
+            season_window_days=season_window_days,
         )
 
         candidates = self.data.fetch_sea_candidates(rubric.id, limit=48)
         if not candidates:
+            sea_log(
+                "selection_empty",
+                reason="no_candidates",
+                wave_height_m=wave_height_value,
+                wave_score=wave_score,
+                wind_ms=wind_ms,
+                wind_kmh=wind_kmh,
+                wind_gust_ms=wind_gust_ms,
+                wind_gust_kmh=wind_gust_kmh,
+                wind_class=wind_class,
+                sky_bucket=sky_bucket,
+                clouds_label=clouds_label,
+            )
             logging.warning("SEA_RUBRIC no_candidates sea_id=%s", sea_id)
             await self._handle_sea_no_candidates(
                 rubric,
@@ -13102,22 +13184,21 @@ class Bot:
 
         working_candidates = [candidate for candidate in candidates if candidate["season_match"]]
         season_filter_removed = False
+        season_removal_reason: str | None = None
         if not working_candidates:
             season_filter_removed = True
+            season_removal_reason = "no_match"
             working_candidates = candidates
-            logging.info(
-                "SEA_RUBRIC season filter removed sea_id=%s reason=no_match total=%s",
-                sea_id,
-                len(candidates),
-            )
 
-        logging.info(
-            "SEA_RUBRIC season window=±%s today_doy=%s filtered=%s kept=%s removed=%s",
-            season_window_days,
-            today_doy,
-            filtered_count,
-            season_matches,
-            season_filter_removed,
+        sea_log(
+            "season_window",
+            total_candidates=len(candidates),
+            matched=season_matches,
+            filtered=filtered_count,
+            filter_removed=season_filter_removed,
+            removal_reason=season_removal_reason,
+            season_window_days=season_window_days,
+            today_doy=today_doy,
         )
 
         def compute_corridor(expand: float) -> tuple[float, float]:
@@ -13133,17 +13214,6 @@ class Bot:
             if low > high:
                 low, high = high, low
             return low, high
-
-        def _normalize_for_log(value: Any) -> Any:
-            if isinstance(value, float):
-                return round(value, 3)
-            if isinstance(value, dict):
-                return {key: _normalize_for_log(val) for key, val in value.items()}
-            if isinstance(value, (list, tuple)):
-                return [_normalize_for_log(item) for item in value]
-            if isinstance(value, set):
-                return [_normalize_for_log(item) for item in sorted(value)]
-            return value
 
         def evaluate_candidate(
             candidate: dict[str, Any],
@@ -13166,12 +13236,12 @@ class Bot:
             score = 0.0
             wave_value = candidate.get("wave_score")
             if wave_value is None and storm_state != "calm":
-                logging.info(
-                    "SEA_RUBRIC discard wave_missing asset_id=%s stage=%s attempt=%s storm_state=%s",
-                    getattr(asset_obj, "id", None),
-                    stage_name,
-                    attempt_index,
-                    storm_state,
+                sea_log(
+                    "candidate_discard",
+                    reason="wave_missing",
+                    asset_id=getattr(asset_obj, "id", None),
+                    stage=stage_name,
+                    attempt=attempt_index,
                 )
                 return None
             if wave_value is not None:
@@ -13305,12 +13375,13 @@ class Bot:
                     }
                 )
 
-            logging.info(
-                "SEA_RUBRIC attempt_%s stage=%s candidates=%s top5=%s",
-                attempt_index,
-                stage["name"],
-                len(sorted_results),
-                json.dumps(top_entries, ensure_ascii=False),
+            sea_log(
+                "stage_shortlist",
+                attempt=attempt_index,
+                stage=stage["name"],
+                candidate_total=len(sorted_results),
+                top5=top_entries,
+                wave_corridor=(round(low, 2), round(high, 2)),
             )
 
             if sorted_results:
@@ -13327,8 +13398,13 @@ class Bot:
                 break
 
         if selected_candidate is None:
-            logging.info("SEA_RUBRIC stage=fallback_age candidates=%s", len(working_candidates))
+            sea_log(
+                "selection_fallback",
+                reason="age_priority",
+                candidate_total=len(working_candidates),
+            )
             if not working_candidates:
+                sea_log("selection_fallback", reason="empty_pool", candidate_total=0)
                 logging.warning("SEA_RUBRIC fallback_no_candidates sea_id=%s", sea_id)
                 return False
 
@@ -13362,19 +13438,20 @@ class Bot:
             fact_sentence = None
             fact_id = None
             fact_info = {"reason": "disabled"}
-        logging.info(
-            "SEA_RUBRIC selected stage=%s asset_id=%s shot_doy=%s score=%.2f wave_score=%s photo_sky=%s season_match=%s storm_persisting=%s storm_reason=%s fact_id=%s reasons=%s",
-            selected_details.get("stage"),
-            asset.id,
-            selected_candidate.get("shot_doy"),
-            selected_details.get("score"),
-            selected_candidate.get("wave_score"),
-            selected_candidate.get("photo_sky"),
-            selected_candidate.get("season_match"),
-            storm_persisting,
-            storm_persisting_reason,
-            fact_id,
-            json.dumps(selected_details.get("reasons"), ensure_ascii=False),
+        sea_log(
+            "selection_final",
+            stage=selected_details.get("stage"),
+            asset_id=asset.id,
+            shot_doy=selected_candidate.get("shot_doy"),
+            score=selected_details.get("score"),
+            wave_score=selected_candidate.get("wave_score"),
+            photo_sky=selected_candidate.get("photo_sky"),
+            season_match=selected_candidate.get("season_match"),
+            sunset_selected=sunset_selected,
+            wave_corridor=selected_details.get("corridor"),
+            reasons=selected_details.get("reasons"),
+            fact_id=fact_id,
+            fact_info=fact_info,
         )
 
         place_hashtag: str | None = None
@@ -13383,7 +13460,9 @@ class Bot:
             if geo_data and geo_data.get("city"):
                 city_name = str(geo_data["city"]).strip()
                 if city_name:
-                    place_hashtag = f"#{city_name}"
+                    sanitized_city = re.sub(r"\s+", "", city_name)
+                    if sanitized_city:
+                        place_hashtag = f"#{sanitized_city}"
 
         def soft_trim(text: str, limit: int) -> str:
             if len(text) <= limit:
@@ -13412,6 +13491,7 @@ class Bot:
             wind_kmh=wind_kmh,
             clouds_label=clouds_label,
             sunset_selected=sunset_selected,
+            want_sunset=want_sunset,
             place_hashtag=place_hashtag,
             fact_sentence=fact_sentence,
             job=job,
@@ -13525,8 +13605,14 @@ class Bot:
             full_caption = full_candidate
             if len(full_candidate) <= 1000 or not candidate:
                 break
+        if caption_text_clean and len(caption_text_clean) > 350:
+            caption_text_clean = soft_trim(caption_text_clean, 350)
+            full_caption = compose_caption(caption_text_clean)
         if len(full_caption) > 1000:
             logging.warning("SEA_RUBRIC caption_trimmed length=%s", len(full_caption))
+            truncated_main = soft_trim(caption_text_clean or "", 280)
+            caption_text_clean = truncated_main
+            full_caption = compose_caption(truncated_main)
 
         caption_text = caption_text_clean
         logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
@@ -13592,6 +13678,11 @@ class Bot:
             "wind_speed": wind_ms,
             "wind_speed_ms": wind_ms,
             "wind_speed_kmh": wind_kmh,
+            "wind_gust_ms": wind_gust_ms,
+            "wind_gust_kmh": wind_gust_kmh,
+            "wind_units": wind_units,
+            "wind_gust_units": wind_gust_units,
+            "wind_time_ref": wind_time_ref,
             "wind_class": wind_class,
             "cloud_cover_pct": cloud_cover_pct,
             "sky_bucket": sky_bucket,
@@ -13649,10 +13740,16 @@ class Bot:
                 resolved_wind_kmh = 0.0
                 resolved_wind_class = "n/a"
             wind_class_display = resolved_wind_class or "n/a"
+            resolved_wind_gust_kmh = wind_gust_kmh
+            if resolved_wind_gust_kmh is None and wind_gust_ms is not None:
+                resolved_wind_gust_kmh = wind_gust_ms * 3.6
             wind_line = (
-                f"• Ветер: {resolved_wind_kmh:.0f} км/ч ({resolved_wind_ms:.1f} м/с, "
-                f"{wind_class_display})"
+                f"• Ветер: {resolved_wind_kmh:.0f} км/ч и {resolved_wind_ms:.1f} м/с "
+                f"({wind_class_display})"
             )
+            if resolved_wind_gust_kmh is not None:
+                wind_line += f", порывы до {resolved_wind_gust_kmh:.0f} км/ч"
+            wind_line += "."
             summary = (
                 "🧪 Тестовая публикация «Море / Закат на море» успешно.\n"
                 f"• Волна: {wave_text} м ({storm_state}).\n"
@@ -13778,6 +13875,7 @@ class Bot:
         wind_kmh: float | None,
         clouds_label: str,
         sunset_selected: bool,
+        want_sunset: bool,
         place_hashtag: str | None,
         fact_sentence: str | None,
         job: Job | None = None,
@@ -13823,16 +13921,16 @@ class Bot:
 
         system_prompt = (
             "Ты редактор телеграм-канала о Балтийском море. "
-            "Пиши очень коротко и по-блогерски: 1–2 предложения, допускается ещё одно вдохновляющее. "
-            "Избегай клише и не используй цифры и единицы измерения в описании погоды; числа из факта допустимы. "
+            "Пиши живо, будто делишься впечатлением: 1–2 бодрых предложения, допускается третье короткое вдохновляющее. "
+            "Избегай штампов и не используй цифры или единицы измерения про погоду — исключение только для чисел из fact_sentence. "
             "Не описывай облачность или солнце — это видно по фото. "
-            "Если storm_state='storm' и storm_persisting=true — начни подпись с вариации «Продолжает штормить…». "
-            "Если storm_state='storm' и шторм не продолжается — мягко скажи, что штормит сегодня. "
-            "Если storm_state='strong_storm' — начни с «Сегодня сильный шторм на море…» и допускай более экспрессивный тон. "
+            "Если storm_state='storm' и storm_persisting=true — начинай подпись с вариации «Продолжает штормить…». "
+            "Если storm_state='storm' и шторм не продолжается — мягко отметь, что штормит сегодня. "
+            "Если storm_state='strong_storm' — открывай «Сегодня сильный шторм на море…» и допускай более экспрессивный тон. "
             "Если море спокойно и sunset_selected=true — начни с вариации «Порадую закатом над морем…». "
-            "Если море спокойно без заката — начни с вариации «Порадую вас морем…». "
+            "Если море спокойно и sunset_selected=false — начни с вариации «Порадую вас морем…». "
             "Ветер описывай только образно, без чисел. "
-            "Если передан fact_sentence — добавь ровно одно дополнительное короткое предложение, живо пересказывая факт и без словосочетания «интересный факт». "
+            "Если передан fact_sentence — добавь ровно одно короткое предложение, живо пересказывая факт и без словосочетания «интересный факт». "
             "Хэштеги #море и #БалтийскоеМоре добавятся позже — не вставляй хэштеги в основной текст."
         )
         wind_label = wind_class if wind_class in {"strong", "very_strong"} else "none"
@@ -13846,6 +13944,7 @@ class Bot:
             "wind_kmh": round(wind_kmh, 1) if wind_kmh is not None else None,
             "clouds_label": clouds_label,
             "sunset_selected": sunset_selected,
+            "want_sunset": want_sunset,
             "place_hashtag": place_hashtag,
             "fact_sentence": fact_sentence,
             "blog_tone": True,
@@ -13855,14 +13954,14 @@ class Bot:
             "Параметры сцены (JSON):\n"
             f"{payload_text}\n"
             "Требования:\n"
-            "- 1–2 очень коротких предложения (допускается третье вдохновляющее).\n"
-            "- Не используй числа и единицы измерения в погодной части; числа из факта допустимы.\n"
+            "- 1–2 живых предложения (допускается третье короткое вдохновляющее завершение).\n"
+            "- Не используй цифры и единицы измерения для описания погоды; числа из fact_sentence допустимы.\n"
             "- Не описывай облачность или солнце.\n"
-            "- Соблюдай правила вступления из system_prompt для штормов, сильного шторма и заката.\n"
-            "- Если wind_class=strong или very_strong — опиши ветер только образно, без чисел.\n"
+            "- Соблюдай правила вступления из system_prompt для штормов, сильного шторма и спокойного моря.\n"
             "- Если storm_persisting=true и storm_state='storm' — начни с вариации «Продолжает штормить…».\n"
+            "- Если wind_class=strong или wind_class=very_strong — опиши ветер только образно, без чисел.\n"
             "- Если fact_sentence не null — добавь ровно одно короткое предложение, живо пересказывающее факт и без слов «интересный факт».\n"
-            "- Основной текст держи в пределах 350 символов, тон дружелюбный, блогерский.\n"
+            "- Основной текст должен поместиться в 350 символов и звучать дружелюбно, по-блогерски.\n"
             "- Хэштеги возвращай только в массиве hashtags — в тексте их быть не должно.\n"
             "Ответ строго в формате JSON: {\"caption\": string, \"hashtags\": string[]}."
         )

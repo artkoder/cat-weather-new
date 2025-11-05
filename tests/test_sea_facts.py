@@ -1,11 +1,13 @@
 import html
 import json
 import os
+import random
 import types
 from datetime import datetime, timedelta
 
 import pytest
 
+from facts.loader import Fact
 from main import Bot
 from openai_client import OpenAIResponse
 from tests.fixtures.sea import create_sea_asset, create_stub_image, seed_sea_environment
@@ -26,6 +28,65 @@ async def test_facts_skipped_on_strong_storm(tmp_path):
         assert text is None
         assert fact_id is None
         assert info.get("reason") == "strong_storm"
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_facts_nonrepeating(tmp_path, monkeypatch):
+    os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
+    bot = Bot("dummy", str(tmp_path / "facts.sqlite"))
+    try:
+        facts_pool = [Fact(id=f"fact-{idx}", text=f"Факт про Балтику {idx}") for idx in range(3)]
+        monkeypatch.setattr("main.load_baltic_facts", lambda: facts_pool)
+
+        base_time = datetime(2024, 1, 1, 9, 0, 0)
+        ids = {fact.id for fact in facts_pool}
+
+        _, fact_id1, info1 = bot._prepare_sea_fact(
+            sea_id=1,
+            storm_state="calm",
+            enable_facts=True,
+            now=base_time,
+            rng=random.Random(0),
+        )
+        assert fact_id1 in ids
+        assert info1["weights"][fact_id1] == pytest.approx(1.0)
+
+        next_time = base_time + timedelta(days=1)
+        _, fact_id2, info2 = bot._prepare_sea_fact(
+            sea_id=1,
+            storm_state="calm",
+            enable_facts=True,
+            now=next_time,
+            rng=random.Random(1),
+        )
+        assert fact_id2 in ids
+        assert fact_id2 != fact_id1
+        assert fact_id1 not in info2["candidates"]
+
+        window_time = base_time + timedelta(days=8)
+        _, fact_id3, info3 = bot._prepare_sea_fact(
+            sea_id=1,
+            storm_state="calm",
+            enable_facts=True,
+            now=window_time,
+            rng=random.Random(2),
+        )
+        assert fact_id3 in ids
+        assert info3["weights"].get(fact_id1) == pytest.approx(0.5)
+
+        usage_map = bot.data.get_fact_usage_map()
+        assert usage_map[fact_id1][0] >= 1
+        assert usage_map[fact_id2][0] >= 1
+
+        day_start = int(base_time.timestamp()) // 86400
+        day_next = int(next_time.timestamp()) // 86400
+        day_far = int(window_time.timestamp()) // 86400
+        rollout_entries = bot.data.get_fact_rollout_range(day_start, end_day=day_far)
+        rollout_map = {day: fid for day, fid in rollout_entries}
+        assert rollout_map.get(day_start) == fact_id1
+        assert rollout_map.get(day_next) == fact_id2
     finally:
         await bot.close()
 

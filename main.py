@@ -2501,7 +2501,7 @@ class Bot:
             gust_kmh_log = f"{wind_gust_kmh:.2f}" if isinstance(wind_gust_kmh, (int, float)) else "None"
             gust_ms_log = f"{wind_gust_ms:.2f}" if isinstance(wind_gust_ms, (int, float)) else "None"
             cloud_log = f"{cloud_cover_pct:.1f}" if isinstance(cloud_cover_pct, (int, float)) else "None"
-            
+
             # Enhanced structured logging for SEA_RUBRIC weather
             logging.info(
                 "SEA_RUBRIC weather sea_id=%s lat=%s lon=%s time_ref=%s wave_height_m=%s wind_speed_kmh=%s wind_speed_ms=%s wind_units=%s wind_gusts_kmh=%s wind_gusts_ms=%s wind_gusts_units=%s cloud_cover_pct=%s",

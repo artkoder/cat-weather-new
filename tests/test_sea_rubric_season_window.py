@@ -1,8 +1,9 @@
 """Integration test for sea rubric day-of-year based season window."""
 import json
+import logging
 import os
 import sys
-from datetime import datetime, date, timedelta
+from datetime import UTC, datetime, date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -397,6 +398,160 @@ async def test_sea_rubric_seasonal_window_year_wraparound(monkeypatch, tmp_path)
         
         # Verify the filtering function works without error
         # The actual season_match values will depend on when the test runs
+
+    if db_path.exists():
+        db_path.unlink()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_sea_rubric_logging_includes_shot_doy_and_reasons(monkeypatch, tmp_path, caplog):
+    webhook_url = "https://example.com/base"
+    db_path = Path("/tmp/test_bot_logging.db")
+    if db_path.exists():
+        db_path.unlink()
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy")
+    monkeypatch.setenv("WEBHOOK_URL", webhook_url)
+    monkeypatch.setenv("4O_API_KEY", "dummy-token")
+    monkeypatch.setattr(main_module, "DB_PATH", str(db_path))
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def bot_noop(self, *_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(main_module, "ensure_webhook", noop)
+    monkeypatch.setattr(main_module.Bot, "run_openai_health_check", bot_noop)
+    monkeypatch.setattr(main_module.Bot, "collect_weather", bot_noop)
+    monkeypatch.setattr(main_module.Bot, "collect_sea", bot_noop)
+    monkeypatch.setattr(main_module.Bot, "process_weather_channels", bot_noop)
+    monkeypatch.setattr(main_module.Bot, "process_rubric_schedule", bot_noop)
+
+    caplog.set_level(logging.INFO)
+    caplog.clear()
+
+    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+        if method == "getWebhookInfo":
+            return {"ok": True, "result": {"url": ""}}
+        if method == "setWebhook":
+            return {"ok": True}
+        if method == "sendPhoto":
+            return {"ok": True, "result": {"message_id": 555}}
+        return {"ok": True}
+
+    monkeypatch.setattr(main_module.Bot, "api_request", fake_api_request, raising=False)
+
+    async def fake_generate_sea_caption(self, **_kwargs) -> tuple[str, list[str]]:
+        return "Короткий тестовый текст", ["#море", "#тест"]
+
+    monkeypatch.setattr(main_module.Bot, "_generate_sea_caption", fake_generate_sea_caption, raising=False)
+
+    async def fake_reverse_geocode(self, *_args, **_kwargs) -> dict[str, Any]:
+        return {}
+
+    monkeypatch.setattr(main_module.Bot, "_reverse_geocode", fake_reverse_geocode, raising=False)
+
+    def fake_prepare_sea_fact(self, *, sea_id: int, storm_state: str, enable_facts: bool, now: datetime, rng=None):
+        return None, None, {"reason": "test"}
+
+    monkeypatch.setattr(main_module.Bot, "_prepare_sea_fact", fake_prepare_sea_fact, raising=False)
+
+    async def fake_ensure_asset_source(self, asset):
+        return asset.local_path, False
+
+    monkeypatch.setattr(main_module.Bot, "_ensure_asset_source", fake_ensure_asset_source, raising=False)
+
+    app = main_module.create_app()
+    async with TestServer(app) as server:
+        bot = server.app["bot"]
+        bot.openai = FakeOpenAI()
+
+        rubric = bot.data.get_rubric_by_code("sea")
+        assert rubric is not None
+
+        sea_channel = -900200
+        updated_config = dict(rubric.config or {})
+        updated_config.update(
+            {
+                "enabled": True,
+                "channel_id": sea_channel,
+                "test_channel_id": sea_channel,
+                "sea_id": 1,
+            }
+        )
+        bot.data.save_rubric_config("sea", updated_config)
+
+        seed_sea_environment(
+            bot,
+            sea_id=1,
+            sea_lat=54.95,
+            sea_lon=20.2,
+            wave=1.0,
+            water_temp=9.0,
+            city_id=201,
+            city_name="Зеленоградск",
+            city_lat=54.9604,
+            city_lon=20.4721,
+            wind_speed=6.0,
+        )
+
+        now_utc = datetime.now(UTC)
+        shot_dt = now_utc - timedelta(days=3)
+        shot_timestamp = int(shot_dt.timestamp())
+        shot_doy = shot_dt.timetuple().tm_yday
+
+        good_file = create_stub_image(tmp_path, "good.jpg")
+        missing_file = create_stub_image(tmp_path, "missing.jpg")
+
+        good_id = create_sea_asset(
+            bot,
+            rubric_id=rubric.id,
+            message_id=601,
+            file_name="good.jpg",
+            local_path=good_file,
+            tags=["sea"],
+            sea_wave_score=1.2,
+            photo_sky="sunny",
+            is_sunset=True,
+        )
+        bot.db.execute(
+            "UPDATE assets SET shot_at_utc=?, shot_doy=? WHERE id=?",
+            (shot_timestamp, shot_doy, good_id),
+        )
+
+        missing_id = create_sea_asset(
+            bot,
+            rubric_id=rubric.id,
+            message_id=602,
+            file_name="missing.jpg",
+            local_path=missing_file,
+            tags=["sea"],
+            sea_wave_score=None,
+            photo_sky="sunny",
+            is_sunset=False,
+        )
+        bot.db.execute(
+            "UPDATE assets SET shot_at_utc=?, shot_doy=? WHERE id=?",
+            (shot_timestamp, shot_doy, missing_id),
+        )
+        bot.db.commit()
+
+        result = await bot._publish_sea(
+            rubric,
+            sea_channel,
+            test=True,
+            job=None,
+            initiator_id=None,
+        )
+        assert result is True
+
+    messages = [record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()]
+    assert any("season window=" in msg and "removed=" in msg for msg in messages)
+    assert any("attempt_" in msg and "top5=" in msg for msg in messages)
+    assert any("discard wave_missing" in msg for msg in messages)
+    assert any("SEA_RUBRIC selected" in msg and "shot_doy=" in msg and "reasons=" in msg for msg in messages)
 
     if db_path.exists():
         db_path.unlink()

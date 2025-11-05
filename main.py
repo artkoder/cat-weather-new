@@ -514,32 +514,39 @@ def is_in_season_window(shot_doy: int | None, *, today_doy: int, window: int = 4
     """
     if shot_doy is None:
         return False
-    
+
     try:
         shot_value = int(shot_doy)
     except (TypeError, ValueError):
         return False
-    
-    if shot_value < 1 or shot_value > 366:
+
+    try:
+        today_value = int(today_doy)
+    except (TypeError, ValueError):
         return False
-    
-    # Normalize leap day (366) to 365 if today is in a non-leap year
-    # Check if today_doy suggests we're in a non-leap year (max 365)
-    # We determine this by checking if today_doy > 365 or by context
-    # For simplicity, if shot_doy == 366, treat it as 365 for non-leap comparison
+
+    try:
+        window_value = int(window)
+    except (TypeError, ValueError):
+        window_value = 0
+
+    if window_value < 0:
+        window_value = 0
+
+    if not 1 <= shot_value <= 366:
+        return False
+    if not 1 <= today_value <= 366:
+        return False
+
     period = 365
     normalized_shot = shot_value if shot_value <= 365 else 365
-    normalized_today = today_doy if today_doy <= 365 else 365
-    
-    # Calculate circular distance on a ring of 'period' days
-    # Distance can be calculated in two directions around the circle
+    normalized_today = today_value if today_value <= 365 else 365
+
     forward_dist = (normalized_shot - normalized_today) % period
     backward_dist = (normalized_today - normalized_shot) % period
-    
-    # Take the minimum of the two distances
     min_dist = min(forward_dist, backward_dist)
-    
-    return min_dist <= window
+
+    return min_dist <= window_value
 
 
 def season_match(season_guess: str | None, allowed: set[str]) -> bool:
@@ -13075,16 +13082,15 @@ class Bot:
         # Apply seasonal filter based on day-of-year
         for candidate in candidates:
             candidate["season_match"] = is_in_season_window(
-                candidate.get("shot_doy"), 
-                today_doy=today_doy, 
-                window=season_window_days
+                candidate.get("shot_doy"),
+                today_doy=today_doy,
+                window=season_window_days,
             )
-        
+
         season_matches = sum(1 for candidate in candidates if candidate["season_match"])
         filtered_count = len(candidates) - season_matches
-        
+
         if DEBUG_SEA_PICK and filtered_count > 0:
-            # Log first few rejected candidates for debugging
             rejected = [c for c in candidates if not c["season_match"]][:5]
             for c in rejected:
                 logging.debug(
@@ -13093,21 +13099,26 @@ class Bot:
                     c.get("shot_doy"),
                     today_doy,
                 )
-        
-        logging.info(
-            "SEA_RUBRIC season window=±%s today_doy=%s period=365 filtered=%s removed=%s",
-            season_window_days,
-            today_doy,
-            filtered_count,
-            season_matches,
-        )
 
         working_candidates = [candidate for candidate in candidates if candidate["season_match"]]
         season_filter_removed = False
         if not working_candidates:
             season_filter_removed = True
             working_candidates = candidates
-            logging.info("SEA_RUBRIC season filter removed sea_id=%s reason=no_match", sea_id)
+            logging.info(
+                "SEA_RUBRIC season filter removed sea_id=%s reason=no_match total=%s",
+                sea_id,
+                len(candidates),
+            )
+
+        logging.info(
+            "SEA_RUBRIC season window=±%s today_doy=%s filtered=%s kept=%s removed=%s",
+            season_window_days,
+            today_doy,
+            filtered_count,
+            season_matches,
+            season_filter_removed,
+        )
 
         def compute_corridor(expand: float) -> tuple[float, float]:
             if storm_state == "calm":
@@ -13123,6 +13134,17 @@ class Bot:
                 low, high = high, low
             return low, high
 
+        def _normalize_for_log(value: Any) -> Any:
+            if isinstance(value, float):
+                return round(value, 3)
+            if isinstance(value, dict):
+                return {key: _normalize_for_log(val) for key, val in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [_normalize_for_log(item) for item in value]
+            if isinstance(value, set):
+                return [_normalize_for_log(item) for item in sorted(value)]
+            return value
+
         def evaluate_candidate(
             candidate: dict[str, Any],
             low: float,
@@ -13130,7 +13152,10 @@ class Bot:
             *,
             enforce_sky: bool,
             sunset_priority: bool,
+            stage_name: str,
+            attempt_index: int,
         ) -> tuple[float, dict[str, Any], dict[str, Any]] | None:
+            asset_obj = candidate.get("asset")
             photo_sky = candidate.get("photo_sky")
             if enforce_sky and (not photo_sky or photo_sky not in allowed_photo_skies):
                 return None
@@ -13140,6 +13165,15 @@ class Bot:
             }
             score = 0.0
             wave_value = candidate.get("wave_score")
+            if wave_value is None and storm_state != "calm":
+                logging.info(
+                    "SEA_RUBRIC discard wave_missing asset_id=%s stage=%s attempt=%s storm_state=%s",
+                    getattr(asset_obj, "id", None),
+                    stage_name,
+                    attempt_index,
+                    storm_state,
+                )
+                return None
             if wave_value is not None:
                 try:
                     wave_value_float = float(wave_value)
@@ -13223,7 +13257,7 @@ class Bot:
 
         selected_candidate: dict[str, Any] | None = None
         selected_details: dict[str, Any] = {}
-        for stage in stages:
+        for attempt_index, stage in enumerate(stages, start=1):
             low, high = compute_corridor(stage["wave_expand"])
             stage_results: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
             for candidate in working_candidates:
@@ -13233,11 +13267,13 @@ class Bot:
                     high,
                     enforce_sky=stage["enforce_sky"],
                     sunset_priority=stage["sunset_priority"],
+                    stage_name=stage["name"],
+                    attempt_index=attempt_index,
                 )
                 if result is None:
                     continue
                 stage_results.append(result)
-            logging.info("SEA_RUBRIC stage=%s candidates=%s", stage["name"], len(stage_results))
+
             if stage_results:
                 def _ordering(item: tuple[float, dict[str, Any], dict[str, Any]]) -> tuple[float, float, int]:
                     score_value, _reason_payload, candidate_payload = item
@@ -13249,7 +13285,36 @@ class Bot:
                         asset_id_int = 0
                     return (round(score_value, 4), round(age_value, 4), -asset_id_int)
 
-                best_score, best_reasons, best_candidate = max(stage_results, key=_ordering)
+                sorted_results = sorted(stage_results, key=_ordering, reverse=True)
+            else:
+                sorted_results = []
+
+            top_entries: list[dict[str, Any]] = []
+            for score_value, reason_payload, candidate_payload in sorted_results[:5]:
+                asset_obj = candidate_payload["asset"]
+                top_entries.append(
+                    {
+                        "id": getattr(asset_obj, "id", None),
+                        "wave_score": _normalize_for_log(candidate_payload.get("wave_score")),
+                        "sky": candidate_payload.get("photo_sky"),
+                        "shot_doy": candidate_payload.get("shot_doy"),
+                        "season_match": candidate_payload.get("season_match"),
+                        "sunset": candidate_payload.get("is_sunset"),
+                        "score": _normalize_for_log(score_value),
+                        "reasons": _normalize_for_log(reason_payload),
+                    }
+                )
+
+            logging.info(
+                "SEA_RUBRIC attempt_%s stage=%s candidates=%s top5=%s",
+                attempt_index,
+                stage["name"],
+                len(sorted_results),
+                json.dumps(top_entries, ensure_ascii=False),
+            )
+
+            if sorted_results:
+                best_score, best_reasons, best_candidate = sorted_results[0]
                 best_reasons["allowed_skies"] = sorted(allowed_photo_skies)
                 best_reasons["stage"] = stage["name"]
                 selected_candidate = best_candidate
@@ -13298,9 +13363,10 @@ class Bot:
             fact_id = None
             fact_info = {"reason": "disabled"}
         logging.info(
-            "SEA_RUBRIC selected stage=%s asset_id=%s score=%.2f wave_score=%s photo_sky=%s season_match=%s storm_persisting=%s storm_reason=%s fact_id=%s reasons=%s",
+            "SEA_RUBRIC selected stage=%s asset_id=%s shot_doy=%s score=%.2f wave_score=%s photo_sky=%s season_match=%s storm_persisting=%s storm_reason=%s fact_id=%s reasons=%s",
             selected_details.get("stage"),
             asset.id,
+            selected_candidate.get("shot_doy"),
             selected_details.get("score"),
             selected_candidate.get("wave_score"),
             selected_candidate.get("photo_sky"),

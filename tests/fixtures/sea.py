@@ -136,6 +136,7 @@ def create_sea_asset(
         "is_sea": True,
         "sea_wave_score": sea_wave_score,
         "photo_sky": photo_sky,
+        "sky_visible": True,  # Default to True for sea fixtures
         "is_sunset": is_sunset,
         "season_guess": season_guess,
     }

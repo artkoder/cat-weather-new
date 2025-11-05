@@ -2496,13 +2496,26 @@ class Bot:
             )
             self.db.commit()
             wave_log = f"{wave_height_for_cache:.3f}" if isinstance(wave_height_for_cache, (int, float)) else "None"
-            wind_log = f"{wind_speed_ms:.2f}" if isinstance(wind_speed_ms, (int, float)) else "None"
+            wind_kmh_log = f"{wind_speed_kmh:.2f}" if isinstance(wind_speed_kmh, (int, float)) else "None"
+            wind_ms_log = f"{wind_speed_ms:.2f}" if isinstance(wind_speed_ms, (int, float)) else "None"
+            gust_kmh_log = f"{wind_gust_kmh:.2f}" if isinstance(wind_gust_kmh, (int, float)) else "None"
+            gust_ms_log = f"{wind_gust_ms:.2f}" if isinstance(wind_gust_ms, (int, float)) else "None"
             cloud_log = f"{cloud_cover_pct:.1f}" if isinstance(cloud_cover_pct, (int, float)) else "None"
+            
+            # Enhanced structured logging for SEA_RUBRIC weather
             logging.info(
-                "Sea cache updated sea_id=%s wave_m=%s wind_ms=%s cloud_pct=%s",
+                "SEA_RUBRIC weather sea_id=%s lat=%s lon=%s time_ref=%s wave_height_m=%s wind_speed_kmh=%s wind_speed_ms=%s wind_units=%s wind_gusts_kmh=%s wind_gusts_ms=%s wind_gusts_units=%s cloud_cover_pct=%s",
                 s["id"],
+                s["lat"],
+                s["lon"],
+                wind_time_ref or "unknown",
                 wave_log,
-                wind_log,
+                wind_kmh_log,
+                wind_ms_log,
+                wind_units or "unknown",
+                gust_kmh_log,
+                gust_ms_log,
+                wind_gust_units or "unknown",
                 cloud_log,
             )
             updated.add(s["id"])

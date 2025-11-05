@@ -231,8 +231,8 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
             (1.6, datetime.utcnow().isoformat(), 1),
         )
         bot.db.execute(
-            "UPDATE sea_conditions SET wave_height_m=?, wind_speed_10m_ms=?, cloud_cover_pct=?, updated=? WHERE sea_id=?",
-            (1.6, 12.0, 65.0, datetime.utcnow().isoformat(), 1),
+            "UPDATE sea_conditions SET wave_height_m=?, wind_speed_10m_ms=?, wind_speed_10m_kmh=?, wind_gusts_10m_ms=?, wind_gusts_10m_kmh=?, wind_units=?, wind_gusts_units=?, wind_time_ref=?, cloud_cover_pct=?, updated=? WHERE sea_id=?",
+            (1.6, 12.0, 43.2, 15.0, 54.0, "m/s", "km/h", datetime.utcnow().isoformat(), 65.0, datetime.utcnow().isoformat(), 1),
         )
         bot.db.execute(
             "UPDATE weather_cache_hour SET wind_speed=?, timestamp=? WHERE city_id=?",
@@ -254,11 +254,18 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
         assert storm_meta["wind_class"] == "very_strong"
         assert storm_meta["place_hashtag"] is None
         assert storm_meta["wind_speed_ms"] == pytest.approx(12.0)
+        # Verify enhanced wind data is preserved in metadata
+        assert storm_meta.get("wind_speed_kmh") == pytest.approx(43.2)
+        assert storm_meta.get("wind_gust_ms") == pytest.approx(15.0)
+        assert storm_meta.get("wind_gust_kmh") == pytest.approx(54.0)
+        assert storm_meta.get("wind_units") == "m/s"
+        assert storm_meta.get("wind_gust_units") == "km/h"
+        assert storm_meta.get("cloud_cover_pct") == 65.0
         assert bot.data.get_asset(storm_id) is None
 
         bot.db.execute(
-            "UPDATE sea_conditions SET wave_height_m=?, wind_speed_10m_ms=?, cloud_cover_pct=?, updated=? WHERE sea_id=?",
-            (2.2, 16.0, 85.0, datetime.utcnow().isoformat(), 1),
+            "UPDATE sea_conditions SET wave_height_m=?, wind_speed_10m_ms=?, wind_speed_10m_kmh=?, wind_gusts_10m_ms=?, wind_gusts_10m_kmh=?, wind_units=?, wind_gusts_units=?, wind_time_ref=?, cloud_cover_pct=?, updated=? WHERE sea_id=?",
+            (2.2, 16.0, 57.6, 20.0, 72.0, "m/s", "km/h", datetime.utcnow().isoformat(), 85.0, datetime.utcnow().isoformat(), 1),
         )
         bot.db.execute(
             "UPDATE weather_cache_hour SET wind_speed=?, timestamp=? WHERE city_id=?",
@@ -279,6 +286,13 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
         assert heavy_meta["wind_class"] == "very_strong"
         assert heavy_meta["storm_state"] == "strong_storm"
         assert heavy_meta["wind_speed_ms"] == pytest.approx(16.0)
+        # Verify enhanced wind data is preserved in metadata for heavy storm
+        assert heavy_meta.get("wind_speed_kmh") == pytest.approx(57.6)
+        assert heavy_meta.get("wind_gust_ms") == pytest.approx(20.0)
+        assert heavy_meta.get("wind_gust_kmh") == pytest.approx(72.0)
+        assert heavy_meta.get("wind_units") == "m/s"
+        assert heavy_meta.get("wind_gust_units") == "km/h"
+        assert heavy_meta.get("cloud_cover_pct") == 85.0
         assert bot.data.get_asset(heavy_storm_id) is None
 
         for call in send_calls:

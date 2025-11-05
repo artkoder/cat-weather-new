@@ -1687,3 +1687,178 @@ def _patch_pillow_exif_weather(monkeypatch: pytest.MonkeyPatch) -> None:
         return original_getexif(self, *args, **kwargs)
 
     monkeypatch.setattr(Image.Image, "getexif", _patched_getexif)
+
+
+@pytest.mark.asyncio
+async def test_collect_sea_enhanced_wind_data(tmp_path, caplog):
+    """Test that collect_sea stores and logs enhanced wind data with km/h and m/s values."""
+    bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
+    
+    # Add a sea location
+    bot.db.execute("INSERT INTO seas (id, name, lat, lon) VALUES (1, 'Test Sea', 54.95, 20.2)")
+    bot.db.commit()
+    
+    # Mock the sea API responses
+    async def mock_fetch_sea(lat, lon):
+        return {
+            "hourly": {
+                "time": ["2024-01-01T00:00:00Z", "2024-01-01T06:00:00Z", "2024-01-01T12:00:00Z", "2024-01-01T18:00:00Z"],
+                "sea_surface_temperature": [8.0, 9.0, 10.0, 11.0],
+                "wave_height": [0.5, 0.6, 0.7, 0.8]
+            },
+            "current": {
+                "wave_height": 0.45
+            }
+        }
+    
+    async def mock_fetch_sea_conditions(lat, lon):
+        return {
+            "current": {
+                "wind_speed_10m": 15.0,
+                "wind_gusts_10m": 25.0,
+                "cloud_cover": 65,
+                "time": "2024-01-01T12:00:00Z"
+            },
+            "current_units": {
+                "wind_speed_10m": "km/h",
+                "wind_gusts_10m": "km/h"
+            }
+        }
+    
+    bot.fetch_open_meteo_sea = mock_fetch_sea  # type: ignore
+    bot.fetch_open_meteo_sea_conditions = mock_fetch_sea_conditions  # type: ignore
+    
+    await bot.collect_sea(force=True)
+    
+    # Check that sea_conditions table has the enhanced data
+    row = bot.db.execute("""
+        SELECT sea_id, wave_height_m, wind_speed_10m_kmh, wind_speed_10m_ms, 
+               wind_gusts_10m_kmh, wind_gusts_10m_ms, wind_units, 
+               wind_gusts_units, wind_time_ref, cloud_cover_pct
+        FROM sea_conditions WHERE sea_id = 1
+    """).fetchone()
+    
+    assert row is not None
+    assert row["sea_id"] == 1
+    assert row["wave_height_m"] == 0.45
+    assert row["wind_speed_10m_kmh"] == 15.0
+    assert row["wind_speed_10m_ms"] == pytest.approx(15.0 / 3.6, rel=1e-3)
+    assert row["wind_gusts_10m_kmh"] == 25.0
+    assert row["wind_gusts_10m_ms"] == pytest.approx(25.0 / 3.6, rel=1e-3)
+    assert row["wind_units"] == "km/h"
+    assert row["wind_gusts_units"] == "km/h"
+    assert row["wind_time_ref"] == "2024-01-01T12:00:00Z"
+    assert row["cloud_cover_pct"] == 65.0
+    
+    # Check that structured logging contains all required fields
+    log_messages = [record.message for record in caplog.records if "SEA_RUBRIC weather" in record.message]
+    assert len(log_messages) >= 1
+    
+    weather_log = log_messages[-1]  # Get the final weather log
+    assert "sea_id=1" in weather_log
+    assert "lat=54.95" in weather_log
+    assert "lon=20.2" in weather_log
+    assert "time_ref=2024-01-01T12:00:00Z" in weather_log
+    assert "wave_height_m=0.450" in weather_log
+    assert "wind_speed_kmh=15.00" in weather_log
+    assert "wind_speed_ms=4.17" in weather_log
+    assert "wind_units=km/h" in weather_log
+    assert "wind_gusts_kmh=25.00" in weather_log
+    assert "wind_gusts_ms=6.94" in weather_log
+    assert "wind_gusts_units=km/h" in weather_log
+    assert "cloud_cover_pct=65.0" in weather_log
+    
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_collect_sea_missing_conditions_graceful_fallback(tmp_path, caplog):
+    """Test that collect_sea handles missing conditions data gracefully."""
+    bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
+    
+    # Add a sea location
+    bot.db.execute("INSERT INTO seas (id, name, lat, lon) VALUES (1, 'Test Sea', 54.95, 20.2)")
+    bot.db.commit()
+    
+    # Mock the sea API responses with missing conditions
+    async def mock_fetch_sea(lat, lon):
+        return {
+            "hourly": {
+                "time": ["2024-01-01T00:00:00Z", "2024-01-01T06:00:00Z", "2024-01-01T12:00:00Z", "2024-01-01T18:00:00Z"],
+                "sea_surface_temperature": [8.0, 9.0, 10.0, 11.0],
+                "wave_height": [0.5, 0.6, 0.7, 0.8]
+            },
+            "current": {
+                "wave_height": 0.45
+            }
+        }
+    
+    async def mock_fetch_sea_conditions(lat, lon):
+        return None  # Simulate failed fetch
+    
+    bot.fetch_open_meteo_sea = mock_fetch_sea  # type: ignore
+    bot.fetch_open_meteo_sea_conditions = mock_fetch_sea_conditions  # type: ignore
+    
+    await bot.collect_sea(force=True)
+    
+    # Check that sea_conditions table still has basic data
+    row = bot.db.execute("""
+        SELECT sea_id, wave_height_m, wind_speed_10m_kmh, wind_speed_10m_ms, 
+               wind_gusts_10m_kmh, wind_gusts_10m_ms, wind_units, 
+               wind_gusts_units, wind_time_ref, cloud_cover_pct
+        FROM sea_conditions WHERE sea_id = 1
+    """).fetchone()
+    
+    assert row is not None
+    assert row["sea_id"] == 1
+    assert row["wave_height_m"] == 0.45
+    assert row["wind_speed_10m_kmh"] is None
+    assert row["wind_speed_10m_ms"] is None
+    assert row["wind_gusts_10m_kmh"] is None
+    assert row["wind_gusts_10m_ms"] is None
+    assert row["wind_units"] is None
+    assert row["wind_gusts_units"] is None
+    assert row["wind_time_ref"] is None
+    assert row["cloud_cover_pct"] is None
+    
+    # Check that structured logging handles missing data gracefully
+    log_messages = [record.message for record in caplog.records if "SEA_RUBRIC weather" in record.message]
+    assert len(log_messages) >= 1
+    
+    weather_log = log_messages[-1]
+    assert "sea_id=1" in weather_log
+    assert "wind_speed_kmh=None" in weather_log
+    assert "wind_speed_ms=None" in weather_log
+    assert "wind_units=unknown" in weather_log
+    
+    await bot.close()
+
+
+def test_resolve_wind_speed_conversion():
+    """Test km/h to m/s conversion and vice versa."""
+    from main import resolve_wind_speed
+    
+    # Test km/h input
+    kmh, ms = resolve_wind_speed(36.0, "km/h")
+    assert kmh == 36.0
+    assert ms == 10.0  # 36 / 3.6
+    
+    # Test m/s input
+    kmh, ms = resolve_wind_speed(10.0, "m/s")
+    assert kmh == 36.0  # 10 * 3.6
+    assert ms == 10.0
+    
+    # Test unknown units (default to km/h)
+    kmh, ms = resolve_wind_speed(18.0, "unknown")
+    assert kmh == 18.0
+    assert ms == 5.0  # 18 / 3.6
+    
+    # Test None input
+    kmh, ms = resolve_wind_speed(None, "km/h")
+    assert kmh is None
+    assert ms is None
+    
+    # Test invalid input
+    kmh, ms = resolve_wind_speed("invalid", "km/h")
+    assert kmh is None
+    assert ms is None

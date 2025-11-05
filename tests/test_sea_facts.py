@@ -6,9 +6,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from main import Bot
 from openai_client import OpenAIResponse
 from tests.fixtures.sea import create_sea_asset, create_stub_image, seed_sea_environment
-from main import Bot
 
 
 @pytest.mark.asyncio

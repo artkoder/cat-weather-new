@@ -9,6 +9,7 @@ import pytest
 from aiohttp import web
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+import main
 from data_access import create_device, insert_upload, revoke_device, set_upload_status
 from main import Bot, create_app
 
@@ -16,7 +17,8 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 os.environ.setdefault("WEBHOOK_URL", "https://example.com")
 
 @pytest.mark.asyncio
-async def test_startup_cleanup():
+async def test_startup_cleanup(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "prod.sqlite"))
     app = create_app()
 
     async def dummy(method, data=None):

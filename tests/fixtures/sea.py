@@ -19,12 +19,19 @@ def seed_sea_environment(
     city_lat: float = 54.9604,
     city_lon: float = 20.4721,
     wind_speed: float = 5.0,
+    wind_gust: float | None = None,
     cloud_cover: float = 35.0,
     timestamp: datetime | None = None,
 ) -> str:
     """Seed reference sea, city, and weather rows for integration tests."""
 
     ts = (timestamp or datetime.utcnow()).isoformat()
+    wind_speed_ms = wind_speed
+    wind_speed_kmh = wind_speed_ms * 3.6 if wind_speed_ms is not None else None
+    gust_ms = wind_gust
+    gust_kmh = gust_ms * 3.6 if gust_ms is not None else None
+    wind_units = "m/s" if wind_speed_ms is not None else None
+    gust_units = "m/s" if gust_ms is not None else None
 
     bot.db.execute(
         "INSERT OR REPLACE INTO seas (id, name, lat, lon) VALUES (?, ?, ?, ?)",
@@ -42,10 +49,24 @@ def seed_sea_environment(
     bot.db.execute(
         """
         INSERT OR REPLACE INTO sea_conditions (
-            sea_id, updated, wave_height_m, wind_speed_10m_ms, cloud_cover_pct
-        ) VALUES (?, ?, ?, ?, ?)
+            sea_id, updated, wave_height_m, wind_speed_10m_ms, wind_speed_10m_kmh,
+            wind_gusts_10m_ms, wind_gusts_10m_kmh, wind_units, wind_gusts_units,
+            wind_time_ref, cloud_cover_pct
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (sea_id, ts, wave, wind_speed, cloud_cover),
+        (
+            sea_id,
+            ts,
+            wave,
+            wind_speed_ms,
+            wind_speed_kmh,
+            gust_ms,
+            gust_kmh,
+            wind_units,
+            gust_units,
+            ts,
+            cloud_cover,
+        ),
     )
     bot.db.execute(
         "INSERT OR REPLACE INTO cities (id, name, lat, lon) VALUES (?, ?, ?, ?)",

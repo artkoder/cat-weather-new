@@ -547,11 +547,23 @@ async def test_sea_rubric_logging_includes_shot_doy_and_reasons(monkeypatch, tmp
         )
         assert result is True
 
-    messages = [record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()]
-    assert any("season window=" in msg and "removed=" in msg for msg in messages)
-    assert any("attempt_" in msg and "top5=" in msg for msg in messages)
-    assert any("discard wave_missing" in msg for msg in messages)
-    assert any("SEA_RUBRIC selected" in msg and "shot_doy=" in msg and "reasons=" in msg for msg in messages)
+    events: list[dict[str, Any]] = []
+    for record in caplog.records:
+        message = record.getMessage()
+        if not message.startswith("SEA_RUBRIC "):
+            continue
+        payload = message.split("SEA_RUBRIC ", 1)[1]
+        try:
+            event_payload = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event_payload, dict):
+            events.append(event_payload)
+
+    assert any(event.get("event") == "season_window" for event in events)
+    assert any(event.get("event") == "stage_shortlist" for event in events)
+    assert any(event.get("event") == "candidate_discard" and event.get("reason") == "wave_missing" for event in events)
+    assert any(event.get("event") == "selection_final" for event in events)
 
     if db_path.exists():
         db_path.unlink()

@@ -343,7 +343,11 @@ def test_asset_vision_schema_definition():
             "photo_sky": {
                 "type": "string",
                 "description": "Класс неба на снимке.",
-                "enum": ["sunny", "partly_cloudy", "mostly_cloudy", "overcast", "night"],
+                "enum": ["sunny", "partly_cloudy", "mostly_cloudy", "overcast", "night", "unknown"],
+            },
+            "sky_visible": {
+                "type": "boolean",
+                "description": "True, если на фото видимо небо (даже частично), иначе False.",
             },
             "is_sunset": {
                 "type": "boolean",
@@ -407,6 +411,7 @@ def test_asset_vision_schema_definition():
             "is_sea",
             "sea_wave_score",
             "photo_sky",
+            "sky_visible",
             "is_sunset",
             "season_guess",
             "safety",
@@ -480,3 +485,178 @@ async def test_marine_lookup_appends_sea_tag(bot_instance):
     url, data, _headers = bot_instance.session.requests[0]
     assert "overpass" in url
     assert "around:250" in data.get("data", "")
+
+
+def test_vision_sea_forcing_when_is_sea_true(db_connection):
+    """Test that vision_category is forced to 'sea' when is_sea=true in vision results."""
+    data = DataAccess(db_connection)
+    asset_id = data.save_asset(
+        channel_id=1,
+        message_id=20,
+        template=None,
+        hashtags=None,
+        tg_chat_id=1,
+        caption=None,
+        kind="photo",
+    )
+
+    # Payload with is_sea=true but category would normally be "architecture" based on caption/tags
+    payload = {
+        "status": "ok",
+        "provider": "test-model",
+        "arch_view": True,
+        "caption": "Архитектура на фоне моря",
+        "objects": ["здание", "море"],
+        "is_outdoor": True,
+        "guess_country": "Россия",
+        "guess_city": "Санкт-Петербург",
+        "location_confidence": 0.85,
+        "landmarks": ["Зимний дворец"],
+        "tags": ["architecture", "sea", "overcast"],
+        "framing": "wide",
+        "architecture_close_up": False,
+        "architecture_wide": True,
+        "weather_image": "overcast",
+        "is_sea": True,  # This should force category to "sea"
+        "sea_wave_score": 3.5,
+        "photo_sky": "overcast",
+        "sky_visible": True,
+        "is_sunset": False,
+        "season_guess": "summer",
+        "arch_style": {"label": "baroque", "confidence": 0.8},
+        "safety": {"nsfw": False, "reason": "безопасно"},
+    }
+
+    data.update_asset(
+        asset_id,
+        vision_results=payload,
+        vision_category="sea",  # Should be forced to "sea" due to is_sea=True
+        vision_arch_view="yes",
+        vision_photo_weather=payload["weather_image"],
+        vision_confidence=payload["location_confidence"],
+        vision_flower_varieties=[],
+    )
+
+    asset = data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.vision_category == "sea"  # Forced to sea
+    assert asset.vision_results is not None
+    assert asset.vision_results["is_sea"] is True
+    assert asset.vision_results["sky_visible"] is True
+
+
+def test_vision_sky_visible_false_preserved_for_rubric(db_connection):
+    """Test that candidates with sky_visible=False are preserved for rubric selection."""
+    data = DataAccess(db_connection)
+
+    # Create asset with sky_visible=False and photo_sky="unknown"
+    asset_id = data.save_asset(
+        channel_id=1,
+        message_id=21,
+        template=None,
+        hashtags=None,
+        tg_chat_id=1,
+        caption=None,
+        kind="photo",
+    )
+
+    payload = {
+        "status": "ok",
+        "provider": "test-model",
+        "arch_view": False,
+        "caption": "Интерьер помещения",
+        "objects": ["мебель"],
+        "is_outdoor": False,
+        "guess_country": None,
+        "guess_city": None,
+        "location_confidence": 0.3,
+        "landmarks": [],
+        "tags": ["indoor", "overcast"],
+        "framing": "medium",
+        "architecture_close_up": False,
+        "architecture_wide": False,
+        "weather_image": "overcast",
+        "is_sea": False,
+        "sea_wave_score": None,
+        "photo_sky": "unknown",  # Should signal to skip sky-based filtering
+        "sky_visible": False,  # Should preserve this candidate
+        "is_sunset": False,
+        "season_guess": None,
+        "arch_style": None,
+        "safety": {"nsfw": False, "reason": "безопасно"},
+    }
+
+    data.update_asset(
+        asset_id,
+        vision_results=payload,
+        vision_category="architecture",
+        vision_arch_view="",
+        vision_photo_weather=payload["weather_image"],
+        vision_confidence=payload["location_confidence"],
+        vision_flower_varieties=[],
+    )
+
+    asset = data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.vision_results is not None
+    assert asset.vision_results["sky_visible"] is False
+    assert asset.vision_results["photo_sky"] == "unknown"
+
+
+def test_vision_schema_validation_with_new_fields(db_connection):
+    """Test that new fields pass schema validation."""
+    data = DataAccess(db_connection)
+    asset_id = data.save_asset(
+        channel_id=1,
+        message_id=22,
+        template=None,
+        hashtags=None,
+        tg_chat_id=1,
+        caption=None,
+        kind="photo",
+    )
+
+    # Complete payload with all new fields
+    payload = {
+        "status": "ok",
+        "provider": "test-model",
+        "arch_view": True,
+        "caption": "Морской закат",
+        "objects": ["море", "волны"],
+        "is_outdoor": True,
+        "guess_country": "Россия",
+        "guess_city": "Сочи",
+        "location_confidence": 0.9,
+        "landmarks": ["набережная"],
+        "tags": ["sea", "sunset", "overcast"],
+        "framing": "wide",
+        "architecture_close_up": False,
+        "architecture_wide": False,
+        "weather_image": "overcast",
+        "is_sea": True,
+        "sea_wave_score": 4.0,
+        "photo_sky": "unknown",  # Test the new enum value
+        "sky_visible": False,  # Test the new boolean field
+        "is_sunset": True,
+        "season_guess": "summer",
+        "arch_style": None,
+        "safety": {"nsfw": False, "reason": "безопасно"},
+    }
+
+    # This should not raise any validation errors
+    data.update_asset(
+        asset_id,
+        vision_results=payload,
+        vision_category="sea",
+        vision_arch_view="yes",
+        vision_photo_weather=payload["weather_image"],
+        vision_confidence=payload["location_confidence"],
+        vision_flower_varieties=[],
+    )
+
+    asset = data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.vision_results is not None
+    assert asset.vision_results["photo_sky"] == "unknown"
+    assert asset.vision_results["sky_visible"] is False
+    assert asset.vision_results["is_sea"] is True

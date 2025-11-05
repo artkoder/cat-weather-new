@@ -674,16 +674,21 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
             "maximum": 10,
         },
         "photo_sky": {
-            "type": "string",
-            "description": "Класс неба на снимке.",
-            "enum": [
-                "sunny",
-                "partly_cloudy",
-                "mostly_cloudy",
-                "overcast",
-                "night",
-            ],
-        },
+                "type": "string",
+                "description": "Класс неба на снимке.",
+                "enum": [
+                    "sunny",
+                    "partly_cloudy",
+                    "mostly_cloudy",
+                    "overcast",
+                    "night",
+                    "unknown",
+                ],
+            },
+            "sky_visible": {
+                "type": "boolean",
+                "description": "True, если на фото видимо небо (даже частично), иначе False.",
+            },
         "is_sunset": {
             "type": "boolean",
             "description": "True, если на фото закат или выраженные закатные оттенки.",
@@ -755,6 +760,7 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
         "is_sea",
         "sea_wave_score",
         "photo_sky",
+        "sky_visible",
         "is_sunset",
         "season_guess",
         "safety",
@@ -5056,14 +5062,16 @@ class Bot:
                 "В objects перечисляй заметные элементы, цветы называй видами. В tags используй английские слова в нижнем регистре и обязательно включай погодный тег. "
                 "Поле safety содержит nsfw:boolean и reason:string, где reason всегда непустая строка на русском. "
                 "Дополнительно определи, есть ли море, океан, пляж или береговая линия — поле is_sea. "
-                "Если is_sea=true, оцени sea_wave_score по шкале 0..10 (0 — гладь, 10 — шквал), укажи photo_sky одной из категорий sunny/partly_cloudy/mostly_cloudy/overcast/night и выставь is_sunset=true, когда заметен закат. "
-                "Если моря нет, sea_wave_score ставь null, но всё равно классифицируй photo_sky по видимому небу."
+                "Если is_sea=true, оцени sea_wave_score по шкале 0..10 (0 — гладь, 10 — шквал), укажи photo_sky одной из категорий sunny/partly_cloudy/mostly_cloudy/overcast/night/unknown и выставь is_sunset=true, когда заметен закат. "
+                "Если моря нет, sea_wave_score ставь null, но всё равно классифицируй photo_sky по видимому небу. "
+                "Обязательно укажи sky_visible=true, если на фото видно небо (даже частично), иначе sky_visible=false. Если небо не видно или неясно, ставь photo_sky=unknown."
             )
             user_prompt = (
                 "Опиши сцену, перечисли объекты, теги, достопримечательности, архитектуру и безопасность фото. Укажи кадровку (framing), "
                 "наличие архитектуры крупным планом и панорам, погодный тег (weather_image), сезон и стиль архитектуры (если можно). "
                 "Если локация неочевидна, ставь guess_country/guess_city = null и указывай низкую числовую уверенность. "
-                "Отдельно отметь, присутствует ли море/океан/пляж (is_sea), оцени sea_wave_score 0..10, классифицируй небо photo_sky и укажи is_sunset для закатных кадров."
+                "Отдельно отметь, присутствует ли море/океан/пляж (is_sea), оцени sea_wave_score 0..10, классифицируй небо photo_sky и укажи is_sunset для закатных кадров. "
+                "Обязательно определи, видно ли небо на фото (sky_visible), и если небо не видно или неясно, используй photo_sky=unknown."
             )
             self._enforce_openai_limit(job, "gpt-4o-mini")
             logging.info(
@@ -5217,6 +5225,30 @@ class Bot:
                 bool(is_outdoor_raw)
                 if isinstance(is_outdoor_raw, bool)
                 else str(is_outdoor_raw).strip().lower() in {"1", "true", "yes", "да"}
+            )
+            is_sea_raw = result.get("is_sea")
+            is_sea = (
+                bool(is_sea_raw)
+                if isinstance(is_sea_raw, bool)
+                else str(is_sea_raw).strip().lower() in {"1", "true", "yes", "да"}
+            )
+            photo_sky_raw = result.get("photo_sky")
+            photo_sky_result: str | None = None
+            if isinstance(photo_sky_raw, str):
+                photo_sky_result = photo_sky_raw.strip() or None
+            elif photo_sky_raw is not None:
+                photo_sky_result = str(photo_sky_raw).strip() or None
+            is_sunset_raw = result.get("is_sunset")
+            is_sunset = (
+                bool(is_sunset_raw)
+                if isinstance(is_sunset_raw, bool)
+                else str(is_sunset_raw).strip().lower() in {"1", "true", "yes", "да"}
+            )
+            sky_visible_raw = result.get("sky_visible")
+            sky_visible = (
+                bool(sky_visible_raw)
+                if isinstance(sky_visible_raw, bool)
+                else str(sky_visible_raw).strip().lower() in {"1", "true", "yes", "да"}
             )
             raw_objects = result.get("objects")
             objects: list[str] = []
@@ -5413,6 +5445,9 @@ class Bot:
             if not caption:
                 raise RuntimeError("Invalid response from vision model")
             category = self._derive_primary_scene(caption, tags)
+            # Force sea category when is_sea=true, regardless of heuristics
+            if is_sea:
+                category = "sea"
             rubric_id = self._resolve_rubric_id_for_category(category)
             flower_varieties: list[str] = []
             normalized_tag_set = {tag.lower() for tag in tags if tag}
@@ -5420,7 +5455,7 @@ class Bot:
                 flower_varieties = [obj for obj in objects if obj]
 
             sea_wave_score_data: dict[str, Any] | None = None
-            is_sea_asset = (
+            is_sea_asset = is_sea or (
                 category == "sea" or
                 normalized_tag_set.intersection({"sea", "ocean"})
             )
@@ -5685,6 +5720,10 @@ class Bot:
                 "weather_final": photo_weather,
                 "weather_final_display": photo_weather_display,
                 "flower_varieties": flower_varieties,
+                "is_sea": is_sea,
+                "photo_sky": photo_sky_result,
+                "sky_visible": sky_visible,
+                "is_sunset": is_sunset,
             }
             if rubric_id is not None:
                 result_payload["rubric_id"] = rubric_id

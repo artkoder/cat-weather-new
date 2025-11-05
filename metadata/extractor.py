@@ -6,7 +6,7 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -649,6 +649,78 @@ def _extract_altitude(gps_info: Mapping[str, Any]) -> float | None:
     return value
 
 
+def _parse_subsecond_value(value: Any) -> int:
+    text = _as_optional_str(value)
+    if not text:
+        return 0
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if not digits:
+        return 0
+    trimmed = digits[:6]
+    return int(trimmed.ljust(6, "0"))
+
+
+def _parse_offset_value(value: Any) -> timedelta | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            offset = _parse_offset_value(item)
+            if offset is not None:
+                return offset
+        return None
+    if isinstance(value, bytes):
+        try:
+            text = value.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+        return _parse_offset_value(text)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        normalized = text.replace("UTC", "").replace("utc", "").strip()
+        match = re.search(r"([+-])\s*(\d{1,2})(?::?(\d{2}))?", normalized)
+        if match:
+            sign = 1 if match.group(1) == "+" else -1
+            hours = int(match.group(2))
+            minutes = int(match.group(3) or 0)
+            return timedelta(hours=sign * hours, minutes=sign * minutes)
+        if normalized.lstrip("+-").isdigit():
+            sign = -1 if normalized.startswith("-") else 1
+            hours = int(normalized.lstrip("+-"))
+            return timedelta(hours=sign * hours)
+        try:
+            hours_float = float(normalized)
+        except ValueError:
+            return None
+        return timedelta(hours=hours_float)
+    if isinstance(value, (int, float)):
+        return timedelta(hours=float(value))
+    return None
+
+
+def _collect_candidate_offsets(exif_payload: Mapping[str, Any]) -> list[timedelta]:
+    offsets: list[timedelta] = []
+    seen: set[int] = set()
+    for key in (
+        "OffsetTimeOriginal",
+        "OffsetTimeDigitized",
+        "OffsetTime",
+        "TimeZoneOffset",
+        "TimeZone",
+    ):
+        offset = _parse_offset_value(exif_payload.get(key))
+        if offset is None:
+            continue
+        seconds = int(offset.total_seconds())
+        if seconds in seen:
+            continue
+        seen.add(seconds)
+        offsets.append(offset)
+    return offsets
+
+
 def _select_captured_at(
     exif_payload: Mapping[str, Any], gps_info: Mapping[str, Any]
 ) -> datetime | None:
@@ -656,13 +728,25 @@ def _select_captured_at(
     if gps_capture:
         return gps_capture
 
-    candidates = [
-        exif_payload.get("DateTimeOriginal"),
-        exif_payload.get("DateTimeDigitized"),
-        exif_payload.get("DateTime"),
+    fallback_offsets = _collect_candidate_offsets(exif_payload)
+    candidate_specs = [
+        ("DateTimeOriginal", "SubSecTimeOriginal", "OffsetTimeOriginal"),
+        ("DateTimeDigitized", "SubSecTimeDigitized", "OffsetTimeDigitized"),
+        ("DateTime", "SubSecTime", "OffsetTime"),
     ]
-    for value in candidates:
-        dt = _parse_exif_datetime(value)
+    for dt_key, subsecond_key, offset_key in candidate_specs:
+        value = exif_payload.get(dt_key)
+        if not value:
+            continue
+        offsets: list[timedelta] = []
+        primary_offset = _parse_offset_value(exif_payload.get(offset_key))
+        if primary_offset is not None:
+            offsets.append(primary_offset)
+        dt = _parse_exif_datetime(
+            value,
+            subsecond=exif_payload.get(subsecond_key),
+            offsets=offsets or fallback_offsets,
+        )
         if dt:
             return dt
     return None
@@ -738,21 +822,79 @@ def _normalize_gps_time(value: Any) -> tuple[float | None, float | None, float |
     return (hours, minutes, seconds)
 
 
-def _parse_exif_datetime(value: Any) -> datetime | None:
+def _parse_exif_datetime(
+    value: Any,
+    *,
+    subsecond: Any = None,
+    offsets: Sequence[timedelta] | None = None,
+) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="ignore")
+        try:
+            value = value.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
     text = str(value).strip().strip("\x00")
     if not text:
         return None
-    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+
+    iso_candidate = text
+    if ":" in iso_candidate[:10]:
+        iso_candidate = iso_candidate.replace(":", "-", 2)
+
+    parsed: datetime | None = None
+    candidates = [iso_candidate]
+    if " " in iso_candidate:
+        candidates.append(iso_candidate.replace(" ", "T", 1))
+    for candidate in candidates:
         try:
-            parsed = datetime.strptime(text, fmt)
+            parsed = datetime.fromisoformat(candidate)
         except ValueError:
-            continue
-        return parsed.replace(tzinfo=UTC)
-    return None
+            parsed = None
+        if parsed is not None:
+            break
+
+    if parsed is None:
+        formats = (
+            "%Y:%m:%d %H:%M:%S%z",
+            "%Y:%m:%d %H:%M:%S.%f%z",
+            "%Y:%m:%d %H:%M:%S",
+            "%Y:%m:%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S%z",
+            "%Y-%m-%d %H:%M:%S.%f%z",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S.%f",
+        )
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+            else:
+                break
+
+    if parsed is None:
+        return None
+
+    microsecond = _parse_subsecond_value(subsecond)
+    if microsecond and parsed.microsecond == 0:
+        parsed = parsed.replace(microsecond=microsecond)
+
+    if parsed.tzinfo is None:
+        tzinfo = None
+        if offsets:
+            for offset in offsets:
+                if offset is not None:
+                    tzinfo = timezone(offset)
+                    break
+        parsed = parsed.replace(tzinfo=tzinfo or UTC)
+
+    return parsed.astimezone(UTC)
 
 
 def _as_optional_str(value: Any) -> str | None:

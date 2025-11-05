@@ -500,23 +500,46 @@ def compute_season_window(reference: date, window_days: int = 45) -> set[str]:
     return seasons
 
 
-def within_shot_window(shot_doy: int | None, reference: date, window_days: int = 45) -> bool | None:
+def is_in_season_window(shot_doy: int | None, *, today_doy: int, window: int = 45) -> bool:
+    """
+    Check if a shot day-of-year falls within a seasonal window around today.
+    
+    Args:
+        shot_doy: Day of year when photo was taken (1-366), or None
+        today_doy: Current day of year (1-366)
+        window: Number of days before and after today to include (default 45)
+    
+    Returns:
+        True if shot_doy is within the window, False otherwise (including when shot_doy is None)
+    """
     if shot_doy is None:
-        return None
+        return False
+    
     try:
-        doy_value = int(shot_doy)
+        shot_value = int(shot_doy)
     except (TypeError, ValueError):
-        return None
-    if doy_value < 1 or doy_value > 366:
-        return None
-    ref_doy = reference.timetuple().tm_yday
-    cycle = 366
-    diff = abs(doy_value - ref_doy)
-    if diff <= window_days:
-        return True
-    if cycle - diff <= window_days:
-        return True
-    return False
+        return False
+    
+    if shot_value < 1 or shot_value > 366:
+        return False
+    
+    # Normalize leap day (366) to 365 if today is in a non-leap year
+    # Check if today_doy suggests we're in a non-leap year (max 365)
+    # We determine this by checking if today_doy > 365 or by context
+    # For simplicity, if shot_doy == 366, treat it as 365 for non-leap comparison
+    period = 365
+    normalized_shot = shot_value if shot_value <= 365 else 365
+    normalized_today = today_doy if today_doy <= 365 else 365
+    
+    # Calculate circular distance on a ring of 'period' days
+    # Distance can be calculated in two directions around the circle
+    forward_dist = (normalized_shot - normalized_today) % period
+    backward_dist = (normalized_today - normalized_shot) % period
+    
+    # Take the minimum of the two distances
+    min_dist = min(forward_dist, backward_dist)
+    
+    return min_dist <= window
 
 
 def season_match(season_guess: str | None, allowed: set[str]) -> bool:
@@ -13005,9 +13028,10 @@ class Bot:
             now=now,
             current_state=storm_state,
         )
-        season_window = compute_season_window(now.date())
+        today_doy = now.timetuple().tm_yday
+        season_window_days = 45
         logging.info(
-            "SEA_RUBRIC input sea_id=%s wave_height=%.3f wave_score=%.2f storm_state=%s wind_ms=%s wind_kmh=%s wind_class=%s cloud_pct=%s sky_bucket=%s allowed_skies=%s want_sunset=%s storm_persisting=%s storm_reason=%s",
+            "SEA_RUBRIC input sea_id=%s wave_height=%.3f wave_score=%.2f storm_state=%s wind_ms=%s wind_kmh=%s wind_class=%s cloud_pct=%s sky_bucket=%s allowed_skies=%s want_sunset=%s storm_persisting=%s storm_reason=%s today_doy=%s season_window=±%s",
             sea_id,
             wave_height_value if wave_height_value is not None else float("nan"),
             wave_score,
@@ -13021,6 +13045,8 @@ class Bot:
             want_sunset,
             storm_persisting,
             storm_persisting_reason,
+            today_doy,
+            season_window_days,
         )
 
         candidates = self.data.fetch_sea_candidates(rubric.id, limit=48)
@@ -13046,14 +13072,34 @@ class Bot:
             )
             return True
 
+        # Apply seasonal filter based on day-of-year
         for candidate in candidates:
-            candidate["season_match"] = season_match(candidate.get("season_guess"), season_window)
+            candidate["season_match"] = is_in_season_window(
+                candidate.get("shot_doy"), 
+                today_doy=today_doy, 
+                window=season_window_days
+            )
+        
         season_matches = sum(1 for candidate in candidates if candidate["season_match"])
+        filtered_count = len(candidates) - season_matches
+        
+        if DEBUG_SEA_PICK and filtered_count > 0:
+            # Log first few rejected candidates for debugging
+            rejected = [c for c in candidates if not c["season_match"]][:5]
+            for c in rejected:
+                logging.debug(
+                    "SEA_RUBRIC season_rejected asset_id=%s shot_doy=%s today_doy=%s",
+                    c["asset"].id,
+                    c.get("shot_doy"),
+                    today_doy,
+                )
+        
         logging.info(
-            "SEA_RUBRIC season_window=%s matches=%s total=%s",
-            sorted(season_window),
+            "SEA_RUBRIC season window=±%s today_doy=%s period=365 filtered=%s removed=%s",
+            season_window_days,
+            today_doy,
+            filtered_count,
             season_matches,
-            len(candidates),
         )
 
         working_candidates = [candidate for candidate in candidates if candidate["season_match"]]

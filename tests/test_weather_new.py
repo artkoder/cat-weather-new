@@ -1693,11 +1693,11 @@ def _patch_pillow_exif_weather(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_collect_sea_enhanced_wind_data(tmp_path, caplog):
     """Test that collect_sea stores and logs enhanced wind data with km/h and m/s values."""
     bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
-    
+
     # Add a sea location
     bot.db.execute("INSERT INTO seas (id, name, lat, lon) VALUES (1, 'Test Sea', 54.95, 20.2)")
     bot.db.commit()
-    
+
     # Mock the sea API responses
     async def mock_fetch_sea(lat, lon):
         return {
@@ -1710,7 +1710,7 @@ async def test_collect_sea_enhanced_wind_data(tmp_path, caplog):
                 "wave_height": 0.45
             }
         }
-    
+
     async def mock_fetch_sea_conditions(lat, lon):
         return {
             "current": {
@@ -1724,20 +1724,20 @@ async def test_collect_sea_enhanced_wind_data(tmp_path, caplog):
                 "wind_gusts_10m": "km/h"
             }
         }
-    
+
     bot.fetch_open_meteo_sea = mock_fetch_sea  # type: ignore
     bot.fetch_open_meteo_sea_conditions = mock_fetch_sea_conditions  # type: ignore
-    
+
     await bot.collect_sea(force=True)
-    
+
     # Check that sea_conditions table has the enhanced data
     row = bot.db.execute("""
-        SELECT sea_id, wave_height_m, wind_speed_10m_kmh, wind_speed_10m_ms, 
-               wind_gusts_10m_kmh, wind_gusts_10m_ms, wind_units, 
+        SELECT sea_id, wave_height_m, wind_speed_10m_kmh, wind_speed_10m_ms,
+               wind_gusts_10m_kmh, wind_gusts_10m_ms, wind_units,
                wind_gusts_units, wind_time_ref, cloud_cover_pct
         FROM sea_conditions WHERE sea_id = 1
     """).fetchone()
-    
+
     assert row is not None
     assert row["sea_id"] == 1
     assert row["wave_height_m"] == 0.45
@@ -1749,11 +1749,11 @@ async def test_collect_sea_enhanced_wind_data(tmp_path, caplog):
     assert row["wind_gusts_units"] == "km/h"
     assert row["wind_time_ref"] == "2024-01-01T12:00:00Z"
     assert row["cloud_cover_pct"] == 65.0
-    
+
     # Check that structured logging contains all required fields
     log_messages = [record.message for record in caplog.records if "SEA_RUBRIC weather" in record.message]
     assert len(log_messages) >= 1
-    
+
     weather_log = log_messages[-1]  # Get the final weather log
     assert "sea_id=1" in weather_log
     assert "lat=54.95" in weather_log
@@ -1767,7 +1767,7 @@ async def test_collect_sea_enhanced_wind_data(tmp_path, caplog):
     assert "wind_gusts_ms=6.94" in weather_log
     assert "wind_gusts_units=km/h" in weather_log
     assert "cloud_cover_pct=65.0" in weather_log
-    
+
     await bot.close()
 
 
@@ -1775,11 +1775,11 @@ async def test_collect_sea_enhanced_wind_data(tmp_path, caplog):
 async def test_collect_sea_missing_conditions_graceful_fallback(tmp_path, caplog):
     """Test that collect_sea handles missing conditions data gracefully."""
     bot = Bot('test-token', str(tmp_path / 'db.sqlite'))
-    
+
     # Add a sea location
     bot.db.execute("INSERT INTO seas (id, name, lat, lon) VALUES (1, 'Test Sea', 54.95, 20.2)")
     bot.db.commit()
-    
+
     # Mock the sea API responses with missing conditions
     async def mock_fetch_sea(lat, lon):
         return {
@@ -1792,23 +1792,23 @@ async def test_collect_sea_missing_conditions_graceful_fallback(tmp_path, caplog
                 "wave_height": 0.45
             }
         }
-    
+
     async def mock_fetch_sea_conditions(lat, lon):
         return None  # Simulate failed fetch
-    
+
     bot.fetch_open_meteo_sea = mock_fetch_sea  # type: ignore
     bot.fetch_open_meteo_sea_conditions = mock_fetch_sea_conditions  # type: ignore
-    
+
     await bot.collect_sea(force=True)
-    
+
     # Check that sea_conditions table still has basic data
     row = bot.db.execute("""
-        SELECT sea_id, wave_height_m, wind_speed_10m_kmh, wind_speed_10m_ms, 
-               wind_gusts_10m_kmh, wind_gusts_10m_ms, wind_units, 
+        SELECT sea_id, wave_height_m, wind_speed_10m_kmh, wind_speed_10m_ms,
+               wind_gusts_10m_kmh, wind_gusts_10m_ms, wind_units,
                wind_gusts_units, wind_time_ref, cloud_cover_pct
         FROM sea_conditions WHERE sea_id = 1
     """).fetchone()
-    
+
     assert row is not None
     assert row["sea_id"] == 1
     assert row["wave_height_m"] == 0.45
@@ -1820,44 +1820,44 @@ async def test_collect_sea_missing_conditions_graceful_fallback(tmp_path, caplog
     assert row["wind_gusts_units"] is None
     assert row["wind_time_ref"] is None
     assert row["cloud_cover_pct"] is None
-    
+
     # Check that structured logging handles missing data gracefully
     log_messages = [record.message for record in caplog.records if "SEA_RUBRIC weather" in record.message]
     assert len(log_messages) >= 1
-    
+
     weather_log = log_messages[-1]
     assert "sea_id=1" in weather_log
     assert "wind_speed_kmh=None" in weather_log
     assert "wind_speed_ms=None" in weather_log
     assert "wind_units=unknown" in weather_log
-    
+
     await bot.close()
 
 
 def test_resolve_wind_speed_conversion():
     """Test km/h to m/s conversion and vice versa."""
     from main import resolve_wind_speed
-    
+
     # Test km/h input
     kmh, ms = resolve_wind_speed(36.0, "km/h")
     assert kmh == 36.0
     assert ms == 10.0  # 36 / 3.6
-    
+
     # Test m/s input
     kmh, ms = resolve_wind_speed(10.0, "m/s")
     assert kmh == 36.0  # 10 * 3.6
     assert ms == 10.0
-    
+
     # Test unknown units (default to km/h)
     kmh, ms = resolve_wind_speed(18.0, "unknown")
     assert kmh == 18.0
     assert ms == 5.0  # 18 / 3.6
-    
+
     # Test None input
     kmh, ms = resolve_wind_speed(None, "km/h")
     assert kmh is None
     assert ms is None
-    
+
     # Test invalid input
     kmh, ms = resolve_wind_speed("invalid", "km/h")
     assert kmh is None

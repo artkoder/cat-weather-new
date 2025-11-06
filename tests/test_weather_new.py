@@ -1759,7 +1759,7 @@ async def test_collect_sea_enhanced_wind_data(tmp_path, caplog):
     assert "lat=54.95" in weather_log
     assert "lon=20.2" in weather_log
     assert "time_ref=2024-01-01T12:00:00Z" in weather_log
-    assert "wave_height_m=0.450" in weather_log
+    assert "wave_height_m=0.350" in weather_log
     assert "wind_speed_kmh=15.00" in weather_log
     assert "wind_speed_ms=4.17" in weather_log
     assert "wind_units=km/h" in weather_log

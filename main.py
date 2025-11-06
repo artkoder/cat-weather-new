@@ -13149,17 +13149,91 @@ class Bot:
             return value
 
         def sea_log(event: str, **details: Any) -> None:
-            payload: dict[str, Any] = {
-                "event": event,
-                "sea_id": sea_id,
-                "storm_state": storm_state,
-                "storm_persisting": storm_persisting,
-            }
-            if storm_persisting_reason:
-                payload["storm_reason"] = storm_persisting_reason
-            payload.update(details)
-            normalized = json.dumps(_normalize_for_log(payload), ensure_ascii=False)
-            logging.info("SEA_RUBRIC %s %s", event, normalized)
+            if event == "weather":
+                logging.info(
+                    "SEA_RUBRIC weather wave_height_m=%s wave_score=%s wind_ms=%s wind_kmh=%s "
+                    "wind_class=%s cloud_cover_pct=%s sky_bucket=%s allowed_skies=%s "
+                    "today_doy=%s season_window_days=%s",
+                    _normalize_for_log(details.get("wave_height_m")),
+                    _normalize_for_log(details.get("wave_score")),
+                    _normalize_for_log(details.get("wind_ms")),
+                    _normalize_for_log(details.get("wind_kmh")),
+                    _normalize_for_log(details.get("wind_class")),
+                    _normalize_for_log(details.get("cloud_cover_pct")),
+                    _normalize_for_log(details.get("sky_bucket")),
+                    _normalize_for_log(details.get("allowed_skies")),
+                    _normalize_for_log(details.get("today_doy")),
+                    _normalize_for_log(details.get("season_window_days")),
+                )
+            elif event == "season":
+                logging.info(
+                    "SEA_RUBRIC season doy_now=%s doy_range=%s kept=%s removed=%s "
+                    "null_doy=%s season_removed=%s total_candidates=%s matched=%s filtered=%s",
+                    _normalize_for_log(details.get("doy_now")),
+                    _normalize_for_log(details.get("doy_range")),
+                    _normalize_for_log(details.get("kept")),
+                    _normalize_for_log(details.get("removed")),
+                    _normalize_for_log(details.get("null_doy")),
+                    _normalize_for_log(details.get("season_removed")),
+                    _normalize_for_log(details.get("total_candidates")),
+                    _normalize_for_log(details.get("matched")),
+                    _normalize_for_log(details.get("filtered")),
+                )
+            elif event.startswith("attempt "):
+                pool_counts = details.get("pool_counts", {})
+                logging.info(
+                    "SEA_RUBRIC pool after_season=%s, after_wave=%s, after_B1=%s, "
+                    "after_wave+broaden=%s, after_B2=%s, after_AN=%s",
+                    pool_counts.get("pool_after_season", 0),
+                    pool_counts.get("pool_after_wave", 0),
+                    pool_counts.get("pool_after_B1", 0),
+                    pool_counts.get("pool_after_wave+broaden", 0),
+                    pool_counts.get("pool_after_B2", 0),
+                    pool_counts.get("pool_after_AN", 0),
+                )
+
+                top5 = details.get("top5", [])
+                for idx, entry in enumerate(top5, start=1):
+                    logging.info(
+                        "SEA_RUBRIC top5 #%s id=%s sky=%s wave=%s score=%s reasons=%s",
+                        idx,
+                        _normalize_for_log(entry.get("id")),
+                        _normalize_for_log(entry.get("sky")),
+                        _normalize_for_log(entry.get("wave")),
+                        _normalize_for_log(entry.get("score")),
+                        _normalize_for_log(entry.get("penalties")),
+                    )
+            elif event == "selected":
+                logging.info(
+                    "SEA_RUBRIC selected stage=%s asset_id=%s shot_doy=%s score=%s "
+                    "wave_score=%s photo_sky=%s season_match=%s sunset_selected=%s "
+                    "want_sunset=%s storm_persisting=%s sky_visible=%s sky_critical_mismatch=%s",
+                    _normalize_for_log(details.get("stage")),
+                    _normalize_for_log(details.get("asset_id")),
+                    _normalize_for_log(details.get("shot_doy")),
+                    _normalize_for_log(details.get("score")),
+                    _normalize_for_log(details.get("wave_score")),
+                    _normalize_for_log(details.get("photo_sky")),
+                    _normalize_for_log(details.get("season_match")),
+                    _normalize_for_log(details.get("sunset_selected")),
+                    _normalize_for_log(details.get("want_sunset")),
+                    _normalize_for_log(details.get("storm_persisting")),
+                    _normalize_for_log(details.get("sky_visible")),
+                    _normalize_for_log(details.get("sky_critical_mismatch")),
+                )
+            else:
+                # Fallback for other events - use compact JSON
+                payload: dict[str, Any] = {
+                    "event": event,
+                    "sea_id": sea_id,
+                    "storm_state": storm_state,
+                    "storm_persisting": storm_persisting,
+                }
+                if storm_persisting_reason:
+                    payload["storm_reason"] = storm_persisting_reason
+                payload.update(details)
+                normalized = json.dumps(_normalize_for_log(payload), ensure_ascii=False)
+                logging.info("SEA_RUBRIC %s %s", event, normalized)
 
         sea_log(
             "weather",
@@ -13362,10 +13436,24 @@ class Bot:
             age_bonus_val = float(candidate.get("age_bonus") or 0.0)
             score += age_bonus_val
 
+            # Apply sky scoring bonuses when factual sky_bucket is partly_cloudy
+            sky_bonus = 0.0
+            if sky_bucket == "partly_cloudy" and sky_visible and photo_sky and photo_sky != "unknown":
+                if photo_sky == "partly_cloudy":
+                    sky_bonus = 0.7
+                elif photo_sky in {"sunny", "mostly_clear"}:
+                    sky_bonus = 0.4
+                elif photo_sky == "mostly_cloudy":
+                    sky_bonus = -0.7
+                elif photo_sky == "overcast":
+                    sky_bonus = -1.0
+                score += sky_bonus
+
             reasons = {
                 "wave_corridor": (round(low, 2), round(high, 2)),
                 "wave_penalty": round(wave_penalty, 3),
                 "sky_penalty": round(sky_penalty, 3),
+                "sky_bonus": round(sky_bonus, 3),
                 "sky_policy": sky_policy,
                 "sky_visible": sky_visible,
                 "penalty_total": round(penalty, 3),
@@ -13444,6 +13532,7 @@ class Bot:
                 pool_size=len(sorted_results),
                 top5=top_entries,
                 wave_corridor=(round(low, 2), round(high, 2)),
+                pool_counts=pool_counts,
             )
 
             if sorted_results:
@@ -13943,7 +14032,7 @@ class Bot:
 
         system_prompt = (
             "Ты редактор телеграм-канала о Балтийском море. "
-            "Пиши 1–2 коротких предложения живым тоном и избегай сухих клише. "
+            "Пиши 1–2 предложения дружелюбным тоном, без научных терминов (избегай слов вроде «термоклин», «галоклин»). "
             "Не называй конкретные числа о текущей погоде. "
             "Если storm_persisting=true и storm_state='storm' — начинай подпись с вариации «Продолжает штормить…». "
             "Если storm_state='storm' и шторм не продолжается — отметь, что штормит сегодня. "
@@ -13951,9 +14040,8 @@ class Bot:
             "Если море спокойно и sunset_selected=true — начни с вариации «Порадую закатом над морем…». "
             "Если море спокойно и sunset_selected=false — начни с вариации «Порадую вас морем…». "
             "Опиши ветер только образно, без чисел. "
-            "Если передан fact_sentence — добавь ровно одно короткое предложение, перефразируя, но сохрани все цифры и единицы измерения строго так, как в факте: не заменяй цифры словами, сохраняй символы %, ‰, км², «тыс.», диапазоны с длинным тире и другие знаки. "
-            "Основной текст — не длиннее 450 символов. Не превышай лимит. "
-            "В поле caption верни только финальный текст подписи без пояснений."
+            "Если передан fact_sentence (и storm_state != 'strong_storm') — добавь плавное вступление (например: «Знаете ли вы…», «Интересный факт:», «К слову о Балтике…», «Поделюсь любопытным фактом…») и одно короткое предложение, перефразируя факт, но сохрани все цифры и единицы измерения строго так, как в факте: не заменяй цифры словами, сохраняй символы %, ‰, км², «тыс.», диапазоны с длинным тире и другие знаки. "
+            "Весь основной текст не длиннее 350 символов. Выведи только сам текст."
         )
         wind_label = wind_class if wind_class in {"strong", "very_strong"} else "none"
         prompt_payload: dict[str, Any] = {
@@ -13983,8 +14071,8 @@ class Bot:
             "- Соблюдай правила вступления из system_prompt для разных состояний моря.\n"
             "- Если storm_persisting=true и storm_state='storm' — начни с вариации «Продолжает штормить…».\n"
             "- Если wind_class=strong или wind_class=very_strong — опиши ветер образно, без чисел.\n"
-            "- Если в JSON есть поле fact_sentence — добавь ровно одно короткое предложение по факту, сохранив все цифры и единицы так же, как в исходном тексте.\n"
-            "- Основной текст должен быть не длиннее 450 символов.\n"
+            "- Если в JSON есть поле fact_sentence — добавь плавное вступление и ровно одно короткое предложение по факту, сохранив все цифры и единицы так же, как в исходном тексте.\n"
+            "- Основной текст должен быть не длиннее 350 символов.\n"
             "- Если place_hashtag задан — включи его в массив hashtags.\n"
             "- Не вставляй хэштеги в caption; верни их только в массиве hashtags.\n"
             "Ответ строго в формате JSON: {\"caption\": string, \"hashtags\": string[]}."

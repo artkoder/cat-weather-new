@@ -553,17 +553,21 @@ async def test_sea_rubric_logging_includes_shot_doy_and_reasons(monkeypatch, tmp
         if not message.startswith("SEA_RUBRIC "):
             continue
         payload = message.split("SEA_RUBRIC ", 1)[1]
+        if " " not in payload:
+            continue
+        event_name, json_payload = payload.split(" ", 1)
         try:
-            event_payload = json.loads(payload)
+            event_payload = json.loads(json_payload)
         except json.JSONDecodeError:
             continue
         if isinstance(event_payload, dict):
+            event_payload.setdefault("event", event_name)
             events.append(event_payload)
 
     assert any(event.get("event") == "season_window" for event in events)
     assert any(event.get("event") == "stage_shortlist" for event in events)
     assert any(event.get("event") == "candidate_discard" and event.get("reason") == "wave_missing" for event in events)
-    assert any(event.get("event") == "selection_final" for event in events)
+    assert any(event.get("event") == "selected" for event in events)
 
     if db_path.exists():
         db_path.unlink()

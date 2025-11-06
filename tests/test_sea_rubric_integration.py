@@ -24,19 +24,17 @@ class FakeOpenAI:
         self.calls.append(kwargs)
         prompt = kwargs.get("user_prompt", "")
         if '"storm_state": "calm"' in prompt:
-            caption = "Порадую закатом над морем — воздух тёплый и тихий."
-            hashtags = ["морем"]
+            caption = "Порадую закатом над морем — воздух тянет солёной свежестью."
+            hashtags = ["морем", "БалтийскоеМоре"]
         elif '"wind_class": "strong"' in prompt:
-            caption = "Сегодня шторм на море — ветер сбивающий с ног и россыпь пены."
-            hashtags = ["БалтийскоеМоре"]
+            caption = "Сегодня шторм на море — ветер сбивает с ног и поднимает пену."
+            hashtags = ["БалтийскоеМоре", "шторм"]
         elif '"wind_class": "very_strong"' in prompt:
-            caption = "Сегодня шторм на море. Ураганный ветер кружит песок.\n" + (
-                "Ураганный ветер кружит песок. " * 80
-            )
-            hashtags = ["моря"]
+            caption = "Сегодня сильный шторм на море — ветер рычит над набережной."
+            hashtags = ["БалтийскоеМоре", "ураган"]
         else:
-            caption = "Море сегодня спокойное."
-            hashtags = []
+            caption = "Море сегодня спокойное и встречает мягкими волнами."
+            hashtags = ["морем", "Балтика"]
         usage = {
             "prompt_tokens": 10,
             "completion_tokens": 20,

@@ -2159,22 +2159,22 @@ class Bot:
             "&daily=wave_height_max,wind_wave_height_max,swell_wave_height_max"
             "&forecast_days=2&timezone=auto&wind_speed_unit=kmh"
         )
-        logging.info("Sea API request: %s", url)
+        logging.info("SEA_RUBRIC api_request url=%s", url)
         try:
             async with self.session.get(url) as resp:
                 text = await resp.text()
         except Exception:
-            logging.exception("Failed to fetch sea")
+            logging.exception("SEA_RUBRIC api_request failed url=%s", url)
             return None
 
-        logging.info("Sea API raw response: %s", text)
+        logging.info("SEA_RUBRIC api_response %s", text)
         if resp.status != 200:
-            logging.error("Open-Meteo sea HTTP %s", resp.status)
+            logging.error("SEA_RUBRIC api_http status=%s", resp.status)
             return None
         try:
             data = json.loads(text)
         except Exception:
-            logging.exception("Invalid sea JSON")
+            logging.exception("SEA_RUBRIC api_response invalid_json")
             return None
         return data
 
@@ -2187,21 +2187,21 @@ class Bot:
             "&past_hours=3&forecast_hours=0"
             "&timezone=auto&wind_speed_unit=kmh"
         )
-        logging.info("Sea weather API request: %s", url)
+        logging.info("SEA_RUBRIC weather_api_request url=%s", url)
         try:
             async with self.session.get(url) as resp:
                 text = await resp.text()
         except Exception:
-            logging.exception("Failed to fetch sea weather")
+            logging.exception("SEA_RUBRIC weather_api_request failed url=%s", url)
             return None
-        logging.info("Sea weather raw response: %s", text)
+        logging.info("SEA_RUBRIC weather_api_response %s", text)
         if resp.status != 200:
-            logging.error("Open-Meteo sea weather HTTP %s", resp.status)
+            logging.error("SEA_RUBRIC weather_api_http status=%s", resp.status)
             return None
         try:
             data = json.loads(text)
         except Exception:
-            logging.exception("Invalid sea weather JSON")
+            logging.exception("SEA_RUBRIC weather_api_response invalid_json")
             return None
         return data
 
@@ -13158,10 +13158,11 @@ class Bot:
             if storm_persisting_reason:
                 payload["storm_reason"] = storm_persisting_reason
             payload.update(details)
-            logging.info("SEA_RUBRIC %s", json.dumps(_normalize_for_log(payload), ensure_ascii=False))
+            normalized = json.dumps(_normalize_for_log(payload), ensure_ascii=False)
+            logging.info("SEA_RUBRIC %s %s", event, normalized)
 
         sea_log(
-            "conditions",
+            "weather",
             wave_height_m=wave_height_value,
             wave_score=wave_score,
             wind_ms=wind_ms,
@@ -13436,8 +13437,9 @@ class Bot:
                     }
                 )
 
+            attempt_event = f"attempt {stage['sky']}"
             sea_log(
-                "stage",
+                attempt_event,
                 stage=stage["name"],
                 pool_size=len(sorted_results),
                 top5=top_entries,
@@ -13512,7 +13514,7 @@ class Bot:
             fact_id = None
             fact_info = {"reason": "disabled"}
         sea_log(
-            "selection_final",
+            "selected",
             stage=selected_details.get("stage"),
             asset_id=asset.id,
             shot_doy=selected_candidate.get("shot_doy"),
@@ -13543,23 +13545,6 @@ class Bot:
                     if sanitized_city:
                         place_hashtag = f"#{sanitized_city}"
 
-        def soft_trim(text: str, limit: int) -> str:
-            if len(text) <= limit:
-                return text
-            sentences = re.split(r"(?<=[.!?…])\s+", text.strip())
-            trimmed = ""
-            for sentence in sentences:
-                candidate_sentence = (trimmed + " " + sentence).strip() if trimmed else sentence.strip()
-                if len(candidate_sentence) > limit:
-                    break
-                trimmed = candidate_sentence
-            if trimmed:
-                return trimmed
-            fallback = text[:limit].rsplit(" ", 1)[0].strip()
-            if fallback:
-                return fallback
-            return text[:limit].strip()
-
         caption_text, model_hashtags = await self._generate_sea_caption(
             storm_state=storm_state,
             storm_persisting=storm_persisting,
@@ -13577,45 +13562,6 @@ class Bot:
         )
         stripped_caption = self.strip_header(caption_text)
         raw_caption_text = (stripped_caption or caption_text or "").strip()
-
-        def sanitize_caption_text(text: str, *, limit: int = 350) -> str:
-            cleaned = (text or "").strip()
-            if not cleaned:
-                return ""
-            sentences = [
-                segment.strip()
-                for segment in re.split(r"(?<=[.!?…])\s+", cleaned)
-                if segment.strip()
-            ]
-            if sentences:
-                cleaned = " ".join(sentences[:3])
-            measurement_pattern = re.compile(
-                r"\d+[.,]?\d*\s*(?:км/ч|м/с|км|м|мм|см|проц(?:ент(?:ов|а)?)?|%|°[CF]?|°|бал(?:л(?:ов|а)?)?)",
-                re.IGNORECASE,
-            )
-            unit_pattern = re.compile(
-                r"\b(?:км/ч|м/с|км|метр(?:ов|а)?|метры|мм|см|проц(?:ент(?:ов|а)?)?|°[CF]?|°|узл(?:ов|а)?|бал(?:л(?:ов|а)?)?)\b",
-                re.IGNORECASE,
-            )
-            cloud_pattern = re.compile(r"\b[\w-]*(?:облачн|солнеч)[\w-]*\b", re.IGNORECASE)
-            cleaned = measurement_pattern.sub("", cleaned)
-            cleaned = unit_pattern.sub("", cleaned)
-            cleaned = cloud_pattern.sub("", cleaned)
-            cleaned = re.sub(r"\s*—\s*", " — ", cleaned)
-            cleaned = re.sub(r"\s{2,}", " ", cleaned)
-            cleaned = re.sub(r"\s+([,.;!?…])", r"\1", cleaned)
-            cleaned = cleaned.replace(" ,", ",").replace(" .", ".").replace(" !", "!").replace(" ?", "?")
-            trimmed = soft_trim(cleaned.strip(), limit) if cleaned else ""
-            if not trimmed:
-                return ""
-            trimmed = measurement_pattern.sub("", trimmed)
-            trimmed = unit_pattern.sub("", trimmed)
-            trimmed = cloud_pattern.sub("", trimmed)
-            trimmed = re.sub(r"\s*—\s*", " — ", trimmed)
-            trimmed = re.sub(r"\s{2,}", " ", trimmed)
-            trimmed = re.sub(r"\s+([,.;!?…])", r"\1", trimmed)
-            trimmed = trimmed.replace(" ,", ",").replace(" .", ".").replace(" !", "!").replace(" ?", "?")
-            return trimmed.strip()
 
         fallback_seed = ""
         if storm_state == "strong_storm":
@@ -13635,7 +13581,16 @@ class Bot:
             fallback_seed += " Ветер ощутимо тянет к морю."
         if fact_sentence:
             fallback_seed += f" {fact_sentence}"
-        fallback_caption_plain = sanitize_caption_text(fallback_seed, limit=350)
+        fallback_sentences = [
+            segment.strip()
+            for segment in re.split(r"(?<=[.!?…])\s+", fallback_seed.strip())
+            if segment.strip()
+        ]
+        fallback_caption_plain = (
+            " ".join(fallback_sentences[:3]) if fallback_sentences else fallback_seed.strip()
+        )
+        main_plain = raw_caption_text or fallback_caption_plain
+        main_plain = main_plain.strip()
 
         deduped_model_tags = self._deduplicate_hashtags(model_hashtags or [])
         seen_tags: set[str] = set()
@@ -13673,27 +13628,10 @@ class Bot:
             lines.append(LOVE_COLLECTION_LINK)
             return "\n".join(lines)
 
-        caption_text_clean = ""
-        full_caption = compose_caption("")
-        for limit in (350, 300, 260, 220, 180, 140, 120, 100, 80):
-            candidate = sanitize_caption_text(raw_caption_text, limit=limit)
-            if not candidate and fallback_caption_plain:
-                candidate = sanitize_caption_text(fallback_caption_plain, limit=limit)
-            full_candidate = compose_caption(candidate)
-            caption_text_clean = candidate
-            full_caption = full_candidate
-            if len(full_candidate) <= 1000 or not candidate:
-                break
-        if caption_text_clean and len(caption_text_clean) > 350:
-            caption_text_clean = soft_trim(caption_text_clean, 350)
-            full_caption = compose_caption(caption_text_clean)
-        if len(full_caption) > 1000:
-            logging.warning("SEA_RUBRIC caption_trimmed length=%s", len(full_caption))
-            truncated_main = soft_trim(caption_text_clean or "", 280)
-            caption_text_clean = truncated_main
-            full_caption = compose_caption(truncated_main)
-
-        caption_text = caption_text_clean
+        caption_text = main_plain or fallback_caption_plain
+        if not caption_text:
+            caption_text = fallback_caption_plain
+        full_caption = compose_caption(caption_text)
         logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
 
         source_path, should_cleanup = await self._ensure_asset_source(asset)
@@ -14005,20 +13943,20 @@ class Bot:
 
         system_prompt = (
             "Ты редактор телеграм-канала о Балтийском море. "
-            "Пиши живо, будто делишься впечатлением: 1–2 бодрых предложения, допускается третье короткое вдохновляющее. "
-            "Избегай штампов и не используй цифры или единицы измерения про погоду — исключение только для чисел из fact_sentence. "
-            "Не описывай облачность или солнце — это видно по фото. "
-            "Если storm_state='storm' и storm_persisting=true — начинай подпись с вариации «Продолжает штормить…». "
-            "Если storm_state='storm' и шторм не продолжается — мягко отметь, что штормит сегодня. "
-            "Если storm_state='strong_storm' — открывай «Сегодня сильный шторм на море…» и допускай более экспрессивный тон. "
+            "Пиши 1–2 коротких предложения живым тоном и избегай сухих клише. "
+            "Не называй конкретные числа о текущей погоде. "
+            "Если storm_persisting=true и storm_state='storm' — начинай подпись с вариации «Продолжает штормить…». "
+            "Если storm_state='storm' и шторм не продолжается — отметь, что штормит сегодня. "
+            "Если storm_state='strong_storm' — открой вариацией «Сегодня сильный шторм на море…» и допускай более эмоциональный тон. "
             "Если море спокойно и sunset_selected=true — начни с вариации «Порадую закатом над морем…». "
             "Если море спокойно и sunset_selected=false — начни с вариации «Порадую вас морем…». "
-            "Ветер описывай только образно, без чисел. "
-            "Если передан fact_sentence — добавь ровно одно короткое предложение, живо пересказывая факт и без словосочетания «интересный факт». "
-            "Хэштеги #море и #БалтийскоеМоре добавятся позже — не вставляй хэштеги в основной текст."
+            "Опиши ветер только образно, без чисел. "
+            "Если передан fact_sentence — добавь ровно одно короткое предложение, перефразируя, но сохрани все цифры и единицы измерения строго так, как в факте: не заменяй цифры словами, сохраняй символы %, ‰, км², «тыс.», диапазоны с длинным тире и другие знаки. "
+            "Основной текст — не длиннее 450 символов. Не превышай лимит. "
+            "В поле caption верни только финальный текст подписи без пояснений."
         )
         wind_label = wind_class if wind_class in {"strong", "very_strong"} else "none"
-        prompt_payload = {
+        prompt_payload: dict[str, Any] = {
             "storm_state": storm_state,
             "storm_persisting": storm_persisting,
             "wave_height_m": round(wave_height_m, 2) if wave_height_m is not None else None,
@@ -14029,24 +13967,26 @@ class Bot:
             "clouds_label": clouds_label,
             "sunset_selected": sunset_selected,
             "want_sunset": want_sunset,
-            "place_hashtag": place_hashtag,
-            "fact_sentence": fact_sentence,
             "blog_tone": True,
         }
+        if place_hashtag:
+            prompt_payload["place_hashtag"] = place_hashtag
+        if storm_state != "strong_storm" and fact_sentence:
+            prompt_payload["fact_sentence"] = fact_sentence
         payload_text = json.dumps(prompt_payload, ensure_ascii=False, separators=(",", ": "))
         user_prompt = (
             "Параметры сцены (JSON):\n"
             f"{payload_text}\n"
             "Требования:\n"
-            "- 1–2 живых предложения (допускается третье короткое вдохновляющее завершение).\n"
-            "- Не используй цифры и единицы измерения для описания погоды; числа из fact_sentence допустимы.\n"
-            "- Не описывай облачность или солнце.\n"
-            "- Соблюдай правила вступления из system_prompt для штормов, сильного шторма и спокойного моря.\n"
+            "- 1–2 коротких предложения (допускается третье короткое вдохновляющее завершение).\n"
+            "- Не используй числовые значения для описания текущей погоды.\n"
+            "- Соблюдай правила вступления из system_prompt для разных состояний моря.\n"
             "- Если storm_persisting=true и storm_state='storm' — начни с вариации «Продолжает штормить…».\n"
-            "- Если wind_class=strong или wind_class=very_strong — опиши ветер только образно, без чисел.\n"
-            "- Если fact_sentence не null — добавь ровно одно короткое предложение, живо пересказывающее факт и без слов «интересный факт».\n"
-            "- Основной текст должен поместиться в 350 символов и звучать дружелюбно, по-блогерски.\n"
-            "- Хэштеги возвращай только в массиве hashtags — в тексте их быть не должно.\n"
+            "- Если wind_class=strong или wind_class=very_strong — опиши ветер образно, без чисел.\n"
+            "- Если в JSON есть поле fact_sentence — добавь ровно одно короткое предложение по факту, сохранив все цифры и единицы так же, как в исходном тексте.\n"
+            "- Основной текст должен быть не длиннее 450 символов.\n"
+            "- Если place_hashtag задан — включи его в массив hashtags.\n"
+            "- Не вставляй хэштеги в caption; верни их только в массиве hashtags.\n"
             "Ответ строго в формате JSON: {\"caption\": string, \"hashtags\": string[]}."
         )
         schema = {

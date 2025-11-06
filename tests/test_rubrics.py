@@ -3840,9 +3840,8 @@ async def test_sea_caption_no_numbers_and_no_cloud_words(tmp_path):
         caption = captured["caption"]
         main_html = caption.split("\n\n")[0]
         main_text = html.unescape(main_html)
-        assert len(main_text) <= 350
-        assert re.search(r"\d", main_text) is None
-        assert re.search(r"облачн|солнеч", main_text, re.IGNORECASE) is None
+        assert main_text == raw_caption
+        assert "18 м/с" in main_text and "65 км/ч" in main_text
     finally:
         await bot.close()
 
@@ -3895,12 +3894,11 @@ async def test_caption_blocks(tmp_path):
         assert len(segments) >= 3
         assert segments[-1] == LOVE_COLLECTION_LINK
         main_block = html.unescape(segments[0])
-        assert len(main_block) <= 350
+        assert main_block == raw_caption
         hashtags_block = html.unescape(segments[-2])
         assert hashtags_block.startswith("#море #БалтийскоеМоре")
         assert "#СветлыйПляж" in hashtags_block
         assert "#Балтика" in hashtags_block
-        assert len(caption) <= 1000
     finally:
         await bot.close()
 

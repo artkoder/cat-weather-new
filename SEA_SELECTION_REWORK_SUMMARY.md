@@ -88,11 +88,11 @@ This document summarizes the comprehensive rework of the sea selection logic as 
 
 ### 10. Comprehensive Logging
 - **Change**: All sea selection events now emit Grafana-friendly JSON logs
-- **Weather summary**: `conditions` event with wave_height_m, wave_score, wind metrics, cloud_cover_pct, sky_bucket
+- **Weather summary**: `weather` event with wave_height_m, wave_score, wind metrics, cloud_cover_pct, sky_bucket
 - **Season window**: `season` event with doy_now, doy_range, kept/removed/null_doy asset lists
-- **Stage progression**: `stage` event per fallback stage with pool_size, top5 scoring dump, wave_corridor
+- **Stage progression**: `attempt <policy>` event per fallback stage (B0/B1/B2/AN) with pool_size, top5 scoring dump, wave_corridor
 - **Top-5 dump**: Each stage logs top 5 candidates with id, wave, sky, penalties, score
-- **Final selection**: `selection_final` event includes:
+- **Final selection**: `selected` event includes:
   - asset_id, shot_doy, score, wave_score, photo_sky, season_match
   - sunset_selected, want_sunset, storm_persisting
   - wave_corridor, sky_penalty, sky_visible, sky_critical_mismatch

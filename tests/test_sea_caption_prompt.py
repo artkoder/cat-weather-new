@@ -77,7 +77,7 @@ async def test_sea_caption_prompt_fact_numbers_and_limit_instruction(monkeypatch
     first_call = bot.openai.calls[-1]
     system_prompt = first_call["system_prompt"]
     user_prompt = first_call["user_prompt"]
-    assert "450" in system_prompt
+    assert "350" in system_prompt
     assert "сохрани все цифры" in system_prompt
     assert '"fact_sentence":' in user_prompt
     assert fact_text in user_prompt
@@ -171,7 +171,8 @@ async def test_sea_logging_prefixes(monkeypatch, tmp_path: Path, caplog: pytest.
     messages = [record.getMessage() for record in caplog.records]
     assert any(msg.startswith("SEA_RUBRIC weather") for msg in messages)
     assert any(msg.startswith("SEA_RUBRIC season") for msg in messages)
-    assert any(msg.startswith("SEA_RUBRIC attempt") for msg in messages)
+    assert any(msg.startswith("SEA_RUBRIC pool after") for msg in messages)
+    assert any(msg.startswith("SEA_RUBRIC top5 #") for msg in messages)
     assert any(msg.startswith("SEA_RUBRIC facts choose") for msg in messages)
     assert any(msg.startswith("SEA_RUBRIC selected") for msg in messages)
 

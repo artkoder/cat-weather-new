@@ -484,8 +484,8 @@ def bucket_clouds(cloud_pct: float | None) -> str | None:
 
 def compatible_skies(bucket: str | None) -> set[str]:
     mapping = {
-        "clear": {"sunny", "partly_cloudy"},
-        "mostly_clear": {"sunny", "partly_cloudy"},
+        "clear": {"sunny", "mostly_clear", "partly_cloudy"},
+        "mostly_clear": {"sunny", "mostly_clear", "partly_cloudy"},
         "partly_cloudy": {"sunny", "partly_cloudy", "mostly_cloudy"},
         "mostly_cloudy": {"mostly_cloudy", "overcast"},
         "overcast": {"mostly_cloudy", "overcast"},

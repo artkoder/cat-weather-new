@@ -509,6 +509,7 @@ async def test_logs_not_truncated_and_prefixed(tmp_path: Path, caplog: pytest.Lo
     weather_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC weather ")]
     season_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC season ")]
     pool_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC pool after ")]
+    pool_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC pool_counts ")]
     top5_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC top5 #")]
     selected_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC selected ")]
 

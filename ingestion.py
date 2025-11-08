@@ -266,6 +266,9 @@ class SaveAssetPayload(TypedDict, total=False):
     exif_present: bool | None
     shot_at_utc: int | None
     shot_doy: int | None
+    photo_doy: int | None
+    photo_wave: float | None
+    sky_visible: str | bool | None
 
 
 @dataclass(slots=True)
@@ -1220,6 +1223,21 @@ async def _ingest_photo_internal(
                     combined_categories.append(text)
                     seen_categories.add(text)
 
+            wave_score_value: float | None = None
+            sky_visible_value: str | bool | None = None
+            if isinstance(vision_payload, dict):
+                raw_wave = vision_payload.get("sea_wave_score")
+                if isinstance(raw_wave, dict):
+                    raw_wave = raw_wave.get("value")
+                if raw_wave is not None:
+                    try:
+                        wave_score_value = float(raw_wave)
+                    except (TypeError, ValueError):
+                        wave_score_value = None
+                raw_sky_visible = vision_payload.get("sky_visible")
+                if raw_sky_visible is not None:
+                    sky_visible_value = raw_sky_visible
+
             save_payload: SaveAssetPayload = {
                 "channel_id": inputs.channel_id,
                 "message_id": message_id,
@@ -1245,6 +1263,9 @@ async def _ingest_photo_internal(
                 "exif_present": bool(exif_payload) or bool(gps_payload),
                 "shot_at_utc": shot_at_utc_value,
                 "shot_doy": shot_doy_value,
+                "photo_doy": shot_doy_value,
+                "photo_wave": wave_score_value,
+                "sky_visible": sky_visible_value,
             }
             asset_id = callbacks.save_asset(save_payload)
 

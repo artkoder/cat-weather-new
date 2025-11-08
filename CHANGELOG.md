@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- Photo metadata persistence for sea assets (`photo_doy`, `photo_wave`, tri-state `sky_visible`) with
+  repeatable migrations and reporting CLI.
+- Weather migration utility now offers `--fill-doy`, `--recalc-sky-visible`, and `--backfill-wave`
+  dry-run jobs to audit and repair historical records.
 - Sea selection rework with Kaliningrad timezone-based seasonal windows, wave-score storm classification (≤3.5 calm, <6 storm, ≥6 strong_storm), penalty-based candidate evaluation, and coastal cloud acceptance matrix (B0/B1/B2/AN) with clear guard enforcement.
 - Sky visibility integration (`sky_visible`) that skips sky penalties and disables sunset prioritization for assets without visible sky or with `photo_sky="unknown"`.
 - Comprehensive sea selection logging with season metadata (doy_now, doy_range, kept/removed assets), pool counts per stage, top-5 scoring dump, and final selection payload including want_sunset, storm_persisting, wave_corridor, sky_penalty, and sky_critical_mismatch.
@@ -32,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Schemathesis-powered contract test suite that exercises the latest API surface to guard against regressions in mobile attach, upload, and webhook flows.
 
 ### Changed
+- Sea rubric scoring now reads configuration-driven stage tolerances, applies wave/sky penalties per
+  stage, and enforces calm-day wave caps even in emergency fallback.
 - Sea rubric seasonal window now uses Europe/Kaliningrad timezone instead of UTC for day-of-year calculations, ensuring accurate seasonal matching for the local region.
 - Sea rubric storm state classification now based on wave scores (≤3.5 calm, <6 storm, ≥6 strong_storm) instead of raw wave heights for more nuanced weather state determination.
 - Sea rubric candidate evaluation redesigned with penalty-based scoring (penalty = max(0, |score−s|−halfwidth)*0.75) that allows calm-day assets without wave scores (−1.0 bonus) and implements staged fallback progression (season → wave → B1 → wave+broaden → B2 → AN).

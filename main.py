@@ -484,8 +484,8 @@ def bucket_clouds(cloud_pct: float | None) -> str | None:
 
 def compatible_skies(bucket: str | None) -> set[str]:
     mapping = {
-        "clear": {"sunny", "partly_cloudy"},
-        "mostly_clear": {"sunny", "partly_cloudy"},
+        "clear": {"sunny", "mostly_clear", "partly_cloudy"},
+        "mostly_clear": {"sunny", "mostly_clear", "partly_cloudy"},
         "partly_cloudy": {"sunny", "partly_cloudy", "mostly_cloudy"},
         "mostly_cloudy": {"mostly_cloudy", "overcast"},
         "overcast": {"mostly_cloudy", "overcast"},
@@ -13170,92 +13170,79 @@ class Bot:
                 return [_normalize_for_log(item) for item in sorted(value)]
             return value
 
+        def _stringify_for_log(value: Any) -> str:
+            normalized = _normalize_for_log(value)
+            if isinstance(normalized, dict):
+                items = [
+                    f"{key}={_stringify_for_log(val)}" for key, val in sorted(normalized.items())
+                ]
+                return ";".join(items)
+            if isinstance(normalized, (list, tuple)):
+                return ",".join(_stringify_for_log(item) for item in normalized)
+            return str(normalized)
+
+        def _emit_log(label: str, **fields: Any) -> None:
+            payload = {key: value for key, value in fields.items() if value is not None}
+            if payload:
+                message = " ".join(
+                    f"{key}={_stringify_for_log(value)}" for key, value in payload.items()
+                )
+                logging.info("SEA_RUBRIC %s %s", label, message)
+            else:
+                logging.info("SEA_RUBRIC %s", label)
+
         def sea_log(event: str, **details: Any) -> None:
             if event == "weather":
-                logging.info(
-                    "SEA_RUBRIC weather wave_height_m=%s wave_score=%s wind_ms=%s wind_kmh=%s "
-                    "wind_class=%s cloud_cover_pct=%s sky_bucket=%s allowed_skies=%s "
-                    "today_doy=%s season_window_days=%s",
-                    _normalize_for_log(details.get("wave_height_m")),
-                    _normalize_for_log(details.get("wave_score")),
-                    _normalize_for_log(details.get("wind_ms")),
-                    _normalize_for_log(details.get("wind_kmh")),
-                    _normalize_for_log(details.get("wind_class")),
-                    _normalize_for_log(details.get("cloud_cover_pct")),
-                    _normalize_for_log(details.get("sky_bucket")),
-                    _normalize_for_log(details.get("allowed_skies")),
-                    _normalize_for_log(details.get("today_doy")),
-                    _normalize_for_log(details.get("season_window_days")),
+                _emit_log(
+                    "weather",
+                    wave_height_m=details.get("wave_height_m"),
+                    wave_score=details.get("wave_score"),
+                    wind_ms=details.get("wind_ms"),
+                    wind_kmh=details.get("wind_kmh"),
+                    wind_class=details.get("wind_class"),
+                    cloud_cover_pct=details.get("cloud_cover_pct"),
+                    sky_bucket=details.get("sky_bucket"),
+                    allowed_skies=details.get("allowed_skies"),
+                    today_doy=details.get("today_doy"),
+                    season_window_days=details.get("season_window_days"),
                 )
             elif event == "season":
-                logging.info(
-                    "SEA_RUBRIC season doy_now=%s doy_range=%s kept=%s removed=%s "
-                    "null_doy=%s season_removed=%s total_candidates=%s matched=%s filtered=%s",
-                    _normalize_for_log(details.get("doy_now")),
-                    _normalize_for_log(details.get("doy_range")),
-                    _normalize_for_log(details.get("kept")),
-                    _normalize_for_log(details.get("removed")),
-                    _normalize_for_log(details.get("null_doy")),
-                    _normalize_for_log(details.get("season_removed")),
-                    _normalize_for_log(details.get("total_candidates")),
-                    _normalize_for_log(details.get("matched")),
-                    _normalize_for_log(details.get("filtered")),
+                _emit_log(
+                    "season window",
+                    doy_now=details.get("doy_now"),
+                    doy_range=details.get("doy_range"),
+                    kept=details.get("kept"),
+                    removed=details.get("removed"),
+                    null_doy=details.get("null_doy"),
+                    season_removed=details.get("season_removed"),
+                    pool_after_season=details.get("pool_after_season"),
                 )
-            elif event.startswith("attempt "):
-                pool_counts = details.get("pool_counts", {})
-                logging.info(
-                    "SEA_RUBRIC pool after_season=%s, after_wave=%s, after_B1=%s, "
-                    "after_wave+broaden=%s, after_B2=%s, after_AN=%s",
-                    pool_counts.get("pool_after_season", 0),
-                    pool_counts.get("pool_after_wave", 0),
-                    pool_counts.get("pool_after_B1", 0),
-                    pool_counts.get("pool_after_wave+broaden", 0),
-                    pool_counts.get("pool_after_B2", 0),
-                    pool_counts.get("pool_after_AN", 0),
+            elif event == "stage":
+                label = f"stage {details.get('name')}"
+                _emit_log(
+                    label,
+                    sky_policy=details.get("sky"),
+                    corridor=details.get("corridor"),
+                    pool_size=details.get("pool_size"),
                 )
-
-                top5 = details.get("top5", [])
-                for idx, entry in enumerate(top5, start=1):
-                    logging.info(
-                        "SEA_RUBRIC top5 #%s id=%s sky=%s wave=%s score=%s reasons=%s",
-                        idx,
-                        _normalize_for_log(entry.get("id")),
-                        _normalize_for_log(entry.get("sky")),
-                        _normalize_for_log(entry.get("wave")),
-                        _normalize_for_log(entry.get("score")),
-                        _normalize_for_log(entry.get("penalties")),
-                    )
+            elif event == "pool_counts":
+                _emit_log(
+                    "pool_counts",
+                    pool_after_season=details.get("pool_after_season"),
+                    pool_after_B1=details.get("pool_after_B1"),
+                    pool_after_B2=details.get("pool_after_B2"),
+                    pool_after_AN=details.get("pool_after_AN"),
+                    pool_after_B0=details.get("pool_after_B0"),
+                )
+            elif event == "top5":
+                index = details.get("index")
+                label = f"top5 #{index}" if index is not None else "top5"
+                payload = {key: val for key, val in details.items() if key != "index"}
+                _emit_log(label, **payload)
             elif event == "selected":
-                logging.info(
-                    "SEA_RUBRIC selected stage=%s asset_id=%s shot_doy=%s score=%s "
-                    "wave_score=%s photo_sky=%s season_match=%s sunset_selected=%s "
-                    "want_sunset=%s storm_persisting=%s sky_visible=%s sky_critical_mismatch=%s",
-                    _normalize_for_log(details.get("stage")),
-                    _normalize_for_log(details.get("asset_id")),
-                    _normalize_for_log(details.get("shot_doy")),
-                    _normalize_for_log(details.get("score")),
-                    _normalize_for_log(details.get("wave_score")),
-                    _normalize_for_log(details.get("photo_sky")),
-                    _normalize_for_log(details.get("season_match")),
-                    _normalize_for_log(details.get("sunset_selected")),
-                    _normalize_for_log(details.get("want_sunset")),
-                    _normalize_for_log(details.get("storm_persisting")),
-                    _normalize_for_log(details.get("sky_visible")),
-                    _normalize_for_log(details.get("sky_critical_mismatch")),
-                )
+                _emit_log("selected", **details)
             else:
-                # Fallback for other events - use compact JSON
-                payload: dict[str, Any] = {
-                    "event": event,
-                    "sea_id": sea_id,
-                    "storm_state": storm_state,
-                    "storm_persisting": storm_persisting,
-                }
-                if storm_persisting_reason:
-                    payload["storm_reason"] = storm_persisting_reason
-                payload.update(details)
-                normalized = json.dumps(_normalize_for_log(payload), ensure_ascii=False)
-                logging.info("SEA_RUBRIC %s %s", event, normalized)
+                _emit_log(event, **details)
 
         sea_log(
             "weather",
@@ -13276,7 +13263,14 @@ class Bot:
             season_window_days=season_window_days,
         )
 
-        candidates = self.data.fetch_sea_candidates(rubric.id, limit=48)
+        doy_low = (today_doy - season_window_days) % 365 + 1
+        doy_high = (today_doy + season_window_days - 1) % 365 + 1
+
+        candidates = self.data.fetch_sea_candidates(
+            rubric.id,
+            limit=48,
+            season_range=(doy_low, doy_high),
+        )
         if not candidates:
             sea_log(
                 "selection_empty",
@@ -13314,9 +13308,6 @@ class Bot:
             return True
 
         # Apply seasonal filter based on day-of-year
-        doy_low = (today_doy - season_window_days) % 365 + 1
-        doy_high = (today_doy + season_window_days - 1) % 365 + 1
-
         kept_asset_ids: list[int] = []
         removed_asset_ids: list[int] = []
         null_doy_asset_ids: list[int] = []
@@ -13324,7 +13315,7 @@ class Bot:
         for candidate in candidates:
             shot_doy = candidate.get("shot_doy")
             if shot_doy is None:
-                candidate["season_match"] = True
+                candidate["season_match"] = False
                 null_doy_asset_ids.append(candidate["asset"].id)
             else:
                 match = is_in_season_window(shot_doy, today_doy=today_doy, window=season_window_days)
@@ -13366,6 +13357,7 @@ class Bot:
             total_candidates=len(candidates),
             matched=season_matches,
             filtered=filtered_count,
+            pool_after_season=len(working_candidates),
         )
 
         def compute_corridor(broaden: float = 0.0) -> tuple[float, float]:
@@ -13396,6 +13388,20 @@ class Bot:
             sky_visible = candidate.get("sky_visible", True)
             wave_value = candidate.get("wave_score")
 
+            strict_sky_map = {
+                "clear": {"sunny", "mostly_clear", "partly_cloudy"},
+                "mostly_clear": {"sunny", "mostly_clear", "partly_cloudy"},
+                "partly_cloudy": {"sunny", "mostly_clear", "partly_cloudy"},
+                "mostly_cloudy": {"mostly_cloudy"},
+                "overcast": {"overcast"},
+            }
+            strict_allowed = set(strict_sky_map.get(sky_bucket, set(allowed_photo_skies)))
+            soft_allowed = set(allowed_photo_skies)
+            if sky_bucket in {"clear", "mostly_clear"}:
+                soft_allowed.update({"sunny", "mostly_clear", "partly_cloudy"})
+            elif sky_bucket == "partly_cloudy":
+                soft_allowed.update({"sunny", "mostly_clear", "partly_cloudy", "mostly_cloudy"})
+
             if wave_value is None:
                 if storm_state == "calm" and allow_missing_wave:
                     pass
@@ -13422,26 +13428,27 @@ class Bot:
                 penalty -= 1.0
 
             sky_penalty = 0.0
-            sky_match_type: str | None = None
-            if sky_visible and photo_sky and photo_sky != "unknown":
-                if sky_policy == "B0":
-                    if photo_sky == "sunny" and sky_bucket in {"clear", "mostly_clear"}:
-                        sky_match_type = "exact"
-                    elif photo_sky in allowed_photo_skies:
-                        sky_match_type = "compatible"
-                    else:
-                        return None
-                elif sky_policy == "B1":
+            photo_known = photo_sky not in (None, "unknown")
+
+            if stage_name == "B0" and sky_visible:
+                return None
+
+            if sky_policy in {"B1", "B2"}:
+                if not sky_visible or not photo_known:
+                    return None
+
+            if sky_policy == "B1" and photo_known:
+                if photo_sky not in strict_allowed:
+                    return None
+            elif sky_policy == "B2" and photo_known:
+                if photo_sky not in soft_allowed:
+                    return None
+            elif sky_policy == "B0":
+                if stage_name not in {"B0"} and sky_visible and photo_known:
                     if photo_sky not in allowed_photo_skies:
                         return None
-                elif sky_policy == "B2":
-                    if photo_sky == "overcast" and sky_bucket in {"clear", "mostly_clear"}:
-                        return None
-                elif sky_policy == "AN":
-                    pass
-                else:
-                    pass
 
+            if sky_visible and photo_known:
                 if photo_sky == "sunny" and sky_bucket in {"clear", "mostly_clear"}:
                     sky_penalty = -0.5
                 elif photo_sky in allowed_photo_skies:
@@ -13449,8 +13456,9 @@ class Bot:
                 else:
                     sky_penalty = 1.0
                 penalty += sky_penalty
-            elif not sky_visible or photo_sky in (None, "unknown"):
-                pass
+            elif not sky_visible or not photo_known:
+                if stage_name in {"B1", "B2"}:
+                    return None
             elif sky_policy in {"B0", "B1"}:
                 return None
 
@@ -13471,11 +13479,27 @@ class Bot:
                     sky_bonus = -1.0
                 score += sky_bonus
 
+            clear_adjustment = 0.0
+            if sky_bucket == "clear":
+                clear_map = {
+                    "sunny": 1.0,
+                    "mostly_clear": 1.0,
+                    "partly_cloudy": 0.6,
+                    "mostly_cloudy": -0.8,
+                    "overcast": -1.5,
+                }
+                if sky_visible and photo_sky:
+                    clear_adjustment = clear_map.get(str(photo_sky), 0.0)
+                else:
+                    clear_adjustment = -1.2
+                score += clear_adjustment
+
             reasons = {
                 "wave_corridor": (round(low, 2), round(high, 2)),
                 "wave_penalty": round(wave_penalty, 3),
                 "sky_penalty": round(sky_penalty, 3),
                 "sky_bonus": round(sky_bonus, 3),
+                "clear_adjustment": round(clear_adjustment, 3),
                 "sky_policy": sky_policy,
                 "sky_visible": sky_visible,
                 "penalty_total": round(penalty, 3),
@@ -13489,15 +13513,22 @@ class Bot:
             {"name": "season", "sky": "B0", "wave_broaden": 0.0, "allow_missing_wave": False},
             {"name": "wave", "sky": "B0", "wave_broaden": 0.0, "allow_missing_wave": True},
             {"name": "B1", "sky": "B1", "wave_broaden": 0.0, "allow_missing_wave": True},
-            {"name": "wave+broaden", "sky": "B1", "wave_broaden": 0.8, "allow_missing_wave": True},
             {"name": "B2", "sky": "B2", "wave_broaden": 0.8, "allow_missing_wave": True},
             {"name": "AN", "sky": "AN", "wave_broaden": 0.8, "allow_missing_wave": True},
+            {"name": "B0", "sky": "B0", "wave_broaden": 0.8, "allow_missing_wave": True},
         ]
 
         selected_candidate: dict[str, Any] | None = None
         selected_details: dict[str, Any] = {}
         sky_critical_mismatch = False
-        pool_counts: dict[str, int] = {}
+        pool_counts: dict[str, int] = {
+            "pool_after_season": len(working_candidates),
+            "pool_after_wave": 0,
+            "pool_after_B1": 0,
+            "pool_after_B2": 0,
+            "pool_after_AN": 0,
+            "pool_after_B0": 0,
+        }
 
         for attempt_index, stage in enumerate(stages, start=1):
             low, high = compute_corridor(stage["wave_broaden"])
@@ -13534,28 +13565,41 @@ class Bot:
             else:
                 sorted_results = []
 
-            top_entries: list[dict[str, Any]] = []
-            for score_value, reason_payload, candidate_payload in sorted_results[:5]:
+            sea_log(
+                "stage",
+                name=stage["name"],
+                sky=stage["sky"],
+                corridor=(round(low, 2), round(high, 2)),
+                pool_size=len(sorted_results),
+            )
+
+            sea_log(
+                "pool_counts",
+                pool_after_season=pool_counts.get("pool_after_season", 0),
+                pool_after_B1=pool_counts.get("pool_after_B1", 0),
+                pool_after_B2=pool_counts.get("pool_after_B2", 0),
+                pool_after_AN=pool_counts.get("pool_after_AN", 0),
+                pool_after_B0=pool_counts.get("pool_after_B0", 0),
+            )
+
+            for idx, (score_value, reason_payload, candidate_payload) in enumerate(
+                sorted_results[:5], start=1
+            ):
                 asset_obj = candidate_payload["asset"]
-                top_entries.append(
-                    {
-                        "id": getattr(asset_obj, "id", None),
-                        "wave": _normalize_for_log(candidate_payload.get("wave_score")),
-                        "sky": candidate_payload.get("photo_sky"),
-                        "penalties": _normalize_for_log(reason_payload),
-                        "score": _normalize_for_log(score_value),
-                    }
+                sea_log(
+                    "top5",
+                    index=idx,
+                    id=getattr(asset_obj, "id", None),
+                    sky_visible=candidate_payload.get("sky_visible"),
+                    photo_sky=candidate_payload.get("photo_sky"),
+                    wave_score=candidate_payload.get("wave_score"),
+                    shot_doy=candidate_payload.get("shot_doy"),
+                    score=score_value,
+                    reasons=reason_payload,
                 )
 
-            attempt_event = f"attempt {stage['sky']}"
-            sea_log(
-                attempt_event,
-                stage=stage["name"],
-                pool_size=len(sorted_results),
-                top5=top_entries,
-                wave_corridor=(round(low, 2), round(high, 2)),
-                pool_counts=pool_counts,
-            )
+            if stage["name"] in {"season", "wave"}:
+                continue
 
             if sorted_results:
                 best_score, best_reasons, best_candidate = sorted_results[0]
@@ -13624,6 +13668,19 @@ class Bot:
             fact_sentence = None
             fact_id = None
             fact_info = {"reason": "disabled"}
+        fact_log_info: dict[str, Any] | None
+        if isinstance(fact_info, dict) and fact_info:
+            fact_log_info = {
+                "reason": fact_info.get("reason"),
+                "fallback": fact_info.get("fallback"),
+                "window_days": fact_info.get("window_days"),
+                "candidates_count": len(fact_info.get("candidates") or []),
+                "recent_ids_count": len(fact_info.get("recent_ids") or []),
+                "weights_count": len(fact_info.get("weights") or []),
+                "chosen_id": fact_info.get("chosen_id"),
+            }
+        else:
+            fact_log_info = None
         sea_log(
             "selected",
             stage=selected_details.get("stage"),
@@ -13642,8 +13699,7 @@ class Bot:
             sky_critical_mismatch=sky_critical_mismatch,
             reasons=selected_details.get("reasons"),
             fact_id=fact_id,
-            fact_info=fact_info,
-            pool_counts=pool_counts,
+            fact_info=fact_log_info,
         )
 
         place_hashtag: str | None = None
@@ -14076,7 +14132,7 @@ class Bot:
             "Если море спокойно и sunset_selected=true — начни с вариации «Порадую закатом над морем…». "
             "Если море спокойно и sunset_selected=false — начни с вариации «Порадую вас морем…». "
             "Опиши ветер только образно, без чисел. "
-            "Если передан fact_sentence (и storm_state != 'strong_storm') — добавь плавное вступление (например: «Знаете ли вы…», «Интересный факт:», «К слову о Балтике…», «Поделюсь любопытным фактом…») и одно короткое предложение, перефразируя факт, но сохрани все цифры и единицы измерения строго так, как в факте: не заменяй цифры словами, сохраняй символы %, ‰, км², «тыс.», диапазоны с длинным тире и другие знаки. "
+            "Если дан FACT — сделай короткую подводку («Знаете ли вы…», «Интересный факт:», «К слову о Балтике…», «Поделюсь фактом…») и одно предложение с фактом; избегай научного жаргона и сохрани все числа и единицы из FACT строго в исходном виде; общий блок до 350 символов. "
             f"{day_part_instruction}"
             "Весь основной текст не длиннее 350 символов. Выведи только сам текст."
         )
@@ -14114,7 +14170,7 @@ class Bot:
             "- Соблюдай правила вступления из system_prompt для разных состояний моря.\n"
             "- Если storm_persisting=true и storm_state='storm' — начни с вариации «Продолжает штормить…».\n"
             "- Если wind_class=strong или wind_class=very_strong — опиши ветер образно, без чисел.\n"
-            "- Если в JSON есть поле fact_sentence — добавь плавное вступление и ровно одно короткое предложение по факту, сохранив все цифры и единицы так же, как в исходном тексте.\n"
+            "- Если в JSON есть поле fact_sentence (FACT) — сделай короткую подводку (например: «Знаете ли вы…», «Интересный факт:», «К слову о Балтике…», «Поделюсь фактом…») и одно предложение с фактом; не используй научный жаргон и сохрани все цифры и единицы измерения без изменений.\n"
             "- Основной текст должен быть не длиннее 350 символов.\n"
             "- Если place_hashtag задан — включи его в массив hashtags.\n"
             "- Не вставляй хэштеги в caption; верни их только в массиве hashtags.\n"

@@ -65,18 +65,66 @@ def test_bucket_clouds(cloud_pct: float | None, expected: str | None) -> None:
 
 
 @pytest.mark.parametrize(
-    "bucket,expected",
+    "bucket,daypart,expected",
     [
-        ("clear", {"sunny", "partly_cloudy"}),
-        ("mostly_clear", {"sunny", "partly_cloudy"}),
-        ("partly_cloudy", {"sunny", "partly_cloudy", "mostly_cloudy"}),
-        ("mostly_cloudy", {"mostly_cloudy", "overcast"}),
-        ("overcast", {"mostly_cloudy", "overcast"}),
-        ("night", {"sunny", "partly_cloudy", "mostly_cloudy", "overcast"}),
+        (
+            "clear",
+            "day",
+            {
+                "day:sunny",
+                "day:mostly_clear",
+                "day:partly_cloudy",
+                "evening:sunny",
+                "evening:mostly_clear",
+            },
+        ),
+        (
+            "mostly_clear",
+            "day",
+            {
+                "day:sunny",
+                "day:mostly_clear",
+                "day:partly_cloudy",
+                "evening:sunny",
+                "evening:mostly_clear",
+            },
+        ),
+        (
+            "partly_cloudy",
+            "day",
+            {
+                "day:sunny",
+                "day:mostly_clear",
+                "day:partly_cloudy",
+                "day:mostly_cloudy",
+            },
+        ),
+        (
+            "mostly_cloudy",
+            "day",
+            {"day:mostly_cloudy", "day:overcast"},
+        ),
+        (
+            "overcast",
+            "day",
+            {"day:mostly_cloudy", "day:overcast"},
+        ),
+        (
+            "unknown",
+            "night",
+            {
+                "night:sunny",
+                "night:mostly_clear",
+                "night:partly_cloudy",
+                "night:mostly_cloudy",
+                "night:overcast",
+            },
+        ),
     ],
 )
-def test_compatible_skies(bucket: str, expected: set[str]) -> None:
-    assert compatible_skies(bucket) == expected
+def test_compatible_skies(bucket: str, daypart: str, expected: set[str]) -> None:
+    result = {sky.token() for sky in compatible_skies(bucket, daypart)}
+    assert result == expected
 
 
 def test_compute_season_window_and_match() -> None:

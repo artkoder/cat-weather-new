@@ -93,7 +93,13 @@ from observability import (
     setup_logging,
 )
 from openai_client import OpenAIClient
-from sea_selection import STAGE_CONFIGS, StageConfig, calc_wave_penalty, sky_similarity
+from sea_selection import (
+    NormalizedSky,
+    STAGE_CONFIGS,
+    StageConfig,
+    calc_wave_penalty,
+    sky_similarity,
+)
 from storage import create_storage_from_env
 from supabase_client import SupabaseClient
 from weather_migration import migrate_weather_publish_channels
@@ -483,15 +489,28 @@ def bucket_clouds(cloud_pct: float | None) -> str | None:
     return "overcast"
 
 
-def compatible_skies(bucket: str | None) -> set[str]:
+def compatible_skies(bucket: str | None, daypart: str | None) -> set[NormalizedSky]:
     mapping = {
-        "clear": {"sunny", "partly_cloudy"},
-        "mostly_clear": {"sunny", "partly_cloudy"},
-        "partly_cloudy": {"sunny", "partly_cloudy", "mostly_cloudy"},
+        "clear": {"sunny", "mostly_clear", "partly_cloudy"},
+        "mostly_clear": {"sunny", "mostly_clear", "partly_cloudy"},
+        "partly_cloudy": {"sunny", "mostly_clear", "partly_cloudy", "mostly_cloudy"},
         "mostly_cloudy": {"mostly_cloudy", "overcast"},
         "overcast": {"mostly_cloudy", "overcast"},
     }
-    return set(mapping.get(bucket, {"sunny", "partly_cloudy", "mostly_cloudy", "overcast"}))
+    normalized_daypart = daypart or "day"
+    weather_tags = mapping.get(bucket)
+    if weather_tags is None:
+        weather_tags = {"sunny", "mostly_clear", "partly_cloudy", "mostly_cloudy", "overcast"}
+
+    allowed = {
+        NormalizedSky(daypart=normalized_daypart, weather_tag=tag) for tag in weather_tags
+    }
+
+    if normalized_daypart == "day" and bucket in {"clear", "mostly_clear"}:
+        for evening_tag in {"sunny", "mostly_clear"}:
+            allowed.add(NormalizedSky(daypart="evening", weather_tag=evening_tag))
+
+    return allowed
 
 
 def compute_season_window(reference: date, window_days: int = 45) -> set[str]:
@@ -13132,7 +13151,6 @@ class Bot:
         wind_class = classify_wind_kph(wind_kmh)
         cloud_cover_pct = self._safe_float(conditions.get("cloud_cover_pct"))
         sky_bucket = bucket_clouds(cloud_cover_pct) or "partly_cloudy"
-        allowed_photo_skies = compatible_skies(sky_bucket)
         clear_guard_hard = cloud_cover_pct is not None and cloud_cover_pct <= 10.0
         clear_guard_soft = cloud_cover_pct is not None and cloud_cover_pct <= 20.0
 
@@ -13158,6 +13176,7 @@ class Bot:
 
         now_local_iso = now_local.isoformat()
         day_part = map_hour_to_day_part(now_local.hour)
+        allowed_photo_skies = compatible_skies(sky_bucket, day_part)
         tz_name = "Europe/Kaliningrad"
 
         def _normalize_for_log(value: Any) -> Any:
@@ -13182,6 +13201,19 @@ class Bot:
                 return ",".join(_stringify_for_log(item) for item in normalized)
             return str(normalized)
 
+        def _sky_token(value: NormalizedSky | None) -> str | None:
+            if isinstance(value, NormalizedSky):
+                return value.token()
+            return None
+
+        def _sky_tokens(values: Iterable[NormalizedSky]) -> list[str]:
+            tokens = {
+                token
+                for token in (_sky_token(item) for item in values)
+                if token
+            }
+            return sorted(tokens)
+
         def _emit_log(label: str, **fields: Any) -> None:
             payload = {key: value for key, value in fields.items() if value is not None}
             if payload:
@@ -13204,6 +13236,7 @@ class Bot:
                     cloud_cover_pct=details.get("cloud_cover_pct"),
                     sky_bucket=details.get("sky_bucket"),
                     allowed_skies=details.get("allowed_skies"),
+                    sky_daypart=details.get("sky_daypart"),
                     today_doy=details.get("today_doy"),
                     season_window_days=details.get("season_window_days"),
                 )
@@ -13260,7 +13293,8 @@ class Bot:
             wind_time_ref=wind_time_ref,
             cloud_cover_pct=cloud_cover_pct,
             sky_bucket=sky_bucket,
-            allowed_skies=sorted(allowed_photo_skies),
+            allowed_skies=_sky_tokens(allowed_photo_skies),
+            sky_daypart=day_part,
             today_doy=today_doy,
             season_window_days=season_window_days,
         )
@@ -13304,6 +13338,7 @@ class Bot:
                 clouds_label=clouds_label,
                 sky_bucket=sky_bucket,
                 want_sunset=temp_want_sunset,
+                sky_daypart=day_part,
                 test=test,
                 initiator_id=initiator_id,
             )
@@ -13364,11 +13399,7 @@ class Bot:
 
         target_wave = float(wave_score or 0.0)
 
-        allowed_hard = {str(item).strip().lower() for item in allowed_photo_skies}
-        if sky_bucket in {"clear", "mostly_clear"}:
-            allowed_hard.update({"sunny", "mostly_clear"})
-        if sky_bucket == "partly_cloudy":
-            allowed_hard.update({"sunny", "mostly_clear", "partly_cloudy"})
+        allowed_hard = set(allowed_photo_skies)
 
         stage_sequence: list[StageConfig] = [
             STAGE_CONFIGS["B0"],
@@ -13419,11 +13450,13 @@ class Bot:
             if sky_visible is None and not stage_cfg.allow_unknown_sky:
                 return None
 
-            photo_sky = candidate.get("photo_sky")
+            photo_sky = candidate.get("photo_sky_struct")
             similarity = sky_similarity(photo_sky, allowed_hard)
             if stage_cfg.require_allowed_sky and similarity != "match":
                 return None
-            if stage_cfg.require_allowed_sky and photo_sky in (None, "unknown"):
+            if stage_cfg.require_allowed_sky and (
+                photo_sky is None or photo_sky.weather_tag == "unknown"
+            ):
                 return None
 
             season_match = candidate.get("season_match")
@@ -13555,7 +13588,8 @@ class Bot:
                     stage=stage_cfg.name,
                     id=getattr(asset_obj, "id", None),
                     sky_visible=candidate_payload.get("sky_visible"),
-                    photo_sky=candidate_payload.get("photo_sky"),
+                    photo_sky=_sky_token(candidate_payload.get("photo_sky_struct")),
+                    photo_sky_daypart=candidate_payload.get("photo_sky_daypart"),
                     wave_photo=candidate_payload.get("photo_wave"),
                     wave_target=target_wave,
                     wave_delta=reason_payload.get("wave_delta"),
@@ -13578,8 +13612,8 @@ class Bot:
                 }
 
                 if stage_cfg.name == "AN" and clear_guard_hard:
-                    chosen_sky = best_candidate.get("photo_sky")
-                    if chosen_sky in {"mostly_cloudy", "overcast"}:
+                    chosen_sky = best_candidate.get("photo_sky_struct")
+                    if chosen_sky and chosen_sky.weather_tag in {"mostly_cloudy", "overcast"}:
                         sky_critical_mismatch = True
 
                 break
@@ -13612,12 +13646,17 @@ class Bot:
         asset = selected_candidate["asset"]
         sunset_selected = bool(selected_candidate.get("is_sunset"))
         sky_visible = selected_candidate.get("sky_visible", True)
-        chosen_photo_sky = selected_candidate.get("photo_sky")
+        chosen_photo_sky = selected_candidate.get("photo_sky_struct")
+        chosen_photo_sky_tag = (
+            chosen_photo_sky.weather_tag if isinstance(chosen_photo_sky, NormalizedSky) else None
+        )
 
         want_sunset = (
             storm_state != "strong_storm"
             and sky_visible
-            and not (clear_guard_hard and chosen_photo_sky in {"mostly_cloudy", "overcast"})
+            and not (
+                clear_guard_hard and chosen_photo_sky_tag in {"mostly_cloudy", "overcast"}
+            )
         )
         if enable_facts:
             fact_sentence_value, fact_id_value, fact_info = self._prepare_sea_fact(
@@ -13656,7 +13695,8 @@ class Bot:
             wave_photo=selected_candidate.get("photo_wave")
             or selected_candidate.get("wave_score"),
             wave_target=target_wave,
-            photo_sky=selected_candidate.get("photo_sky"),
+            photo_sky=_sky_token(selected_candidate.get("photo_sky_struct")),
+            photo_sky_daypart=selected_candidate.get("photo_sky_daypart"),
             season_match=selected_candidate.get("season_match"),
             sunset_selected=sunset_selected,
             want_sunset=want_sunset,
@@ -13843,8 +13883,12 @@ class Bot:
             "clear_guard_hard": clear_guard_hard,
             "clear_guard_soft": clear_guard_soft,
             "sky_bucket": sky_bucket,
-            "allowed_photo_sky": sorted(allowed_photo_skies),
+            "sky_daypart": day_part,
+            "allowed_photo_sky": _sky_tokens(allowed_photo_skies),
             "selected_photo_sky": selected_candidate.get("photo_sky"),
+            "selected_photo_sky_token": _sky_token(selected_candidate.get("photo_sky_struct")),
+            "selected_photo_sky_daypart": selected_candidate.get("photo_sky_daypart"),
+            "selected_photo_sky_weather": selected_candidate.get("photo_sky_weather"),
             "sky_visible": sky_visible,
             "sky_critical_mismatch": sky_critical_mismatch,
             "want_sunset": want_sunset,
@@ -13948,6 +13992,7 @@ class Bot:
         clouds_label: str,
         sky_bucket: str,
         want_sunset: bool,
+        sky_daypart: str | None,
         test: bool,
         initiator_id: int | None,
     ) -> None:
@@ -13975,6 +14020,7 @@ class Bot:
             "clouds_label": clouds_label,
             "sky_bucket": sky_bucket,
             "want_sunset": want_sunset,
+            "sky_daypart": sky_daypart,
         }
         self.data.record_post_history(channel_id, 0, None, rubric.id, metadata)
 

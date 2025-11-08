@@ -5,6 +5,20 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+
+@dataclass(frozen=True)
+class NormalizedSky:
+    """Normalized representation of sky conditions for selection logic."""
+
+    daypart: str
+    weather_tag: str
+
+    def token(self) -> str:
+        return f"{self.daypart}:{self.weather_tag}"
+
+    def __str__(self) -> str:  # pragma: no cover - used for logging readability
+        return self.token()
+
 _SKY_POSITIVE_KEYWORDS = {
     "sky",
     "clear_sky",
@@ -171,14 +185,25 @@ _ALLOWED_NEIGHBOURS = {
 }
 
 
-def sky_similarity(photo_sky: str | None, allowed: set[str]) -> str:
-    if not photo_sky:
+def sky_similarity(photo_sky: NormalizedSky | None, allowed: set[NormalizedSky]) -> str:
+    if not photo_sky or photo_sky.weather_tag in {"", "unknown"}:
         return "none"
-    normalized = _normalize_token(photo_sky)
-    if normalized in allowed:
+    if photo_sky in allowed:
         return "match"
     for candidate in allowed:
-        neighbours = _ALLOWED_NEIGHBOURS.get(candidate, set())
-        if normalized in neighbours:
+        if candidate.daypart != photo_sky.daypart:
+            continue
+        neighbours = _ALLOWED_NEIGHBOURS.get(candidate.weather_tag, set())
+        if photo_sky.weather_tag in neighbours:
             return "close"
+    if (
+        photo_sky.daypart == "evening"
+        and photo_sky.weather_tag in {"sunny", "mostly_clear"}
+        and any(
+            candidate.daypart == "day"
+            and candidate.weather_tag in {"sunny", "mostly_clear"}
+            for candidate in allowed
+        )
+    ):
+        return "match"
     return "mismatch"

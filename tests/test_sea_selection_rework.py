@@ -8,7 +8,7 @@ import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from main import is_in_season_window, map_wave_height_to_score
+from main import is_in_season_window, wave_m_to_score
 
 
 def test_season_window_doy_any_year():
@@ -43,17 +43,17 @@ def test_season_window_doy_any_year():
 def test_wave_mapping_and_corridor():
     """Test wave height to score mapping and storm state classification."""
     # Test the interpolation curve
-    assert map_wave_height_to_score(0.0) == pytest.approx(0.0)
-    assert map_wave_height_to_score(0.5) == pytest.approx(3.0)
-    assert map_wave_height_to_score(1.0) == pytest.approx(5.0)
-    assert map_wave_height_to_score(1.5) == pytest.approx(7.0)
-    assert map_wave_height_to_score(2.0) == pytest.approx(8.5)
-    assert map_wave_height_to_score(3.0) == pytest.approx(10.0)
+    assert wave_m_to_score(0.0) == 0
+    assert wave_m_to_score(0.5) == 2
+    assert wave_m_to_score(1.0) == 5
+    assert wave_m_to_score(1.5) == 7
+    assert wave_m_to_score(2.0) == 10
+    assert wave_m_to_score(3.0) == 10
 
     # Test storm state classification
-    assert map_wave_height_to_score(0.3) <= 3.5  # calm
-    assert 3.5 < map_wave_height_to_score(0.75) < 6.0  # storm
-    assert map_wave_height_to_score(1.7) >= 6.0  # strong_storm
+    assert wave_m_to_score(0.3) <= 2  # calm
+    assert 2 < wave_m_to_score(0.75) < 6  # storm
+    assert wave_m_to_score(1.7) >= 6  # strong_storm
 
 
 def test_no_sky_not_filtered():
@@ -126,24 +126,24 @@ def test_want_sunset_requires_visible_sky_and_no_clear_guard_violation():
 def test_storm_persisting_true():
     """Test that storm persistence logic uses new wave-score based storm states."""
     # Storm states based on wave scores:
-    # calm: score <= 3.5
-    # storm: 3.5 < score < 6.0
-    # strong_storm: score >= 6.0
+    # calm: score <= 2
+    # storm: 2 < score < 6
+    # strong_storm: score >= 6
 
     # Test wave heights and their corresponding scores and states
     test_cases = [
-        (0.3, 1.5, "calm"),     # wave_height=0.3m -> score ~1.5 -> calm
-        (0.75, 4.5, "storm"),   # wave_height=0.75m -> score ~4.5 -> storm
-        (1.7, 7.5, "strong_storm"),  # wave_height=1.7m -> score ~7.5 -> strong_storm
+        (0.3, 1, "calm"),  # wave_height=0.3m -> score 1 -> calm
+        (0.75, 3, "storm"),  # wave_height=0.75m -> score 3 -> storm threshold
+        (1.7, 8, "strong_storm"),  # wave_height=1.7m -> score 8 -> strong_storm
     ]
 
     for wave_height, expected_score, expected_state in test_cases:
-        score = map_wave_height_to_score(wave_height)
-        assert abs(score - expected_score) < 1.0
+        score = wave_m_to_score(wave_height)
+        assert score == expected_score
 
-        if score <= 3.5:
+        if score <= 2:
             assert expected_state == "calm"
-        elif score < 6.0:
+        elif score < 6:
             assert expected_state == "storm"
         else:
             assert expected_state == "strong_storm"

@@ -163,7 +163,9 @@ STAGE_CONFIGS: Mapping[str, StageConfig] = {
 }
 
 
-def calc_wave_penalty(photo_wave: float | None, target_wave: float, stage: StageConfig) -> float:
+def calc_wave_penalty(
+    photo_wave: float | int | None, target_wave: float | int, stage: StageConfig
+) -> float:
     """Compute penalty for wave mismatch for a given stage."""
 
     if photo_wave is None:

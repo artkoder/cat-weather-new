@@ -57,7 +57,7 @@ async def test_clear_prefers_sunny_visible_sky(
         file_name="sunny.jpg",
         local_path=image_path,
         tags=["sea"],
-        sea_wave_score=3.0,
+        sea_wave_score=3,
         photo_sky="sunny",
         sky_visible=True,
     )
@@ -68,7 +68,7 @@ async def test_clear_prefers_sunny_visible_sky(
         file_name="overcast.jpg",
         local_path=image_path,
         tags=["sea"],
-        sea_wave_score=3.0,
+        sea_wave_score=3,
         photo_sky="overcast",
         sky_visible=True,
     )
@@ -79,7 +79,7 @@ async def test_clear_prefers_sunny_visible_sky(
         file_name="hidden.jpg",
         local_path=image_path,
         tags=["sea"],
-        sea_wave_score=3.0,
+        sea_wave_score=3,
         photo_sky="sunny",
         sky_visible=False,
     )
@@ -182,7 +182,7 @@ async def test_logs_steps_present(
             file_name="sunny1.jpg",
             local_path=image_path,
             tags=["sea"],
-            sea_wave_score=3.0,
+            sea_wave_score=3,
             photo_sky="sunny",
             sky_visible=True,
         ),
@@ -193,7 +193,7 @@ async def test_logs_steps_present(
             file_name="partly.jpg",
             local_path=image_path,
             tags=["sea"],
-            sea_wave_score=3.2,
+            sea_wave_score=3,
             photo_sky="partly_cloudy",
             sky_visible=True,
         ),
@@ -204,7 +204,7 @@ async def test_logs_steps_present(
             file_name="hidden.jpg",
             local_path=image_path,
             tags=["sea"],
-            sea_wave_score=2.8,
+            sea_wave_score=3,
             photo_sky="sunny",
             sky_visible=False,
         ),
@@ -307,7 +307,7 @@ async def test_sky_scoring_partly_cloudy_prefers_matching(tmp_path: Path) -> Non
         file_name="partly_cloudy.jpg",
         local_path=image_path,
         tags=["sea"],
-        sea_wave_score=3.0,
+        sea_wave_score=3,
         photo_sky="partly_cloudy",
         is_sunset=False,
     )
@@ -320,7 +320,7 @@ async def test_sky_scoring_partly_cloudy_prefers_matching(tmp_path: Path) -> Non
         file_name="sunny.jpg",
         local_path=image_path,
         tags=["sea"],
-        sea_wave_score=3.0,
+        sea_wave_score=3,
         photo_sky="sunny",
         is_sunset=False,
     )
@@ -333,7 +333,7 @@ async def test_sky_scoring_partly_cloudy_prefers_matching(tmp_path: Path) -> Non
         file_name="overcast.jpg",
         local_path=image_path,
         tags=["sea"],
-        sea_wave_score=3.0,
+        sea_wave_score=3,
         photo_sky="overcast",
         is_sunset=False,
     )
@@ -346,7 +346,7 @@ async def test_sky_scoring_partly_cloudy_prefers_matching(tmp_path: Path) -> Non
         file_name="mostly_clear.jpg",
         local_path=image_path,
         tags=["sea"],
-        sea_wave_score=3.0,
+        sea_wave_score=3,
         photo_sky="mostly_clear",
         is_sunset=False,
     )
@@ -359,7 +359,7 @@ async def test_sky_scoring_partly_cloudy_prefers_matching(tmp_path: Path) -> Non
         file_name="mostly_cloudy.jpg",
         local_path=image_path,
         tags=["sea"],
-        sea_wave_score=3.0,
+        sea_wave_score=3,
         photo_sky="mostly_cloudy",
         is_sunset=False,
     )
@@ -455,7 +455,7 @@ async def test_logs_not_truncated_and_prefixed(tmp_path: Path, caplog: pytest.Lo
         file_name="test-logs.jpg",
         local_path=image_path,
         tags=["sea"],
-        sea_wave_score=3.0,
+        sea_wave_score=3,
         photo_sky="partly_cloudy",
         is_sunset=False,
     )
@@ -533,7 +533,7 @@ async def test_logs_not_truncated_and_prefixed(tmp_path: Path, caplog: pytest.Lo
         assert "sky_visible=" in top5_log
         assert "photo_sky=" in top5_log
         assert "wave_photo=" in top5_log
-        assert "wave_target=" in top5_log
+        assert "wave_target_score=" in top5_log
         assert "score=" in top5_log
         assert "score_components=" in top5_log
 
@@ -574,7 +574,7 @@ async def test_prompt_soft_intro_and_constraints(tmp_path: Path) -> None:
         storm_state="storm",
         storm_persisting=False,
         wave_height_m=1.2,
-        wave_score=4.8,
+        wave_score=6,
         wind_class="strong",
         wind_ms=12.0,
         wind_kmh=43.2,
@@ -613,7 +613,7 @@ async def test_prompt_soft_intro_and_constraints(tmp_path: Path) -> None:
         storm_state="strong_storm",
         storm_persisting=True,
         wave_height_m=2.1,
-        wave_score=6.7,
+        wave_score=10,
         wind_class="very_strong",
         wind_ms=18.0,
         wind_kmh=64.8,

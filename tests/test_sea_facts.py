@@ -170,7 +170,7 @@ async def test_storm_persisting_flag(tmp_path):
             file_name="storm.jpg",
             local_path=image_path,
             tags=["storm"],
-            sea_wave_score=8.0,
+            sea_wave_score=8,
             photo_sky="mostly_cloudy",
             is_sunset=False,
         )
@@ -248,7 +248,7 @@ async def test_caption_includes_fact_sentence_once(tmp_path):
             file_name="sunset.jpg",
             local_path=image_path,
             tags=["sunset"],
-            sea_wave_score=1.0,
+            sea_wave_score=1,
             photo_sky="sunny",
             is_sunset=True,
         )

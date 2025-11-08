@@ -405,32 +405,21 @@ SEASON_ADJACENCY: dict[str, set[str]] = {
 }
 
 
-def map_wave_height_to_score(height: float | None) -> float:
-    if height is None:
-        return 0.0
+def wave_m_to_score(meters: float | int | str | None) -> int:
+    """Map wave height in meters to an integer score on a 0..10 scale."""
+
+    if meters is None:
+        return 0
     try:
-        value = float(height)
+        value = float(meters)
     except (TypeError, ValueError):
-        return 0.0
-    if value <= 0:
-        return 0.0
-    points = [
-        (0.0, 0.0),
-        (0.5, 3.0),
-        (1.0, 5.0),
-        (1.5, 7.0),
-        (2.0, 8.5),
-        (3.0, 10.0),
-    ]
-    for idx in range(len(points) - 1):
-        left_x, left_y = points[idx]
-        right_x, right_y = points[idx + 1]
-        if value <= right_x:
-            if right_x == left_x:
-                return right_y
-            ratio = (value - left_x) / (right_x - left_x)
-            return left_y + (right_y - left_y) * ratio
-    return 10.0
+        return 0
+    if value <= 0.0:
+        return 0
+    step = 0.2
+    epsilon = 1e-9
+    score = math.floor((value + epsilon) / step)
+    return max(0, min(10, score))
 
 
 def classify_wind_kph(speed_kmh: float | None) -> str | None:
@@ -13121,13 +13110,14 @@ class Bot:
         wave_height_value = self._safe_float(conditions.get("wave_height_m"))
         if wave_height_value is None and cache_row:
             wave_height_value = self._safe_float(cache_row["wave"])
-        wave_score = map_wave_height_to_score(wave_height_value)
-        if wave_score <= 3.5:
+        wave_score = wave_m_to_score(wave_height_value)
+        if wave_score <= 2:
             storm_state = "calm"
-        elif wave_score < 6.0:
+        elif wave_score < 6:
             storm_state = "storm"
         else:
             storm_state = "strong_storm"
+        target_wave_score = wave_score
         wind_ms = self._safe_float(conditions.get("wind_speed_10m_ms"))
         wind_kmh = self._safe_float(conditions.get("wind_speed_10m_kmh"))
         if wind_ms is not None:
@@ -13229,7 +13219,7 @@ class Bot:
                 _emit_log(
                     "weather",
                     wave_height_m=details.get("wave_height_m"),
-                    wave_score=details.get("wave_score"),
+                    wave_target_score=details.get("wave_target_score"),
                     wind_ms=details.get("wind_ms"),
                     wind_kmh=details.get("wind_kmh"),
                     wind_class=details.get("wind_class"),
@@ -13282,7 +13272,7 @@ class Bot:
         sea_log(
             "weather",
             wave_height_m=wave_height_value,
-            wave_score=wave_score,
+            wave_target_score=target_wave_score,
             wind_ms=wind_ms,
             wind_kmh=wind_kmh,
             wind_gust_ms=wind_gust_ms,
@@ -13312,7 +13302,7 @@ class Bot:
                 "selection_empty",
                 reason="no_candidates",
                 wave_height_m=wave_height_value,
-                wave_score=wave_score,
+                wave_target_score=target_wave_score,
                 wind_ms=wind_ms,
                 wind_kmh=wind_kmh,
                 wind_gust_ms=wind_gust_ms,
@@ -13397,7 +13387,7 @@ class Bot:
             pool_after_season=len(working_candidates),
         )
 
-        target_wave = float(wave_score or 0.0)
+        target_wave_value = float(target_wave_score)
 
         allowed_hard = set(allowed_photo_skies)
 
@@ -13410,8 +13400,8 @@ class Bot:
 
         def build_corridor(stage_cfg: StageConfig) -> tuple[float, float]:
             tolerance = stage_cfg.wave_tolerance
-            low = max(0.0, target_wave - tolerance)
-            high = min(10.0, target_wave + tolerance)
+            low = max(0.0, target_wave_value - tolerance)
+            high = min(10.0, target_wave_value + tolerance)
             return low, high
 
         def evaluate_stage_candidate(
@@ -13434,12 +13424,12 @@ class Bot:
 
             wave_delta = None
             if photo_wave_val is not None:
-                wave_delta = abs(photo_wave_val - target_wave)
+                wave_delta = abs(photo_wave_val - target_wave_value)
                 if stage_cfg.name == "B0" and wave_delta > stage_cfg.wave_tolerance:
                     return None
                 if (
                     stage_cfg.calm_wave_cap is not None
-                    and target_wave <= 1.5
+                    and target_wave_score <= 2
                     and photo_wave_val > stage_cfg.calm_wave_cap
                 ):
                     return None
@@ -13478,7 +13468,7 @@ class Bot:
             components["AgeBonus"] = age_bonus_val
             score += age_bonus_val
 
-            wave_penalty = calc_wave_penalty(photo_wave_val, target_wave, stage_cfg)
+            wave_penalty = calc_wave_penalty(photo_wave_val, target_wave_value, stage_cfg)
             components["WaveDeltaPenalty"] = wave_penalty
             score -= wave_penalty
 
@@ -13591,7 +13581,7 @@ class Bot:
                     photo_sky=_sky_token(candidate_payload.get("photo_sky_struct")),
                     photo_sky_daypart=candidate_payload.get("photo_sky_daypart"),
                     wave_photo=candidate_payload.get("photo_wave"),
-                    wave_target=target_wave,
+                    wave_target_score=target_wave_score,
                     wave_delta=reason_payload.get("wave_delta"),
                     season_match=candidate_payload.get("season_match"),
                     photo_doy=candidate_payload.get("photo_doy")
@@ -13694,7 +13684,7 @@ class Bot:
             score=selected_details.get("score"),
             wave_photo=selected_candidate.get("photo_wave")
             or selected_candidate.get("wave_score"),
-            wave_target=target_wave,
+            wave_target_score=target_wave_score,
             photo_sky=_sky_token(selected_candidate.get("photo_sky_struct")),
             photo_sky_daypart=selected_candidate.get("photo_sky_daypart"),
             season_match=selected_candidate.get("season_match"),

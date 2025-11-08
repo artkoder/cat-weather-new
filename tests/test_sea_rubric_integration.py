@@ -170,7 +170,7 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
             tags=["sunset", "sea"],
             latitude=54.9604,
             longitude=20.4721,
-            sea_wave_score=1.5,
+            sea_wave_score=1,
             photo_sky="sunny",
             is_sunset=True,
         )
@@ -189,7 +189,7 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
             file_name="storm.jpg",
             local_path=storm_file,
             tags=["storm", "waves"],
-            sea_wave_score=8.0,
+            sea_wave_score=8,
             photo_sky="mostly_cloudy",
             is_sunset=False,
         )
@@ -201,7 +201,7 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
             local_path=heavy_storm_file,
             tags=["sea"],
             categories=["Шторм"],
-            sea_wave_score=9.5,
+            sea_wave_score=9,
             photo_sky="overcast",
             is_sunset=False,
         )

@@ -10,7 +10,6 @@ from collections.abc import Mapping as MappingABC
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypedDict

@@ -265,6 +265,152 @@ async def test_logs_steps_present(
 
 
 @pytest.mark.asyncio
+async def test_soft_penalties_logged_for_strict_stage(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Ensure strict B0 stage keeps penalized candidates with explicit penalty logging."""
+
+    caplog.set_level(logging.INFO)
+    bot = main_module.Bot("dummy", str(tmp_path / "soft_penalty.db"))
+
+    seed_sea_environment(
+        bot,
+        sea_id=1,
+        sea_lat=54.95,
+        sea_lon=20.2,
+        wave=0.2,
+        water_temp=12.0,
+        city_id=101,
+        city_name="Калининград",
+        wind_speed=3.0,
+        cloud_cover=5.0,
+    )
+
+    rubric = bot.data.get_rubric_by_code("sea")
+    assert rubric is not None
+    updated_config = dict(rubric.config or {})
+    updated_config.update(
+        {
+            "enabled": True,
+            "channel_id": -990001,
+            "test_channel_id": -990001,
+            "sea_id": 1,
+        }
+    )
+    bot.data.save_rubric_config("sea", updated_config)
+
+    image_path = create_stub_image(tmp_path, "penalty-test.jpg")
+    today_doy = datetime.utcnow().timetuple().tm_yday
+
+    good_id = create_sea_asset(
+        bot,
+        rubric_id=rubric.id,
+        message_id=9101,
+        file_name="good.jpg",
+        local_path=image_path,
+        tags=["sea"],
+        sea_wave_score=1.0,
+        photo_sky="sunny",
+        sky_visible=True,
+    )
+    penalized_id = create_sea_asset(
+        bot,
+        rubric_id=rubric.id,
+        message_id=9102,
+        file_name="penalized.jpg",
+        local_path=image_path,
+        tags=["sea"],
+        sea_wave_score=8.0,
+        photo_sky="overcast",
+        sky_visible=False,
+    )
+
+    penalized_asset_id = str(penalized_id)
+
+    for asset_id in (good_id, penalized_id):
+        bot.db.execute("UPDATE assets SET shot_doy=? WHERE id=?", (today_doy, asset_id))
+    bot.db.commit()
+
+    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+        if method == "sendPhoto":
+            return {"ok": True, "result": {"message_id": 4242}}
+        return {"ok": True}
+
+    async def fake_reverse_geocode(self, lat: float, lon: float) -> dict[str, Any]:
+        return {}
+
+    bot.api_request = fake_api_request.__get__(bot, main_module.Bot)
+    bot._reverse_geocode = fake_reverse_geocode.__get__(bot, main_module.Bot)
+    bot.openai = None
+
+    await bot.publish_rubric("sea")
+
+    log_lines = [record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()]
+    penalized_logs = [
+        line
+        for line in log_lines
+        if f"id={penalized_asset_id}" in line and "SEA_RUBRIC top5" in line
+    ]
+
+    assert penalized_logs, "Expected penalized candidate to be present in top5 logs"
+    combined_penalty_log = "\n".join(penalized_logs)
+    assert "FalseSkyPenalty=" in combined_penalty_log
+    assert "RequiredSkyPenalty=" in combined_penalty_log
+    assert "WaveCorridorPenalty=" in combined_penalty_log
+    assert "CalmWavePenalty=" in combined_penalty_log
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_pool_logs_selection_empty(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Verify that empty candidate pools log selection_empty after soft filtering."""
+
+    caplog.set_level(logging.INFO)
+    bot = main_module.Bot("dummy", str(tmp_path / "empty_pool.db"))
+
+    seed_sea_environment(
+        bot,
+        sea_id=1,
+        sea_lat=54.95,
+        sea_lon=20.2,
+        wave=0.5,
+        water_temp=10.0,
+        city_id=101,
+        city_name="Калининград",
+        wind_speed=4.0,
+        cloud_cover=45.0,
+    )
+
+    rubric = bot.data.get_rubric_by_code("sea")
+    assert rubric is not None
+    updated_config = dict(rubric.config or {})
+    updated_config.update(
+        {
+            "enabled": True,
+            "channel_id": -990555,
+            "test_channel_id": -990555,
+            "sea_id": 1,
+        }
+    )
+    bot.data.save_rubric_config("sea", updated_config)
+
+    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+        return {"ok": True}
+
+    bot.api_request = fake_api_request.__get__(bot, main_module.Bot)
+    bot.openai = None
+
+    result = await bot.publish_rubric("sea")
+    assert result is True
+
+    log_lines = [record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()]
+    combined = "\n".join(log_lines)
+    assert "SEA_RUBRIC selection_empty" in combined
+    assert "reason=no_candidates" in combined
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_sky_scoring_partly_cloudy_prefers_matching(tmp_path: Path) -> None:
     """Test that when factual sky_bucket is partly_cloudy, picker prefers photo_sky=partly_cloudy/sunny over overcast."""
     bot = main_module.Bot("dummy", str(tmp_path / "sky_scoring.db"))
@@ -524,7 +670,7 @@ async def test_logs_not_truncated_and_prefixed(tmp_path: Path, caplog: pytest.Lo
         # Should not contain giant JSON that gets truncated
         assert "..." not in log or log.count("...") <= 1, f"Log appears truncated: {log}"
         # Should be reasonably short for individual lines
-        assert len(log) < 1000, f"Log too long, likely contains giant JSON: {log[:200]}..."
+        assert len(log) < 1400, f"Log too long, likely contains giant JSON: {log[:200]}..."
 
     # Top5 logs should be individual lines
     for top5_log in top5_logs:

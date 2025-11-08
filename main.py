@@ -13419,48 +13419,30 @@ class Bot:
                 except (TypeError, ValueError):
                     photo_wave_val = None
 
-            if photo_wave_val is None and not stage_cfg.allow_missing_wave:
-                return None
-
             wave_delta = None
             if photo_wave_val is not None:
                 wave_delta = abs(photo_wave_val - target_wave_value)
-                if stage_cfg.name == "B0" and wave_delta > stage_cfg.wave_tolerance:
-                    return None
-                if (
-                    stage_cfg.calm_wave_cap is not None
-                    and target_wave_score <= 2
-                    and photo_wave_val > stage_cfg.calm_wave_cap
-                ):
-                    return None
 
             sky_visible = candidate.get("sky_visible")
-            if sky_visible is False and not stage_cfg.allow_false_sky:
-                return None
-            if sky_visible is None and not stage_cfg.allow_unknown_sky:
-                return None
 
             photo_sky = candidate.get("photo_sky_struct")
             similarity = sky_similarity(photo_sky, allowed_hard)
-            if stage_cfg.require_allowed_sky and similarity != "match":
-                return None
-            if stage_cfg.require_allowed_sky and (
-                photo_sky is None or photo_sky.weather_tag == "unknown"
-            ):
-                return None
-
             season_match = candidate.get("season_match")
-            if stage_cfg.season_required and not season_match:
-                return None
 
             components: dict[str, float] = {
                 "SkyMatchBonus": 0.0,
                 "SkyUnknownPenalty": 0.0,
                 "SkyMismatchPenalty": 0.0,
+                "FalseSkyPenalty": 0.0,
+                "StrictSkyPenalty": 0.0,
+                "RequiredSkyPenalty": 0.0,
                 "WaveDeltaPenalty": 0.0,
+                "WaveCorridorPenalty": 0.0,
+                "CalmWavePenalty": 0.0,
                 "SeasonMismatchPenalty": 0.0,
                 "NoDoyPenalty": 0.0,
                 "AgeBonus": 0.0,
+                "VisibleSkyBonus": 0.0,
             }
 
             score = 0.0
@@ -13472,12 +13454,40 @@ class Bot:
             components["WaveDeltaPenalty"] = wave_penalty
             score -= wave_penalty
 
+            if wave_delta is not None and wave_delta > stage_cfg.wave_tolerance:
+                overshoot = wave_delta - stage_cfg.wave_tolerance
+                corridor_penalty = overshoot * stage_cfg.outside_corridor_multiplier
+                if corridor_penalty:
+                    corridor_penalty = round(corridor_penalty, 6)
+                    components["WaveCorridorPenalty"] = corridor_penalty
+                    score -= corridor_penalty
+
+            if (
+                stage_cfg.calm_wave_cap is not None
+                and target_wave_score <= 2
+                and photo_wave_val is not None
+                and photo_wave_val > stage_cfg.calm_wave_cap
+            ):
+                calm_penalty = stage_cfg.calm_wave_penalty
+                if calm_penalty:
+                    components["CalmWavePenalty"] = calm_penalty
+                    score -= calm_penalty
+
             if sky_visible is None:
                 components["SkyUnknownPenalty"] += stage_cfg.unknown_sky_penalty
                 score -= stage_cfg.unknown_sky_penalty
+                if not stage_cfg.allow_unknown_sky and stage_cfg.strict_unknown_sky_penalty:
+                    components["StrictSkyPenalty"] += stage_cfg.strict_unknown_sky_penalty
+                    score -= stage_cfg.strict_unknown_sky_penalty
             elif sky_visible is False:
                 components["SkyMismatchPenalty"] += stage_cfg.mismatch_penalty
                 score -= stage_cfg.mismatch_penalty
+                if not stage_cfg.allow_false_sky and stage_cfg.false_sky_penalty:
+                    components["FalseSkyPenalty"] += stage_cfg.false_sky_penalty
+                    score -= stage_cfg.false_sky_penalty
+            elif sky_visible is True and stage_cfg.require_visible_sky and stage_cfg.visible_sky_bonus:
+                components["VisibleSkyBonus"] = stage_cfg.visible_sky_bonus
+                score += stage_cfg.visible_sky_bonus
 
             if similarity == "match":
                 components["SkyMatchBonus"] += stage_cfg.match_bonus
@@ -13490,7 +13500,23 @@ class Bot:
                 components["SkyMismatchPenalty"] += stage_cfg.mismatch_penalty
                 score -= stage_cfg.mismatch_penalty
 
-            if not season_match:
+            if stage_cfg.require_allowed_sky:
+                if similarity != "match" and photo_sky is not None and photo_sky.weather_tag != "unknown":
+                    penalty = stage_cfg.required_sky_penalty
+                    if penalty:
+                        components["RequiredSkyPenalty"] += penalty
+                        score -= penalty
+                elif photo_sky is None or (photo_sky and photo_sky.weather_tag == "unknown"):
+                    penalty = stage_cfg.required_sky_unknown_penalty
+                    if penalty:
+                        components["RequiredSkyPenalty"] += penalty
+                        score -= penalty
+
+            if stage_cfg.season_required and not season_match:
+                season_penalty = stage_cfg.season_penalty + stage_cfg.season_mismatch_extra
+                components["SeasonMismatchPenalty"] = season_penalty
+                score -= season_penalty
+            elif not season_match:
                 season_penalty = stage_cfg.season_penalty + stage_cfg.season_mismatch_extra
                 components["SeasonMismatchPenalty"] = season_penalty
                 score -= season_penalty
@@ -13572,6 +13598,7 @@ class Bot:
                 sorted_results[:5], start=1
             ):
                 asset_obj = candidate_payload["asset"]
+                component_payload = reason_payload.get("score_components") or {}
                 sea_log(
                     "top5",
                     index=idx,
@@ -13588,6 +13615,12 @@ class Bot:
                     or candidate_payload.get("shot_doy"),
                     score=score_value,
                     score_components=reason_payload.get("score_components"),
+                    wave_corridor_penalty=component_payload.get("WaveCorridorPenalty"),
+                    calm_wave_penalty=component_payload.get("CalmWavePenalty"),
+                    required_sky_penalty=component_payload.get("RequiredSkyPenalty"),
+                    false_sky_penalty=component_payload.get("FalseSkyPenalty"),
+                    strict_sky_penalty=component_payload.get("StrictSkyPenalty"),
+                    visible_sky_bonus=component_payload.get("VisibleSkyBonus"),
                 )
 
             if sorted_results:

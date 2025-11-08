@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+import piexif
 import psutil
 from aiohttp import ClientSession, FormData, web
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -40,7 +41,6 @@ try:  # pragma: no cover - optional dependency
     from PIL import ImageCms  # type: ignore
 except Exception:  # pragma: no cover - fallback when LittleCMS is unavailable
     ImageCms = None  # type: ignore[assignment]
-import piexif
 
 try:  # pragma: no cover - optional dependency
     import exifread  # type: ignore

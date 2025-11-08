@@ -16,7 +16,7 @@ _UNSET = object()
 
 import sqlite3
 
-from sea_selection import infer_sky_visible
+from sea_selection import NormalizedSky, infer_sky_visible
 
 PAIRING_TOKEN_TTL_SECONDS = 600
 NONCE_TTL_SECONDS = 600
@@ -1786,18 +1786,71 @@ class DataAccess:
         now = datetime.utcnow()
         candidates: list[dict[str, Any]] = []
 
-        def normalize_sky(value: Any) -> str | None:
+        def normalize_sky(value: Any, *, tags: set[str] | None = None) -> NormalizedSky | None:
             if value is None:
                 return None
             text = str(value).strip().lower()
             if not text:
                 return None
             token = text.replace("-", "_").replace(" ", "_")
+
+            def _infer_daypart(source: str) -> str:
+                if any(marker in source for marker in ("night",)):
+                    return "night"
+                if any(marker in source for marker in ("sunset", "dusk", "evening")):
+                    return "evening"
+                if any(marker in source for marker in ("sunrise", "dawn", "morning")):
+                    return "morning"
+                return "day"
+
+            def _strip_daypart_markers(source: str) -> str:
+                stripped = source
+                for marker in (
+                    "night",
+                    "sunset",
+                    "dusk",
+                    "evening",
+                    "sunrise",
+                    "dawn",
+                    "morning",
+                ):
+                    stripped = stripped.replace(f"{marker}_", "").replace(f"_{marker}", "")
+                return stripped.strip("_")
+
+            def _infer_weather_from_tags(hints: set[str] | None) -> str | None:
+                if not hints:
+                    return None
+                normalized_tags = {
+                    str(tag).strip().lower().replace(" ", "_")
+                    for tag in hints
+                    if str(tag).strip()
+                }
+                if normalized_tags & {
+                    "storm",
+                    "stormy",
+                    "rain",
+                    "rainy",
+                    "rainfall",
+                    "snow",
+                    "blizzard",
+                    "fog",
+                }:
+                    return "overcast"
+                if normalized_tags & {"overcast", "mostly_cloudy", "cloudy"}:
+                    return "mostly_cloudy"
+                if normalized_tags & {"partly_cloudy", "clouds", "scattered_clouds", "few_clouds"}:
+                    return "partly_cloudy"
+                if normalized_tags & {"sunny", "sun", "clear_sky", "clear"}:
+                    return "sunny"
+                return None
+
+            daypart = _infer_daypart(token)
+            stripped = _strip_daypart_markers(token)
             mapping = {
                 "sunny": "sunny",
                 "clear": "sunny",
-                "mostly_clear": "sunny",
-                "mostly_sunny": "sunny",
+                "mostly_clear": "mostly_clear",
+                "mostly_sunny": "mostly_clear",
                 "day_clear": "sunny",
                 "day_sunny": "sunny",
                 "partly_cloudy": "partly_cloudy",
@@ -1813,18 +1866,25 @@ class DataAccess:
                 "fog": "overcast",
                 "storm": "overcast",
                 "stormy": "overcast",
-                "night": "night",
-                "night_clear": "night",
-                "night_partly_cloudy": "night",
-                "night_mostly_cloudy": "night",
-                "night_overcast": "night",
-                "twilight": "night",
+                "twilight": "partly_cloudy",
+                "unknown": "unknown",
             }
-            if token in mapping:
-                return mapping[token]
-            if token.endswith("_night"):
-                return "night"
-            return None
+            weather_tag = mapping.get(stripped)
+            if weather_tag is None:
+                for key, value in mapping.items():
+                    if key and key in stripped:
+                        weather_tag = value
+                        break
+            if weather_tag is None:
+                weather_tag = _infer_weather_from_tags(tags)
+            if weather_tag is None:
+                if daypart == "evening":
+                    weather_tag = "sunny"
+                elif daypart == "night":
+                    weather_tag = "unknown"
+                else:
+                    weather_tag = "unknown"
+            return NormalizedSky(daypart=daypart, weather_tag=weather_tag)
 
         def _parse_sky_hint(value: Any) -> bool | None:
             if value is None:
@@ -1850,11 +1910,6 @@ class DataAccess:
                 if isinstance(raw_wave, dict):
                     raw_wave = raw_wave.get("value")
             wave_score = Asset._to_float(raw_wave)
-            photo_sky_candidate = normalize_sky(vision.get("photo_sky"))
-            if photo_sky_candidate is None:
-                photo_sky_candidate = normalize_sky(vision.get("weather_image"))
-            photo_sky = photo_sky_candidate
-            is_sunset = bool(vision.get("is_sunset"))
             tags_raw = vision.get("tags")
             if isinstance(tags_raw, list):
                 tag_values = {
@@ -1864,6 +1919,13 @@ class DataAccess:
                 }
             else:
                 tag_values = set()
+            photo_sky_candidate = normalize_sky(vision.get("photo_sky"), tags=tag_values)
+            if photo_sky_candidate is None:
+                photo_sky_candidate = normalize_sky(
+                    vision.get("weather_image"), tags=tag_values
+                )
+            photo_sky = photo_sky_candidate
+            is_sunset = bool(vision.get("is_sunset"))
             sky_visible_source = _parse_sky_hint(asset.sky_visible_hint)
             if sky_visible_source is None:
                 sky_visible_source = _parse_sky_hint(vision.get("sky_visible"))
@@ -1896,7 +1958,11 @@ class DataAccess:
                 {
                     "asset": asset,
                     "wave_score": wave_score,
-                    "photo_sky": photo_sky,
+                    "photo_sky_struct": photo_sky,
+                    "photo_sky": photo_sky.weather_tag if photo_sky else None,
+                    "photo_sky_token": photo_sky.token() if photo_sky else None,
+                    "photo_sky_daypart": photo_sky.daypart if photo_sky else None,
+                    "photo_sky_weather": photo_sky.weather_tag if photo_sky else None,
                     "is_sunset": is_sunset,
                     "sky_visible": sky_visible,
                     "season_guess": season_guess,

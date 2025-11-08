@@ -15,12 +15,57 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: 'Guard: no binary files in repo'
+      - name: 'Guard: check for disallowed binary files'
         run: |
-          BIN=$(git ls-files | xargs -I{} file -i "{}" | grep 'charset=binary' || true)
-          if [ -n "$BIN" ]; then
-            echo "::error::Binary files detected in the tree:"
-            echo "$BIN"
+          # Comprehensive binary file check with allowlists
+          # Allows:
+          #   - overlays/*.png (PNG overlay assets used by quizzes/posts)
+          #   - api/contract/ (directory, may contain submodule or placeholder)
+          #   - empty __init__.py files (Python package markers)
+          #   - All directories and text files
+          # Fails on unexpected binaries (archives, executables, etc.) outside allowlist
+          
+          set -euo pipefail
+          disallowed=""
+          while IFS= read -r -d '' f; do
+            mt=$(file --mime-type -b "$f" || true)
+            
+            # Allow common text and code file types
+            case "$mt" in
+              text/*|application/json|application/xml|application/x-yaml|application/javascript|application/x-sh)
+                continue
+                ;;
+            esac
+            
+            # Allowlist: overlays PNG assets
+            if [[ "$f" =~ ^overlays/.+\.png$ ]]; then
+              continue
+            fi
+            
+            # Allowlist: api/contract directory
+            if [[ "$f" =~ ^api/contract($|/) ]]; then
+              continue
+            fi
+            
+            # Allowlist: empty Python package markers (__init__.py with inode/x-empty)
+            if [[ "$(file -b "$f")" == "empty" && "$f" =~ __init__\.py$ ]]; then
+              continue
+            fi
+            
+            # Allowlist: directories (inode/directory)
+            if [[ "$mt" == "inode/directory" ]]; then
+              continue
+            fi
+            
+            # Flag unexpected binaries
+            if [[ "$mt" =~ ^image/|^video/|^audio/|application/(octet-stream|zip|x-executable|x-dosexec) ]]; then
+              disallowed+="$f ($mt)\n"
+            fi
+          done < <(git ls-files -z)
+          
+          if [[ -n "$disallowed" ]]; then
+            echo "::error::Disallowed binary files detected:"
+            echo -e "$disallowed"
             exit 1
           fi
       - run: pip install -r requirements.txt

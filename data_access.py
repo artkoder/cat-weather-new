@@ -597,6 +597,16 @@ class DataAccess:
             payload_map["message_id"] = message_id_value
         payload_json = json.dumps(payload_map, ensure_ascii=False) if payload_map else None
 
+        shot_doy_value = Asset._to_int(shot_doy)
+        if photo_doy is not None:
+            photo_doy_value = Asset._to_int(photo_doy)
+        elif shot_doy_value is not None:
+            photo_doy_value = shot_doy_value
+        else:
+            photo_doy_value = None
+        photo_wave_value = Asset._to_float(photo_wave)
+        sky_visible_value = self._normalize_sky_visible(sky_visible)
+
         self.conn.execute(
             """
             INSERT INTO assets (
@@ -614,8 +624,11 @@ class DataAccess:
                 created_at,
                 source,
                 shot_at_utc,
-                shot_doy
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                shot_doy,
+                photo_doy,
+                photo_wave,
+                sky_visible
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -632,7 +645,10 @@ class DataAccess:
                 now,
                 source,
                 shot_at_utc,
-                shot_doy,
+                shot_doy_value,
+                photo_doy_value,
+                photo_wave_value,
+                sky_visible_value,
             ),
         )
         self.conn.commit()

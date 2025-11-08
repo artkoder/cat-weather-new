@@ -108,6 +108,7 @@ def create_sea_asset(
     photo_sky: str = "partly_cloudy",
     is_sunset: bool = False,
     season_guess: str = "summer",
+    sky_visible: bool = True,
 ) -> str:
     """Persist a sea asset with the provided metadata and local source."""
 
@@ -136,7 +137,7 @@ def create_sea_asset(
         "is_sea": True,
         "sea_wave_score": sea_wave_score,
         "photo_sky": photo_sky,
-        "sky_visible": True,  # Default to True for sea fixtures
+        "sky_visible": sky_visible,
         "is_sunset": is_sunset,
         "season_guess": season_guess,
     }

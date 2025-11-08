@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -9,11 +10,258 @@ import pytest
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import main as main_module  # noqa: E402
-from tests.fixtures.sea import (  # noqa: E402
-    create_sea_asset,
-    create_stub_image,
-    seed_sea_environment,
-)
+from tests.fixtures.sea import create_sea_asset, create_stub_image, seed_sea_environment  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_clear_prefers_sunny_visible_sky(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ensure clear bucket prefers sunny/visible skies."""
+
+    bot = main_module.Bot("dummy", str(tmp_path / "clear_choice.db"))
+
+    seed_sea_environment(
+        bot,
+        sea_id=1,
+        sea_lat=54.95,
+        sea_lon=20.2,
+        wave=0.8,
+        water_temp=12.0,
+        city_id=101,
+        city_name="Калининград",
+        wind_speed=3.0,
+        cloud_cover=5.0,
+    )
+
+    rubric = bot.data.get_rubric_by_code("sea")
+    assert rubric is not None
+    updated_config = dict(rubric.config or {})
+    updated_config.update(
+        {
+            "enabled": True,
+            "channel_id": -999777,
+            "test_channel_id": -999777,
+            "sea_id": 1,
+        }
+    )
+    bot.data.save_rubric_config("sea", updated_config)
+
+    image_path = create_stub_image(tmp_path, "clear-test.jpg")
+    today_doy = datetime.utcnow().timetuple().tm_yday
+
+    sunny_id = create_sea_asset(
+        bot,
+        rubric_id=rubric.id,
+        message_id=2001,
+        file_name="sunny.jpg",
+        local_path=image_path,
+        tags=["sea"],
+        sea_wave_score=3.0,
+        photo_sky="sunny",
+        sky_visible=True,
+    )
+    overcast_id = create_sea_asset(
+        bot,
+        rubric_id=rubric.id,
+        message_id=2002,
+        file_name="overcast.jpg",
+        local_path=image_path,
+        tags=["sea"],
+        sea_wave_score=3.0,
+        photo_sky="overcast",
+        sky_visible=True,
+    )
+    hidden_id = create_sea_asset(
+        bot,
+        rubric_id=rubric.id,
+        message_id=2003,
+        file_name="hidden.jpg",
+        local_path=image_path,
+        tags=["sea"],
+        sea_wave_score=3.0,
+        photo_sky="sunny",
+        sky_visible=False,
+    )
+
+    for asset_id in (sunny_id, overcast_id, hidden_id):
+        bot.db.execute("UPDATE assets SET shot_doy=? WHERE id=?", (today_doy, asset_id))
+    bot.db.commit()
+
+    class DummyOpenAI:
+        def __init__(self) -> None:
+            self.api_key = "dummy"
+
+        async def generate_json(self, **kwargs: Any):  # type: ignore[override]
+            from openai_client import OpenAIResponse
+
+            usage = {
+                "prompt_tokens": 5,
+                "completion_tokens": 5,
+                "total_tokens": 10,
+                "endpoint": "/v1/responses",
+                "request_id": "clear-test",
+            }
+            content = {
+                "caption": "Порадую вас морем — небо сегодня прозрачное.",
+                "hashtags": ["#море", "#БалтийскоеМоре"],
+            }
+            return OpenAIResponse(content, usage)
+
+    bot.openai = DummyOpenAI()
+
+    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+        if method == "sendPhoto":
+            return {"ok": True, "result": {"message_id": 600}}
+        return {"ok": True}
+
+    bot.api_request = fake_api_request.__get__(bot, main_module.Bot)
+
+    async def fake_reverse_geocode(self, lat: float, lon: float) -> dict[str, Any]:
+        return {}
+
+    bot._reverse_geocode = fake_reverse_geocode.__get__(bot, main_module.Bot)
+
+    published: dict[str, Any] = {}
+
+    def capture_post_history(channel_id: int, message_id: int, asset_id: str, rubric_id: int, metadata: dict[str, Any]) -> None:
+        published["asset_id"] = asset_id
+        published["metadata"] = metadata
+
+    monkeypatch.setattr(bot.data, "record_post_history", capture_post_history, raising=False)
+
+    result = await bot.publish_rubric("sea")
+    assert result is True
+    assert published["asset_id"] == sunny_id
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_logs_steps_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    bot = main_module.Bot("dummy", str(tmp_path / "log_steps.db"))
+
+    caplog.set_level(logging.INFO)
+
+    seed_sea_environment(
+        bot,
+        sea_id=1,
+        sea_lat=54.95,
+        sea_lon=20.2,
+        wave=0.6,
+        water_temp=10.0,
+        city_id=301,
+        city_name="Калининград",
+        wind_speed=2.5,
+        cloud_cover=5.0,
+    )
+
+    rubric = bot.data.get_rubric_by_code("sea")
+    assert rubric is not None
+    updated_config = dict(rubric.config or {})
+    updated_config.update(
+        {
+            "enabled": True,
+            "channel_id": -999888,
+            "test_channel_id": -999888,
+            "sea_id": 1,
+        }
+    )
+    bot.data.save_rubric_config("sea", updated_config)
+
+    image_path = create_stub_image(tmp_path, "logs-test.jpg")
+    today_doy = datetime.utcnow().timetuple().tm_yday
+
+    asset_ids = [
+        create_sea_asset(
+            bot,
+            rubric_id=rubric.id,
+            message_id=3001,
+            file_name="sunny1.jpg",
+            local_path=image_path,
+            tags=["sea"],
+            sea_wave_score=3.0,
+            photo_sky="sunny",
+            sky_visible=True,
+        ),
+        create_sea_asset(
+            bot,
+            rubric_id=rubric.id,
+            message_id=3002,
+            file_name="partly.jpg",
+            local_path=image_path,
+            tags=["sea"],
+            sea_wave_score=3.2,
+            photo_sky="partly_cloudy",
+            sky_visible=True,
+        ),
+        create_sea_asset(
+            bot,
+            rubric_id=rubric.id,
+            message_id=3003,
+            file_name="hidden.jpg",
+            local_path=image_path,
+            tags=["sea"],
+            sea_wave_score=2.8,
+            photo_sky="sunny",
+            sky_visible=False,
+        ),
+    ]
+
+    for asset_id in asset_ids:
+        bot.db.execute("UPDATE assets SET shot_doy=? WHERE id=?", (today_doy, asset_id))
+    bot.db.commit()
+
+    class DummyOpenAI:
+        def __init__(self) -> None:
+            self.api_key = "dummy"
+
+        async def generate_json(self, **kwargs: Any):  # type: ignore[override]
+            from openai_client import OpenAIResponse
+
+            usage = {
+                "prompt_tokens": 5,
+                "completion_tokens": 5,
+                "total_tokens": 10,
+                "endpoint": "/v1/responses",
+                "request_id": "log-test",
+            }
+            content = {
+                "caption": "Поделюсь морским настроением.",
+                "hashtags": ["#море", "#БалтийскоеМоре"],
+            }
+            return OpenAIResponse(content, usage)
+
+    bot.openai = DummyOpenAI()
+
+    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+        if method == "sendPhoto":
+            return {"ok": True, "result": {"message_id": 700}}
+        return {"ok": True}
+
+    bot.api_request = fake_api_request.__get__(bot, main_module.Bot)
+
+    async def fake_reverse_geocode(self, lat: float, lon: float) -> dict[str, Any]:
+        return {}
+
+    bot._reverse_geocode = fake_reverse_geocode.__get__(bot, main_module.Bot)
+
+    await bot.publish_rubric("sea")
+
+    log_lines = [record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()]
+    combined = "\n".join(log_lines)
+
+    assert "SEA_RUBRIC stage B1" in combined
+    assert "pool_after_B1=" in combined
+    assert "pool_after_B2=" in combined
+    assert "pool_after_AN=" in combined
+    assert "pool_after_B0=" in combined
+    assert any("SEA_RUBRIC top5 #" in line and "sky_visible=" in line for line in log_lines)
+    assert "SEA_RUBRIC selected" in combined
+
+    await bot.close()
 
 
 @pytest.mark.asyncio
@@ -260,7 +508,7 @@ async def test_logs_not_truncated_and_prefixed(tmp_path: Path, caplog: pytest.Lo
     # Should have separate weather, season, pool, top5, and selected logs
     weather_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC weather ")]
     season_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC season ")]
-    pool_logs = [msg for msg in messages if "SEA_RUBRIC pool after" in msg]
+    pool_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC pool after ")]
     top5_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC top5 #")]
     selected_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC selected ")]
 
@@ -282,7 +530,7 @@ async def test_logs_not_truncated_and_prefixed(tmp_path: Path, caplog: pytest.Lo
         assert "SEA_RUBRIC top5 #" in top5_log
         assert "id=" in top5_log
         assert "sky=" in top5_log
-        assert "wave=" in top5_log
+        assert "wave_score=" in top5_log
         assert "score=" in top5_log
         assert "reasons=" in top5_log
 
@@ -348,7 +596,7 @@ async def test_prompt_soft_intro_and_constraints(tmp_path: Path) -> None:
     assert "Знаете ли вы" in system_prompt
     assert "Интересный факт:" in system_prompt
     assert "К слову о Балтике" in system_prompt
-    assert "Поделюсь любопытным фактом" in system_prompt
+    assert "Поделюсь фактом" in system_prompt
 
     # Check 350-char limit
     assert "350 символов" in system_prompt

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import Iterable, Mapping, Optional
+
 
 _SKY_POSITIVE_KEYWORDS = {
     "sky",

@@ -5,14 +5,17 @@ import json
 import logging
 import os
 import sqlite3
+
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
 from zoneinfo import ZoneInfo
 
 from data_access import Asset, DataAccess
 from sea_selection import infer_sky_visible
+
 
 KALININGRAD_TZ = ZoneInfo("Europe/Kaliningrad")
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "weather.db"
@@ -78,6 +81,7 @@ def _parse_exif_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=KALININGRAD_TZ)
     return parsed.astimezone(KALININGRAD_TZ)
+
 
 
 def _parse_offset(offset: str) -> timedelta:
@@ -181,7 +185,7 @@ def fill_photo_doy(conn: sqlite3.Connection, *, dry_run: bool = False) -> dict[s
                     break
         if new_doy is None and row["shot_at_utc"] is not None:
             try:
-                shot_dt = datetime.fromtimestamp(int(row["shot_at_utc"]), tz=datetime.UTC)
+                shot_dt = datetime.fromtimestamp(int(row["shot_at_utc"]), tz=timezone.utc)
             except (TypeError, ValueError, OSError):
                 shot_dt = None
             if shot_dt is not None:

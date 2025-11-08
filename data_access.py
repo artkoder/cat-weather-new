@@ -7,7 +7,7 @@ import random
 import secrets
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -17,6 +17,7 @@ _UNSET = object()
 import sqlite3
 
 from sea_selection import NormalizedSky, infer_sky_visible
+from zoneinfo import ZoneInfo
 
 PAIRING_TOKEN_TTL_SECONDS = 600
 NONCE_TTL_SECONDS = 600
@@ -43,6 +44,9 @@ class Asset:
     photo_wave: float | None = None
     sky_visible_hint: str | None = None
     source: str | None = None
+    captured_at: str | None = None
+    doy: int | None = None
+    daypart: str | None = None
     exif: dict[str, Any] | None = None
     labels: Any | None = None
     payload: dict[str, Any] = field(default_factory=dict)
@@ -493,6 +497,11 @@ class DataAccess:
         "flowers": {"flowers", "flower"},
     }
 
+    try:
+        _LOCAL_TIMEZONE = ZoneInfo("Europe/Kaliningrad")
+    except Exception:  # pragma: no cover - fallback for environments without zoneinfo
+        _LOCAL_TIMEZONE = timezone(timedelta(hours=2))
+
     def __init__(self, connection: sqlite3.Connection):
         self.conn = connection
         self.conn.row_factory = sqlite3.Row
@@ -569,7 +578,6 @@ class DataAccess:
         chat_id_value = Asset._to_int(tg_chat_id)
         message_id_value: int | None = None
         identifier: str | None = None
-
         if isinstance(tg_message_id, str):
             text = tg_message_id.strip()
             if text:
@@ -597,6 +605,14 @@ class DataAccess:
             payload_map["message_id"] = message_id_value
         payload_json = json.dumps(payload_map, ensure_ascii=False) if payload_map else None
 
+        exif_dict: dict[str, Any] | None = exif if isinstance(exif, dict) else None
+
+        captured_at_value, doy_value, daypart_value = self._compute_capture_fields(
+            exif=exif_dict,
+            shot_at_utc=shot_at_utc,
+            shot_doy=shot_doy,
+        )
+
         self.conn.execute(
             """
             INSERT INTO assets (
@@ -614,8 +630,11 @@ class DataAccess:
                 created_at,
                 source,
                 shot_at_utc,
-                shot_doy
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                shot_doy,
+                captured_at,
+                doy,
+                daypart
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -633,6 +652,9 @@ class DataAccess:
                 source,
                 shot_at_utc,
                 shot_doy,
+                captured_at_value,
+                doy_value,
+                daypart_value,
             ),
         )
         self.conn.commit()
@@ -813,6 +835,111 @@ class DataAccess:
         except TypeError:
             fallback = DataAccess._make_json_safe(str(safe_payload))
             return json.dumps(fallback, ensure_ascii=False)
+
+    @staticmethod
+    def _extract_capture_datetime(exif: dict[str, Any] | None) -> str | None:
+        if not exif:
+            return None
+        for key in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
+            raw = exif.get(key)
+            if not raw:
+                continue
+            text = str(raw).strip()
+            if not text:
+                continue
+            for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                except ValueError:
+                    continue
+                return dt.replace(tzinfo=timezone.utc).isoformat()
+            return text
+        return None
+
+    @staticmethod
+    def _parse_datetime_string(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    parsed = datetime.strptime(text, fmt)
+                except ValueError:
+                    continue
+                return parsed.replace(tzinfo=timezone.utc)
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    @classmethod
+    def _determine_daypart(cls, dt: datetime) -> str:
+        local_dt = dt.astimezone(cls._LOCAL_TIMEZONE)
+        hour = local_dt.hour
+        if 5 <= hour < 11:
+            return "morning"
+        if 11 <= hour < 17:
+            return "day"
+        if 17 <= hour < 22:
+            return "evening"
+        return "night"
+
+    @classmethod
+    def _compute_capture_fields(
+        cls,
+        *,
+        exif: dict[str, Any] | None,
+        shot_at_utc: int | None = None,
+        shot_doy: int | None = None,
+        existing_captured_at: str | None = None,
+        existing_doy: int | None = None,
+        existing_daypart: str | None = None,
+    ) -> tuple[str | None, int | None, str | None]:
+        captured_at = cls._extract_capture_datetime(exif) if exif else None
+        parsed_dt = cls._parse_datetime_string(captured_at)
+        if parsed_dt is None and shot_at_utc is not None:
+            try:
+                parsed_dt = datetime.fromtimestamp(int(shot_at_utc), tz=timezone.utc)
+            except (OSError, OverflowError, ValueError, TypeError):
+                parsed_dt = None
+            else:
+                if captured_at is None:
+                    captured_at = parsed_dt.isoformat()
+        if captured_at is None:
+            captured_at = existing_captured_at
+        if parsed_dt is None and captured_at:
+            parsed_dt = cls._parse_datetime_string(captured_at)
+
+        doy_value: int | None = None
+        daypart_value: str | None = None
+        if parsed_dt is not None:
+            local_dt = parsed_dt.astimezone(cls._LOCAL_TIMEZONE)
+            doy_value = local_dt.timetuple().tm_yday
+            daypart_value = cls._determine_daypart(parsed_dt)
+        if doy_value is None and shot_doy is not None:
+            try:
+                candidate = int(shot_doy)
+            except (TypeError, ValueError):
+                candidate = None
+            else:
+                if 1 <= candidate <= 366:
+                    doy_value = candidate
+        if doy_value is None:
+            doy_value = existing_doy if existing_doy in range(1, 367) else existing_doy
+        if daypart_value is None and existing_daypart:
+            text = str(existing_daypart).strip().lower()
+            if text:
+                daypart_value = text
+        if daypart_value:
+            daypart_value = daypart_value.strip().lower()
+        else:
+            daypart_value = None
+        return captured_at, doy_value, daypart_value
 
     @staticmethod
     def _try_ratio_tuple(value: tuple[Any, ...]) -> float | None:
@@ -1083,9 +1210,25 @@ class DataAccess:
         if height is None and existing:
             height = existing.height
 
+        exif_dict: dict[str, Any] | None = None
+        raw_exif = file_meta.get("exif") if isinstance(file_meta, dict) else None
+        if isinstance(raw_exif, dict):
+            exif_dict = raw_exif
+        elif existing and isinstance(existing.exif, dict):
+            exif_dict = existing.exif
+
+        captured_at_value, doy_value, daypart_value = self._compute_capture_fields(
+            exif=exif_dict,
+            shot_at_utc=shot_at_value,
+            shot_doy=shot_doy_value,
+            existing_captured_at=existing.captured_at if existing else None,
+            existing_doy=existing.doy if existing else None,
+            existing_daypart=existing.daypart if existing else None,
+        )
+
         exif_json_value = file_meta.get("exif_json")
-        if exif_json_value is None and "exif" in file_meta:
-            exif_json_value = self._encode_exif_blob(file_meta["exif"])
+        if exif_json_value is None and isinstance(raw_exif, dict):
+            exif_json_value = self._encode_exif_blob(raw_exif)
         if exif_json_value is None and existing:
             exif_json_value = existing.exif_json
 
@@ -1108,6 +1251,9 @@ class DataAccess:
                        photo_doy=?,
                        photo_wave=?,
                        sky_visible=?,
+                       captured_at=?,
+                       doy=?,
+                       daypart=?,
                        payload_json=?
                  WHERE id=?
                 """,
@@ -1125,6 +1271,9 @@ class DataAccess:
                     photo_doy_value,
                     photo_wave_value,
                     sky_visible_value,
+                    captured_at_value,
+                    doy_value,
+                    daypart_value,
                     payload_json,
                     existing.id,
                 ),
@@ -1155,8 +1304,11 @@ class DataAccess:
                 shot_doy,
                 photo_doy,
                 photo_wave,
-                sky_visible
-            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sky_visible,
+                captured_at,
+                doy,
+                daypart
+            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -1176,6 +1328,9 @@ class DataAccess:
                 photo_doy_value,
                 photo_wave_value,
                 sky_visible_value,
+                captured_at_value,
+                doy_value,
+                daypart_value,
             ),
         )
         self.conn.commit()
@@ -1345,6 +1500,41 @@ class DataAccess:
             column_dirty = True
         if sky_visible is not None:
             columns["sky_visible"] = self._normalize_sky_visible(sky_visible)
+            column_dirty = True
+        computed_shot_at = columns.get("shot_at_utc", row.shot_at_utc)
+        computed_shot_doy = columns.get("shot_doy", row.shot_doy)
+        exif_dict: dict[str, Any] | None = None
+        if file_meta is not None:
+            fm_exif = file_meta.get("exif")
+            if isinstance(fm_exif, dict):
+                exif_dict = fm_exif
+            else:
+                fm_exif_json = file_meta.get("exif_json")
+                if isinstance(fm_exif_json, str):
+                    try:
+                        parsed_exif = json.loads(fm_exif_json)
+                    except json.JSONDecodeError:
+                        parsed_exif = None
+                    if isinstance(parsed_exif, dict):
+                        exif_dict = parsed_exif
+        if exif_dict is None and isinstance(row.exif, dict):
+            exif_dict = row.exif
+        captured_at_value, doy_value, daypart_value = self._compute_capture_fields(
+            exif=exif_dict,
+            shot_at_utc=computed_shot_at,
+            shot_doy=computed_shot_doy,
+            existing_captured_at=row.captured_at,
+            existing_doy=row.doy,
+            existing_daypart=row.daypart,
+        )
+        if captured_at_value != row.captured_at:
+            columns["captured_at"] = captured_at_value
+            column_dirty = True
+        if doy_value != row.doy:
+            columns["doy"] = doy_value
+            column_dirty = True
+        if daypart_value != row.daypart:
+            columns["daypart"] = daypart_value
             column_dirty = True
         if exif_present is not None:
             payload_updates["exif_present"] = bool(exif_present)
@@ -1561,6 +1751,21 @@ class DataAccess:
         photo_doy_val = Asset._to_int(row_dict.get("photo_doy"))
         if photo_doy_val is not None and not (1 <= photo_doy_val <= 366):
             photo_doy_val = None
+        captured_at_raw = row_dict.get("captured_at")
+        captured_at_val = None
+        if captured_at_raw is not None:
+            captured_text = str(captured_at_raw).strip()
+            if captured_text:
+                captured_at_val = captured_text
+        doy_val = Asset._to_int(row_dict.get("doy"))
+        if doy_val is not None and not (1 <= doy_val <= 366):
+            doy_val = None
+        daypart_raw = row_dict.get("daypart")
+        daypart_val = None
+        if daypart_raw is not None:
+            daypart_text = str(daypart_raw).strip().lower()
+            if daypart_text:
+                daypart_val = daypart_text
         photo_wave_raw = row_dict.get("photo_wave")
         photo_wave_val = Asset._to_float(photo_wave_raw)
         sky_visible_raw = row_dict.get("sky_visible")
@@ -1593,6 +1798,9 @@ class DataAccess:
                 if row_dict.get("source") is not None
                 else None
             ),
+            captured_at=captured_at_val,
+            doy=doy_val,
+            daypart=daypart_val,
             exif=exif_data,
             labels=labels_data,
             payload=payload_data,
@@ -1731,13 +1939,17 @@ class DataAccess:
 
     @staticmethod
     def compute_age_bonus(last_used_at: str | None, now: datetime | None = None) -> float:
-        reference = now or datetime.utcnow()
+        reference = now or datetime.utcnow().replace(tzinfo=timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
         if not last_used_at:
             return 2.0
         try:
             timestamp = datetime.fromisoformat(last_used_at)
         except Exception:
             return 1.0
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
         delta = reference - timestamp
         if delta.total_seconds() <= 0:
             return 0.5
@@ -1783,7 +1995,7 @@ class DataAccess:
             extra_where=extra_where if extra_where else None,
             extra_params=extra_params if extra_params else None,
         )
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         candidates: list[dict[str, Any]] = []
 
         def normalize_sky(value: Any, *, tags: set[str] | None = None) -> NormalizedSky | None:
@@ -1946,14 +2158,20 @@ class DataAccess:
             payload_data = asset.payload if isinstance(asset.payload, dict) else {}
             last_used_value = payload_data.get("last_used_at") if payload_data else None
             last_used_dt: datetime | None
+            reference_timestamp: str | None = None
             if isinstance(last_used_value, str) and last_used_value.strip():
+                reference_timestamp = last_used_value
                 try:
                     last_used_dt = datetime.fromisoformat(last_used_value)
                 except ValueError:
                     last_used_dt = None
             else:
                 last_used_dt = None
-            age_bonus = self.compute_age_bonus(last_used_value if isinstance(last_used_value, str) else None, now=now)
+                if asset.captured_at:
+                    reference_timestamp = asset.captured_at
+                else:
+                    reference_timestamp = asset.created_at
+            age_bonus = self.compute_age_bonus(reference_timestamp, now=now)
             candidates.append(
                 {
                     "asset": asset,
@@ -1973,6 +2191,9 @@ class DataAccess:
                     "shot_doy": asset.shot_doy,
                     "photo_doy": asset.photo_doy,
                     "photo_wave": wave_score,
+                    "captured_at": asset.captured_at,
+                    "capture_doy": asset.doy,
+                    "capture_daypart": asset.daypart,
                 }
             )
         return candidates

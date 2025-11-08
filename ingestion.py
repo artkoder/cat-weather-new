@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypedDict
+from zoneinfo import ZoneInfo
 
 import piexif
 from PIL import ExifTags, Image, ImageOps

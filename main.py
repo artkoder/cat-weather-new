@@ -484,8 +484,8 @@ def bucket_clouds(cloud_pct: float | None) -> str | None:
 
 def compatible_skies(bucket: str | None) -> set[str]:
     mapping = {
-        "clear": {"sunny", "mostly_clear", "partly_cloudy"},
-        "mostly_clear": {"sunny", "mostly_clear", "partly_cloudy"},
+        "clear": {"sunny", "partly_cloudy"},
+        "mostly_clear": {"sunny", "partly_cloudy"},
         "partly_cloudy": {"sunny", "partly_cloudy", "mostly_cloudy"},
         "mostly_cloudy": {"mostly_cloudy", "overcast"},
         "overcast": {"mostly_cloudy", "overcast"},
@@ -13226,14 +13226,15 @@ class Bot:
                     pool_size=details.get("pool_size"),
                 )
             elif event == "pool_counts":
-                _emit_log(
-                    "pool after",
-                    pool_after_season=details.get("pool_after_season"),
-                    pool_after_B1=details.get("pool_after_B1"),
-                    pool_after_B2=details.get("pool_after_B2"),
-                    pool_after_AN=details.get("pool_after_AN"),
-                    pool_after_B0=details.get("pool_after_B0"),
-                )
+                payload = {
+                    "pool_after_season": details.get("pool_after_season"),
+                    "pool_after_B1": details.get("pool_after_B1"),
+                    "pool_after_B2": details.get("pool_after_B2"),
+                    "pool_after_AN": details.get("pool_after_AN"),
+                    "pool_after_B0": details.get("pool_after_B0"),
+                }
+                _emit_log("pool after", **payload)
+                _emit_log("pool_counts", **payload)
             elif event == "top5":
                 index = details.get("index")
                 label = f"top5 #{index}" if index is not None else "top5"

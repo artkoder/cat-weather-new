@@ -10,6 +10,7 @@ from collections.abc import Mapping as MappingABC
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TypedDict
@@ -949,6 +950,44 @@ async def _ingest_photo_internal(
     vision_payload: dict[str, Any] | None = None
 
     photo_meta: PhotoMeta | None = None
+    kaliningrad_tz = ZoneInfo("Europe/Kaliningrad")
+
+    def _parse_datetime_original(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        candidates = [text]
+        if ":" in text[:10]:
+            candidates.append(text.replace(":", "-", 2))
+        parsed: datetime | None = None
+        for candidate in candidates:
+            try:
+                parsed = datetime.fromisoformat(candidate)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                break
+        if parsed is None:
+            formats = (
+                "%Y:%m:%d %H:%M:%S",
+                "%Y:%m:%d %H:%M:%S.%f",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M:%S.%f",
+            )
+            for fmt in formats:
+                try:
+                    parsed = datetime.strptime(text, fmt)
+                except ValueError:
+                    continue
+                else:
+                    break
+        if parsed is None:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=kaliningrad_tz)
+        return parsed.astimezone(kaliningrad_tz)
 
     with _ensure_telemetry(inputs.telemetry):
         sha256 = _compute_sha256(inputs.file.path)
@@ -988,13 +1027,19 @@ async def _ingest_photo_internal(
         if capture_dt is not None:
             if capture_dt.tzinfo is None:
                 capture_dt = capture_dt.replace(tzinfo=UTC)
-            else:
-                capture_dt = capture_dt.astimezone(UTC)
-            shot_at_utc_value = int(capture_dt.timestamp())
-            shot_doy_value = capture_dt.timetuple().tm_yday
+            capture_utc = capture_dt.astimezone(UTC)
+            shot_at_utc_value = int(capture_utc.timestamp())
+            capture_local = capture_utc.astimezone(kaliningrad_tz)
+            shot_doy_value = capture_local.timetuple().tm_yday
         else:
             shot_at_utc_value = None
             shot_doy_value = None
+
+        exif_datetime_original = (exif_payload or {}).get("DateTimeOriginal") if exif_payload else None
+        original_local = _parse_datetime_original(exif_datetime_original)
+        if original_local is not None:
+            shot_at_utc_value = int(original_local.astimezone(UTC).timestamp())
+            shot_doy_value = original_local.timetuple().tm_yday
 
         if inputs.max_image_side:
             processed_path, processed_cleanup = _downscale_image_if_needed(
@@ -1206,6 +1251,14 @@ async def _ingest_photo_internal(
         if asset_id and callbacks.link_upload_asset and inputs.upload_id:
             callbacks.link_upload_asset(asset_id)
         metrics.record_asset_created(1 if asset_id else 0)
+
+        if asset_id:
+            logging.info(
+                "SEA_RUBRIC assets ingest asset_id=%s shot_at=%s shot_doy=%s",
+                asset_id,
+                shot_at_utc_value,
+                shot_doy_value,
+            )
 
     if processed_cleanup and processed_path.exists():
         with contextlib.suppress(Exception):

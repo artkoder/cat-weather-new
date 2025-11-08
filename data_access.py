@@ -1613,6 +1613,8 @@ class DataAccess:
         require_arch_view: bool = False,
         random_order: bool = False,
         mark_used: bool = False,
+        extra_where: Sequence[str] | None = None,
+        extra_params: Sequence[Any] | None = None,
     ) -> list[Asset]:
         if not category:
             return []
@@ -1631,6 +1633,10 @@ class DataAccess:
             where.append(
                 "TRIM(COALESCE(json_extract(a.payload_json, '$.vision_arch_view'), '')) != ''"
             )
+        if extra_where:
+            where.extend(extra_where)
+        if extra_params:
+            params.extend(extra_params)
         return self._fetch_assets(
             rubric_id=rubric_id,
             limit=limit,
@@ -1655,18 +1661,44 @@ class DataAccess:
         days = delta.total_seconds() / 86400.0
         return max(0.5, min(3.0, days / 3.0))
 
+    @staticmethod
+    def build_season_clause(low: int, high: int) -> tuple[str, list[int]]:
+        """Return SQL clause for seasonal filtering with proper parentheses."""
+
+        low_clamped = max(1, min(366, int(low)))
+        high_clamped = max(1, min(366, int(high)))
+        if low_clamped <= high_clamped:
+            clause = "((shot_doy BETWEEN ? AND ?) OR shot_doy IS NULL)"
+            params = [low_clamped, high_clamped]
+        else:
+            clause = (
+                "(((shot_doy BETWEEN ? AND 366) OR (shot_doy BETWEEN 1 AND ?)) "
+                "OR shot_doy IS NULL)"
+            )
+            params = [low_clamped, high_clamped]
+        return clause, params
+
     def fetch_sea_candidates(
         self,
         rubric_id: int,
         *,
         limit: int = 48,
+        season_range: tuple[int, int] | None = None,
     ) -> list[dict[str, Any]]:
+        extra_where: list[str] = []
+        extra_params: list[Any] = []
+        if season_range is not None:
+            clause, params = self.build_season_clause(*season_range)
+            extra_where.append(clause)
+            extra_params.extend(params)
         assets = self.fetch_assets_by_vision_category(
             "sea",
             rubric_id=rubric_id,
             limit=limit,
             random_order=False,
             mark_used=False,
+            extra_where=extra_where if extra_where else None,
+            extra_params=extra_params if extra_params else None,
         )
         now = datetime.utcnow()
         candidates: list[dict[str, Any]] = []

@@ -1873,7 +1873,10 @@ class DataAccess:
             elif inferred_sky is not None:
                 sky_visible = inferred_sky
             else:
-                sky_visible = None
+                if photo_sky is not None:
+                    sky_visible = photo_sky != "night"
+                else:
+                    sky_visible = None
             season_guess_raw = vision.get("season_guess")
             season_guess = (
                 str(season_guess_raw).strip().lower()

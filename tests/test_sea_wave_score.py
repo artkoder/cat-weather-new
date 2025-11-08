@@ -11,26 +11,32 @@ from main import (
     classify_wind_kph,
     compatible_skies,
     compute_season_window,
-    map_wave_height_to_score,
     season_match,
+    wave_m_to_score,
 )
 
 
 @pytest.mark.parametrize(
     "wave,expected",
     [
-        (0.0, 0.0),
-        (0.5, 3.0),
-        (1.0, 5.0),
-        (1.5, 7.0),
-        (2.0, 8.5),
-        (3.0, 10.0),
-        (0.25, 1.5),
-        (1.25, 6.0),
+        (None, 0),
+        (0.0, 0),
+        (0.05, 0),
+        (0.2, 1),
+        (0.21, 1),
+        (0.39, 1),
+        (0.4, 2),
+        (0.8, 4),
+        (1.0, 5),
+        (1.5, 7),
+        (1.6, 8),
+        (2.0, 10),
+        (2.8, 10),
+        ("bad", 0),
     ],
 )
-def test_map_wave_height_to_score(wave: float, expected: float) -> None:
-    assert map_wave_height_to_score(wave) == pytest.approx(expected, rel=1e-6)
+def test_wave_m_to_score(wave: float | None, expected: int) -> None:
+    assert wave_m_to_score(wave) == expected
 
 
 @pytest.mark.parametrize(

@@ -158,7 +158,7 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
             file_name="oct.jpg",
             local_path=oct_file,
             tags=["sea"],
-            sea_wave_score=1.5,
+            sea_wave_score=1,
             photo_sky="sunny",
             is_sunset=False,
         )
@@ -175,7 +175,7 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
             file_name="mar.jpg",
             local_path=mar_file,
             tags=["sea"],
-            sea_wave_score=1.5,
+            sea_wave_score=1,
             photo_sky="sunny",
             is_sunset=False,
         )
@@ -191,7 +191,7 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
             file_name="dec.jpg",
             local_path=dec_file,
             tags=["sea"],
-            sea_wave_score=1.5,
+            sea_wave_score=1,
             photo_sky="sunny",
             is_sunset=False,
         )
@@ -344,7 +344,7 @@ async def test_sea_rubric_seasonal_window_year_wraparound(monkeypatch, tmp_path)
             file_name="dec2.jpg",
             local_path=dec_file,
             tags=["sea"],
-            sea_wave_score=1.5,
+            sea_wave_score=1,
             photo_sky="sunny",
             is_sunset=False,
         )
@@ -360,7 +360,7 @@ async def test_sea_rubric_seasonal_window_year_wraparound(monkeypatch, tmp_path)
             file_name="jun.jpg",
             local_path=jun_file,
             tags=["sea"],
-            sea_wave_score=1.5,
+            sea_wave_score=1,
             photo_sky="sunny",
             is_sunset=False,
         )
@@ -512,7 +512,7 @@ async def test_sea_rubric_logging_includes_shot_doy_and_reasons(monkeypatch, tmp
             file_name="good.jpg",
             local_path=good_file,
             tags=["sea"],
-            sea_wave_score=1.2,
+            sea_wave_score=1,
             photo_sky="sunny",
             is_sunset=True,
         )

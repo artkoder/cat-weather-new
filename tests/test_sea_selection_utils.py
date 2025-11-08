@@ -17,16 +17,16 @@ def test_infer_sky_visible_unknown_tags() -> None:
 
 def test_calc_wave_penalty_within_tolerance() -> None:
     stage = STAGE_CONFIGS["B0"]
-    assert calc_wave_penalty(1.5, 1.4, stage) == pytest.approx(0.0)
+    assert calc_wave_penalty(3, 2, stage) == pytest.approx(0.0)
 
 
 def test_calc_wave_penalty_outside_tolerance() -> None:
     stage = STAGE_CONFIGS["B1"]
-    penalty = calc_wave_penalty(4.0, 1.5, stage)
-    expected = max(0.0, abs(4.0 - 1.5) - stage.wave_tolerance) * stage.wave_penalty_rate
+    penalty = calc_wave_penalty(8, 3, stage)
+    expected = max(0.0, abs(8 - 3) - stage.wave_tolerance) * stage.wave_penalty_rate
     assert penalty == pytest.approx(expected)
 
 
 def test_calc_wave_penalty_missing_allowed() -> None:
     stage = STAGE_CONFIGS["B2"]
-    assert calc_wave_penalty(None, 2.0, stage) == pytest.approx(stage.unknown_wave_penalty)
+    assert calc_wave_penalty(None, 4, stage) == pytest.approx(stage.unknown_wave_penalty)

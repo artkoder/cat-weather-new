@@ -253,7 +253,7 @@ async def test_logs_steps_present(
     log_lines = [record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()]
     combined = "\n".join(log_lines)
 
-    assert "SEA_RUBRIC stage B1" in combined
+    assert "SEA_RUBRIC stage B0" in combined
     assert "pool_after_B1=" in combined
     assert "pool_after_B2=" in combined
     assert "pool_after_AN=" in combined
@@ -530,10 +530,12 @@ async def test_logs_not_truncated_and_prefixed(tmp_path: Path, caplog: pytest.Lo
     for top5_log in top5_logs:
         assert "SEA_RUBRIC top5 #" in top5_log
         assert "id=" in top5_log
-        assert "sky=" in top5_log
-        assert "wave_score=" in top5_log
+        assert "sky_visible=" in top5_log
+        assert "photo_sky=" in top5_log
+        assert "wave_photo=" in top5_log
+        assert "wave_target=" in top5_log
         assert "score=" in top5_log
-        assert "reasons=" in top5_log
+        assert "score_components=" in top5_log
 
     await bot.close()
 

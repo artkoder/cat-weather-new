@@ -93,6 +93,7 @@ from observability import (
     setup_logging,
 )
 from openai_client import OpenAIClient
+from sea_selection import STAGE_CONFIGS, StageConfig, calc_wave_penalty, sky_similarity
 from storage import create_storage_from_env
 from supabase_client import SupabaseClient
 from weather_migration import migrate_weather_publish_channels
@@ -13361,195 +13362,157 @@ class Bot:
             pool_after_season=len(working_candidates),
         )
 
-        def compute_corridor(broaden: float = 0.0) -> tuple[float, float]:
-            if storm_state == "calm":
-                center = 1.75
-                halfwidth = 1.75 + broaden
-            elif storm_state == "storm":
-                center = wave_score
-                halfwidth = 1.0 + broaden
-            else:
-                center = 9.0
-                halfwidth = 1.0 + broaden
-            low = max(0.0, center - halfwidth)
-            high = min(10.0, center + halfwidth)
+        target_wave = float(wave_score or 0.0)
+
+        allowed_hard = {str(item).strip().lower() for item in allowed_photo_skies}
+        if sky_bucket in {"clear", "mostly_clear"}:
+            allowed_hard.update({"sunny", "mostly_clear"})
+        if sky_bucket == "partly_cloudy":
+            allowed_hard.update({"sunny", "mostly_clear", "partly_cloudy"})
+
+        stage_sequence: list[StageConfig] = [
+            STAGE_CONFIGS["B0"],
+            STAGE_CONFIGS["B1"],
+            STAGE_CONFIGS["B2"],
+            STAGE_CONFIGS["AN"],
+        ]
+
+        def build_corridor(stage_cfg: StageConfig) -> tuple[float, float]:
+            tolerance = stage_cfg.wave_tolerance
+            low = max(0.0, target_wave - tolerance)
+            high = min(10.0, target_wave + tolerance)
             return low, high
 
-        def evaluate_candidate(
+        def evaluate_stage_candidate(
             candidate: dict[str, Any],
-            low: float,
-            high: float,
-            *,
-            sky_policy: str,
-            allow_missing_wave: bool,
-            stage_name: str,
+            stage_cfg: StageConfig,
+            corridor: tuple[float, float],
         ) -> tuple[float, dict[str, Any]] | None:
-            asset_obj = candidate.get("asset")
-            photo_sky = candidate.get("photo_sky")
-            sky_visible = candidate.get("sky_visible", True)
-            wave_value = candidate.get("wave_score")
-
-            strict_sky_map = {
-                "clear": {"sunny", "mostly_clear", "partly_cloudy"},
-                "mostly_clear": {"sunny", "mostly_clear", "partly_cloudy"},
-                "partly_cloudy": {"sunny", "mostly_clear", "partly_cloudy"},
-                "mostly_cloudy": {"mostly_cloudy"},
-                "overcast": {"overcast"},
-            }
-            strict_allowed = set(strict_sky_map.get(sky_bucket, set(allowed_photo_skies)))
-            soft_allowed = set(allowed_photo_skies)
-            if sky_bucket in {"clear", "mostly_clear"}:
-                soft_allowed.update({"sunny", "mostly_clear", "partly_cloudy"})
-            elif sky_bucket == "partly_cloudy":
-                soft_allowed.update({"sunny", "mostly_clear", "partly_cloudy", "mostly_cloudy"})
-
-            if wave_value is None:
-                if storm_state == "calm" and allow_missing_wave:
-                    pass
-                elif allow_missing_wave:
-                    pass
-                else:
-                    return None
-
-            halfwidth = (high - low) / 2.0
-            center = (low + high) / 2.0
-
-            penalty = 0.0
-            wave_penalty = 0.0
-            if wave_value is not None:
+            photo_wave = candidate.get("photo_wave")
+            if photo_wave is None:
+                photo_wave = candidate.get("wave_score")
+            photo_wave_val = None
+            if photo_wave is not None:
                 try:
-                    wave_float = float(wave_value)
+                    photo_wave_val = float(photo_wave)
                 except (TypeError, ValueError):
-                    wave_float = None
-                if wave_float is not None:
-                    distance_from_range = max(0.0, abs(wave_float - center) - halfwidth)
-                    wave_penalty = distance_from_range * 0.75
-                    penalty += wave_penalty
-            elif storm_state == "calm":
-                penalty -= 1.0
+                    photo_wave_val = None
 
-            sky_penalty = 0.0
-            photo_known = photo_sky not in (None, "unknown")
-
-            if stage_name == "B0" and sky_visible:
+            if photo_wave_val is None and not stage_cfg.allow_missing_wave:
                 return None
 
-            if sky_policy in {"B1", "B2"}:
-                if not sky_visible or not photo_known:
+            wave_delta = None
+            if photo_wave_val is not None:
+                wave_delta = abs(photo_wave_val - target_wave)
+                if stage_cfg.name == "B0" and wave_delta > stage_cfg.wave_tolerance:
+                    return None
+                if (
+                    stage_cfg.calm_wave_cap is not None
+                    and target_wave <= 1.5
+                    and photo_wave_val > stage_cfg.calm_wave_cap
+                ):
                     return None
 
-            if sky_policy == "B1" and photo_known:
-                if photo_sky not in strict_allowed:
-                    return None
-            elif sky_policy == "B2" and photo_known:
-                if photo_sky not in soft_allowed:
-                    return None
-            elif sky_policy == "B0":
-                if stage_name not in {"B0"} and sky_visible and photo_known:
-                    if photo_sky not in allowed_photo_skies:
-                        return None
-
-            if sky_visible and photo_known:
-                if photo_sky == "sunny" and sky_bucket in {"clear", "mostly_clear"}:
-                    sky_penalty = -0.5
-                elif photo_sky in allowed_photo_skies:
-                    sky_penalty = 0.0
-                else:
-                    sky_penalty = 1.0
-                penalty += sky_penalty
-            elif not sky_visible or not photo_known:
-                if stage_name in {"B1", "B2"}:
-                    return None
-            elif sky_policy in {"B0", "B1"}:
+            sky_visible = candidate.get("sky_visible")
+            if sky_visible is False and not stage_cfg.allow_false_sky:
+                return None
+            if sky_visible is None and not stage_cfg.allow_unknown_sky:
                 return None
 
-            score = -penalty
+            photo_sky = candidate.get("photo_sky")
+            similarity = sky_similarity(photo_sky, allowed_hard)
+            if stage_cfg.require_allowed_sky and similarity != "match":
+                return None
+            if stage_cfg.require_allowed_sky and photo_sky in (None, "unknown"):
+                return None
+
+            season_match = candidate.get("season_match")
+            if stage_cfg.season_required and not season_match:
+                return None
+
+            components: dict[str, float] = {
+                "SkyMatchBonus": 0.0,
+                "SkyUnknownPenalty": 0.0,
+                "SkyMismatchPenalty": 0.0,
+                "WaveDeltaPenalty": 0.0,
+                "SeasonMismatchPenalty": 0.0,
+                "NoDoyPenalty": 0.0,
+                "AgeBonus": 0.0,
+            }
+
+            score = 0.0
             age_bonus_val = float(candidate.get("age_bonus") or 0.0)
+            components["AgeBonus"] = age_bonus_val
             score += age_bonus_val
 
-            # Apply sky scoring bonuses when factual sky_bucket is partly_cloudy
-            sky_bonus = 0.0
-            if sky_bucket == "partly_cloudy" and sky_visible and photo_sky and photo_sky != "unknown":
-                if photo_sky == "partly_cloudy":
-                    sky_bonus = 0.7
-                elif photo_sky in {"sunny", "mostly_clear"}:
-                    sky_bonus = 0.4
-                elif photo_sky == "mostly_cloudy":
-                    sky_bonus = -0.7
-                elif photo_sky == "overcast":
-                    sky_bonus = -1.0
-                score += sky_bonus
+            wave_penalty = calc_wave_penalty(photo_wave_val, target_wave, stage_cfg)
+            components["WaveDeltaPenalty"] = wave_penalty
+            score -= wave_penalty
 
-            clear_adjustment = 0.0
-            if sky_bucket == "clear":
-                clear_map = {
-                    "sunny": 1.0,
-                    "mostly_clear": 1.0,
-                    "partly_cloudy": 0.6,
-                    "mostly_cloudy": -0.8,
-                    "overcast": -1.5,
-                }
-                if sky_visible and photo_sky:
-                    clear_adjustment = clear_map.get(str(photo_sky), 0.0)
-                else:
-                    clear_adjustment = -1.2
-                score += clear_adjustment
+            if sky_visible is None:
+                components["SkyUnknownPenalty"] += stage_cfg.unknown_sky_penalty
+                score -= stage_cfg.unknown_sky_penalty
+            elif sky_visible is False:
+                components["SkyMismatchPenalty"] += stage_cfg.mismatch_penalty
+                score -= stage_cfg.mismatch_penalty
+
+            if similarity == "match":
+                components["SkyMatchBonus"] += stage_cfg.match_bonus
+                score += stage_cfg.match_bonus
+            elif similarity == "close":
+                close_bonus = round(stage_cfg.match_bonus * 0.6, 3)
+                components["SkyMatchBonus"] += close_bonus
+                score += close_bonus
+            elif similarity == "mismatch" and components["SkyMismatchPenalty"] == 0.0:
+                components["SkyMismatchPenalty"] += stage_cfg.mismatch_penalty
+                score -= stage_cfg.mismatch_penalty
+
+            if not season_match:
+                season_penalty = stage_cfg.season_penalty + stage_cfg.season_mismatch_extra
+                components["SeasonMismatchPenalty"] = season_penalty
+                score -= season_penalty
+
+            if (
+                stage_cfg.name == "AN"
+                and candidate.get("photo_doy") is None
+                and candidate.get("shot_doy") is None
+            ):
+                components["NoDoyPenalty"] = 0.3
+                score -= 0.3
 
             reasons = {
-                "wave_corridor": (round(low, 2), round(high, 2)),
-                "wave_penalty": round(wave_penalty, 3),
-                "sky_penalty": round(sky_penalty, 3),
-                "sky_bonus": round(sky_bonus, 3),
-                "clear_adjustment": round(clear_adjustment, 3),
-                "sky_policy": sky_policy,
+                "stage": stage_cfg.name,
+                "wave_corridor": [round(val, 2) for val in corridor],
+                "wave_delta": round(wave_delta, 2) if wave_delta is not None else None,
+                "score_components": {k: round(v, 3) for k, v in components.items()},
+                "season_match": season_match,
                 "sky_visible": sky_visible,
-                "penalty_total": round(penalty, 3),
-                "age_bonus": round(age_bonus_val, 2),
-                "season_match": candidate.get("season_match"),
+                "sky_similarity": similarity,
             }
-
             return score, reasons
-
-        stages = [
-            {"name": "season", "sky": "B0", "wave_broaden": 0.0, "allow_missing_wave": False},
-            {"name": "wave", "sky": "B0", "wave_broaden": 0.0, "allow_missing_wave": True},
-            {"name": "B1", "sky": "B1", "wave_broaden": 0.0, "allow_missing_wave": True},
-            {"name": "B2", "sky": "B2", "wave_broaden": 0.8, "allow_missing_wave": True},
-            {"name": "AN", "sky": "AN", "wave_broaden": 0.8, "allow_missing_wave": True},
-            {"name": "B0", "sky": "B0", "wave_broaden": 0.8, "allow_missing_wave": True},
-        ]
 
         selected_candidate: dict[str, Any] | None = None
         selected_details: dict[str, Any] = {}
         sky_critical_mismatch = False
         pool_counts: dict[str, int] = {
             "pool_after_season": len(working_candidates),
-            "pool_after_wave": 0,
+            "pool_after_B0": 0,
             "pool_after_B1": 0,
             "pool_after_B2": 0,
             "pool_after_AN": 0,
-            "pool_after_B0": 0,
         }
 
-        for attempt_index, stage in enumerate(stages, start=1):
-            low, high = compute_corridor(stage["wave_broaden"])
+        for stage_cfg in stage_sequence:
+            corridor = build_corridor(stage_cfg)
             stage_results: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
             for candidate in working_candidates:
-                result = evaluate_candidate(
-                    candidate,
-                    low,
-                    high,
-                    sky_policy=stage["sky"],
-                    allow_missing_wave=stage["allow_missing_wave"],
-                    stage_name=stage["name"],
-                )
-                if result is None:
+                evaluation = evaluate_stage_candidate(candidate, stage_cfg, corridor)
+                if evaluation is None:
                     continue
-                score, reasons = result
+                score, reasons = evaluation
                 stage_results.append((score, reasons, candidate))
 
-            pool_key = f"pool_after_{stage['name']}"
-            pool_counts[pool_key] = len(stage_results)
+            pool_counts[f"pool_after_{stage_cfg.name}"] = len(stage_results)
 
             if stage_results:
                 def _ordering(item: tuple[float, dict[str, Any], dict[str, Any]]) -> tuple[float, float, int]:
@@ -13568,19 +13531,18 @@ class Bot:
 
             sea_log(
                 "stage",
-                name=stage["name"],
-                sky=stage["sky"],
-                corridor=(round(low, 2), round(high, 2)),
+                name=stage_cfg.name,
+                corridor=[round(val, 2) for val in corridor],
                 pool_size=len(sorted_results),
             )
 
             sea_log(
                 "pool_counts",
                 pool_after_season=pool_counts.get("pool_after_season", 0),
+                pool_after_B0=pool_counts.get("pool_after_B0", 0),
                 pool_after_B1=pool_counts.get("pool_after_B1", 0),
                 pool_after_B2=pool_counts.get("pool_after_B2", 0),
                 pool_after_AN=pool_counts.get("pool_after_AN", 0),
-                pool_after_B0=pool_counts.get("pool_after_B0", 0),
             )
 
             for idx, (score_value, reason_payload, candidate_payload) in enumerate(
@@ -13590,30 +13552,32 @@ class Bot:
                 sea_log(
                     "top5",
                     index=idx,
+                    stage=stage_cfg.name,
                     id=getattr(asset_obj, "id", None),
                     sky_visible=candidate_payload.get("sky_visible"),
                     photo_sky=candidate_payload.get("photo_sky"),
-                    wave_score=candidate_payload.get("wave_score"),
-                    shot_doy=candidate_payload.get("shot_doy"),
+                    wave_photo=candidate_payload.get("photo_wave"),
+                    wave_target=target_wave,
+                    wave_delta=reason_payload.get("wave_delta"),
+                    season_match=candidate_payload.get("season_match"),
+                    photo_doy=candidate_payload.get("photo_doy")
+                    or candidate_payload.get("shot_doy"),
                     score=score_value,
-                    reasons=reason_payload,
+                    score_components=reason_payload.get("score_components"),
                 )
-
-            if stage["name"] in {"season", "wave"}:
-                continue
 
             if sorted_results:
                 best_score, best_reasons, best_candidate = sorted_results[0]
-                best_reasons["stage"] = stage["name"]
+                best_reasons["stage"] = stage_cfg.name
                 selected_candidate = best_candidate
                 selected_details = {
                     "score": best_score,
                     "reasons": best_reasons,
-                    "stage": stage["name"],
-                    "corridor": (low, high),
+                    "stage": stage_cfg.name,
+                    "corridor": corridor,
                 }
 
-                if stage["name"] == "AN" and clear_guard_hard:
+                if stage_cfg.name == "AN" and clear_guard_hard:
                     chosen_sky = best_candidate.get("photo_sky")
                     if chosen_sky in {"mostly_cloudy", "overcast"}:
                         sky_critical_mismatch = True
@@ -13642,7 +13606,7 @@ class Bot:
                 "score": 0.0,
                 "reasons": {"fallback": "age_priority"},
                 "stage": "fallback_age",
-                "corridor": compute_corridor(0.8),
+                "corridor": build_corridor(STAGE_CONFIGS["AN"]),
             }
 
         asset = selected_candidate["asset"]
@@ -13687,18 +13651,21 @@ class Bot:
             stage=selected_details.get("stage"),
             asset_id=asset.id,
             shot_doy=selected_candidate.get("shot_doy"),
+            photo_doy=selected_candidate.get("photo_doy"),
             score=selected_details.get("score"),
-            wave_score=selected_candidate.get("wave_score"),
+            wave_photo=selected_candidate.get("photo_wave")
+            or selected_candidate.get("wave_score"),
+            wave_target=target_wave,
             photo_sky=selected_candidate.get("photo_sky"),
             season_match=selected_candidate.get("season_match"),
             sunset_selected=sunset_selected,
             want_sunset=want_sunset,
             storm_persisting=storm_persisting,
             wave_corridor=selected_details.get("corridor"),
-            sky_penalty=selected_details.get("reasons", {}).get("sky_penalty"),
             sky_visible=sky_visible,
             sky_critical_mismatch=sky_critical_mismatch,
             reasons=selected_details.get("reasons"),
+            score_components=selected_details.get("reasons", {}).get("score_components"),
             fact_id=fact_id,
             fact_info=fact_log_info,
         )

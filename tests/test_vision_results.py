@@ -91,6 +91,13 @@ def _load_schema(conn: sqlite3.Connection) -> None:
         spec_sea_assets.loader.exec_module(module_sea_assets)
         if hasattr(module_sea_assets, "run"):
             module_sea_assets.run(conn)
+    photo_metadata_path = Path(__file__).resolve().parents[1] / "migrations" / "0027_assets_photo_metadata.py"
+    spec_photo_metadata = importlib.util.spec_from_file_location("_migration_0027_assets_photo_metadata", photo_metadata_path)
+    if spec_photo_metadata and spec_photo_metadata.loader:
+        module_photo_metadata = importlib.util.module_from_spec(spec_photo_metadata)
+        spec_photo_metadata.loader.exec_module(module_photo_metadata)
+        if hasattr(module_photo_metadata, "run"):
+            module_photo_metadata.run(conn)
 
 
 @pytest.fixture

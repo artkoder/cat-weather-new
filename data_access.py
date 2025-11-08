@@ -16,6 +16,8 @@ _UNSET = object()
 
 import sqlite3
 
+from sea_selection import infer_sky_visible
+
 PAIRING_TOKEN_TTL_SECONDS = 600
 NONCE_TTL_SECONDS = 600
 UPLOAD_IDEMPOTENCY_TTL_SECONDS = 24 * 3600
@@ -37,6 +39,9 @@ class Asset:
     created_at: str
     shot_at_utc: int | None = None
     shot_doy: int | None = None
+    photo_doy: int | None = None
+    photo_wave: float | None = None
+    sky_visible_hint: str | None = None
     source: str | None = None
     exif: dict[str, Any] | None = None
     labels: Any | None = None
@@ -551,6 +556,9 @@ class DataAccess:
         source: str = "mobile",
         shot_at_utc: int | None = None,
         shot_doy: int | None = None,
+        photo_doy: int | None = None,
+        photo_wave: float | None = None,
+        sky_visible: str | bool | None = None,
     ) -> str:
         """Create a new asset entry tied to an upload and return its UUID."""
 
@@ -921,6 +929,23 @@ class DataAccess:
                 return canonical
         return normalized
 
+    @staticmethod
+    def _normalize_sky_visible(value: str | bool | None) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        text = str(value).strip().lower()
+        if not text or text in {"none", "null"}:
+            return None
+        if text in {"true", "1", "yes", "y", "да"}:
+            return "true"
+        if text in {"false", "0", "no", "n", "нет"}:
+            return "false"
+        if text in {"unknown", "maybe"}:
+            return "unknown"
+        return text
+
     @classmethod
     def _vision_category_variants(cls, category: str) -> set[str]:
         canonical = cls._normalize_vision_category(category)
@@ -955,6 +980,9 @@ class DataAccess:
         source: str = "telegram",
         shot_at_utc: int | None = None,
         shot_doy: int | None = None,
+        photo_doy: int | None = None,
+        photo_wave: float | None = None,
+        sky_visible: str | bool | None = None,
     ) -> str:
         """Insert or update asset metadata."""
 
@@ -970,6 +998,23 @@ class DataAccess:
         shot_doy_value = shot_doy if shot_doy is not None else (
             existing.shot_doy if existing else None
         )
+        if photo_doy is not None:
+            photo_doy_value = int(photo_doy)
+        elif shot_doy is not None:
+            photo_doy_value = int(shot_doy)
+        elif existing and existing.photo_doy is not None:
+            photo_doy_value = existing.photo_doy
+        else:
+            photo_doy_value = shot_doy_value
+        if photo_wave is not None:
+            photo_wave_value = Asset._to_float(photo_wave)
+        elif existing:
+            photo_wave_value = existing.photo_wave
+        else:
+            photo_wave_value = None
+        sky_visible_value = self._normalize_sky_visible(sky_visible)
+        if sky_visible_value is None and existing:
+            sky_visible_value = existing.sky_visible_hint
         if categories_list:
             labels_json = json.dumps(categories_list, ensure_ascii=False)
         elif existing:
@@ -1060,6 +1105,9 @@ class DataAccess:
                        tg_message_id=?,
                        shot_at_utc=?,
                        shot_doy=?,
+                       photo_doy=?,
+                       photo_wave=?,
+                       sky_visible=?,
                        payload_json=?
                  WHERE id=?
                 """,
@@ -1074,6 +1122,9 @@ class DataAccess:
                     tg_identifier,
                     shot_at_value,
                     shot_doy_value,
+                    photo_doy_value,
+                    photo_wave_value,
+                    sky_visible_value,
                     payload_json,
                     existing.id,
                 ),
@@ -1101,8 +1152,11 @@ class DataAccess:
                 created_at,
                 source,
                 shot_at_utc,
-                shot_doy
-            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                shot_doy,
+                photo_doy,
+                photo_wave,
+                sky_visible
+            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -1119,6 +1173,9 @@ class DataAccess:
                 source,
                 shot_at_value,
                 shot_doy_value,
+                photo_doy_value,
+                photo_wave_value,
+                sky_visible_value,
             ),
         )
         self.conn.commit()
@@ -1180,6 +1237,9 @@ class DataAccess:
         origin: str | None = None,
         shot_at_utc: int | None = None,
         shot_doy: int | None = None,
+        photo_doy: int | None = None,
+        photo_wave: float | None = None,
+        sky_visible: str | bool | None = None,
     ) -> None:
         """Update selected asset fields while preserving unset values."""
 
@@ -1276,6 +1336,15 @@ class DataAccess:
             column_dirty = True
         if shot_doy is not None:
             columns["shot_doy"] = int(shot_doy)
+            column_dirty = True
+        if photo_doy is not None:
+            columns["photo_doy"] = int(photo_doy)
+            column_dirty = True
+        if photo_wave is not None:
+            columns["photo_wave"] = Asset._to_float(photo_wave)
+            column_dirty = True
+        if sky_visible is not None:
+            columns["sky_visible"] = self._normalize_sky_visible(sky_visible)
             column_dirty = True
         if exif_present is not None:
             payload_updates["exif_present"] = bool(exif_present)
@@ -1489,6 +1558,17 @@ class DataAccess:
         shot_doy_val = Asset._to_int(row_dict.get("shot_doy"))
         if shot_doy_val is not None and not (1 <= shot_doy_val <= 366):
             shot_doy_val = None
+        photo_doy_val = Asset._to_int(row_dict.get("photo_doy"))
+        if photo_doy_val is not None and not (1 <= photo_doy_val <= 366):
+            photo_doy_val = None
+        photo_wave_raw = row_dict.get("photo_wave")
+        photo_wave_val = Asset._to_float(photo_wave_raw)
+        sky_visible_raw = row_dict.get("sky_visible")
+        sky_visible_hint = (
+            str(sky_visible_raw).strip().lower()
+            if sky_visible_raw is not None and str(sky_visible_raw).strip()
+            else None
+        )
 
         return Asset(
             id=str(row_dict.get("id")),
@@ -1505,6 +1585,9 @@ class DataAccess:
             created_at=created_at,
             shot_at_utc=shot_at_utc_val,
             shot_doy=shot_doy_val,
+            photo_doy=photo_doy_val,
+            photo_wave=photo_wave_val,
+            sky_visible_hint=sky_visible_hint,
             source=(
                 str(row_dict.get("source"))
                 if row_dict.get("source") is not None
@@ -1743,36 +1826,61 @@ class DataAccess:
                 return "night"
             return None
 
+        def _parse_sky_hint(value: Any) -> bool | None:
+            if value is None:
+                return None
+            if isinstance(value, bool):
+                return value
+            text = str(value).strip().lower()
+            if not text:
+                return None
+            if text in {"true", "1", "yes", "y", "да"}:
+                return True
+            if text in {"false", "0", "no", "n", "нет"}:
+                return False
+            if text == "unknown":
+                return None
+            return None
+
         for asset in assets:
             vision = asset.vision_results or {}
-            raw_wave = vision.get("sea_wave_score")
-            if isinstance(raw_wave, dict):
-                raw_wave = raw_wave.get("value")
-            try:
-                wave_score = float(raw_wave) if raw_wave is not None else None
-            except (TypeError, ValueError):
-                wave_score = None
+            raw_wave: Any = asset.photo_wave
+            if raw_wave is None:
+                raw_wave = vision.get("sea_wave_score")
+                if isinstance(raw_wave, dict):
+                    raw_wave = raw_wave.get("value")
+            wave_score = Asset._to_float(raw_wave)
             photo_sky_candidate = normalize_sky(vision.get("photo_sky"))
             if photo_sky_candidate is None:
                 photo_sky_candidate = normalize_sky(vision.get("weather_image"))
             photo_sky = photo_sky_candidate
             is_sunset = bool(vision.get("is_sunset"))
-            sky_visible_raw = vision.get("sky_visible")
-            if sky_visible_raw is None:
-                sky_visible = photo_sky not in (None, "unknown") if photo_sky != "unknown" else False
+            tags_raw = vision.get("tags")
+            if isinstance(tags_raw, list):
+                tag_values = {
+                    str(tag).strip().lower().replace(" ", "_")
+                    for tag in tags_raw
+                    if str(tag).strip()
+                }
             else:
-                sky_visible = bool(sky_visible_raw)
+                tag_values = set()
+            sky_visible_source = _parse_sky_hint(asset.sky_visible_hint)
+            if sky_visible_source is None:
+                sky_visible_source = _parse_sky_hint(vision.get("sky_visible"))
+            inferred_sky = infer_sky_visible(tag_values)
+            if sky_visible_source is not None:
+                sky_visible: bool | None = sky_visible_source
+            elif inferred_sky is not None:
+                sky_visible = inferred_sky
+            else:
+                sky_visible = None
             season_guess_raw = vision.get("season_guess")
             season_guess = (
                 str(season_guess_raw).strip().lower()
                 if isinstance(season_guess_raw, str) and season_guess_raw.strip()
                 else None
             )
-            tags_raw = vision.get("tags")
-            if isinstance(tags_raw, list):
-                tags = {str(tag).strip().lower() for tag in tags_raw if str(tag).strip()}
-            else:
-                tags = set()
+            tags = tag_values
             payload_data = asset.payload if isinstance(asset.payload, dict) else {}
             last_used_value = payload_data.get("last_used_at") if payload_data else None
             last_used_dt: datetime | None
@@ -1797,6 +1905,8 @@ class DataAccess:
                     "age_bonus": age_bonus,
                     "shot_at_utc": asset.shot_at_utc,
                     "shot_doy": asset.shot_doy,
+                    "photo_doy": asset.photo_doy,
+                    "photo_wave": wave_score,
                 }
             )
         return candidates

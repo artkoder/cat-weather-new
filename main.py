@@ -494,11 +494,29 @@ def compatible_skies(bucket: str | None) -> set[str]:
 
 
 def compute_season_window(reference: date, window_days: int = 45) -> set[str]:
-    seasons: set[str] = set()
-    for offset in range(-window_days, window_days + 1):
-        candidate = reference + timedelta(days=offset)
-        seasons.add(SEASON_BY_MONTH.get(candidate.month, "winter"))
-    return seasons
+     seasons: set[str] = set()
+     for offset in range(-window_days, window_days + 1):
+         candidate = reference + timedelta(days=offset)
+         seasons.add(SEASON_BY_MONTH.get(candidate.month, "winter"))
+     return seasons
+
+
+def map_hour_to_day_part(hour: int) -> str:
+     """Map hour (0-23) to day part.
+
+     morning: 05:00–10:59
+     day:     11:00–16:59
+     evening: 17:00–21:59
+     night:   22:00–04:59
+     """
+     if 5 <= hour < 11:
+         return "morning"
+     elif 11 <= hour < 17:
+         return "day"
+     elif 17 <= hour < 22:
+         return "evening"
+     else:
+         return "night"
 
 
 def is_in_season_window(shot_doy: int | None, *, today_doy: int, window: int = 45) -> bool:
@@ -13137,6 +13155,10 @@ class Bot:
         today_doy = now_local.timetuple().tm_yday
         season_window_days = 45
 
+        now_local_iso = now_local.isoformat()
+        day_part = map_hour_to_day_part(now_local.hour)
+        tz_name = "Europe/Kaliningrad"
+
         def _normalize_for_log(value: Any) -> Any:
             if isinstance(value, float):
                 return round(value, 3)
@@ -13647,6 +13669,9 @@ class Bot:
             want_sunset=want_sunset,
             place_hashtag=place_hashtag,
             fact_sentence=fact_sentence,
+            now_local_iso=now_local_iso,
+            day_part=day_part,
+            tz_name=tz_name,
             job=job,
         )
         stripped_caption = self.strip_header(caption_text)
@@ -13989,6 +14014,9 @@ class Bot:
         want_sunset: bool,
         place_hashtag: str | None,
         fact_sentence: str | None,
+        now_local_iso: str | None = None,
+        day_part: str | None = None,
+        tz_name: str | None = None,
         job: Job | None = None,
     ) -> tuple[str, list[str]]:
         default_hashtags = self._default_hashtags("sea")
@@ -14030,6 +14058,14 @@ class Bot:
             fallback_text = cleaned.strip() if cleaned else raw_fallback.strip()
             return fallback_text, default_hashtags
 
+        day_part_instruction = ""
+        if day_part:
+            day_part_instruction = (
+                "Учитывай локальное время публикации: now_local_iso, day_part (morning|day|evening|night), tz_name. "
+                "Пиши уместно текущему времени суток, но не упоминай время явно. "
+                "Избегай приветствий и пожеланий, не соответствующих моменту (например, «пусть ваш день будет…», если уже вечер/ночь). "
+                "Сохраняй естественный, дружелюбный тон. "
+            )
         system_prompt = (
             "Ты редактор телеграм-канала о Балтийском море. "
             "Пиши 1–2 предложения дружелюбным тоном, без научных терминов (избегай слов вроде «термоклин», «галоклин»). "
@@ -14041,6 +14077,7 @@ class Bot:
             "Если море спокойно и sunset_selected=false — начни с вариации «Порадую вас морем…». "
             "Опиши ветер только образно, без чисел. "
             "Если передан fact_sentence (и storm_state != 'strong_storm') — добавь плавное вступление (например: «Знаете ли вы…», «Интересный факт:», «К слову о Балтике…», «Поделюсь любопытным фактом…») и одно короткое предложение, перефразируя факт, но сохрани все цифры и единицы измерения строго так, как в факте: не заменяй цифры словами, сохраняй символы %, ‰, км², «тыс.», диапазоны с длинным тире и другие знаки. "
+            f"{day_part_instruction}"
             "Весь основной текст не длиннее 350 символов. Выведи только сам текст."
         )
         wind_label = wind_class if wind_class in {"strong", "very_strong"} else "none"
@@ -14061,6 +14098,12 @@ class Bot:
             prompt_payload["place_hashtag"] = place_hashtag
         if storm_state != "strong_storm" and fact_sentence:
             prompt_payload["fact_sentence"] = fact_sentence
+        if now_local_iso:
+            prompt_payload["now_local_iso"] = now_local_iso
+        if day_part:
+            prompt_payload["day_part"] = day_part
+        if tz_name:
+            prompt_payload["tz_name"] = tz_name
         payload_text = json.dumps(prompt_payload, ensure_ascii=False, separators=(",", ": "))
         user_prompt = (
             "Параметры сцены (JSON):\n"

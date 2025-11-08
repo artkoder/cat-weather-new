@@ -5,9 +5,12 @@ import json
 import logging
 import os
 import sqlite3
-from datetime import datetime, timedelta, timezone
+
+from collections.abc import Iterable
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+
 from zoneinfo import ZoneInfo
 
 from data_access import Asset, DataAccess
@@ -78,7 +81,7 @@ def _parse_exif_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=KALININGRAD_TZ)
     return parsed.astimezone(KALININGRAD_TZ)
-from zoneinfo import ZoneInfo
+
 
 
 def _parse_offset(offset: str) -> timedelta:

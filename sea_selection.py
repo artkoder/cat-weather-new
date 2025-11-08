@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional
 
@@ -36,7 +37,7 @@ def _normalize_token(token: str) -> str:
     return text.replace(" ", "_")
 
 
-def infer_sky_visible(tags: Iterable[str]) -> Optional[bool]:
+def infer_sky_visible(tags: Iterable[str]) -> bool | None:
     """Infer whether the sky is visible based on recognition tags.
 
     Returns ``True`` if a sky-related tag is present, ``False`` if an

@@ -3810,9 +3810,22 @@ async def test_publish_sea_soft_truncation_preserves_footer(tmp_path):
     long_caption = " ".join(["Очень длинное описание моря с мягким ветром." for _ in range(80)])
 
     async def fake_generate_sea_caption_with_timeout(self, **kwargs):
-        return long_caption, ["#море"], {"openai_calls_per_publish": 1, "duration_ms": 100, "tokens": 50, "retries": 0, "timeout_hit": 0, "fallback": 0}
+        return (
+            long_caption,
+            ["#море"],
+            {
+                "openai_calls_per_publish": 1,
+                "duration_ms": 100,
+                "tokens": 50,
+                "retries": 0,
+                "timeout_hit": 0,
+                "fallback": 0,
+            },
+        )
 
-    bot._generate_sea_caption_with_timeout = fake_generate_sea_caption_with_timeout.__get__(bot, Bot)
+    bot._generate_sea_caption_with_timeout = fake_generate_sea_caption_with_timeout.__get__(
+        bot, Bot
+    )
 
     captured: dict[str, Any] = {}
 
@@ -3870,7 +3883,18 @@ async def test_sea_caption_clickable_love_link(tmp_path):
         )
 
         async def fake_generate(self, **_kwargs):
-            return "Порадую вас морем — вечерний бриз.", ["#море", "#БалтийскоеМоре"], {"openai_calls_per_publish": 1, "duration_ms": 100, "tokens": 50, "retries": 0, "timeout_hit": 0, "fallback": 0}
+            return (
+                "Порадую вас морем — вечерний бриз.",
+                ["#море", "#БалтийскоеМоре"],
+                {
+                    "openai_calls_per_publish": 1,
+                    "duration_ms": 100,
+                    "tokens": 50,
+                    "retries": 0,
+                    "timeout_hit": 0,
+                    "fallback": 0,
+                },
+            )
 
         bot._generate_sea_caption_with_timeout = fake_generate.__get__(bot, Bot)
 
@@ -3919,7 +3943,18 @@ async def test_sea_caption_no_numbers_and_no_cloud_words(tmp_path):
         )
 
         async def fake_generate(self, **_kwargs):
-            return raw_caption, ["#море", "#БалтийскоеМоре", "#шторм"], {"openai_calls_per_publish": 1, "duration_ms": 100, "tokens": 50, "retries": 0, "timeout_hit": 0, "fallback": 0}
+            return (
+                raw_caption,
+                ["#море", "#БалтийскоеМоре", "#шторм"],
+                {
+                    "openai_calls_per_publish": 1,
+                    "duration_ms": 100,
+                    "tokens": 50,
+                    "retries": 0,
+                    "timeout_hit": 0,
+                    "fallback": 0,
+                },
+            )
 
         bot._generate_sea_caption_with_timeout = fake_generate.__get__(bot, Bot)
 
@@ -3966,7 +4001,18 @@ async def test_caption_blocks(tmp_path):
         raw_caption = " ".join(["На побережье тихо и хочется задержаться." for _ in range(25)])
 
         async def fake_generate(self, **_kwargs):
-            return raw_caption, ["#море", "#БалтийскоеМоре", "#Балтика"], {"openai_calls_per_publish": 1, "duration_ms": 100, "tokens": 50, "retries": 0, "timeout_hit": 0, "fallback": 0}
+            return (
+                raw_caption,
+                ["#море", "#БалтийскоеМоре", "#Балтика"],
+                {
+                    "openai_calls_per_publish": 1,
+                    "duration_ms": 100,
+                    "tokens": 50,
+                    "retries": 0,
+                    "timeout_hit": 0,
+                    "fallback": 0,
+                },
+            )
 
         bot._generate_sea_caption_with_timeout = fake_generate.__get__(bot, Bot)
 

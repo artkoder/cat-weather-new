@@ -1,4 +1,9 @@
+import os
+import sys
+
 import pytest
+
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from sea_selection import STAGE_CONFIGS, calc_wave_penalty, infer_sky_visible
 

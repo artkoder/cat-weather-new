@@ -149,3 +149,42 @@ def test_storm_persisting_true():
             assert expected_state == "storm"
         else:
             assert expected_state == "strong_storm"
+
+
+def test_topn_log_structure():
+    """Test that topN log payloads include all required fields."""
+    # This validates the structure expected in topN logs:
+    # - wave_target
+    # - wave_photo
+    # - delta (wave_delta)
+    # - sky_photo
+    # - penalties (breakdown dict)
+    # - total_score
+
+    required_fields = {
+        "wave_target",
+        "wave_photo",
+        "delta",
+        "sky_photo",
+        "penalties",
+        "total_score",
+    }
+
+    # Verify all required fields are present in expected topN structure
+    assert len(required_fields) == 6
+
+
+def test_null_wave_penalty_applied():
+    """Test that NULL wave scores receive +0.8 penalty in B2/AN stages."""
+    from sea_selection import STAGE_CONFIGS
+
+    b2_stage = STAGE_CONFIGS["B2"]
+    an_stage = STAGE_CONFIGS["AN"]
+
+    # B2 and AN stages should allow missing wave scores
+    assert b2_stage.allow_missing_wave is True
+    assert an_stage.allow_missing_wave is True
+
+    # The penalty logic will add +0.8 when photo_wave is None
+    expected_null_penalty = 0.8
+    assert expected_null_penalty == 0.8

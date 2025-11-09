@@ -1125,6 +1125,8 @@ class Bot:
             self.flowers_kb = load_flowers_knowledge()
         except Exception:
             logging.exception("Failed to load flowers knowledge base")
+        self._backfill_waves_lock = asyncio.Lock()
+        self._backfill_waves_running = False
 
     def _generate_pairing_code(self) -> str:
         length = self._pairing_rng.randint(6, 8)
@@ -1919,6 +1921,105 @@ class Bot:
         await self.supabase.aclose()
 
         self.db.close()
+
+    async def backfill_waves(self, *, dry_run: bool = False) -> dict[str, int]:
+        """Backfill wave_score_0_10, wave_conf, and sky_code from vision_results.
+
+        Runs in batches of 200 with async yields. Guarded by lock to prevent concurrent runs.
+        Returns stats dict with counts of updated, skipped, and error assets.
+        """
+        async with self._backfill_waves_lock:
+            if self._backfill_waves_running:
+                logging.info("Backfill waves already running, skipping duplicate trigger")
+                return {"updated": 0, "skipped": 0, "errors": 0, "already_running": 1}
+
+            self._backfill_waves_running = True
+            try:
+                stats = {"updated": 0, "skipped": 0, "errors": 0}
+                batch_size = 200
+                batch_count = 0
+
+                assets_to_process = []
+                for asset in self.data.iter_assets():
+                    has_wave = asset.vision_wave_score is not None
+                    has_conf = asset.vision_wave_conf is not None
+                    has_sky = asset.vision_sky_bucket is not None
+
+                    if has_wave and has_conf and has_sky:
+                        stats["skipped"] += 1
+                        continue
+
+                    assets_to_process.append(asset)
+
+                logging.info(
+                    "Backfill waves: found %d assets to process, %d already complete",
+                    len(assets_to_process),
+                    stats["skipped"],
+                )
+
+                for i in range(0, len(assets_to_process), batch_size):
+                    batch = assets_to_process[i : i + batch_size]
+                    batch_count += 1
+
+                    for asset in batch:
+                        try:
+                            vision = asset.vision_results or {}
+                            wave_score, wave_conf = self.data._parse_wave_score_from_vision(vision)
+                            sky_bucket = self.data._parse_sky_bucket_from_vision(vision)
+
+                            if wave_score is None and sky_bucket is None:
+                                stats["errors"] += 1
+                                continue
+
+                            updates: list[str] = []
+                            params: list[Any] = []
+
+                            if asset.vision_wave_score is None and wave_score is not None:
+                                updates.append("vision_wave_score=?")
+                                params.append(float(wave_score))
+
+                            if asset.vision_wave_conf is None and wave_conf is not None:
+                                updates.append("vision_wave_conf=?")
+                                params.append(float(wave_conf))
+
+                            if asset.vision_sky_bucket is None and sky_bucket is not None:
+                                updates.append("vision_sky_bucket=?")
+                                params.append(str(sky_bucket))
+
+                            if not updates:
+                                stats["skipped"] += 1
+                                continue
+
+                            if not dry_run:
+                                sql = f"UPDATE assets SET {', '.join(updates)} WHERE id=?"
+                                params.append(str(asset.id))
+                                self.db.execute(sql, params)
+
+                            stats["updated"] += 1
+
+                        except Exception as e:
+                            logging.exception(
+                                "Error backfilling asset %s: %s",
+                                asset.id,
+                                e,
+                            )
+                            stats["errors"] += 1
+
+                    if not dry_run:
+                        self.db.commit()
+
+                    logging.info(
+                        "Backfill waves: processed batch %d (%d assets), stats: %s",
+                        batch_count,
+                        len(batch),
+                        stats,
+                    )
+                    await asyncio.sleep(0)
+
+                return stats
+
+            finally:
+                self._backfill_waves_running = False
 
     async def handle_edited_message(self, message: Any) -> None:
         chat_id = message.get("chat", {}).get("id")
@@ -2740,6 +2841,11 @@ class Bot:
     def is_superadmin(self, user_id: Any) -> bool:
         row = self.get_user(user_id)
         return row and row["is_superadmin"]
+
+    def get_superadmin_ids(self) -> list[int]:
+        """Return list of all superadmin user IDs."""
+        cur = self.db.execute("SELECT user_id FROM users WHERE is_superadmin=1")
+        return [row["user_id"] for row in cur.fetchall()]
 
     def get_amber_sea(self) -> int | None:
         row = self.db.execute("SELECT sea_id FROM amber_state LIMIT 1").fetchone()
@@ -6333,6 +6439,7 @@ class Bot:
                     "- `/addsea <name> <lat> <lon>` — добавить морскую точку для температуры воды.\n"
                     "- `/seas` — показать все морские точки и удалить ненужные.\n"
                     "- `/dump_sea` — экспортировать CSV со всеми морскими ассетами, метаданными волн/неба и vision_json (только для супер-админов).\n"
+                    "- `/backfill_waves [dry-run]` — заполнить волны/небо из vision_results (используйте dry-run для проверки без изменений).\n"
                 ),
                 (
                     "*Погодные рассылки*\n"
@@ -6551,6 +6658,50 @@ class Bot:
                 await self.api_request(
                     "sendMessage",
                     {"chat_id": user_id, "text": f"❌ Error generating CSV: {e}"},
+                )
+            return
+
+        if text.startswith("/backfill_waves"):
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
+                return
+
+            parts = text.split()
+            dry_run = len(parts) > 1 and parts[1].lower() in ("dry-run", "dry_run", "dryrun")
+
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": user_id,
+                    "text": f"🔄 Starting wave backfill {'(DRY RUN)' if dry_run else ''}...",
+                },
+            )
+
+            try:
+                stats = await self.backfill_waves(dry_run=dry_run)
+
+                if "already_running" in stats and stats["already_running"] > 0:
+                    message = "⚠️ Backfill already running, skipped"
+                else:
+                    mode_label = "DRY RUN" if dry_run else "COMPLETED"
+                    message = (
+                        f"✅ Backfill waves {mode_label}:\n"
+                        f"Updated: {stats['updated']}\n"
+                        f"Skipped: {stats['skipped']}\n"
+                        f"Errors: {stats['errors']}"
+                    )
+
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": message},
+                )
+            except Exception as e:
+                logging.exception("Failed to run wave backfill")
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": f"❌ Backfill error: {e}"},
                 )
             return
 
@@ -16633,6 +16784,32 @@ def create_app() -> web.Application:
             logging.exception("Error during startup")
             raise
         app["schedule_task"] = asyncio.create_task(bot.schedule_loop())
+
+        async def run_startup_backfill() -> None:
+            try:
+                logging.info("Starting wave backfill in background")
+                stats = await bot.backfill_waves(dry_run=False)
+                message = (
+                    f"🌊 Backfill waves finished:\n"
+                    f"Updated: {stats['updated']}\n"
+                    f"Skipped: {stats['skipped']}\n"
+                    f"Errors: {stats['errors']}"
+                )
+                logging.info("Wave backfill completed: %s", stats)
+
+                superadmin_ids = bot.get_superadmin_ids()
+                for admin_id in superadmin_ids:
+                    try:
+                        await bot.api_request(
+                            "sendMessage",
+                            {"chat_id": admin_id, "text": message},
+                        )
+                    except Exception:
+                        logging.exception("Failed to notify superadmin %s", admin_id)
+            except Exception:
+                logging.exception("Background wave backfill failed")
+
+        asyncio.create_task(run_startup_backfill())
 
     async def cleanup_background(app: web.Application) -> None:
         await bot.close()

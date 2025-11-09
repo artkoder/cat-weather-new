@@ -1072,30 +1072,32 @@ class DataAccess:
         return text
 
     @staticmethod
-    def _parse_wave_score_from_vision(vision_json: dict[str, Any] | None) -> tuple[float | None, float | None]:
+    def _parse_wave_score_from_vision(
+        vision_json: dict[str, Any] | None,
+    ) -> tuple[float | None, float | None]:
         """Extract wave score and confidence from various vision JSON layouts.
-        
+
         Returns: (wave_score, confidence) tuple, both can be None
         """
         if not vision_json:
             return None, None
-        
+
         wave_score: float | None = None
         wave_conf: float | None = None
-        
+
         if "weather" in vision_json and isinstance(vision_json["weather"], dict):
             weather = vision_json["weather"]
             if "sea" in weather and isinstance(weather["sea"], dict):
                 sea_data = weather["sea"]
                 wave_score = Asset._to_float(sea_data.get("wave_score"))
                 wave_conf = Asset._to_float(sea_data.get("confidence"))
-        
+
         if wave_score is None and "sea_state" in vision_json:
             sea_state = vision_json["sea_state"]
             if isinstance(sea_state, dict):
                 wave_score = Asset._to_float(sea_state.get("score"))
                 wave_conf = Asset._to_float(sea_state.get("confidence"))
-        
+
         if wave_score is None and "sea_wave_score" in vision_json:
             raw_wave = vision_json["sea_wave_score"]
             if isinstance(raw_wave, dict):
@@ -1103,42 +1105,43 @@ class DataAccess:
                 wave_conf = Asset._to_float(raw_wave.get("confidence"))
             else:
                 wave_score = Asset._to_float(raw_wave)
-        
+
         if wave_score is None and "result_text" in vision_json:
             result_text = str(vision_json["result_text"])
             import re
+
             match = re.search(r"Волнение моря:\s*(\d+(?:\.\d+)?)\s*/\s*10", result_text)
             if match:
                 wave_score = Asset._to_float(match.group(1))
-        
+
         return wave_score, wave_conf
 
     @staticmethod
     def _parse_sky_bucket_from_vision(vision_json: dict[str, Any] | None) -> str | None:
         """Extract sky bucket from vision JSON.
-        
+
         Returns: sky bucket string (e.g., "clear", "partly_cloudy", "overcast")
         """
         if not vision_json:
             return None
-        
+
         if "weather" in vision_json and isinstance(vision_json["weather"], dict):
             weather = vision_json["weather"]
             if "sky" in weather and isinstance(weather["sky"], dict):
                 bucket = weather["sky"].get("bucket")
                 if bucket:
                     return str(bucket)
-        
+
         if "sky_bucket" in vision_json:
             bucket = vision_json["sky_bucket"]
             if bucket:
                 return str(bucket)
-        
+
         if "sky" in vision_json and isinstance(vision_json["sky"], dict):
             bucket = vision_json["sky"].get("bucket")
             if bucket:
                 return str(bucket)
-        
+
         return None
 
     @classmethod
@@ -1927,12 +1930,12 @@ class DataAccess:
 
     def dump_sea_assets_csv(self) -> str:
         """Generate CSV dump of sea assets with vision metadata.
-        
+
         Returns: CSV string with headers and data rows
         """
         import csv
         from io import StringIO
-        
+
         query = """
             SELECT 
                 a.id AS asset_id,
@@ -1964,12 +1967,12 @@ class DataAccess:
              )
             ORDER BY a.created_at DESC
         """
-        
+
         rows = self.conn.execute(query).fetchall()
-        
+
         output = StringIO()
         writer = csv.writer(output)
-        
+
         headers = [
             "asset_id",
             "created_at",
@@ -1986,31 +1989,33 @@ class DataAccess:
             "exif_present",
             "doy",
             "local_path",
-            "vision_json"
+            "vision_json",
         ]
         writer.writerow(headers)
-        
+
         for row in rows:
             asset_id = row["asset_id"]
             created_at = row["created_at"] or ""
-            
+
             last_used = row["last_used_at"]
             uses_count = 1 if last_used else 0
-            
+
             city = row["city"] or ""
             lat = row["lat"] if row["lat"] is not None else ""
             lon = row["lon"] if row["lon"] is not None else ""
-            
-            vision_confidence = row["vision_confidence"] if row["vision_confidence"] is not None else ""
+
+            vision_confidence = (
+                row["vision_confidence"] if row["vision_confidence"] is not None else ""
+            )
             vision_photo_weather = row["vision_photo_weather"] or ""
-            
+
             vision_sky_bucket = row["vision_sky_bucket"] or ""
             daypart = row["daypart"] or ""
-            
+
             vision_wave_score = row["vision_wave_score"]
             vision_wave_conf = row["vision_wave_conf"]
             photo_wave = row["photo_wave"]
-            
+
             vision_json_raw = row["vision_json"]
             vision_json: dict[str, Any] | None = None
             if vision_json_raw:
@@ -2018,50 +2023,52 @@ class DataAccess:
                     vision_json = json.loads(vision_json_raw)
                 except json.JSONDecodeError:
                     vision_json = None
-            
+
             if vision_wave_score is None and vision_json:
                 parsed_wave, parsed_conf = self._parse_wave_score_from_vision(vision_json)
                 if parsed_wave is not None:
                     vision_wave_score = parsed_wave
                 if vision_wave_conf is None and parsed_conf is not None:
                     vision_wave_conf = parsed_conf
-            
+
             if not vision_sky_bucket and vision_json:
                 vision_sky_bucket = self._parse_sky_bucket_from_vision(vision_json) or ""
-            
+
             if vision_wave_score is None and photo_wave is not None:
                 vision_wave_score = photo_wave
-            
+
             wave_score_str = str(vision_wave_score) if vision_wave_score is not None else ""
             wave_conf_str = str(vision_wave_conf) if vision_wave_conf is not None else ""
-            
+
             exif_json_raw = row["exif_json"]
             exif_present = "1" if exif_json_raw else "0"
-            
+
             doy = row["doy"] if row["doy"] is not None else ""
             local_path = row["local_path"] or ""
-            
+
             vision_json_str = json.dumps(vision_json, ensure_ascii=False) if vision_json else ""
-            
-            writer.writerow([
-                asset_id,
-                created_at,
-                uses_count,
-                city,
-                lat,
-                lon,
-                vision_confidence,
-                vision_photo_weather,
-                vision_sky_bucket,
-                daypart,
-                wave_score_str,
-                wave_conf_str,
-                exif_present,
-                doy,
-                local_path,
-                vision_json_str
-            ])
-        
+
+            writer.writerow(
+                [
+                    asset_id,
+                    created_at,
+                    uses_count,
+                    city,
+                    lat,
+                    lon,
+                    vision_confidence,
+                    vision_photo_weather,
+                    vision_sky_bucket,
+                    daypart,
+                    wave_score_str,
+                    wave_conf_str,
+                    exif_present,
+                    doy,
+                    local_path,
+                    vision_json_str,
+                ]
+            )
+
         return output.getvalue()
 
     def _fetch_assets(

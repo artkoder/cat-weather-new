@@ -6524,23 +6524,27 @@ class Bot:
         if text.startswith("/dump_sea") and self.is_superadmin(user_id):
             try:
                 from datetime import datetime as dt
+
                 csv_content = self.data.dump_sea_assets_csv()
-                
+
                 timestamp = dt.utcnow().strftime("%Y%m%d_%H%M%S")
                 filename = f"sea_assets_{timestamp}.csv"
-                
+
                 csv_bytes = csv_content.encode("utf-8")
-                
+
                 logging.info(
                     "Dumping sea assets CSV for user %s: %d bytes, %d rows",
                     user_id,
                     len(csv_bytes),
-                    csv_content.count("\n")
+                    csv_content.count("\n"),
                 )
-                
+
                 await self.api_request(
                     "sendDocument",
-                    {"chat_id": user_id, "caption": f"Sea assets dump generated at {timestamp} UTC"},
+                    {
+                        "chat_id": user_id,
+                        "caption": f"Sea assets dump generated at {timestamp} UTC",
+                    },
                     files={"document": (filename, csv_bytes)},
                 )
             except Exception as e:
@@ -13661,9 +13665,7 @@ class Bot:
                 wave_delta_log = reason_payload.get("wave_delta")
                 sky_bucket_log = candidate_payload.get("photo_sky_struct")
                 sky_bucket_str = (
-                    sky_bucket_log.weather_tag
-                    if hasattr(sky_bucket_log, "weather_tag")
-                    else None
+                    sky_bucket_log.weather_tag if hasattr(sky_bucket_log, "weather_tag") else None
                 )
                 age_bonus_log = candidate_payload.get("age_bonus")
                 sea_log(

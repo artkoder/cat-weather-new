@@ -102,6 +102,7 @@ from sea_selection import (
 )
 from storage import create_storage_from_env
 from supabase_client import SupabaseClient
+from utils_wave import wave_m_to_score
 from weather_migration import migrate_weather_publish_channels
 
 if TYPE_CHECKING:
@@ -401,23 +402,6 @@ SEASON_ADJACENCY: dict[str, set[str]] = {
     "autumn": {"summer", "winter"},
     "winter": {"autumn", "spring"},
 }
-
-
-def wave_m_to_score(meters: float | int | str | None) -> int:
-    """Map wave height in meters to an integer score on a 0..10 scale."""
-
-    if meters is None:
-        return 0
-    try:
-        value = float(meters)
-    except (TypeError, ValueError):
-        return 0
-    if value <= 0.0:
-        return 0
-    step = 0.2
-    epsilon = 1e-9
-    score = math.floor((value + epsilon) / step)
-    return max(0, min(10, score))
 
 
 def classify_wind_kph(speed_kmh: float | None) -> str | None:
@@ -13421,7 +13405,14 @@ class Bot:
             stage_cfg: StageConfig,
             corridor: tuple[float, float],
         ) -> tuple[float, dict[str, Any]] | None:
+            asset_obj = candidate["asset"]
+            vision_wave = getattr(asset_obj, "vision_wave_score", None)
+            vision_wave_conf = getattr(asset_obj, "vision_wave_conf", None)
+            vision_sky_bucket_val = getattr(asset_obj, "vision_sky_bucket", None)
+
             photo_wave = candidate.get("photo_wave")
+            if photo_wave is None and vision_wave is not None:
+                photo_wave = vision_wave
             if photo_wave is None:
                 photo_wave = candidate.get("wave_score")
             photo_wave_val = None
@@ -13434,6 +13425,8 @@ class Bot:
             wave_delta = None
             if photo_wave_val is not None:
                 wave_delta = abs(photo_wave_val - target_wave_value)
+            elif target_wave_value is not None:
+                wave_delta = None
 
             sky_visible = candidate.get("sky_visible")
 
@@ -13451,6 +13444,7 @@ class Bot:
                 "WaveDeltaPenalty": 0.0,
                 "WaveCorridorPenalty": 0.0,
                 "CalmWavePenalty": 0.0,
+                "CalmWaveBonus": 0.0,
                 "SeasonMismatchPenalty": 0.0,
                 "NoDoyPenalty": 0.0,
                 "AgeBonus": 0.0,
@@ -13461,6 +13455,12 @@ class Bot:
             age_bonus_val = float(candidate.get("age_bonus") or 0.0)
             components["AgeBonus"] = age_bonus_val
             score += age_bonus_val
+
+            if target_wave_score <= 2 and photo_wave_val is not None:
+                if photo_wave_val <= 1.0:
+                    calm_bonus = 5.0
+                    components["CalmWaveBonus"] = calm_bonus
+                    score += calm_bonus
 
             wave_penalty = calc_wave_penalty(photo_wave_val, target_wave_value, stage_cfg)
             components["WaveDeltaPenalty"] = wave_penalty
@@ -13601,10 +13601,14 @@ class Bot:
             else:
                 sorted_results = []
 
+            sky_policy_desc = "strict_visible" if stage_cfg.require_visible_sky else "relaxed"
+            if stage_cfg.allow_false_sky:
+                sky_policy_desc = "permissive"
             sea_log(
                 "stage",
                 name=stage_cfg.name,
-                corridor=[round(val, 2) for val in corridor],
+                sky=sky_policy_desc,
+                corridor=corridor,
                 pool_size=len(sorted_results),
             )
 
@@ -13622,28 +13626,33 @@ class Bot:
             ):
                 asset_obj = candidate_payload["asset"]
                 component_payload = reason_payload.get("score_components") or {}
+                photo_wave_log = candidate_payload.get("photo_wave")
+                wave_delta_log = reason_payload.get("wave_delta")
+                sky_bucket_log = candidate_payload.get("photo_sky_struct")
+                sky_bucket_str = (
+                    sky_bucket_log.weather_tag
+                    if hasattr(sky_bucket_log, "weather_tag")
+                    else None
+                )
+                age_bonus_log = candidate_payload.get("age_bonus")
                 sea_log(
                     "top5",
                     index=idx,
                     stage=stage_cfg.name,
-                    id=getattr(asset_obj, "id", None),
+                    asset_id=getattr(asset_obj, "id", None),
+                    photo_wave=photo_wave_log,
+                    target_wave=target_wave_score,
+                    wave_delta=wave_delta_log,
+                    sky_bucket=sky_bucket_str,
+                    freshness=age_bonus_log,
+                    score=score_value,
                     sky_visible=candidate_payload.get("sky_visible"),
                     photo_sky=_sky_token(candidate_payload.get("photo_sky_struct")),
                     photo_sky_daypart=candidate_payload.get("photo_sky_daypart"),
-                    wave_photo=candidate_payload.get("photo_wave"),
-                    wave_target_score=target_wave_score,
-                    wave_delta=reason_payload.get("wave_delta"),
                     season_match=candidate_payload.get("season_match"),
                     photo_doy=candidate_payload.get("photo_doy")
                     or candidate_payload.get("shot_doy"),
-                    score=score_value,
                     score_components=reason_payload.get("score_components"),
-                    wave_corridor_penalty=component_payload.get("WaveCorridorPenalty"),
-                    calm_wave_penalty=component_payload.get("CalmWavePenalty"),
-                    required_sky_penalty=component_payload.get("RequiredSkyPenalty"),
-                    false_sky_penalty=component_payload.get("FalseSkyPenalty"),
-                    strict_sky_penalty=component_payload.get("StrictSkyPenalty"),
-                    visible_sky_bonus=component_payload.get("VisibleSkyBonus"),
                 )
 
             if sorted_results:
@@ -15003,7 +15012,6 @@ class Bot:
             (("туман", "fog", "mist", "дымк", "haze", "смог"), "fog"),
             (("пасмур", "overcast", "сплошн", "тучн", "серое небо"), "overcast"),
             (("облач", "cloud"), "partly_cloudy"),
-            (("закат", "sunset", "рассвет", "sunrise", "golden hour"), "night"),
             (("солне", "ясн", "clear", "sunny", "bright sun"), "sunny"),
         ]
         for needles, token in keyword_map:

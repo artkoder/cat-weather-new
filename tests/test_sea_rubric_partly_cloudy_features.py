@@ -704,11 +704,11 @@ async def test_logs_not_truncated_and_prefixed(
     # Top5 logs should be individual lines
     for top5_log in top5_logs:
         assert "SEA_RUBRIC top5 #" in top5_log
-        assert "id=" in top5_log
+        assert "asset_id=" in top5_log
         assert "sky_visible=" in top5_log
         assert "photo_sky=" in top5_log
-        assert "wave_photo=" in top5_log
-        assert "wave_target_score=" in top5_log
+        assert "photo_wave=" in top5_log
+        assert "target_wave=" in top5_log
         assert "score=" in top5_log
         assert "score_components=" in top5_log
 

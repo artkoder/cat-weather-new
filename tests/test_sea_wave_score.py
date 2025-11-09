@@ -12,8 +12,8 @@ from main import (
     compatible_skies,
     compute_season_window,
     season_match,
-    wave_m_to_score,
 )
+from utils_wave import wave_m_to_score
 
 
 @pytest.mark.parametrize(

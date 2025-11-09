@@ -90,6 +90,18 @@ def test_bucket_clouds(cloud_pct: float | None, expected: str | None) -> None:
             },
         ),
         (
+            "clear",
+            "morning",
+            {
+                "morning:sunny",
+                "morning:mostly_clear",
+                "morning:partly_cloudy",
+                "day:sunny",
+                "day:mostly_clear",
+                "day:partly_cloudy",
+            },
+        ),
+        (
             "partly_cloudy",
             "day",
             {

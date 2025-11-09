@@ -414,6 +414,8 @@ def wave_m_to_score(meters: float | int | str | None) -> int:
         value = float(meters)
     except (TypeError, ValueError):
         return 0
+    if not math.isfinite(value):
+        return 0
     if value <= 0.0:
         return 0
     step = 0.2

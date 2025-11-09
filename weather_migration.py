@@ -80,7 +80,6 @@ def _parse_exif_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(KALININGRAD_TZ)
 
 
-
 def _parse_offset(offset: str) -> timedelta:
     sign = -1 if offset.startswith("-") else 1
     hours, minutes = offset.lstrip("+-").split(":")
@@ -99,9 +98,7 @@ def _next_weather_run(post_time: str, offset: str, reference: datetime | None = 
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    cur = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
-    )
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
     return cur.fetchone() is not None
 
 
@@ -295,7 +292,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if not any((args.fill_doy, args.recalc_sky_visible_flag, args.backfill_wave)):
-        parser.error("No action specified. Use --fill-doy, --recalc-sky-visible, or --backfill-wave.")
+        parser.error(
+            "No action specified. Use --fill-doy, --recalc-sky-visible, or --backfill-wave."
+        )
 
     _ensure_logging()
 

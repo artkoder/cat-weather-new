@@ -143,6 +143,7 @@ def _read_version_from_changelog() -> str:
 
 APP_VERSION = os.getenv("APP_VERSION") or _read_version_from_changelog()
 
+
 # Default database path points to /data which is mounted as a Fly.io volume.
 # This ensures information like registered channels and scheduled posts
 # persists across deployments unless DB_PATH is explicitly overridden.
@@ -170,30 +171,28 @@ VISION_CONCURRENCY_RAW = os.getenv("VISION_CONCURRENCY", "1")
 try:
     VISION_CONCURRENCY = max(1, int(VISION_CONCURRENCY_RAW))
 except ValueError:
-    logging.warning(
-        "Invalid VISION_CONCURRENCY=%s, defaulting to 1", VISION_CONCURRENCY_RAW
-    )
+    logging.warning("Invalid VISION_CONCURRENCY=%s, defaulting to 1", VISION_CONCURRENCY_RAW)
     VISION_CONCURRENCY = 1
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 WMO_EMOJI = {
     0: "\u2600\ufe0f",
-    1: "\U0001F324",
+    1: "\U0001f324",
     2: "\u26c5",
     3: "\u2601\ufe0f",
-    45: "\U0001F32B",
-    48: "\U0001F32B",
-    51: "\U0001F327",
-    53: "\U0001F327",
-    55: "\U0001F327",
-    61: "\U0001F327",
-    63: "\U0001F327",
-    65: "\U0001F327",
+    45: "\U0001f32b",
+    48: "\U0001f32b",
+    51: "\U0001f327",
+    53: "\U0001f327",
+    55: "\U0001f327",
+    61: "\U0001f327",
+    63: "\U0001f327",
+    65: "\U0001f327",
     71: "\u2744\ufe0f",
     73: "\u2744\ufe0f",
     75: "\u2744\ufe0f",
-    80: "\U0001F327",
-    81: "\U0001F327",
-    82: "\U0001F327",
+    80: "\U0001f327",
+    81: "\U0001f327",
+    82: "\U0001f327",
     95: "\u26c8\ufe0f",
     96: "\u26c8\ufe0f",
     99: "\u26c8\ufe0f",
@@ -213,8 +212,9 @@ def _isoformat_utc(dt: datetime) -> str:
 def weather_emoji(code: int, is_day: int | None) -> str:
     emoji = WMO_EMOJI.get(code, "")
     if code == 0 and is_day == 0:
-        return "\U0001F319"  # crescent moon
+        return "\U0001f319"  # crescent moon
     return emoji
+
 
 WEATHER_SEPARATOR = "\u2219"  # "∙" used to split header from original text
 WEATHER_HEADER_PATTERN = re.compile(
@@ -255,9 +255,7 @@ def detect_mime_and_size(
         with Image.open(file_path) as image:
             format_name = image.format
             if format_name:
-                mime = Image.MIME.get(format_name.upper()) or Image.MIME.get(
-                    format_name
-                )
+                mime = Image.MIME.get(format_name.upper()) or Image.MIME.get(format_name)
     except Exception:
         logging.debug("Failed to detect MIME via Pillow for %s", path, exc_info=True)
     if not mime:
@@ -491,9 +489,7 @@ def compatible_skies(bucket: str | None, daypart: str | None) -> set[NormalizedS
     if weather_tags is None:
         weather_tags = {"sunny", "mostly_clear", "partly_cloudy", "mostly_cloudy", "overcast"}
 
-    allowed = {
-        NormalizedSky(daypart=normalized_daypart, weather_tag=tag) for tag in weather_tags
-    }
+    allowed = {NormalizedSky(daypart=normalized_daypart, weather_tag=tag) for tag in weather_tags}
 
     if normalized_daypart == "day" and bucket in {"clear", "mostly_clear"}:
         for evening_tag in {"sunny", "mostly_clear"}:
@@ -503,29 +499,29 @@ def compatible_skies(bucket: str | None, daypart: str | None) -> set[NormalizedS
 
 
 def compute_season_window(reference: date, window_days: int = 45) -> set[str]:
-     seasons: set[str] = set()
-     for offset in range(-window_days, window_days + 1):
-         candidate = reference + timedelta(days=offset)
-         seasons.add(SEASON_BY_MONTH.get(candidate.month, "winter"))
-     return seasons
+    seasons: set[str] = set()
+    for offset in range(-window_days, window_days + 1):
+        candidate = reference + timedelta(days=offset)
+        seasons.add(SEASON_BY_MONTH.get(candidate.month, "winter"))
+    return seasons
 
 
 def map_hour_to_day_part(hour: int) -> str:
-     """Map hour (0-23) to day part.
+    """Map hour (0-23) to day part.
 
-     morning: 05:00–10:59
-     day:     11:00–16:59
-     evening: 17:00–21:59
-     night:   22:00–04:59
-     """
-     if 5 <= hour < 11:
-         return "morning"
-     elif 11 <= hour < 17:
-         return "day"
-     elif 17 <= hour < 22:
-         return "evening"
-     else:
-         return "night"
+    morning: 05:00–10:59
+    day:     11:00–16:59
+    evening: 17:00–21:59
+    night:   22:00–04:59
+    """
+    if 5 <= hour < 11:
+        return "morning"
+    elif 11 <= hour < 17:
+        return "day"
+    elif 17 <= hour < 22:
+        return "evening"
+    else:
+        return "night"
 
 
 def is_in_season_window(shot_doy: int | None, *, today_doy: int, window: int = 45) -> bool:
@@ -582,7 +578,6 @@ def season_match(season_guess: str | None, allowed: set[str]) -> bool:
         return False
     normalized = str(season_guess).strip().lower()
     return normalized in allowed
-
 
 
 ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
@@ -657,8 +652,7 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
         "framing": {
             "type": "string",
             "description": (
-                "Кадровка/ракурс снимка. Используй один из вариантов: close_up, medium, "
-                "wide."
+                "Кадровка/ракурс снимка. Используй один из вариантов: close_up, medium, " "wide."
             ),
             "enum": [
                 "close_up",
@@ -701,21 +695,21 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
             "maximum": 10,
         },
         "photo_sky": {
-                "type": "string",
-                "description": "Класс неба на снимке.",
-                "enum": [
-                    "sunny",
-                    "partly_cloudy",
-                    "mostly_cloudy",
-                    "overcast",
-                    "night",
-                    "unknown",
-                ],
-            },
-            "sky_visible": {
-                "type": "boolean",
-                "description": "True, если на фото видимо небо (даже частично), иначе False.",
-            },
+            "type": "string",
+            "description": "Класс неба на снимке.",
+            "enum": [
+                "sunny",
+                "partly_cloudy",
+                "mostly_cloudy",
+                "overcast",
+                "night",
+                "unknown",
+            ],
+        },
+        "sky_visible": {
+            "type": "boolean",
+            "description": "True, если на фото видимо небо (даже частично), иначе False.",
+        },
         "is_sunset": {
             "type": "boolean",
             "description": "True, если на фото закат или выраженные закатные оттенки.",
@@ -755,9 +749,7 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
         },
         "safety": {
             "type": "object",
-            "description": (
-                "Информация о чувствительном контенте: nsfw и краткая причина."
-            ),
+            "description": ("Информация о чувствительном контенте: nsfw и краткая причина."),
             "additionalProperties": False,
             "properties": {
                 "nsfw": {"type": "boolean"},
@@ -866,13 +858,8 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
-    applied = {
-        row["id"]
-        for row in conn.execute("SELECT id FROM schema_migrations")
-    }
-    migration_files = sorted(
-        p for p in MIGRATIONS_DIR.iterdir() if p.suffix in {".sql", ".py"}
-    )
+    applied = {row["id"] for row in conn.execute("SELECT id FROM schema_migrations")}
+    migration_files = sorted(p for p in MIGRATIONS_DIR.iterdir() if p.suffix in {".sql", ".py"})
     for path in migration_files:
         migration_id = path.stem
         if migration_id in applied:
@@ -916,7 +903,7 @@ CREATE_TABLES = [
             chat_id INTEGER PRIMARY KEY,
             title TEXT
         )""",
-        """CREATE TABLE IF NOT EXISTS schedule (
+    """CREATE TABLE IF NOT EXISTS schedule (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             from_chat_id INTEGER,
             message_id INTEGER,
@@ -940,7 +927,7 @@ CREATE_TABLES = [
             wind_speed REAL,
             PRIMARY KEY (city_id, day)
         )""",
-        """CREATE TABLE IF NOT EXISTS weather_cache_hour (
+    """CREATE TABLE IF NOT EXISTS weather_cache_hour (
             city_id INTEGER NOT NULL,
             timestamp DATETIME NOT NULL,
             temperature REAL,
@@ -949,7 +936,6 @@ CREATE_TABLES = [
             is_day INTEGER,
             PRIMARY KEY (city_id, timestamp)
         )""",
-
     """CREATE TABLE IF NOT EXISTS seas (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
@@ -957,7 +943,6 @@ CREATE_TABLES = [
             lon REAL NOT NULL,
             UNIQUE(name)
         )""",
-
     """CREATE TABLE IF NOT EXISTS sea_cache (
             sea_id INTEGER PRIMARY KEY,
             updated TEXT,
@@ -985,8 +970,7 @@ CREATE_TABLES = [
             wind_time_ref TEXT,
             cloud_cover_pct REAL
         )""",
-
-     """CREATE TABLE IF NOT EXISTS weather_posts (
+    """CREATE TABLE IF NOT EXISTS weather_posts (
 
             chat_id BIGINT NOT NULL,
             message_id BIGINT NOT NULL,
@@ -998,16 +982,13 @@ CREATE_TABLES = [
 
             UNIQUE(chat_id, message_id)
         )""",
-
     """CREATE TABLE IF NOT EXISTS asset_channel (
             channel_id INTEGER PRIMARY KEY
         )""",
     """CREATE TABLE IF NOT EXISTS recognition_channel (
             channel_id INTEGER PRIMARY KEY
         )""",
-
-
-        """CREATE TABLE IF NOT EXISTS weather_cache_period (
+    """CREATE TABLE IF NOT EXISTS weather_cache_period (
             city_id INTEGER PRIMARY KEY,
             updated TEXT,
             morning_temp REAL,
@@ -1023,13 +1004,11 @@ CREATE_TABLES = [
             night_code INTEGER,
             night_wind REAL
         )""",
-
     """CREATE TABLE IF NOT EXISTS latest_weather_post (
             chat_id BIGINT,
             message_id BIGINT,
             published_at TEXT
         )""",
-
     """CREATE TABLE IF NOT EXISTS weather_link_posts (
             chat_id BIGINT NOT NULL,
             message_id BIGINT NOT NULL,
@@ -1037,17 +1016,14 @@ CREATE_TABLES = [
             button_texts TEXT,
             UNIQUE(chat_id, message_id)
         )""",
-
     """CREATE TABLE IF NOT EXISTS amber_channels (
             channel_id INTEGER PRIMARY KEY
         )""",
-
     """CREATE TABLE IF NOT EXISTS amber_state (
             sea_id INTEGER PRIMARY KEY,
             storm_start TEXT,
             active INTEGER DEFAULT 0
         )""",
-
 ]
 
 
@@ -1096,9 +1072,7 @@ class Bot:
         try:
             ttl_hours = float(ttl_hours_raw)
         except ValueError:
-            logging.warning(
-                "Invalid REVGEO_CACHE_TTL_HOURS=%s, defaulting to 24h", ttl_hours_raw
-            )
+            logging.warning("Invalid REVGEO_CACHE_TTL_HOURS=%s, defaulting to 24h", ttl_hours_raw)
             ttl_hours = 24.0
         fail_ttl_minutes_raw = os.getenv("REVGEO_FAIL_TTL_MINUTES", "15")
         try:
@@ -1118,9 +1092,7 @@ class Bot:
         self._vision_semaphore = asyncio.Semaphore(VISION_CONCURRENCY)
         self._twogis_api_key = os.getenv("TWOGIS_API_KEY")
         self._twogis_backoff_seconds = 1.0
-        self._shoreline_cache: dict[
-            tuple[float, float], tuple[bool, datetime]
-        ] = {}
+        self._shoreline_cache: dict[tuple[float, float], tuple[bool, datetime]] = {}
         self._shoreline_fail_cache: dict[tuple[float, float], datetime] = {}
         # ensure new columns exist when upgrading
         for table, column in (
@@ -1130,7 +1102,6 @@ class Bot:
             ("rejected_users", "username"),
             ("weather_posts", "template"),
             ("weather_posts", "base_text"),
-
             ("weather_posts", "base_caption"),
             ("weather_posts", "reply_markup"),
             ("sea_cache", "updated"),
@@ -1144,7 +1115,6 @@ class Bot:
             ("sea_cache", "day_wave"),
             ("sea_cache", "evening_wave"),
             ("sea_cache", "night_wave"),
-
         ):
             cur = self.db.execute(f"PRAGMA table_info({table})")
             names = [r[1] for r in cur.fetchall()]
@@ -1177,9 +1147,7 @@ class Bot:
         length = self._pairing_rng.randint(6, 8)
         return "".join(self._pairing_rng.choice(_PAIRING_ALPHABET) for _ in range(length))
 
-    def _get_active_pairing_token(
-        self, user_id: int
-    ) -> tuple[str, datetime, str] | None:
+    def _get_active_pairing_token(self, user_id: int) -> tuple[str, datetime, str] | None:
         now = datetime.utcnow()
         cur = self.db.execute(
             """
@@ -1210,9 +1178,7 @@ class Bot:
             return None
         return code, expires_at, device_name
 
-    def _issue_pairing_token(
-        self, user_id: int, device_name: str
-    ) -> tuple[str, datetime]:
+    def _issue_pairing_token(self, user_id: int, device_name: str) -> tuple[str, datetime]:
         normalized_name = (device_name or "").strip() or _PAIRING_DEFAULT_NAME
         for _ in range(20):
             code = self._generate_pairing_code()
@@ -1247,16 +1213,12 @@ class Bot:
                     expires_at = datetime.fromisoformat(str(expires_raw))
                 except (TypeError, ValueError):
                     expires_at = datetime.utcnow() + timedelta(minutes=10)
-                logging.info(
-                    "PAIR code issued user=%s name=%s", user_id, normalized_name
-                )
+                logging.info("PAIR code issued user=%s name=%s", user_id, normalized_name)
                 return code, expires_at
         raise RuntimeError("Failed to generate pairing token")
 
     @staticmethod
-    def _format_pairing_message(
-        code: str, expires_at: datetime, existing: bool
-    ) -> str:
+    def _format_pairing_message(code: str, expires_at: datetime, existing: bool) -> str:
         if existing:
             remaining = max(0, int((expires_at - datetime.utcnow()).total_seconds()))
             if remaining <= 60:
@@ -1269,9 +1231,7 @@ class Bot:
                 f"Активный код для привязки: {code}. Истекает через {minutes} мин. "
                 "Введите код в приложении."
             )
-        return (
-            f"Код для привязки: {code}. Действует 10 минут. Введите код в приложении."
-        )
+        return f"Код для привязки: {code}. Действует 10 минут. Введите код в приложении."
 
     async def _send_pairing_code_message(
         self,
@@ -1456,9 +1416,7 @@ class Bot:
                 }
             )
             keyboard.append(buttons)
-        keyboard.append([
-            {"text": "🔄 Новый код", "callback_data": "pair:new"}
-        ])
+        keyboard.append([{"text": "🔄 Новый код", "callback_data": "pair:new"}])
         return {"inline_keyboard": keyboard}
 
     async def _send_mobile_pairing_card(
@@ -1472,9 +1430,7 @@ class Bot:
         replace_photo: bool = False,
     ) -> None:
         active_devices = [
-            device
-            for device in devices
-            if not str(device.get("revoked_at") or "").strip()
+            device for device in devices if not str(device.get("revoked_at") or "").strip()
         ]
         caption = self._format_mobile_caption(code, expires_at, active_devices)
         keyboard = self._build_mobile_keyboard(active_devices)
@@ -1552,9 +1508,7 @@ class Bot:
 
         return False
 
-    def _reencode_to_jpeg_under_10mb(
-        self, local_path: str | os.PathLike[str] | Path
-    ) -> Path:
+    def _reencode_to_jpeg_under_10mb(self, local_path: str | os.PathLike[str] | Path) -> Path:
         source_path = Path(local_path)
         fd, temp_name = tempfile.mkstemp(prefix="tg-photo-", suffix=".jpg")
         os.close(fd)
@@ -1588,9 +1542,7 @@ class Bot:
                 if temp_path.stat().st_size <= bytes_10mb():
                     break
             else:
-                logging.warning(
-                    "Unable to reduce %s below 10MB at lowest quality", source_path
-                )
+                logging.warning("Unable to reduce %s below 10MB at lowest quality", source_path)
             return temp_path
         except Exception:
             self._remove_file(str(temp_path))
@@ -1677,9 +1629,7 @@ class Bot:
         content_type: str | None = None,
     ) -> dict[str, Any] | None:
         resolved_type = (
-            content_type
-            or mimetypes.guess_type(filename)[0]
-            or "application/octet-stream"
+            content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
         )
         logging.info(
             "Publishing mobile document for chat %s via sendDocument (filename=%s, content_type=%s)",
@@ -1713,7 +1663,11 @@ class Bot:
             score = width * height
             if score <= 0 and file_size <= 0:
                 continue
-            if score > best_score or (score == best_score and file_size > int(best.get("file_size") or 0) if best else True):
+            if score > best_score or (
+                score == best_score and file_size > int(best.get("file_size") or 0)
+                if best
+                else True
+            ):
                 best = entry
                 best_score = score
         if not best:
@@ -1727,9 +1681,7 @@ class Bot:
             "mime_type": "image/jpeg",
         }
 
-    def _get_rubric_overview_target(
-        self, user_id: int, code: str
-    ) -> dict[str, Any] | None:
+    def _get_rubric_overview_target(self, user_id: int, code: str) -> dict[str, Any] | None:
         stored = self.rubric_overview_messages.get(user_id, {}).get(code)
         if not stored:
             return None
@@ -1747,9 +1699,7 @@ class Bot:
             "message_id": message_id,
         }
 
-    def _cleanup_rubric_overviews(
-        self, user_id: int, valid_codes: Iterable[str]
-    ) -> None:
+    def _cleanup_rubric_overviews(self, user_id: int, valid_codes: Iterable[str]) -> None:
         stored = self.rubric_overview_messages.get(user_id)
         if not stored:
             return
@@ -1770,9 +1720,7 @@ class Bot:
     def _clear_rubric_pending_run(self, user_id: int, code: str) -> None:
         self.rubric_pending_runs.pop((user_id, code), None)
 
-    async def _render_rubric_cards(
-        self, user_id: int, rubrics: Sequence[Rubric]
-    ) -> None:
+    async def _render_rubric_cards(self, user_id: int, rubrics: Sequence[Rubric]) -> None:
         for rubric in rubrics:
             target = self._get_rubric_overview_target(user_id, rubric.code)
             await self._send_rubric_overview(user_id, rubric.code, message=target)
@@ -1808,7 +1756,9 @@ class Bot:
             return value
 
         limits: dict[str, int] = {}
-        default_limit = parse_limit(os.getenv("OPENAI_DAILY_TOKEN_LIMIT"), "OPENAI_DAILY_TOKEN_LIMIT")
+        default_limit = parse_limit(
+            os.getenv("OPENAI_DAILY_TOKEN_LIMIT"), "OPENAI_DAILY_TOKEN_LIMIT"
+        )
         per_model_env_vars: Sequence[tuple[str, Sequence[str]]] = (
             (
                 "gpt-4o",
@@ -1868,7 +1818,9 @@ class Bot:
         if response and isinstance(response.content, dict) and response.content.get("ok") is True:
             logging.info("OpenAI OK")
         else:
-            logging.warning("OpenAI FAIL: unexpected response %s", response.content if response else None)
+            logging.warning(
+                "OpenAI FAIL: unexpected response %s", response.content if response else None
+            )
 
     def _enforce_openai_limit(self, job: Job | None, model: str) -> None:
         if (
@@ -1883,9 +1835,7 @@ class Bot:
             tz_offset = job.payload.get("tz_offset")
         tz_offset = tz_offset or TZ_OFFSET
         limit = self._model_limits[model]
-        total_today = self.data.get_daily_token_usage_total(
-            models={model}, tz_offset=tz_offset
-        )
+        total_today = self.data.get_daily_token_usage_total(models={model}, tz_offset=tz_offset)
         if total_today >= limit:
             resume_at = self._next_usage_reset(tz_offset=tz_offset)
             tzinfo = self._parse_tz_offset(tz_offset)
@@ -1928,9 +1878,7 @@ class Bot:
             tz_offset = job.payload.get("tz_offset")
         tz_offset = tz_offset or TZ_OFFSET
         if model in self._model_limits:
-            total_today = self.data.get_daily_token_usage_total(
-                models={model}, tz_offset=tz_offset
-            )
+            total_today = self.data.get_daily_token_usage_total(models={model}, tz_offset=tz_offset)
             limit = self._model_limits[model]
             logging.info(
                 "Суммарное потребление токенов %s за сегодня: %s из %s",
@@ -2239,13 +2187,11 @@ class Bot:
         for c in cur.fetchall():
             try:
                 row = self.db.execute(
-
                     "SELECT timestamp FROM weather_cache_hour WHERE city_id=? ORDER BY timestamp DESC LIMIT 1",
                     (c["id"],),
                 ).fetchone()
                 now = datetime.utcnow()
                 last_success = datetime.fromisoformat(row["timestamp"]) if row else datetime.min
-
 
                 attempts, last_attempt = self.failed_fetches.get(c["id"], (0, datetime.min))
 
@@ -2287,7 +2233,6 @@ class Bot:
                     (
                         c["id"],
                         day,
-
                         w.get("temperature_2m"),
                         w.get("weather_code"),
                         w.get("wind_speed_10m"),
@@ -2356,9 +2301,7 @@ class Bot:
                         mt,
                         mc,
                         mw,
-
                         dt_val,
-
                         dc,
                         dw,
                         et,
@@ -2398,7 +2341,9 @@ class Bot:
             data = await self.fetch_open_meteo_sea(s["lat"], s["lon"])
             if not data or "hourly" not in data:
                 continue
-            temps = data["hourly"].get("water_temperature") or data["hourly"].get("sea_surface_temperature")
+            temps = data["hourly"].get("water_temperature") or data["hourly"].get(
+                "sea_surface_temperature"
+            )
             waves = data["hourly"].get("wave_height")
             times = data["hourly"].get("time")
             if not temps or not times:
@@ -2421,10 +2366,14 @@ class Bot:
                 current_units = conditions_payload.get("current_units") or {}
                 hourly_units = conditions_payload.get("hourly_units") or {}
 
-                raw_wind_units = current_units.get("wind_speed_10m") or hourly_units.get("wind_speed_10m")
+                raw_wind_units = current_units.get("wind_speed_10m") or hourly_units.get(
+                    "wind_speed_10m"
+                )
                 if raw_wind_units is not None:
                     wind_units = str(raw_wind_units).strip() or None
-                raw_gust_units = current_units.get("wind_gusts_10m") or hourly_units.get("wind_gusts_10m")
+                raw_gust_units = current_units.get("wind_gusts_10m") or hourly_units.get(
+                    "wind_gusts_10m"
+                )
                 if raw_gust_units is not None:
                     wind_gust_units = str(raw_gust_units).strip() or None
 
@@ -2442,10 +2391,9 @@ class Bot:
                     wind_gust_kmh = wind_gust_ms * 3.6
 
                 cloud_cover_pct = self._safe_float(current_conditions.get("cloud_cover"))
-                wind_time_ref = (
-                    current_conditions.get("time")
-                    or (conditions_payload.get("current_weather") or {}).get("time")
-                )
+                wind_time_ref = current_conditions.get("time") or (
+                    conditions_payload.get("current_weather") or {}
+                ).get("time")
 
                 logging.info(
                     "SEA_RUBRIC weather: wind_source=wind_speed_10m units=%s gusts_units=%s time_ref=%s",
@@ -2479,9 +2427,7 @@ class Bot:
                 elif dt.hour == 0 and night is None:
                     night = temp
                     nwave = wave
-                if (
-                    None not in (morn, day_temp, eve, night, mwave, dwave, ewave, nwave)
-                ):
+                if None not in (morn, day_temp, eve, night, mwave, dwave, ewave, nwave):
                     break
 
             wave_height_for_cache = self._safe_float(current_wave)
@@ -2522,12 +2468,26 @@ class Bot:
                 ),
             )
             self.db.commit()
-            wave_log = f"{wave_height_for_cache:.3f}" if isinstance(wave_height_for_cache, (int, float)) else "None"
-            wind_kmh_log = f"{wind_speed_kmh:.2f}" if isinstance(wind_speed_kmh, (int, float)) else "None"
-            wind_ms_log = f"{wind_speed_ms:.2f}" if isinstance(wind_speed_ms, (int, float)) else "None"
-            gust_kmh_log = f"{wind_gust_kmh:.2f}" if isinstance(wind_gust_kmh, (int, float)) else "None"
-            gust_ms_log = f"{wind_gust_ms:.2f}" if isinstance(wind_gust_ms, (int, float)) else "None"
-            cloud_log = f"{cloud_cover_pct:.1f}" if isinstance(cloud_cover_pct, (int, float)) else "None"
+            wave_log = (
+                f"{wave_height_for_cache:.3f}"
+                if isinstance(wave_height_for_cache, (int, float))
+                else "None"
+            )
+            wind_kmh_log = (
+                f"{wind_speed_kmh:.2f}" if isinstance(wind_speed_kmh, (int, float)) else "None"
+            )
+            wind_ms_log = (
+                f"{wind_speed_ms:.2f}" if isinstance(wind_speed_ms, (int, float)) else "None"
+            )
+            gust_kmh_log = (
+                f"{wind_gust_kmh:.2f}" if isinstance(wind_gust_kmh, (int, float)) else "None"
+            )
+            gust_ms_log = (
+                f"{wind_gust_ms:.2f}" if isinstance(wind_gust_ms, (int, float)) else "None"
+            )
+            cloud_log = (
+                f"{cloud_cover_pct:.1f}" if isinstance(cloud_cover_pct, (int, float)) else "None"
+            )
 
             # Enhanced structured logging for SEA_RUBRIC weather
             logging.info(
@@ -2551,152 +2511,158 @@ class Bot:
             await self.check_amber()
 
     async def check_amber(self):
-        state = self.db.execute('SELECT sea_id, storm_start, active FROM amber_state LIMIT 1').fetchone()
+        state = self.db.execute(
+            "SELECT sea_id, storm_start, active FROM amber_state LIMIT 1"
+        ).fetchone()
         if not state:
             return
-        sea_id = state['sea_id']
+        sea_id = state["sea_id"]
         row = self._get_sea_cache(sea_id)
-        if not row or row['wave'] is None:
+        if not row or row["wave"] is None:
             return
-        wave_raw = row['wave']
+        wave_raw = row["wave"]
         try:
             wave = float(wave_raw)
         except (TypeError, ValueError):
-            logging.warning('Unable to parse wave height %r for sea %s', wave_raw, sea_id)
+            logging.warning("Unable to parse wave height %r for sea %s", wave_raw, sea_id)
             return
         now = datetime.utcnow()
         if wave >= 1.5:
-            if not state['active']:
+            if not state["active"]:
                 self.db.execute(
-                    'UPDATE amber_state SET storm_start=?, active=1 WHERE sea_id=?',
+                    "UPDATE amber_state SET storm_start=?, active=1 WHERE sea_id=?",
                     (now.isoformat(), sea_id),
                 )
                 self.db.commit()
             return
-        if state['active'] and state['storm_start']:
-            start = datetime.fromisoformat(state['storm_start'])
+        if state["active"] and state["storm_start"]:
+            start = datetime.fromisoformat(state["storm_start"])
             if now - start >= timedelta(hours=1):
                 tz_offset = self.get_default_tz_offset()
                 start_str = self.format_time(start.isoformat(), tz_offset)
                 end_str = self.format_time(now.isoformat(), tz_offset)
                 text = (
-                    'Время собирать янтарь. Закончился шторм, длившийся с '
-                    f'{start_str} по {end_str}, теперь в окрестностях Светлогорска, Отрадного, Донского и Балтийска можно идти собирать янтарь на пляже (вывоз за пределы региона по закону запрещён).\n\n'
-                    'Сообщение сформировано автоматически сервисом #котопогода от Полюбить Калининград'
+                    "Время собирать янтарь. Закончился шторм, длившийся с "
+                    f"{start_str} по {end_str}, теперь в окрестностях Светлогорска, Отрадного, Донского и Балтийска можно идти собирать янтарь на пляже (вывоз за пределы региона по закону запрещён).\n\n"
+                    "Сообщение сформировано автоматически сервисом #котопогода от Полюбить Калининград"
                 )
-                for r in self.db.execute('SELECT channel_id FROM amber_channels'):
+                for r in self.db.execute("SELECT channel_id FROM amber_channels"):
                     try:
-                        await self.api_request('sendMessage', {'chat_id': r['channel_id'], 'text': text})
-                        logging.info('Amber message sent to %s', r['channel_id'])
+                        await self.api_request(
+                            "sendMessage", {"chat_id": r["channel_id"], "text": text}
+                        )
+                        logging.info("Amber message sent to %s", r["channel_id"])
                     except Exception:
-                        logging.exception('Amber message failed for %s', r['channel_id'])
-            self.db.execute('UPDATE amber_state SET storm_start=NULL, active=0 WHERE sea_id=?', (sea_id,))
+                        logging.exception("Amber message failed for %s", r["channel_id"])
+            self.db.execute(
+                "UPDATE amber_state SET storm_start=NULL, active=0 WHERE sea_id=?", (sea_id,)
+            )
             self.db.commit()
 
     async def handle_update(self, update):
-        message = update.get('message') or update.get('channel_post')
+        message = update.get("message") or update.get("channel_post")
         if message:
             await self.handle_message(message)
 
-        elif 'edited_channel_post' in update:
-            await self.handle_edited_message(update['edited_channel_post'])
+        elif "edited_channel_post" in update:
+            await self.handle_edited_message(update["edited_channel_post"])
 
-        elif 'callback_query' in update:
-            await self.handle_callback(update['callback_query'])
-        elif 'my_chat_member' in update:
-            await self.handle_my_chat_member(update['my_chat_member'])
+        elif "callback_query" in update:
+            await self.handle_callback(update["callback_query"])
+        elif "my_chat_member" in update:
+            await self.handle_my_chat_member(update["my_chat_member"])
 
     async def handle_my_chat_member(self, chat_update):
-        chat = chat_update['chat']
-        status = chat_update['new_chat_member']['status']
-        if status in {'administrator', 'creator'}:
+        chat = chat_update["chat"]
+        status = chat_update["new_chat_member"]["status"]
+        if status in {"administrator", "creator"}:
             self.db.execute(
-                'INSERT OR REPLACE INTO channels (chat_id, title) VALUES (?, ?)',
-                (chat['id'], chat.get('title', chat.get('username', '')))
+                "INSERT OR REPLACE INTO channels (chat_id, title) VALUES (?, ?)",
+                (chat["id"], chat.get("title", chat.get("username", ""))),
             )
             self.db.commit()
-            logging.info("Added channel %s", chat['id'])
+            logging.info("Added channel %s", chat["id"])
         else:
-            self.db.execute('DELETE FROM channels WHERE chat_id=?', (chat['id'],))
+            self.db.execute("DELETE FROM channels WHERE chat_id=?", (chat["id"],))
             self.db.commit()
-            logging.info("Removed channel %s", chat['id'])
+            logging.info("Removed channel %s", chat["id"])
 
     def get_user(self, user_id):
-        cur = self.db.execute('SELECT * FROM users WHERE user_id=?', (user_id,))
+        cur = self.db.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
         return cur.fetchone()
 
     def is_pending(self, user_id: int) -> bool:
-        cur = self.db.execute('SELECT 1 FROM pending_users WHERE user_id=?', (user_id,))
+        cur = self.db.execute("SELECT 1 FROM pending_users WHERE user_id=?", (user_id,))
         return cur.fetchone() is not None
 
     def pending_count(self) -> int:
-        cur = self.db.execute('SELECT COUNT(*) FROM pending_users')
+        cur = self.db.execute("SELECT COUNT(*) FROM pending_users")
         return cur.fetchone()[0]
 
     def approve_user(self, uid: int) -> bool:
         if not self.is_pending(uid):
             return False
-        cur = self.db.execute('SELECT username FROM pending_users WHERE user_id=?', (uid,))
+        cur = self.db.execute("SELECT username FROM pending_users WHERE user_id=?", (uid,))
         row = cur.fetchone()
-        username = row['username'] if row else None
-        self.db.execute('DELETE FROM pending_users WHERE user_id=?', (uid,))
+        username = row["username"] if row else None
+        self.db.execute("DELETE FROM pending_users WHERE user_id=?", (uid,))
         self.db.execute(
-            'INSERT OR IGNORE INTO users (user_id, username, tz_offset) VALUES (?, ?, ?)',
-            (uid, username, TZ_OFFSET)
+            "INSERT OR IGNORE INTO users (user_id, username, tz_offset) VALUES (?, ?, ?)",
+            (uid, username, TZ_OFFSET),
         )
         if username:
-            self.db.execute('UPDATE users SET username=? WHERE user_id=?', (username, uid))
-        self.db.execute('DELETE FROM rejected_users WHERE user_id=?', (uid,))
+            self.db.execute("UPDATE users SET username=? WHERE user_id=?", (username, uid))
+        self.db.execute("DELETE FROM rejected_users WHERE user_id=?", (uid,))
         self.db.commit()
-        logging.info('Approved user %s', uid)
+        logging.info("Approved user %s", uid)
         return True
 
     def reject_user(self, uid: int) -> bool:
         if not self.is_pending(uid):
             return False
-        cur = self.db.execute('SELECT username FROM pending_users WHERE user_id=?', (uid,))
+        cur = self.db.execute("SELECT username FROM pending_users WHERE user_id=?", (uid,))
         row = cur.fetchone()
-        username = row['username'] if row else None
-        self.db.execute('DELETE FROM pending_users WHERE user_id=?', (uid,))
+        username = row["username"] if row else None
+        self.db.execute("DELETE FROM pending_users WHERE user_id=?", (uid,))
         self.db.execute(
-            'INSERT OR REPLACE INTO rejected_users (user_id, username, rejected_at) VALUES (?, ?, ?)',
+            "INSERT OR REPLACE INTO rejected_users (user_id, username, rejected_at) VALUES (?, ?, ?)",
             (uid, username, datetime.utcnow().isoformat()),
         )
         self.db.commit()
-        logging.info('Rejected user %s', uid)
+        logging.info("Rejected user %s", uid)
         return True
 
     def is_rejected(self, user_id: int) -> bool:
-        cur = self.db.execute('SELECT 1 FROM rejected_users WHERE user_id=?', (user_id,))
+        cur = self.db.execute("SELECT 1 FROM rejected_users WHERE user_id=?", (user_id,))
         return cur.fetchone() is not None
 
     def list_scheduled(self):
         cur = self.db.execute(
-            'SELECT s.id, s.target_chat_id, c.title as target_title, '
-            's.publish_time, s.from_chat_id, s.message_id '
-            'FROM schedule s LEFT JOIN channels c ON s.target_chat_id=c.chat_id '
-            'WHERE s.sent=0 ORDER BY s.publish_time'
+            "SELECT s.id, s.target_chat_id, c.title as target_title, "
+            "s.publish_time, s.from_chat_id, s.message_id "
+            "FROM schedule s LEFT JOIN channels c ON s.target_chat_id=c.chat_id "
+            "WHERE s.sent=0 ORDER BY s.publish_time"
         )
         return cur.fetchall()
 
     def add_schedule(self, from_chat: int, msg_id: int, targets: set[int], pub_time: str):
         for chat_id in targets:
             self.db.execute(
-                'INSERT INTO schedule (from_chat_id, message_id, target_chat_id, publish_time) VALUES (?, ?, ?, ?)',
+                "INSERT INTO schedule (from_chat_id, message_id, target_chat_id, publish_time) VALUES (?, ?, ?, ?)",
                 (from_chat, msg_id, chat_id, pub_time),
             )
         self.db.commit()
-        logging.info('Scheduled %s -> %s at %s', msg_id, list(targets), pub_time)
+        logging.info("Scheduled %s -> %s at %s", msg_id, list(targets), pub_time)
 
     def remove_schedule(self, sid: int):
-        self.db.execute('DELETE FROM schedule WHERE id=?', (sid,))
+        self.db.execute("DELETE FROM schedule WHERE id=?", (sid,))
         self.db.commit()
-        logging.info('Cancelled schedule %s', sid)
+        logging.info("Cancelled schedule %s", sid)
 
     def update_schedule_time(self, sid: int, pub_time: str):
-        self.db.execute('UPDATE schedule SET publish_time=? WHERE id=?', (pub_time, sid))
+        self.db.execute("UPDATE schedule SET publish_time=? WHERE id=?", (pub_time, sid))
         self.db.commit()
-        logging.info('Rescheduled %s to %s', sid, pub_time)
+        logging.info("Rescheduled %s to %s", sid, pub_time)
 
     @staticmethod
     def format_user(user_id: int, username: str | None) -> str:
@@ -2705,8 +2671,8 @@ class Bot:
 
     @staticmethod
     def parse_offset(offset: str) -> timedelta:
-        sign = -1 if offset.startswith('-') else 1
-        h, m = offset.lstrip('+-').split(':')
+        sign = -1 if offset.startswith("-") else 1
+        h, m = offset.lstrip("+-").split(":")
         return timedelta(minutes=sign * (int(h) * 60 + int(m)))
 
     def next_weather_run(
@@ -2722,10 +2688,8 @@ class Bot:
             reference = datetime.utcnow()
         tz_delta = self.parse_offset(offset)
         local_ref = reference + tz_delta
-        hour, minute = map(int, post_time.split(':'))
-        candidate = local_ref.replace(
-            hour=hour, minute=minute, second=0, microsecond=0
-        )
+        hour, minute = map(int, post_time.split(":"))
+        candidate = local_ref.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if candidate <= local_ref:
             if allow_past:
                 candidate = local_ref
@@ -2736,7 +2700,7 @@ class Bot:
     def format_time(self, ts: str, offset: str) -> str:
         dt = datetime.fromisoformat(ts)
         dt += self.parse_offset(offset)
-        return dt.strftime('%H:%M %d.%m.%Y')
+        return dt.strftime("%H:%M %d.%m.%Y")
 
     def get_default_tz_offset(self) -> str:
         """Return the timezone offset configured in settings or fallback to global default."""
@@ -2744,7 +2708,7 @@ class Bot:
         def _extract(config: Mapping[str, Any] | None) -> str | None:
             if not isinstance(config, Mapping):
                 return None
-            raw_value = config.get('tz')
+            raw_value = config.get("tz")
             if isinstance(raw_value, str):
                 candidate = raw_value.strip()
                 if candidate:
@@ -2756,10 +2720,10 @@ class Bot:
             return None
 
         preferred_codes = (
-            'weather',
-            'weather_new',
-            'weather_daily',
-            'weather_hourly',
+            "weather",
+            "weather_new",
+            "weather_daily",
+            "weather_hourly",
         )
         for code in preferred_codes:
             try:
@@ -2783,54 +2747,61 @@ class Bot:
         return TZ_OFFSET
 
     def get_tz_offset(self, user_id: int) -> str:
-        cur = self.db.execute('SELECT tz_offset FROM users WHERE user_id=?', (user_id,))
+        cur = self.db.execute("SELECT tz_offset FROM users WHERE user_id=?", (user_id,))
         row = cur.fetchone()
-        return row['tz_offset'] if row and row['tz_offset'] else TZ_OFFSET
+        return row["tz_offset"] if row and row["tz_offset"] else TZ_OFFSET
 
     def is_authorized(self, user_id):
         return self.get_user(user_id) is not None
 
     def is_superadmin(self, user_id):
         row = self.get_user(user_id)
-        return row and row['is_superadmin']
+        return row and row["is_superadmin"]
 
     def get_amber_sea(self) -> int | None:
-        row = self.db.execute('SELECT sea_id FROM amber_state LIMIT 1').fetchone()
-        return row['sea_id'] if row else None
+        row = self.db.execute("SELECT sea_id FROM amber_state LIMIT 1").fetchone()
+        return row["sea_id"] if row else None
 
     def set_amber_sea(self, sea_id: int):
-        self.db.execute('DELETE FROM amber_state')
+        self.db.execute("DELETE FROM amber_state")
         self.db.execute(
-            'INSERT INTO amber_state (sea_id, storm_start, active) VALUES (?, NULL, 0)',
+            "INSERT INTO amber_state (sea_id, storm_start, active) VALUES (?, NULL, 0)",
             (sea_id,),
         )
         self.db.commit()
 
     def get_amber_channels(self) -> set[int]:
-        cur = self.db.execute('SELECT channel_id FROM amber_channels')
-        return {r['channel_id'] for r in cur.fetchall()}
+        cur = self.db.execute("SELECT channel_id FROM amber_channels")
+        return {r["channel_id"] for r in cur.fetchall()}
 
     def is_amber_channel(self, channel_id: int) -> bool:
-        cur = self.db.execute('SELECT 1 FROM amber_channels WHERE channel_id=?', (channel_id,))
+        cur = self.db.execute("SELECT 1 FROM amber_channels WHERE channel_id=?", (channel_id,))
         return cur.fetchone() is not None
 
     async def show_amber_channels(self, user_id: int):
         enabled = self.get_amber_channels()
-        cur = self.db.execute('SELECT chat_id, title FROM channels')
+        cur = self.db.execute("SELECT chat_id, title FROM channels")
         rows = cur.fetchall()
         if not rows:
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No channels available'})
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": "No channels available"}
+            )
             return
         for r in rows:
-            cid = r['chat_id']
-            icon = '✅' if cid in enabled else '❌'
-            btn = 'Выключить отправку' if cid in enabled else 'Включить отправку'
-            keyboard = {'inline_keyboard': [[{'text': btn, 'callback_data': f'amber_toggle:{cid}'}]]}
-            await self.api_request('sendMessage', {
-                'chat_id': user_id,
-                'text': f"{r['title'] or cid} {icon}",
-                'reply_markup': keyboard,
-            })
+            cid = r["chat_id"]
+            icon = "✅" if cid in enabled else "❌"
+            btn = "Выключить отправку" if cid in enabled else "Включить отправку"
+            keyboard = {
+                "inline_keyboard": [[{"text": btn, "callback_data": f"amber_toggle:{cid}"}]]
+            }
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": user_id,
+                    "text": f"{r['title'] or cid} {icon}",
+                    "reply_markup": keyboard,
+                },
+            )
 
     async def parse_post_url(self, url: str) -> tuple[int, int] | None:
         """Return chat_id and message_id from a Telegram post URL."""
@@ -2839,9 +2810,9 @@ class Bot:
             return int(f"-100{m.group(1)}"), int(m.group(2))
         m = re.search(r"t.me/([^/]+)/(\d+)", url)
         if m:
-            resp = await self.api_request('getChat', {'chat_id': f"@{m.group(1)}"})
-            if resp.get('ok'):
-                return resp['result']['id'], int(m.group(2))
+            resp = await self.api_request("getChat", {"chat_id": f"@{m.group(1)}"})
+            if resp.get("ok"):
+                return resp["result"]["id"], int(m.group(2))
         return None
 
     def _get_cached_weather(self, city_id: int):
@@ -2999,7 +2970,7 @@ class Bot:
             return None, None, info
         preview = selected.text.replace("\n", " ")[:80]
         logging.info(
-            "SEA_RUBRIC facts choose window_days=%s candidates=%s chosen={id:%s, preview:\"%s\"} reason=\"lowest uses_count, rnd\"",
+            'SEA_RUBRIC facts choose window_days=%s candidates=%s chosen={id:%s, preview:"%s"} reason="lowest uses_count, rnd"',
             info.get("window_days"),
             len(info.get("candidates") or []),
             selected.id,
@@ -3089,14 +3060,10 @@ class Bot:
             safe_table_name = table_name.replace("'", "''")
             safe_table_quoted = table_name.replace('"', '""')
             try:
-                pragma = conn.execute(
-                    f"PRAGMA table_info('{safe_table_name}')"
-                ).fetchall()
+                pragma = conn.execute(f"PRAGMA table_info('{safe_table_name}')").fetchall()
             except Exception:
                 continue
-            column_names = {
-                str(col["name"] if "name" in col.keys() else col[1]) for col in pragma
-            }
+            column_names = {str(col["name"] if "name" in col.keys() else col[1]) for col in pragma}
             if "sea_id" not in column_names:
                 continue
             ts_column = next(
@@ -3223,7 +3190,6 @@ class Bot:
             return rest.lstrip()
         return text
 
-
     @staticmethod
     def _parse_coords(text: str) -> tuple[float, float] | None:
         """Parse latitude and longitude from string allowing comma separator."""
@@ -3234,7 +3200,6 @@ class Bot:
             return float(parts[0]), float(parts[1])
         except ValueError:
             return None
-
 
     def _render_template(self, template: str) -> str | None:
         """Replace placeholders in template with cached weather values."""
@@ -3271,8 +3236,8 @@ class Bot:
                 }.get(period, "current")
                 if row[key] is None:
                     raise ValueError(f"no sea {key} for {cid}")
-                emoji = "\U0001F30A"
-                return f"{emoji} {row[key]:.1f}\u00B0C"
+                emoji = "\U0001f30a"
+                return f"{emoji} {row[key]:.1f}\u00b0C"
 
             if field == "seastorm":
                 row = self._get_sea_cache(cid)
@@ -3301,9 +3266,9 @@ class Bot:
                 except (TypeError, ValueError):
                     raise ValueError(f"invalid sea storm data for {cid}")
 
-                emoji = "\U0001F30A"
+                emoji = "\U0001f30a"
                 if wave_val < 0.5:
-                    return f"{emoji} {temp_val:.1f}\u00B0C"
+                    return f"{emoji} {temp_val:.1f}\u00b0C"
                 if wave_val >= 1.5:
                     return f"{emoji} сильный шторм"
                 return f"{emoji} шторм"
@@ -3326,7 +3291,7 @@ class Bot:
                         if field in {"temperature", "temp"}:
                             emoji = weather_emoji(period_row[c_key], is_day_val)
 
-                            return f"{emoji} {period_row[t_key]:.0f}\u00B0C"
+                            return f"{emoji} {period_row[t_key]:.0f}\u00b0C"
 
                         if field == "wind":
                             return f"{period_row[w_key]:.1f}"
@@ -3335,7 +3300,7 @@ class Bot:
                 is_day = row["is_day"] if "is_day" in row.keys() else None
                 if field in {"temperature", "temp"}:
                     emoji = weather_emoji(row["weather_code"], is_day)
-                    return f"{emoji} {row['temperature']:.1f}\u00B0C"
+                    return f"{emoji} {row['temperature']:.1f}\u00b0C"
 
                 return f"{row['wind_speed']:.1f}"
             return ""
@@ -3352,19 +3317,16 @@ class Bot:
             logging.info("%s", e)
             return None
 
-
     @staticmethod
     def post_url(chat_id: int, message_id: int) -> str:
         if str(chat_id).startswith("-100"):
             return f"https://t.me/c/{str(chat_id)[4:]}/{message_id}"
         return f"https://t.me/{chat_id}/{message_id}"
 
-
     async def update_weather_posts(self, cities: set[int] | None = None):
         """Update all registered posts using cached weather."""
         cur = self.db.execute(
             "SELECT id, chat_id, message_id, template, base_text, base_caption, reply_markup FROM weather_posts"
-
         )
         rows = cur.fetchall()
         for r in rows:
@@ -3388,7 +3350,6 @@ class Bot:
                 resp = await self.api_request(
                     "editMessageCaption",
                     payload,
-
                 )
             else:
                 text = (
@@ -3407,21 +3368,18 @@ class Bot:
                 resp = await self.api_request(
                     "editMessageText",
                     payload,
-
                 )
             if resp.get("ok"):
                 logging.info("Updated weather post %s", r["id"])
-            elif resp.get("error_code") == 400 and "message is not modified" in resp.get("description", ""):
+            elif resp.get("error_code") == 400 and "message is not modified" in resp.get(
+                "description", ""
+            ):
                 logging.info("Weather post %s already up to date", r["id"])
             else:
-                logging.error(
-                    "Failed to update weather post %s: %s", r["id"], resp
-                )
+                logging.error("Failed to update weather post %s: %s", r["id"], resp)
 
     def latest_weather_url(self) -> str | None:
-        cur = self.db.execute(
-            "SELECT chat_id, message_id FROM latest_weather_post LIMIT 1"
-        )
+        cur = self.db.execute("SELECT chat_id, message_id FROM latest_weather_post LIMIT 1")
         row = cur.fetchone()
         if row:
             return self.post_url(row["chat_id"], row["message_id"])
@@ -3463,7 +3421,8 @@ class Bot:
             )
 
             if not resp.get("ok") and not (
-                resp.get("error_code") == 400 and "message is not modified" in resp.get("description", "")
+                resp.get("error_code") == 400
+                and "message is not modified" in resp.get("description", "")
             ):
                 logging.error("Failed to update buttons for %s: %s", r["message_id"], resp)
 
@@ -3492,9 +3451,7 @@ class Bot:
                 {
                     "channel_id": job.channel_id,
                     "post_time": job.post_time,
-                    "last_published_at": job.last_run_at.isoformat()
-                    if job.last_run_at
-                    else None,
+                    "last_published_at": job.last_run_at.isoformat() if job.last_run_at else None,
                     "next_run_at": job.run_at.isoformat(),
                     "title": title_row["title"] if title_row else None,
                 }
@@ -3585,27 +3542,27 @@ class Bot:
         callback_prefix: str,
         prompt: str,
     ) -> None:
-        cur = self.db.execute('SELECT chat_id, title FROM channels')
+        cur = self.db.execute("SELECT chat_id, title FROM channels")
         rows = cur.fetchall()
         if not rows:
             await self.api_request(
-                'sendMessage',
-                {'chat_id': user_id, 'text': 'No channels available'},
+                "sendMessage",
+                {"chat_id": user_id, "text": "No channels available"},
             )
             return
         keyboard = {
-            'inline_keyboard': [
-                [{'text': r['title'], 'callback_data': f'{callback_prefix}:{r["chat_id"]}'}]
+            "inline_keyboard": [
+                [{"text": r["title"], "callback_data": f'{callback_prefix}:{r["chat_id"]}'}]
                 for r in rows
             ]
         }
         self.pending[user_id] = {pending_key: True}
         await self.api_request(
-            'sendMessage',
+            "sendMessage",
             {
-                'chat_id': user_id,
-                'text': prompt,
-                'reply_markup': keyboard,
+                "chat_id": user_id,
+                "text": prompt,
+                "reply_markup": keyboard,
             },
         )
 
@@ -3634,7 +3591,9 @@ class Bot:
         chat_id = message.get("chat", {}).get("id", 0)
         message_id = message.get("message_id", 0)
         from_user = message.get("from") or {}
-        sender_chat_id = message.get("sender_chat", {}).get("id") if message.get("sender_chat") else None
+        sender_chat_id = (
+            message.get("sender_chat", {}).get("id") if message.get("sender_chat") else None
+        )
         via_bot_id = message.get("via_bot", {}).get("id") if message.get("via_bot") else None
         forward_from_user = (
             message.get("forward_from", {}).get("id") if message.get("forward_from") else None
@@ -3651,9 +3610,7 @@ class Bot:
         kind = None
         if message.get("photo"):
             kind = "photo"
-            photo = sorted(
-                message["photo"], key=lambda p: p.get("file_size", 0)
-            )[-1]
+            photo = sorted(message["photo"], key=lambda p: p.get("file_size", 0))[-1]
             file_meta = {
                 "file_id": photo.get("file_id"),
                 "file_unique_id": photo.get("file_unique_id"),
@@ -3736,9 +3693,7 @@ class Bot:
         try:
             async with self.session.get(url) as file_resp:
                 if file_resp.status != 200:
-                    logging.error(
-                        "Failed to download file %s: HTTP %s", file_id, file_resp.status
-                    )
+                    logging.error("Failed to download file %s: HTTP %s", file_id, file_resp.status)
                     return None
                 with tmp_dest.open("wb") as fh:
                     async for chunk in file_resp.content.iter_chunked(64 * 1024):
@@ -3850,9 +3805,7 @@ class Bot:
             decimal = -decimal
         return decimal
 
-    def _extract_gps(
-        self, image_source: str | Path | BinaryIO
-    ) -> tuple[float, float] | None:
+    def _extract_gps(self, image_source: str | Path | BinaryIO) -> tuple[float, float] | None:
         exif_dict: dict[str, Any] | None = None
         loaded_from_path = False
         try:
@@ -3874,17 +3827,11 @@ class Bot:
             except Exception:
                 logging.exception("Failed to load EXIF metadata from file path")
                 exif_dict = None
-        if (
-            exif_dict is not None
-            and not loaded_from_path
-            and isinstance(image_source, (str, Path))
-        ):
+        if exif_dict is not None and not loaded_from_path and isinstance(image_source, (str, Path)):
             gps_ifd = exif_dict.get("GPS") or {}
             zeroth_source = exif_dict.get("0th")
             zeroth_ifd = zeroth_source if isinstance(zeroth_source, dict) else {}
-            has_gps_pointer = any(
-                key in zeroth_ifd for key in (piexif.ImageIFD.GPSTag, "GPSInfo")
-            )
+            has_gps_pointer = any(key in zeroth_ifd for key in (piexif.ImageIFD.GPSTag, "GPSInfo"))
             if has_gps_pointer and not gps_ifd:
                 try:
                     exif_dict = piexif.load(str(image_source))
@@ -3914,9 +3861,7 @@ class Bot:
                 with Path(image_source).open("rb") as fh:
                     tags = exifread.process_file(fh, details=False)
             except Exception:
-                logging.debug(
-                    "exifread failed to process file for GPS extraction", exc_info=True
-                )
+                logging.debug("exifread failed to process file for GPS extraction", exc_info=True)
             else:
                 lat_field = tags.get("GPS GPSLatitude")
                 lon_field = tags.get("GPS GPSLongitude")
@@ -3946,9 +3891,7 @@ class Bot:
                     return lat, lon
         return None
 
-    def _extract_exif_full(
-        self, image_source: str | Path | BinaryIO
-    ) -> dict[str, dict[str, Any]]:
+    def _extract_exif_full(self, image_source: str | Path | BinaryIO) -> dict[str, dict[str, Any]]:
         try:
             with Image.open(image_source, mode="r") as img:
                 exif_bytes = img.info.get("exif")
@@ -4020,9 +3963,7 @@ class Bot:
         return None
 
     @classmethod
-    def _extract_exif_datetimes(
-        cls, image_source: str | Path | BinaryIO
-    ) -> dict[str, str]:
+    def _extract_exif_datetimes(cls, image_source: str | Path | BinaryIO) -> dict[str, str]:
         return extract_exif_datetimes(image_source)
 
     @staticmethod
@@ -4082,9 +4023,7 @@ class Bot:
                         stack.append(value)
         return None
 
-    def _extract_exif_month(
-        self, image_source: str | Path | BinaryIO
-    ) -> int | None:
+    def _extract_exif_month(self, image_source: str | Path | BinaryIO) -> int | None:
         try:
             with Image.open(image_source, mode="r") as img:
                 exif_bytes = img.info.get("exif")
@@ -4143,9 +4082,7 @@ class Bot:
         return None
 
     @classmethod
-    def _extract_weather_enum_from_metadata(
-        cls, metadata: dict[str, Any] | None
-    ) -> str | None:
+    def _extract_weather_enum_from_metadata(cls, metadata: dict[str, Any] | None) -> str | None:
         if not isinstance(metadata, dict):
             return None
         stack: list[Any] = [metadata]
@@ -4259,9 +4196,7 @@ class Bot:
 
         for allowed_seasons in candidate_sets:
             selection = [
-                asset
-                for asset in filtered_assets
-                if asset_seasons.get(asset.id) in allowed_seasons
+                asset for asset in filtered_assets if asset_seasons.get(asset.id) in allowed_seasons
             ]
             if len(selection) < required_count:
                 continue
@@ -4464,11 +4399,7 @@ class Bot:
 
         self._twogis_backoff_seconds = 1.0
 
-        items = (
-            data.get("result", {}).get("items")
-            if isinstance(data, dict)
-            else None
-        )
+        items = data.get("result", {}).get("items") if isinstance(data, dict) else None
         if not items:
             return None
         best = items[0]
@@ -4495,12 +4426,12 @@ class Bot:
 
         query = (
             "[out:json][timeout:25];("  # noqa: E501
-            f"way(around:250,{lat:.6f},{lon:.6f})[\"natural\"=\"coastline\"];"
-            f"relation(around:250,{lat:.6f},{lon:.6f})[\"natural\"=\"coastline\"];"
-            f"way(around:250,{lat:.6f},{lon:.6f})[\"natural\"=\"water\"][\"water\"~\"sea|ocean\"];"
-            f"relation(around:250,{lat:.6f},{lon:.6f})[\"natural\"=\"water\"][\"water\"~\"sea|ocean\"];"
-            f"way(around:250,{lat:.6f},{lon:.6f})[\"place\"=\"sea\"];"
-            f"relation(around:250,{lat:.6f},{lon:.6f})[\"place\"=\"sea\"];"
+            f'way(around:250,{lat:.6f},{lon:.6f})["natural"="coastline"];'
+            f'relation(around:250,{lat:.6f},{lon:.6f})["natural"="coastline"];'
+            f'way(around:250,{lat:.6f},{lon:.6f})["natural"="water"]["water"~"sea|ocean"];'
+            f'relation(around:250,{lat:.6f},{lon:.6f})["natural"="water"]["water"~"sea|ocean"];'
+            f'way(around:250,{lat:.6f},{lon:.6f})["place"="sea"];'
+            f'relation(around:250,{lat:.6f},{lon:.6f})["place"="sea"];'
             ");out ids;"
         )
         url = "https://overpass-api.de/api/interpreter"
@@ -4594,9 +4525,7 @@ class Bot:
             location_parts.append(country.strip())
 
         outside_region = (
-            isinstance(state, str)
-            and state.strip()
-            and state.strip() != "Калининградская область"
+            isinstance(state, str) and state.strip() and state.strip() != "Калининградская область"
         )
 
         location_line = ", ".join(location_parts)
@@ -4663,10 +4592,10 @@ class Bot:
                 asset_id,
                 metadata={"ingest_skipped": True},
             )
-            tz_offset = self.get_tz_offset(asset.author_user_id) if asset.author_user_id else TZ_OFFSET
-            vision_job = self.jobs.enqueue(
-                "vision", {"asset_id": asset_id, "tz_offset": tz_offset}
+            tz_offset = (
+                self.get_tz_offset(asset.author_user_id) if asset.author_user_id else TZ_OFFSET
             )
+            vision_job = self.jobs.enqueue("vision", {"asset_id": asset_id, "tz_offset": tz_offset})
             logging.info(
                 "Asset %s queued for vision job %s after ingest (dry run)", asset_id, vision_job
             )
@@ -4689,9 +4618,7 @@ class Bot:
         metrics = self.upload_metrics or UploadMetricsRecorder(emitter=LoggingMetricsEmitter())
 
         upload_id_value = str(asset.upload_id or asset_id)
-        storage_key_value = str(
-            asset.file_ref or asset.file_id or asset.file_unique_id or asset_id
-        )
+        storage_key_value = str(asset.file_ref or asset.file_id or asset.file_unique_id or asset_id)
         ingestion_context = UploadIngestionContext(
             upload_id=upload_id_value,
             storage_key=storage_key_value,
@@ -4703,7 +4630,9 @@ class Bot:
             job_name=job.name,
         )
 
-        target_channel_id = asset.tg_chat_id or asset.channel_id or self.uploads_config.assets_channel_id
+        target_channel_id = (
+            asset.tg_chat_id or asset.channel_id or self.uploads_config.assets_channel_id
+        )
         if target_channel_id is None:
             raise RuntimeError(f"Asset {asset_id} missing channel for ingest")
 
@@ -4782,7 +4711,10 @@ class Bot:
                         self._message_id,
                         asset_id,
                     )
-                    return {"message_id": self._message_id, "chat": {"id": self._chat_id or chat_id}}
+                    return {
+                        "message_id": self._message_id,
+                        "chat": {"id": self._chat_id or chat_id},
+                    }
                 response, _ = await self._bot._publish_as_photo(chat_id, str(photo), caption)
                 return response or {}
 
@@ -4801,7 +4733,10 @@ class Bot:
                         self._message_id,
                         asset_id,
                     )
-                    return {"message_id": self._message_id, "chat": {"id": self._chat_id or chat_id}}
+                    return {
+                        "message_id": self._message_id,
+                        "chat": {"id": self._chat_id or chat_id},
+                    }
                 if isinstance(document, (bytes, bytearray)):
                     document_stream: BinaryIO = io.BytesIO(document)
                 else:
@@ -4824,43 +4759,57 @@ class Bot:
             result_id = self.data.save_asset(
                 payload["channel_id"],
                 payload["message_id"],
-                payload.get("template")
-                if payload.get("template") is not None
-                else asset.caption_template,
-                payload.get("hashtags")
-                if payload.get("hashtags") is not None
-                else asset.hashtags,
+                (
+                    payload.get("template")
+                    if payload.get("template") is not None
+                    else asset.caption_template
+                ),
+                payload.get("hashtags") if payload.get("hashtags") is not None else asset.hashtags,
                 tg_chat_id=payload.get("tg_chat_id") or target_channel_id,
-                caption=payload.get("caption")
-                if payload.get("caption") is not None
-                else asset.caption,
+                caption=(
+                    payload.get("caption") if payload.get("caption") is not None else asset.caption
+                ),
                 kind=payload.get("kind") if payload.get("kind") is not None else asset.kind,
                 file_meta=payload.get("file_meta"),
                 metadata=merged_metadata or None,
                 categories=categories_payload or None,
-                rubric_id=payload.get("rubric_id")
-                if payload.get("rubric_id") is not None
-                else asset.rubric_id,
+                rubric_id=(
+                    payload.get("rubric_id")
+                    if payload.get("rubric_id") is not None
+                    else asset.rubric_id
+                ),
                 origin=payload.get("origin") or asset.origin or "telegram",
                 source=payload.get("source") or asset.source or "telegram",
-                author_user_id=payload.get("author_user_id")
-                if payload.get("author_user_id") is not None
-                else asset.author_user_id,
-                author_username=payload.get("author_username")
-                if payload.get("author_username") is not None
-                else asset.author_username,
-                sender_chat_id=payload.get("sender_chat_id")
-                if payload.get("sender_chat_id") is not None
-                else asset.sender_chat_id,
-                via_bot_id=payload.get("via_bot_id")
-                if payload.get("via_bot_id") is not None
-                else asset.via_bot_id,
-                forward_from_user=payload.get("forward_from_user")
-                if payload.get("forward_from_user") is not None
-                else asset.forward_from_user,
-                forward_from_chat=payload.get("forward_from_chat")
-                if payload.get("forward_from_chat") is not None
-                else asset.forward_from_chat,
+                author_user_id=(
+                    payload.get("author_user_id")
+                    if payload.get("author_user_id") is not None
+                    else asset.author_user_id
+                ),
+                author_username=(
+                    payload.get("author_username")
+                    if payload.get("author_username") is not None
+                    else asset.author_username
+                ),
+                sender_chat_id=(
+                    payload.get("sender_chat_id")
+                    if payload.get("sender_chat_id") is not None
+                    else asset.sender_chat_id
+                ),
+                via_bot_id=(
+                    payload.get("via_bot_id")
+                    if payload.get("via_bot_id") is not None
+                    else asset.via_bot_id
+                ),
+                forward_from_user=(
+                    payload.get("forward_from_user")
+                    if payload.get("forward_from_user") is not None
+                    else asset.forward_from_user
+                ),
+                forward_from_chat=(
+                    payload.get("forward_from_chat")
+                    if payload.get("forward_from_chat") is not None
+                    else asset.forward_from_chat
+                ),
             )
             update_kwargs: dict[str, Any] = {"local_path": None}
             latitude = payload.get("latitude")
@@ -4919,18 +4868,14 @@ class Bot:
         override_longitude = gps_override.get("longitude") if gps_override else None
         if lat is None:
             fallback_latitude = (
-                override_latitude
-                if override_latitude is not None
-                else stored_latitude
+                override_latitude if override_latitude is not None else stored_latitude
             )
             if fallback_latitude is not None:
                 gps_payload["latitude"] = fallback_latitude
                 lat = fallback_latitude
         if lon is None:
             fallback_longitude = (
-                override_longitude
-                if override_longitude is not None
-                else stored_longitude
+                override_longitude if override_longitude is not None else stored_longitude
             )
             if fallback_longitude is not None:
                 gps_payload["longitude"] = fallback_longitude
@@ -4972,12 +4917,8 @@ class Bot:
                 if country:
                     update_kwargs["country"] = country
         else:
-            stored_has_coords = (
-                stored_latitude is not None and stored_longitude is not None
-            )
-            override_has_coords = (
-                override_latitude is not None and override_longitude is not None
-            )
+            stored_has_coords = stored_latitude is not None and stored_longitude is not None
+            override_has_coords = override_latitude is not None and override_longitude is not None
             ingest_has_coords = lat is not None and lon is not None
             if not stored_has_coords and not override_has_coords and not ingest_has_coords:
                 logging.warning(
@@ -4998,11 +4939,8 @@ class Bot:
         if asset.source == "mobile":
             record_mobile_photo_ingested()
         tz_offset = self.get_tz_offset(asset.author_user_id) if asset.author_user_id else TZ_OFFSET
-        vision_job = self.jobs.enqueue(
-            "vision", {"asset_id": asset_id, "tz_offset": tz_offset}
-        )
+        vision_job = self.jobs.enqueue("vision", {"asset_id": asset_id, "tz_offset": tz_offset})
         logging.info("Asset %s queued for vision job %s after ingest", asset_id, vision_job)
-
 
     async def _job_vision(self, job: Job):
         async with self._vision_semaphore:
@@ -5089,6 +5027,7 @@ class Bot:
                     logging.info("MEM rss=%sMB stage=%s", rss, stage)
                 except Exception:
                     logging.debug("Failed to capture RSS at stage=%s", stage)
+
             if not local_path or not os.path.exists(local_path):
                 raise RuntimeError(f"Local file for asset {asset_id} not found")
 
@@ -5146,11 +5085,14 @@ class Bot:
             if isinstance(framing_raw, str):
                 framing = re.sub(r"[\s\-]+", "_", framing_raw.strip().lower()) or None
             elif framing_raw is not None:
-                framing = re.sub(
-                    r"[\s\-]+",
-                    "_",
-                    str(framing_raw).strip().lower(),
-                ) or None
+                framing = (
+                    re.sub(
+                        r"[\s\-]+",
+                        "_",
+                        str(framing_raw).strip().lower(),
+                    )
+                    or None
+                )
             if not framing:
                 raise RuntimeError("Invalid response from vision model: missing framing")
             if framing not in FRAMING_ALLOWED_VALUES:
@@ -5158,48 +5100,44 @@ class Bot:
                 if alias in FRAMING_ALLOWED_VALUES:
                     framing = alias
                 else:
-                    raise RuntimeError(
-                        "Invalid response from vision model: unknown framing"
-                    )
+                    raise RuntimeError("Invalid response from vision model: unknown framing")
             architecture_close_up_raw = result.get("architecture_close_up")
             architecture_close_up = (
                 bool(architecture_close_up_raw)
                 if isinstance(architecture_close_up_raw, bool)
-                else str(architecture_close_up_raw)
-                .strip()
-                .lower()
-                in {"1", "true", "yes", "да"}
+                else str(architecture_close_up_raw).strip().lower() in {"1", "true", "yes", "да"}
             )
             architecture_wide_raw = result.get("architecture_wide")
             architecture_wide = (
                 bool(architecture_wide_raw)
                 if isinstance(architecture_wide_raw, bool)
-                else str(architecture_wide_raw)
-                .strip()
-                .lower()
-                in {"1", "true", "yes", "да"}
+                else str(architecture_wide_raw).strip().lower() in {"1", "true", "yes", "да"}
             )
             weather_image_raw = result.get("weather_image")
             weather_image: str | None = None
             if isinstance(weather_image_raw, str):
-                weather_image = re.sub(
-                    r"[\s\-]+",
-                    "_",
-                    weather_image_raw.strip().lower(),
-                ) or None
+                weather_image = (
+                    re.sub(
+                        r"[\s\-]+",
+                        "_",
+                        weather_image_raw.strip().lower(),
+                    )
+                    or None
+                )
             elif weather_image_raw is not None:
-                weather_image = re.sub(
-                    r"[\s\-]+",
-                    "_",
-                    str(weather_image_raw).strip().lower(),
-                ) or None
+                weather_image = (
+                    re.sub(
+                        r"[\s\-]+",
+                        "_",
+                        str(weather_image_raw).strip().lower(),
+                    )
+                    or None
+                )
             if not weather_image:
                 raise RuntimeError("Invalid response from vision model: missing weather_image")
             normalized_weather = self._normalize_weather_enum(weather_image)
             if not normalized_weather:
-                raise RuntimeError(
-                    "Invalid response from vision model: unknown weather_image"
-                )
+                raise RuntimeError("Invalid response from vision model: unknown weather_image")
             weather_image = normalized_weather
             season_guess_raw = result.get("season_guess")
             if isinstance(season_guess_raw, str):
@@ -5343,11 +5281,7 @@ class Bot:
                     continue
                 if isinstance(raw_value, (list, tuple)):
                     candidate = next(
-                        (
-                            str(item).strip()
-                            for item in raw_value
-                            if str(item).strip()
-                        ),
+                        (str(item).strip() for item in raw_value if str(item).strip()),
                         "",
                     )
                 else:
@@ -5365,19 +5299,11 @@ class Bot:
                     capture_time_display = candidate
                 break
             exif_month = self._extract_month_from_metadata(metadata_dict)
-            if (
-                exif_month is None
-                and local_path
-                and os.path.exists(local_path)
-            ):
+            if exif_month is None and local_path and os.path.exists(local_path):
                 exif_month = self._extract_exif_month(local_path)
             season_from_exif = self._season_from_month(exif_month)
             season_final = self._normalize_season(season_from_exif or season_guess)
-            season_final_display = (
-                SEASON_TRANSLATIONS.get(season_final)
-                if season_final
-                else None
-            )
+            season_final_display = SEASON_TRANSLATIONS.get(season_final) if season_final else None
             fallback_weather = self._normalize_weather_enum(weather_image)
             model_weather: str | None = None
             model_weather_display: str | None = None
@@ -5448,9 +5374,7 @@ class Bot:
                         "Supabase token usage insert failed: %s", error, extra=log_context
                     )
                 else:
-                    logging.error(
-                        "Supabase token usage insert failed", extra=log_context
-                    )
+                    logging.error("Supabase token usage insert failed", extra=log_context)
             safety_raw = result.get("safety")
             nsfw_flag = False
             safety_reason: str | None = None
@@ -5466,11 +5390,7 @@ class Bot:
                 elif reason_raw is not None:
                     safety_reason = str(reason_raw).strip() or None
             if not safety_reason:
-                safety_reason = (
-                    "обнаружен чувствительный контент"
-                    if nsfw_flag
-                    else "безопасно"
-                )
+                safety_reason = "обнаружен чувствительный контент" if nsfw_flag else "безопасно"
             location_confidence_raw = result.get("location_confidence")
             location_confidence: float | None = None
             if isinstance(location_confidence_raw, (int, float)):
@@ -5496,16 +5416,21 @@ class Bot:
 
             sea_wave_score_data: dict[str, Any] | None = None
             is_sea_asset = is_sea or (
-                category == "sea" or
-                normalized_tag_set.intersection({"sea", "ocean"})
+                category == "sea" or normalized_tag_set.intersection({"sea", "ocean"})
             )
-            if is_sea_asset and self.openai and self.openai.api_key and local_path and os.path.exists(local_path):
+            if (
+                is_sea_asset
+                and self.openai
+                and self.openai.api_key
+                and local_path
+                and os.path.exists(local_path)
+            ):
                 try:
                     sea_wave_prompt = (
                         "Analyze the sea/ocean in this image and return a JSON with sea wave intensity score. "
                         "Score criteria: 0 = calm/flat, 1-3 = small waves, 4-6 = moderate waves/storm, "
                         "7-8 = strong storm (many whitecaps), 9-10 = very strong storm (massive whitecaps, foam, spray everywhere). "
-                        "Evaluate only the sea/ocean visible. Return: {\"sea_wave_score\": 0-10 (integer), \"confidence\": 0.0-1.0 (float)}"
+                        'Evaluate only the sea/ocean visible. Return: {"sea_wave_score": 0-10 (integer), "confidence": 0.0-1.0 (float)}'
                     )
                     sea_wave_schema = {
                         "type": "object",
@@ -5540,7 +5465,9 @@ class Bot:
                     if sea_wave_response and isinstance(sea_wave_response.content, dict):
                         wave_score_raw = sea_wave_response.content.get("sea_wave_score")
                         confidence_raw = sea_wave_response.content.get("confidence")
-                        if isinstance(wave_score_raw, int) and isinstance(confidence_raw, (int, float)):
+                        if isinstance(wave_score_raw, int) and isinstance(
+                            confidence_raw, (int, float)
+                        ):
                             wave_score = max(0, min(10, wave_score_raw))
                             confidence = max(0.0, min(1.0, float(confidence_raw)))
                             sea_wave_score_data = {
@@ -5586,11 +5513,7 @@ class Bot:
                     exif_coords = (float(asset.latitude), float(asset.longitude))
                 except (TypeError, ValueError):
                     exif_coords = None
-            if (
-                not exif_coords
-                and local_path
-                and os.path.exists(local_path)
-            ):
+            if not exif_coords and local_path and os.path.exists(local_path):
                 exif_retry = self._extract_gps(local_path)
                 if exif_retry:
                     exif_coords = exif_retry
@@ -5632,11 +5555,7 @@ class Bot:
                 if formatted_exif and formatted_exif not in caption_lines:
                     caption_lines.append(formatted_exif)
 
-                if (
-                    fallback_text
-                    and not has_osm_components
-                    and fallback_text not in caption_lines
-                ):
+                if fallback_text and not has_osm_components and fallback_text not in caption_lines:
                     caption_lines.append(fallback_text)
             if location_parts:
                 location_line = ", ".join(location_parts)
@@ -5659,9 +5578,7 @@ class Bot:
                 confidence_value = arch_style.get("confidence")
                 style_line = f"Стиль: {arch_style['label']}"
                 confidence_note: str
-                if isinstance(confidence_value, (int, float)) and math.isfinite(
-                    confidence_value
-                ):
+                if isinstance(confidence_value, (int, float)) and math.isfinite(confidence_value):
                     confidence_float = float(confidence_value)
                     confidence_pct = int(round(confidence_float * 100))
                     confidence_pct = max(0, min(100, confidence_pct))
@@ -5688,8 +5605,7 @@ class Bot:
                 caption_lines.append(f"Волнение моря: {wave_val}/10 (conf={wave_conf:.2f})")
             if nsfw_flag:
                 caption_lines.append(
-                    "⚠️ Чувствительный контент: "
-                    + (safety_reason or "потенциально NSFW")
+                    "⚠️ Чувствительный контент: " + (safety_reason or "потенциально NSFW")
                 )
 
             attribution_line = "Адрес: OSM/Nominatim"
@@ -5709,9 +5625,7 @@ class Bot:
             location_log_parts: list[str] = []
             if guess_city:
                 location_log_parts.append(guess_city)
-            if guess_country and (
-                not guess_city or guess_country.lower() != guess_city.lower()
-            ):
+            if guess_country and (not guess_city or guess_country.lower() != guess_city.lower()):
                 location_log_parts.append(guess_country)
             location_log = ", ".join(location_log_parts) or "-"
             confidence_log = (
@@ -5788,7 +5702,11 @@ class Bot:
                 "OpenAI request_id=%s usage in/out/total=%s/%s/%s",
                 request_id or "-",
                 response.prompt_tokens if response and response.prompt_tokens is not None else "-",
-                response.completion_tokens if response and response.completion_tokens is not None else "-",
+                (
+                    response.completion_tokens
+                    if response and response.completion_tokens is not None
+                    else "-"
+                ),
                 response.total_tokens if response and response.total_tokens is not None else "-",
             )
             delete_original_after_post = False
@@ -5955,10 +5873,7 @@ class Bot:
                 new_mid,
             )
             weather_display_log = (
-                weather_final_display
-                or photo_weather_display
-                or photo_weather
-                or "-"
+                weather_final_display or photo_weather_display or photo_weather or "-"
             )
             weather_source_log: str | None
             if metadata_weather:
@@ -5972,9 +5887,7 @@ class Bot:
             if weather_source_log:
                 weather_display_log = f"{weather_display_log} ({weather_source_log})"
             season_display_log = season_final_display or season_final or "-"
-            arch_style_label = (
-                arch_style.get("label") if isinstance(arch_style, dict) else None
-            )
+            arch_style_label = arch_style.get("label") if isinstance(arch_style, dict) else None
             arch_style_confidence = (
                 arch_style.get("confidence") if isinstance(arch_style, dict) else None
             )
@@ -6025,9 +5938,7 @@ class Bot:
                         exif_payload = self._extract_exif_full(debug_path)
                         exif_json = json.dumps(exif_payload, ensure_ascii=False, indent=2)
                         message_text = (
-                            f"EXIF (raw)\n```json\n{exif_json}\n```"
-                            if exif_json
-                            else "EXIF (raw)"
+                            f"EXIF (raw)\n```json\n{exif_json}\n```" if exif_json else "EXIF (raw)"
                         )
                         exif_bytes = exif_json.encode("utf-8") if exif_json else b""
                         if len(message_text) <= 3500:
@@ -6052,12 +5963,7 @@ class Bot:
                             )
                 except Exception:
                     logging.exception("Failed to publish EXIF debug for asset %s", asset_id)
-            if (
-                delete_original_after_post
-                and not self.dry_run
-                and new_mid
-                and asset.message_id
-            ):
+            if delete_original_after_post and not self.dry_run and new_mid and asset.message_id:
                 logging.info(
                     "Vision job %s deleting original document message %s for asset %s",
                     job.id,
@@ -6106,7 +6012,6 @@ class Bot:
             "recognized_message_id": asset.recognized_message_id,
         }
 
-
     @staticmethod
     def _is_missing_source_message_error(resp: dict[str, Any]) -> bool:
         if resp.get("ok", False):
@@ -6120,7 +6025,9 @@ class Bot:
             "message to copy",
             "message to forward",
         )
-        return any(indicator in description and "not found" in description for indicator in indicators)
+        return any(
+            indicator in description and "not found" in description for indicator in indicators
+        )
 
     def _cleanup_missing_source_asset(self, asset: dict[str, Any]) -> None:
         asset_id = asset.get("id")
@@ -6134,7 +6041,6 @@ class Bot:
         )
         if asset_id is not None:
             self.data.delete_assets([asset_id])
-
 
     async def publish_weather(
         self,
@@ -6214,8 +6120,6 @@ class Bot:
 
         return ok
 
-
-
     async def handle_message(self, message):
         global TZ_OFFSET
 
@@ -6264,48 +6168,42 @@ class Bot:
                 self._schedule_ingest_job(asset_id, reason="new_message")
             return
 
-
-        if 'from' not in message:
+        if "from" not in message:
             # ignore channel posts when asset channel is not configured
             return
 
-
-        text = message.get('text', '')
-        user_id = message['from']['id']
-        username = message['from'].get('username')
+        text = message.get("text", "")
+        user_id = message["from"]["id"]
+        username = message["from"].get("username")
 
         preview_state = self.pending_flowers_previews.get(user_id)
-        if preview_state and preview_state.get('awaiting_instruction'):
-            reply_to = message.get('reply_to_message') or {}
-            prompt_id = preview_state.get('instruction_prompt_id')
-            if prompt_id and reply_to.get('message_id') == prompt_id:
+        if preview_state and preview_state.get("awaiting_instruction"):
+            reply_to = message.get("reply_to_message") or {}
+            prompt_id = preview_state.get("instruction_prompt_id")
+            if prompt_id and reply_to.get("message_id") == prompt_id:
                 instructions_text = text.strip()
-                preview_state['instructions'] = instructions_text
-                preview_state['awaiting_instruction'] = False
-                preview_state['instruction_prompt_id'] = None
-                rubric_code = preview_state.get('rubric_code')
-                rubric = (
-                    self.data.get_rubric_by_code(rubric_code)
-                    if rubric_code
-                    else None
-                )
+                preview_state["instructions"] = instructions_text
+                preview_state["awaiting_instruction"] = False
+                preview_state["instruction_prompt_id"] = None
+                rubric_code = preview_state.get("rubric_code")
+                rubric = self.data.get_rubric_by_code(rubric_code) if rubric_code else None
                 if rubric:
-                    assets = list(preview_state.get('assets') or [])
-                    weather_block = preview_state.get('weather_block')
-                    plan_override = preview_state.get('plan')
+                    assets = list(preview_state.get("assets") or [])
+                    weather_block = preview_state.get("weather_block")
+                    plan_override = preview_state.get("plan")
                     if isinstance(plan_override, dict):
                         plan_override = deepcopy(plan_override)
-                        plan_override['instructions'] = instructions_text
+                        plan_override["instructions"] = instructions_text
                     else:
                         plan_override = None
-                    channel_hint = preview_state.get('default_channel_id')
+                    channel_hint = preview_state.get("default_channel_id")
                     if not isinstance(channel_hint, int):
-                        for key in ('channel_id', 'test_channel_id'):
+                        for key in ("channel_id", "test_channel_id"):
                             value = preview_state.get(key)
                             if isinstance(value, int):
                                 channel_hint = value
                                 break
-                    plan_meta_override = preview_state.get('plan_meta')
+                    plan_meta_override = preview_state.get("plan_meta")
                     greeting, hashtags, plan, plan_meta = await self._generate_flowers_copy(
                         rubric,
                         assets,
@@ -6313,7 +6211,9 @@ class Bot:
                         weather_block=weather_block,
                         instructions=instructions_text,
                         plan=plan_override,
-                        plan_meta=plan_meta_override if isinstance(plan_meta_override, dict) else None,
+                        plan_meta=(
+                            plan_meta_override if isinstance(plan_meta_override, dict) else None
+                        ),
                     )
                     if isinstance(plan, dict):
                         plan["instructions"] = instructions_text
@@ -6324,33 +6224,27 @@ class Bot:
                         prepared_hashtags,
                     ) = self._build_flowers_caption(
                         greeting,
-                        list(preview_state.get('cities') or []),
+                        list(preview_state.get("cities") or []),
                         hashtags,
                         weather_block,
                     )
-                    preview_state['plan'] = plan
-                    preview_state['plan_meta'] = plan_meta or {}
-                    preview_state['pattern_ids'] = list((plan_meta or {}).get('pattern_ids', []))
+                    preview_state["plan"] = plan
+                    preview_state["plan_meta"] = plan_meta or {}
+                    preview_state["pattern_ids"] = list((plan_meta or {}).get("pattern_ids", []))
                     prompt_payload = self._build_flowers_prompt_payload(plan, plan_meta)
-                    preview_state['serialized_plan'] = str(
-                        prompt_payload.get('serialized_plan') or '{}'
+                    preview_state["serialized_plan"] = str(
+                        prompt_payload.get("serialized_plan") or "{}"
                     )
-                    plan_system_prompt = str(
-                        prompt_payload.get('system_prompt') or ''
-                    )
-                    plan_user_prompt = str(
-                        prompt_payload.get('user_prompt') or ''
-                    )
-                    plan_request_text = str(
-                        prompt_payload.get('request_text') or ''
-                    )
-                    preview_state['plan_system_prompt'] = plan_system_prompt
-                    preview_state['plan_user_prompt'] = plan_user_prompt
-                    preview_state['plan_request_text'] = plan_request_text
-                    preview_state['plan_prompt'] = plan_user_prompt
-                    preview_state['plan_prompt_length'] = prompt_payload.get('prompt_length')
-                    preview_state['plan_prompt_fallback'] = bool(
-                        prompt_payload.get('used_fallback')
+                    plan_system_prompt = str(prompt_payload.get("system_prompt") or "")
+                    plan_user_prompt = str(prompt_payload.get("user_prompt") or "")
+                    plan_request_text = str(prompt_payload.get("request_text") or "")
+                    preview_state["plan_system_prompt"] = plan_system_prompt
+                    preview_state["plan_user_prompt"] = plan_user_prompt
+                    preview_state["plan_request_text"] = plan_request_text
+                    preview_state["plan_prompt"] = plan_user_prompt
+                    preview_state["plan_prompt_length"] = prompt_payload.get("prompt_length")
+                    preview_state["plan_prompt_fallback"] = bool(
+                        prompt_payload.get("used_fallback")
                     )
                     await self._update_flowers_preview_caption_state(
                         preview_state,
@@ -6362,47 +6256,47 @@ class Bot:
                         prepared_hashtags=prepared_hashtags,
                     )
                     await self.api_request(
-                        'sendMessage',
+                        "sendMessage",
                         {
-                            'chat_id': user_id,
-                            'text': 'Инструкция сохранена, подпись обновлена.',
+                            "chat_id": user_id,
+                            "text": "Инструкция сохранена, подпись обновлена.",
                         },
                     )
                 else:
                     await self.api_request(
-                        'sendMessage',
+                        "sendMessage",
                         {
-                            'chat_id': user_id,
-                            'text': 'Не удалось обновить подпись: рубрика недоступна.',
+                            "chat_id": user_id,
+                            "text": "Не удалось обновить подпись: рубрика недоступна.",
                         },
                     )
                 return
 
-        if user_id in self.pending and self.pending[user_id].get('rubric_input'):
+        if user_id in self.pending and self.pending[user_id].get("rubric_input"):
             if not self.is_superadmin(user_id):
                 del self.pending[user_id]
             else:
                 await self.api_request(
-                    'sendMessage',
+                    "sendMessage",
                     {
-                        'chat_id': user_id,
-                        'text': 'Используйте кнопки для настройки рубрики.',
+                        "chat_id": user_id,
+                        "text": "Используйте кнопки для настройки рубрики.",
                     },
                 )
             return
 
-        command = text.split(maxsplit=1)[0] if text else ''
-        if command == '/privet' or command.startswith('/privet@'):
+        command = text.split(maxsplit=1)[0] if text else ""
+        if command == "/privet" or command.startswith("/privet@"):
             await self.api_request(
-                'sendMessage',
+                "sendMessage",
                 {
-                    'chat_id': user_id,
-                    'text': 'Привет',
+                    "chat_id": user_id,
+                    "text": "Привет",
                 },
             )
             return
 
-        if text.startswith('/help'):
+        if text.startswith("/help"):
             help_messages = [
                 (
                     "*Быстрый старт*\n\n"
@@ -6476,76 +6370,76 @@ class Bot:
             )
             for chunk in help_messages:
                 await self.api_request(
-                    'sendMessage',
+                    "sendMessage",
                     {
-                        'chat_id': user_id,
-                        'text': chunk,
-                        'parse_mode': 'Markdown',
+                        "chat_id": user_id,
+                        "text": chunk,
+                        "parse_mode": "Markdown",
                     },
                 )
             return
 
         # first /start registers superadmin or puts user in queue
-        if text.startswith('/start'):
+        if text.startswith("/start"):
             if self.get_user(user_id):
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Bot is working'
-                })
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Bot is working"}
+                )
                 return
 
             if self.is_rejected(user_id):
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Access denied by administrator'
-                })
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Access denied by administrator"}
+                )
                 return
 
             if self.is_pending(user_id):
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Awaiting approval'
-                })
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Awaiting approval"}
+                )
                 return
 
-            cur = self.db.execute('SELECT COUNT(*) FROM users')
+            cur = self.db.execute("SELECT COUNT(*) FROM users")
             user_count = cur.fetchone()[0]
             if user_count == 0:
-                self.db.execute('INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)', (user_id, username, TZ_OFFSET))
+                self.db.execute(
+                    "INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)",
+                    (user_id, username, TZ_OFFSET),
+                )
                 self.db.commit()
-                logging.info('Registered %s as superadmin', user_id)
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'You are superadmin'
-                })
+                logging.info("Registered %s as superadmin", user_id)
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "You are superadmin"}
+                )
                 return
 
             if self.pending_count() >= 10:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Registration queue full, try later'
-                })
-                logging.info('Registration rejected for %s due to full queue', user_id)
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "Registration queue full, try later"},
+                )
+                logging.info("Registration rejected for %s due to full queue", user_id)
                 return
 
             self.db.execute(
-                'INSERT OR IGNORE INTO pending_users (user_id, username, requested_at) VALUES (?, ?, ?)',
-                (user_id, username, datetime.utcnow().isoformat())
+                "INSERT OR IGNORE INTO pending_users (user_id, username, requested_at) VALUES (?, ?, ?)",
+                (user_id, username, datetime.utcnow().isoformat()),
             )
             self.db.commit()
-            logging.info('User %s added to pending queue', user_id)
-            await self.api_request('sendMessage', {
-                'chat_id': user_id,
-                'text': 'Registration pending approval'
-            })
+            logging.info("User %s added to pending queue", user_id)
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": "Registration pending approval"}
+            )
             return
 
-        if text.startswith('/pair') or text.startswith('/attach'):
+        if text.startswith("/pair") or text.startswith("/attach"):
             if not self.is_authorized(user_id):
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Not authorized'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
                 return
             parts = text.split(maxsplit=1)
-            requested_name = parts[1].strip() if len(parts) > 1 else ''
+            requested_name = parts[1].strip() if len(parts) > 1 else ""
             existing_token = self._get_active_pairing_token(user_id)
             if existing_token and not requested_name:
                 code, expires_at, _ = existing_token
@@ -6562,12 +6456,12 @@ class Bot:
             try:
                 code, expires_at = self._issue_pairing_token(user_id, device_label)
             except RuntimeError:
-                logging.error('Failed to generate pairing code for user %s', user_id)
+                logging.error("Failed to generate pairing code for user %s", user_id)
                 await self.api_request(
-                    'sendMessage',
+                    "sendMessage",
                     {
-                        'chat_id': user_id,
-                        'text': 'Не удалось сгенерировать код, попробуйте снова.',
+                        "chat_id": user_id,
+                        "text": "Не удалось сгенерировать код, попробуйте снова.",
                     },
                 )
                 return
@@ -6579,36 +6473,40 @@ class Bot:
             )
             return
 
-        if text.startswith('/mobile_stats'):
+        if text.startswith("/mobile_stats"):
             if not self.is_authorized(user_id):
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Not authorized'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
                 return
             stats = self.data.get_mobile_upload_stats()
             lines = [
-                '📱 Mobile uploads',
-                f'Total: {stats.total}',
+                "📱 Mobile uploads",
+                f"Total: {stats.total}",
                 f"Today: {stats.today}",
                 f"7d: {stats.seven_days}",
                 f"30d: {stats.thirty_days}",
             ]
             if stats.top_devices:
-                lines.append('')
-                lines.append('Top devices:')
+                lines.append("")
+                lines.append("Top devices:")
                 for device in stats.top_devices:
                     label = device.name or device.device_id
                     lines.append(f"• {label} — {device.count}")
             await self.api_request(
-                'sendMessage',
+                "sendMessage",
                 {
-                    'chat_id': user_id,
-                    'text': '\n'.join(lines),
+                    "chat_id": user_id,
+                    "text": "\n".join(lines),
                 },
             )
             return
 
-        if text.startswith('/mobile'):
+        if text.startswith("/mobile"):
             if not self.is_authorized(user_id):
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Not authorized'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
                 return
             existing_token = self._get_active_pairing_token(user_id)
             if existing_token:
@@ -6617,12 +6515,12 @@ class Bot:
                 try:
                     code, expires_at = self._issue_pairing_token(user_id, _PAIRING_DEFAULT_NAME)
                 except RuntimeError:
-                    logging.error('Failed to generate pairing code for user %s', user_id)
+                    logging.error("Failed to generate pairing code for user %s", user_id)
                     await self.api_request(
-                        'sendMessage',
+                        "sendMessage",
                         {
-                            'chat_id': user_id,
-                            'text': 'Не удалось сгенерировать код, попробуйте снова.',
+                            "chat_id": user_id,
+                            "text": "Не удалось сгенерировать код, попробуйте снова.",
                         },
                     )
                     return
@@ -6638,365 +6536,422 @@ class Bot:
             await self._send_mobile_pairing_card(user_id, code, expires_at, devices)
             return
 
-        if text.startswith('/add_user') and self.is_superadmin(user_id):
+        if text.startswith("/add_user") and self.is_superadmin(user_id):
             parts = text.split()
             if len(parts) == 2:
                 uid = int(parts[1])
                 if not self.get_user(uid):
-                    self.db.execute('INSERT INTO users (user_id) VALUES (?)', (uid,))
+                    self.db.execute("INSERT INTO users (user_id) VALUES (?)", (uid,))
                     self.db.commit()
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'User {uid} added'
-                })
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": f"User {uid} added"}
+                )
             return
 
-        if text.startswith('/remove_user') and self.is_superadmin(user_id):
+        if text.startswith("/remove_user") and self.is_superadmin(user_id):
             parts = text.split()
             if len(parts) == 2:
                 uid = int(parts[1])
-                self.db.execute('DELETE FROM users WHERE user_id=?', (uid,))
+                self.db.execute("DELETE FROM users WHERE user_id=?", (uid,))
                 self.db.commit()
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'User {uid} removed'
-                })
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": f"User {uid} removed"}
+                )
             return
 
-        if text.startswith('/tz'):
+        if text.startswith("/tz"):
             parts = text.split()
             if not self.is_authorized(user_id):
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Not authorized'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
                 return
             if len(parts) != 2:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Usage: /tz +02:00'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Usage: /tz +02:00"}
+                )
                 return
             try:
                 self.parse_offset(parts[1])
             except Exception:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Invalid offset'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Invalid offset"}
+                )
                 return
-            self.db.execute('UPDATE users SET tz_offset=? WHERE user_id=?', (parts[1], user_id))
+            self.db.execute("UPDATE users SET tz_offset=? WHERE user_id=?", (parts[1], user_id))
             self.db.commit()
             TZ_OFFSET = parts[1]
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': f'Timezone set to {parts[1]}'})
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": f"Timezone set to {parts[1]}"}
+            )
             return
 
-        if text.startswith('/list_users') and self.is_superadmin(user_id):
-            cur = self.db.execute('SELECT user_id, username, is_superadmin FROM users')
+        if text.startswith("/list_users") and self.is_superadmin(user_id):
+            cur = self.db.execute("SELECT user_id, username, is_superadmin FROM users")
             rows = cur.fetchall()
-            msg = '\n'.join(
+            msg = "\n".join(
                 f"{self.format_user(r['user_id'], r['username'])} {'(admin)' if r['is_superadmin'] else ''}"
                 for r in rows
             )
-            await self.api_request('sendMessage', {
-                'chat_id': user_id,
-                'text': msg or 'No users',
-                'parse_mode': 'Markdown'
-            })
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": msg or "No users", "parse_mode": "Markdown"},
+            )
             return
 
-        if text.startswith('/pending') and self.is_superadmin(user_id):
-            cur = self.db.execute('SELECT user_id, username, requested_at FROM pending_users')
+        if text.startswith("/pending") and self.is_superadmin(user_id):
+            cur = self.db.execute("SELECT user_id, username, requested_at FROM pending_users")
             rows = cur.fetchall()
             if not rows:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No pending users'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "No pending users"}
+                )
                 return
 
-            msg = '\n'.join(
+            msg = "\n".join(
                 f"{self.format_user(r['user_id'], r['username'])} requested {r['requested_at']}"
                 for r in rows
             )
             keyboard = {
-                'inline_keyboard': [
+                "inline_keyboard": [
                     [
-                        {'text': 'Approve', 'callback_data': f'approve:{r["user_id"]}'},
-                        {'text': 'Reject', 'callback_data': f'reject:{r["user_id"]}'}
+                        {"text": "Approve", "callback_data": f'approve:{r["user_id"]}'},
+                        {"text": "Reject", "callback_data": f'reject:{r["user_id"]}'},
                     ]
                     for r in rows
                 ]
             }
-            await self.api_request('sendMessage', {
-                'chat_id': user_id,
-                'text': msg,
-                'parse_mode': 'Markdown',
-                'reply_markup': keyboard
-            })
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": user_id,
+                    "text": msg,
+                    "parse_mode": "Markdown",
+                    "reply_markup": keyboard,
+                },
+            )
             return
 
-        if text.startswith('/rubrics') and self.is_superadmin(user_id):
+        if text.startswith("/rubrics") and self.is_superadmin(user_id):
             await self._send_rubric_dashboard(user_id)
             return
 
-
-
-
-        if text.startswith('/approve') and self.is_superadmin(user_id):
+        if text.startswith("/approve") and self.is_superadmin(user_id):
             parts = text.split()
             if len(parts) == 2:
                 uid = int(parts[1])
                 if self.approve_user(uid):
-                    cur = self.db.execute('SELECT username FROM users WHERE user_id=?', (uid,))
+                    cur = self.db.execute("SELECT username FROM users WHERE user_id=?", (uid,))
                     row = cur.fetchone()
-                    uname = row['username'] if row else None
-                    await self.api_request('sendMessage', {
-                        'chat_id': user_id,
-                        'text': f'{self.format_user(uid, uname)} approved',
-                        'parse_mode': 'Markdown'
-                    })
-                    await self.api_request('sendMessage', {'chat_id': uid, 'text': 'You are approved'})
+                    uname = row["username"] if row else None
+                    await self.api_request(
+                        "sendMessage",
+                        {
+                            "chat_id": user_id,
+                            "text": f"{self.format_user(uid, uname)} approved",
+                            "parse_mode": "Markdown",
+                        },
+                    )
+                    await self.api_request(
+                        "sendMessage", {"chat_id": uid, "text": "You are approved"}
+                    )
                 else:
-                    await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'User not in pending list'})
+                    await self.api_request(
+                        "sendMessage", {"chat_id": user_id, "text": "User not in pending list"}
+                    )
             return
 
-        if text.startswith('/reject') and self.is_superadmin(user_id):
+        if text.startswith("/reject") and self.is_superadmin(user_id):
             parts = text.split()
             if len(parts) == 2:
                 uid = int(parts[1])
                 if self.reject_user(uid):
-                    cur = self.db.execute('SELECT username FROM rejected_users WHERE user_id=?', (uid,))
+                    cur = self.db.execute(
+                        "SELECT username FROM rejected_users WHERE user_id=?", (uid,)
+                    )
                     row = cur.fetchone()
-                    uname = row['username'] if row else None
-                    await self.api_request('sendMessage', {
-                        'chat_id': user_id,
-                        'text': f'{self.format_user(uid, uname)} rejected',
-                        'parse_mode': 'Markdown'
-                    })
-                    await self.api_request('sendMessage', {'chat_id': uid, 'text': 'Your registration was rejected'})
+                    uname = row["username"] if row else None
+                    await self.api_request(
+                        "sendMessage",
+                        {
+                            "chat_id": user_id,
+                            "text": f"{self.format_user(uid, uname)} rejected",
+                            "parse_mode": "Markdown",
+                        },
+                    )
+                    await self.api_request(
+                        "sendMessage", {"chat_id": uid, "text": "Your registration was rejected"}
+                    )
                 else:
-                    await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'User not in pending list'})
+                    await self.api_request(
+                        "sendMessage", {"chat_id": user_id, "text": "User not in pending list"}
+                    )
             return
 
-        if text.startswith('/channels') and self.is_superadmin(user_id):
-            cur = self.db.execute('SELECT chat_id, title FROM channels')
+        if text.startswith("/channels") and self.is_superadmin(user_id):
+            cur = self.db.execute("SELECT chat_id, title FROM channels")
             rows = cur.fetchall()
-            msg = '\n'.join(f"{r['title']} ({r['chat_id']})" for r in rows)
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': msg or 'No channels'})
+            msg = "\n".join(f"{r['title']} ({r['chat_id']})" for r in rows)
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": msg or "No channels"}
+            )
             return
 
-        if text.startswith('/history'):
+        if text.startswith("/history"):
             cur = self.db.execute(
-                'SELECT target_chat_id, sent_at FROM schedule WHERE sent=1 ORDER BY sent_at DESC LIMIT 10'
+                "SELECT target_chat_id, sent_at FROM schedule WHERE sent=1 ORDER BY sent_at DESC LIMIT 10"
             )
             rows = cur.fetchall()
             offset = self.get_tz_offset(user_id)
-            msg = '\n'.join(
-                f"{r['target_chat_id']} at {self.format_time(r['sent_at'], offset)}"
-                for r in rows
+            msg = "\n".join(
+                f"{r['target_chat_id']} at {self.format_time(r['sent_at'], offset)}" for r in rows
             )
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': msg or 'No history'})
+            await self.api_request("sendMessage", {"chat_id": user_id, "text": msg or "No history"})
             return
 
-        if text.startswith('/scheduled') and self.is_authorized(user_id):
+        if text.startswith("/scheduled") and self.is_authorized(user_id):
             rows = self.list_scheduled()
             if not rows:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No scheduled posts'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "No scheduled posts"}
+                )
                 return
             offset = self.get_tz_offset(user_id)
             for r in rows:
                 ok = False
                 try:
-                    resp = await self.api_request('forwardMessage', {
-                        'chat_id': user_id,
-                        'from_chat_id': r['from_chat_id'],
-                        'message_id': r['message_id']
-                    })
-                    ok = resp.get('ok', False)
-                    if not ok and resp.get('error_code') == 400 and 'not' in resp.get('description', '').lower():
-                        resp = await self.api_request('copyMessage', {
-                            'chat_id': user_id,
-                            'from_chat_id': r['from_chat_id'],
-                            'message_id': r['message_id']
-                        })
-                        ok = resp.get('ok', False)
+                    resp = await self.api_request(
+                        "forwardMessage",
+                        {
+                            "chat_id": user_id,
+                            "from_chat_id": r["from_chat_id"],
+                            "message_id": r["message_id"],
+                        },
+                    )
+                    ok = resp.get("ok", False)
+                    if (
+                        not ok
+                        and resp.get("error_code") == 400
+                        and "not" in resp.get("description", "").lower()
+                    ):
+                        resp = await self.api_request(
+                            "copyMessage",
+                            {
+                                "chat_id": user_id,
+                                "from_chat_id": r["from_chat_id"],
+                                "message_id": r["message_id"],
+                            },
+                        )
+                        ok = resp.get("ok", False)
                 except Exception:
-                    logging.exception('Failed to forward message %s', r['id'])
+                    logging.exception("Failed to forward message %s", r["id"])
                 if not ok:
                     link = None
-                    if str(r['from_chat_id']).startswith('-100'):
-                        cid = str(r['from_chat_id'])[4:]
+                    if str(r["from_chat_id"]).startswith("-100"):
+                        cid = str(r["from_chat_id"])[4:]
                         link = f'https://t.me/c/{cid}/{r["message_id"]}'
-                    await self.api_request('sendMessage', {
-                        'chat_id': user_id,
-                        'text': link or f'Message {r["message_id"]} from {r["from_chat_id"]}'
-                    })
+                    await self.api_request(
+                        "sendMessage",
+                        {
+                            "chat_id": user_id,
+                            "text": link or f'Message {r["message_id"]} from {r["from_chat_id"]}',
+                        },
+                    )
                 keyboard = {
-                    'inline_keyboard': [[
-                        {'text': 'Cancel', 'callback_data': f'cancel:{r["id"]}'},
-                        {'text': 'Reschedule', 'callback_data': f'resch:{r["id"]}'}
-                    ]]
+                    "inline_keyboard": [
+                        [
+                            {"text": "Cancel", "callback_data": f'cancel:{r["id"]}'},
+                            {"text": "Reschedule", "callback_data": f'resch:{r["id"]}'},
+                        ]
+                    ]
                 }
                 target = (
                     f"{r['target_title']} ({r['target_chat_id']})"
-                    if r['target_title'] else str(r['target_chat_id'])
+                    if r["target_title"]
+                    else str(r["target_chat_id"])
                 )
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f"{r['id']}: {target} at {self.format_time(r['publish_time'], offset)}",
-                    'reply_markup': keyboard
-                })
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": f"{r['id']}: {target} at {self.format_time(r['publish_time'], offset)}",
+                        "reply_markup": keyboard,
+                    },
+                )
             return
 
-        if text.startswith('/addbutton'):
+        if text.startswith("/addbutton"):
             if not self.is_authorized(user_id):
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Not authorized'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
                 return
 
             parts = text.split()
             if len(parts) < 4:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Usage: /addbutton <post_url> <text> <url>'
-                })
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "Usage: /addbutton <post_url> <text> <url>"},
+                )
                 return
             parsed = await self.parse_post_url(parts[1])
             if not parsed:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Invalid post URL'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Invalid post URL"}
+                )
                 return
             chat_id, msg_id = parsed
             keyboard_text = " ".join(parts[2:-1])
             fwd = await self.api_request(
-
-                'forwardMessage',
-
+                "forwardMessage",
                 {
-                    'chat_id': user_id,
-                    'from_chat_id': chat_id,
-                    'message_id': msg_id,
+                    "chat_id": user_id,
+                    "from_chat_id": chat_id,
+                    "message_id": msg_id,
                 },
             )
-
 
             markup = None
             caption = None
             caption_entities = None
-            if fwd.get('ok') and fwd.get('result'):
-                message = fwd['result']
-                markup = message.get('reply_markup')
-                caption = message.get('caption')
-                caption_entities = message.get('caption_entities')
+            if fwd.get("ok") and fwd.get("result"):
+                message = fwd["result"]
+                markup = message.get("reply_markup")
+                caption = message.get("caption")
+                caption_entities = message.get("caption_entities")
                 await self.api_request(
-                    'deleteMessage',
-                    {'chat_id': user_id, 'message_id': message.get('message_id')},
+                    "deleteMessage",
+                    {"chat_id": user_id, "message_id": message.get("message_id")},
                 )
             key = (chat_id, msg_id)
             info = self.manual_buttons.get(key)
             if info is None:
-                base_buttons = markup.get('inline_keyboard', []) if markup else []
+                base_buttons = markup.get("inline_keyboard", []) if markup else []
                 info = {
-                    'base': [
-                        [dict(btn) for btn in row]
-                        for row in base_buttons
-                    ],
-                    'custom': [],
+                    "base": [[dict(btn) for btn in row] for row in base_buttons],
+                    "custom": [],
                 }
-            new_row = [{'text': keyboard_text, 'url': parts[-1]}]
-            info['custom'].append([dict(btn) for btn in new_row])
+            new_row = [{"text": keyboard_text, "url": parts[-1]}]
+            info["custom"].append([dict(btn) for btn in new_row])
             self.manual_buttons[key] = info
 
             keyboard = {
-                'inline_keyboard': [
-                    [dict(btn) for btn in row]
-                    for row in info['base'] + info['custom']
+                "inline_keyboard": [
+                    [dict(btn) for btn in row] for row in info["base"] + info["custom"]
                 ]
             }
 
             payload = {
-                'chat_id': chat_id,
-                'message_id': msg_id,
-                'reply_markup': keyboard,
+                "chat_id": chat_id,
+                "message_id": msg_id,
+                "reply_markup": keyboard,
             }
-            method = 'editMessageReplyMarkup'
+            method = "editMessageReplyMarkup"
             if caption is not None:
-                method = 'editMessageCaption'
-                payload['caption'] = caption
+                method = "editMessageCaption"
+                payload["caption"] = caption
                 if caption_entities:
-                    payload['caption_entities'] = caption_entities
+                    payload["caption_entities"] = caption_entities
 
             resp = await self.api_request(method, payload)
 
-            if not resp.get('ok') and resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', ''):
-                resp['ok'] = True
-            if resp.get('ok'):
-                logging.info('Updated message %s with button', msg_id)
+            if (
+                not resp.get("ok")
+                and resp.get("error_code") == 400
+                and "message is not modified" in resp.get("description", "")
+            ):
+                resp["ok"] = True
+            if resp.get("ok"):
+                logging.info("Updated message %s with button", msg_id)
                 cur = self.db.execute(
-                    'SELECT 1 FROM weather_posts WHERE chat_id=? AND message_id=?',
+                    "SELECT 1 FROM weather_posts WHERE chat_id=? AND message_id=?",
                     (chat_id, msg_id),
                 )
                 if cur.fetchone():
                     self.db.execute(
-                        'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                        "UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?",
                         (json.dumps(keyboard), chat_id, msg_id),
                     )
                     self.db.commit()
 
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Button added'})
+                await self.api_request("sendMessage", {"chat_id": user_id, "text": "Button added"})
             else:
-                logging.error('Failed to add button to %s: %s', msg_id, resp)
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Failed to add button'})
+                logging.error("Failed to add button to %s: %s", msg_id, resp)
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Failed to add button"}
+                )
             return
 
-        if text.startswith('/delbutton'):
+        if text.startswith("/delbutton"):
             if not self.is_authorized(user_id):
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Not authorized'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
                 return
 
             parts = text.split()
             if len(parts) != 2:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Usage: /delbutton <post_url>'
-                })
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Usage: /delbutton <post_url>"}
+                )
                 return
             parsed = await self.parse_post_url(parts[1])
             if not parsed:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Invalid post URL'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Invalid post URL"}
+                )
                 return
             chat_id, msg_id = parsed
 
             resp = await self.api_request(
-                'editMessageReplyMarkup',
+                "editMessageReplyMarkup",
                 {
-                    'chat_id': chat_id,
-                    'message_id': msg_id,
-                    'reply_markup': {},
+                    "chat_id": chat_id,
+                    "message_id": msg_id,
+                    "reply_markup": {},
                 },
             )
 
-            if not resp.get('ok') and resp.get('error_code') == 400 and 'message is not modified' in resp.get('description', ''):
-                resp['ok'] = True
-            if resp.get('ok'):
+            if (
+                not resp.get("ok")
+                and resp.get("error_code") == 400
+                and "message is not modified" in resp.get("description", "")
+            ):
+                resp["ok"] = True
+            if resp.get("ok"):
 
-                logging.info('Removed buttons from message %s', msg_id)
+                logging.info("Removed buttons from message %s", msg_id)
                 self.db.execute(
-                    'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                    "DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?",
                     (chat_id, msg_id),
                 )
                 self.db.execute(
-                    'UPDATE weather_posts SET reply_markup=NULL WHERE chat_id=? AND message_id=?',
+                    "UPDATE weather_posts SET reply_markup=NULL WHERE chat_id=? AND message_id=?",
                     (chat_id, msg_id),
                 )
                 self.db.commit()
                 self.manual_buttons.pop((chat_id, msg_id), None)
             else:
-                logging.error('Failed to remove button from %s: %s', msg_id, resp)
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Failed to remove button'})
+                logging.error("Failed to remove button from %s: %s", msg_id, resp)
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Failed to remove button"}
+                )
             return
 
-        if text.startswith('/addweatherbutton') and self.is_superadmin(user_id):
+        if text.startswith("/addweatherbutton") and self.is_superadmin(user_id):
             parts = text.split()
             if len(parts) < 3:
                 await self.api_request(
-                    'sendMessage',
+                    "sendMessage",
                     {
-                        'chat_id': user_id,
-                        'text': 'Usage: /addweatherbutton <post_url> <text> [url]'
+                        "chat_id": user_id,
+                        "text": "Usage: /addweatherbutton <post_url> <text> [url]",
                     },
                 )
                 return
 
             url = None
-            if len(parts) > 3 and parts[-1].startswith(('http://', 'https://')):
+            if len(parts) > 3 and parts[-1].startswith(("http://", "https://")):
                 url = parts[-1]
                 btn_text = " ".join(parts[2:-1])
             else:
@@ -7004,551 +6959,641 @@ class Bot:
                 url = self.latest_weather_url()
                 if not url:
                     await self.api_request(
-                        'sendMessage',
-                        {
-                            'chat_id': user_id,
-                            'text': 'Specify forecast URL after text'
-                        },
+                        "sendMessage",
+                        {"chat_id": user_id, "text": "Specify forecast URL after text"},
                     )
                     return
 
             parsed = await self.parse_post_url(parts[1])
             if not parsed:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Invalid post URL'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Invalid post URL"}
+                )
                 return
             chat_id, msg_id = parsed
             fwd = await self.api_request(
-                'copyMessage',
-                {'chat_id': user_id, 'from_chat_id': chat_id, 'message_id': msg_id},
+                "copyMessage",
+                {"chat_id": user_id, "from_chat_id": chat_id, "message_id": msg_id},
             )
             markup = None
-            if not fwd.get('ok'):
+            if not fwd.get("ok"):
                 fwd = await self.api_request(
-                    'forwardMessage',
-                    {'chat_id': user_id, 'from_chat_id': chat_id, 'message_id': msg_id},
+                    "forwardMessage",
+                    {"chat_id": user_id, "from_chat_id": chat_id, "message_id": msg_id},
                 )
-            if fwd.get('ok') and fwd.get('result'):
-                markup = fwd['result'].get('reply_markup')
+            if fwd.get("ok") and fwd.get("result"):
+                markup = fwd["result"].get("reply_markup")
                 await self.api_request(
-                    'deleteMessage',
+                    "deleteMessage",
                     {
-                        'chat_id': user_id,
-                        'message_id': fwd['result'].get('message_id'),
+                        "chat_id": user_id,
+                        "message_id": fwd["result"].get("message_id"),
                     },
                 )
 
             row = self.db.execute(
-                'SELECT base_markup, button_texts FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                "SELECT base_markup, button_texts FROM weather_link_posts WHERE chat_id=? AND message_id=?",
                 (chat_id, msg_id),
             ).fetchone()
-            base_markup = row['base_markup'] if row else json.dumps(markup) if markup else None
-            texts = json.loads(row['button_texts']) if row else []
+            base_markup = row["base_markup"] if row else json.dumps(markup) if markup else None
+            texts = json.loads(row["button_texts"]) if row else []
             if row is None:
-                base_buttons = markup.get('inline_keyboard', []) if markup else []
+                base_buttons = markup.get("inline_keyboard", []) if markup else []
             else:
-                base_buttons = json.loads(base_markup)['inline_keyboard'] if base_markup else []
+                base_buttons = json.loads(base_markup)["inline_keyboard"] if base_markup else []
             texts.append(btn_text)
 
             rendered_texts = [self._render_template(t) or t for t in texts]
-            weather_buttons = [{'text': t, 'url': url} for t in rendered_texts]
+            weather_buttons = [{"text": t, "url": url} for t in rendered_texts]
             keyboard_buttons = base_buttons + [weather_buttons]
 
             resp = await self.api_request(
-                'editMessageReplyMarkup',
+                "editMessageReplyMarkup",
                 {
-                    'chat_id': chat_id,
-                    'message_id': msg_id,
-                    'reply_markup': {'inline_keyboard': keyboard_buttons},
+                    "chat_id": chat_id,
+                    "message_id": msg_id,
+                    "reply_markup": {"inline_keyboard": keyboard_buttons},
                 },
             )
-            if resp.get('ok'):
+            if resp.get("ok"):
                 self.db.execute(
-                    'INSERT OR REPLACE INTO weather_link_posts (chat_id, message_id, base_markup, button_texts) VALUES (?, ?, ?, ?)',
+                    "INSERT OR REPLACE INTO weather_link_posts (chat_id, message_id, base_markup, button_texts) VALUES (?, ?, ?, ?)",
                     (chat_id, msg_id, base_markup, json.dumps(texts)),
                 )
                 self.db.execute(
-                    'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
-                    (json.dumps({'inline_keyboard': keyboard_buttons}), chat_id, msg_id),
+                    "UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?",
+                    (json.dumps({"inline_keyboard": keyboard_buttons}), chat_id, msg_id),
                 )
                 self.db.commit()
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather button added'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Weather button added"}
+                )
             else:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Failed to add weather button'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Failed to add weather button"}
+                )
             return
 
-        if text.startswith('/addcity') and self.is_superadmin(user_id):
+        if text.startswith("/addcity") and self.is_superadmin(user_id):
             parts = text.split(maxsplit=2)
             if len(parts) == 3:
                 name = parts[1]
                 coords = self._parse_coords(parts[2])
                 if not coords:
-                    await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Invalid coordinates'})
+                    await self.api_request(
+                        "sendMessage", {"chat_id": user_id, "text": "Invalid coordinates"}
+                    )
                     return
                 lat, lon = coords
                 try:
-                    self.db.execute('INSERT INTO cities (name, lat, lon) VALUES (?, ?, ?)', (name, lat, lon))
+                    self.db.execute(
+                        "INSERT INTO cities (name, lat, lon) VALUES (?, ?, ?)", (name, lat, lon)
+                    )
                     self.db.commit()
-                    await self.api_request('sendMessage', {'chat_id': user_id, 'text': f'City {name} added'})
+                    await self.api_request(
+                        "sendMessage", {"chat_id": user_id, "text": f"City {name} added"}
+                    )
                 except sqlite3.IntegrityError:
-                    await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'City already exists'})
+                    await self.api_request(
+                        "sendMessage", {"chat_id": user_id, "text": "City already exists"}
+                    )
             else:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Usage: /addcity <name> <lat> <lon>'})
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "Usage: /addcity <name> <lat> <lon>"},
+                )
             return
 
-        if text.startswith('/addsea') and self.is_superadmin(user_id):
+        if text.startswith("/addsea") and self.is_superadmin(user_id):
 
             parts = text.split(maxsplit=2)
             if len(parts) == 3:
                 name = parts[1]
                 coords = self._parse_coords(parts[2])
                 if not coords:
-                    await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Invalid coordinates'})
+                    await self.api_request(
+                        "sendMessage", {"chat_id": user_id, "text": "Invalid coordinates"}
+                    )
                     return
                 lat, lon = coords
 
                 try:
-                    self.db.execute('INSERT INTO seas (name, lat, lon) VALUES (?, ?, ?)', (name, lat, lon))
+                    self.db.execute(
+                        "INSERT INTO seas (name, lat, lon) VALUES (?, ?, ?)", (name, lat, lon)
+                    )
                     self.db.commit()
-                    await self.api_request('sendMessage', {'chat_id': user_id, 'text': f'Sea {name} added'})
+                    await self.api_request(
+                        "sendMessage", {"chat_id": user_id, "text": f"Sea {name} added"}
+                    )
                 except sqlite3.IntegrityError:
-                    await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Sea already exists'})
+                    await self.api_request(
+                        "sendMessage", {"chat_id": user_id, "text": "Sea already exists"}
+                    )
             else:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Usage: /addsea <name> <lat> <lon>'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Usage: /addsea <name> <lat> <lon>"}
+                )
             return
 
-        if text.startswith('/cities') and self.is_superadmin(user_id):
-            cur = self.db.execute('SELECT id, name, lat, lon FROM cities ORDER BY id')
+        if text.startswith("/cities") and self.is_superadmin(user_id):
+            cur = self.db.execute("SELECT id, name, lat, lon FROM cities ORDER BY id")
             rows = cur.fetchall()
             if not rows:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No cities'})
+                await self.api_request("sendMessage", {"chat_id": user_id, "text": "No cities"})
                 return
             for r in rows:
-                keyboard = {'inline_keyboard': [[{'text': 'Delete', 'callback_data': f'city_del:{r["id"]}'}]]}
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f"{r['id']}: {r['name']} ({r['lat']:.6f}, {r['lon']:.6f})",
-                    'reply_markup': keyboard
-                })
+                keyboard = {
+                    "inline_keyboard": [
+                        [{"text": "Delete", "callback_data": f'city_del:{r["id"]}'}]
+                    ]
+                }
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": f"{r['id']}: {r['name']} ({r['lat']:.6f}, {r['lon']:.6f})",
+                        "reply_markup": keyboard,
+                    },
+                )
             return
 
-        if text.startswith('/seas') and self.is_superadmin(user_id):
-            cur = self.db.execute('SELECT id, name, lat, lon FROM seas ORDER BY id')
+        if text.startswith("/seas") and self.is_superadmin(user_id):
+            cur = self.db.execute("SELECT id, name, lat, lon FROM seas ORDER BY id")
             rows = cur.fetchall()
             if not rows:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No seas'})
+                await self.api_request("sendMessage", {"chat_id": user_id, "text": "No seas"})
                 return
             for r in rows:
-                keyboard = {'inline_keyboard': [[{'text': 'Delete', 'callback_data': f'sea_del:{r["id"]}'}]]}
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f"{r['id']}: {r['name']} ({r['lat']:.6f}, {r['lon']:.6f})",
-                    'reply_markup': keyboard
-                })
+                keyboard = {
+                    "inline_keyboard": [[{"text": "Delete", "callback_data": f'sea_del:{r["id"]}'}]]
+                }
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": f"{r['id']}: {r['name']} ({r['lat']:.6f}, {r['lon']:.6f})",
+                        "reply_markup": keyboard,
+                    },
+                )
             return
 
-        if text.startswith('/amber') and self.is_superadmin(user_id):
+        if text.startswith("/amber") and self.is_superadmin(user_id):
             sea_id = self.get_amber_sea()
             if sea_id is None:
-                cur = self.db.execute('SELECT id, name FROM seas ORDER BY id')
+                cur = self.db.execute("SELECT id, name FROM seas ORDER BY id")
                 rows = cur.fetchall()
                 if not rows:
-                    await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No seas'})
+                    await self.api_request("sendMessage", {"chat_id": user_id, "text": "No seas"})
                     return
-                keyboard = {'inline_keyboard': [[{'text': r['name'], 'callback_data': f'amber_sea:{r["id"]}'}] for r in rows]}
-                self.pending[user_id] = {'amber_sea': True}
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Select sea', 'reply_markup': keyboard})
+                keyboard = {
+                    "inline_keyboard": [
+                        [{"text": r["name"], "callback_data": f'amber_sea:{r["id"]}'}] for r in rows
+                    ]
+                }
+                self.pending[user_id] = {"amber_sea": True}
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "Select sea", "reply_markup": keyboard},
+                )
             else:
                 await self.show_amber_channels(user_id)
             return
 
-        if text.startswith('/weatherposts') and self.is_superadmin(user_id):
+        if text.startswith("/weatherposts") and self.is_superadmin(user_id):
             parts = text.split(maxsplit=1)
-            force = len(parts) > 1 and parts[1] == 'update'
+            force = len(parts) > 1 and parts[1] == "update"
             if force:
                 await self.update_weather_posts()
                 await self.update_weather_buttons()
             cur = self.db.execute(
-                'SELECT chat_id, message_id, template FROM weather_posts ORDER BY id'
+                "SELECT chat_id, message_id, template FROM weather_posts ORDER BY id"
             )
             post_rows = cur.fetchall()
             for r in post_rows:
-                header = self._render_template(r['template'])
-                url = self.post_url(r['chat_id'], r['message_id'])
+                header = self._render_template(r["template"])
+                url = self.post_url(r["chat_id"], r["message_id"])
                 text = f"{url} {header}" if header else f"{url} no data"
                 keyboard = {
-                    'inline_keyboard': [[
-                        {
-                            'text': 'Stop weather',
-                            'callback_data': f'wpost_del:{r["chat_id"]}:{r["message_id"]}'
-                        }
-                    ]]
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "Stop weather",
+                                "callback_data": f'wpost_del:{r["chat_id"]}:{r["message_id"]}',
+                            }
+                        ]
+                    ]
                 }
                 await self.api_request(
-                    'sendMessage',
-                    {'chat_id': user_id, 'text': text, 'reply_markup': keyboard},
+                    "sendMessage",
+                    {"chat_id": user_id, "text": text, "reply_markup": keyboard},
                 )
-            cur = self.db.execute('SELECT chat_id, message_id, button_texts FROM weather_link_posts ORDER BY rowid')
+            cur = self.db.execute(
+                "SELECT chat_id, message_id, button_texts FROM weather_link_posts ORDER BY rowid"
+            )
             rows = cur.fetchall()
             if not rows and not post_rows:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No weather posts'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "No weather posts"}
+                )
                 return
             for r in rows:
 
-                rendered = [self._render_template(t) or t for t in json.loads(r['button_texts'])]
-                texts = ', '.join(rendered)
+                rendered = [self._render_template(t) or t for t in json.loads(r["button_texts"])]
+                texts = ", ".join(rendered)
 
-                keyboard = {'inline_keyboard': [[{'text': 'Remove buttons', 'callback_data': f'wbtn_del:{r["chat_id"]}:{r["message_id"]}'}]]}
+                keyboard = {
+                    "inline_keyboard": [
+                        [
+                            {
+                                "text": "Remove buttons",
+                                "callback_data": f'wbtn_del:{r["chat_id"]}:{r["message_id"]}',
+                            }
+                        ]
+                    ]
+                }
                 await self.api_request(
-                    'sendMessage',
+                    "sendMessage",
                     {
-                        'chat_id': user_id,
-                        'text': f"{self.post_url(r['chat_id'], r['message_id'])} buttons: {texts}",
-                        'reply_markup': keyboard,
+                        "chat_id": user_id,
+                        "text": f"{self.post_url(r['chat_id'], r['message_id'])} buttons: {texts}",
+                        "reply_markup": keyboard,
                     },
                 )
             return
 
-        if text.startswith('/setup_weather') and self.is_superadmin(user_id):
-            cur = self.db.execute('SELECT chat_id, title FROM channels')
+        if text.startswith("/setup_weather") and self.is_superadmin(user_id):
+            cur = self.db.execute("SELECT chat_id, title FROM channels")
             rows = cur.fetchall()
-            existing = {r['channel_id'] for r in self.list_weather_channels()}
-            options = [r for r in rows if r['chat_id'] not in existing]
+            existing = {r["channel_id"] for r in self.list_weather_channels()}
+            options = [r for r in rows if r["chat_id"] not in existing]
             if not options:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No channels available'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "No channels available"}
+                )
                 return
-            keyboard = {'inline_keyboard': [[{'text': r['title'], 'callback_data': f'ws_ch:{r["chat_id"]}'}] for r in options]}
-            self.pending[user_id] = {'setup_weather': True}
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Select channel', 'reply_markup': keyboard})
+            keyboard = {
+                "inline_keyboard": [
+                    [{"text": r["title"], "callback_data": f'ws_ch:{r["chat_id"]}'}]
+                    for r in options
+                ]
+            }
+            self.pending[user_id] = {"setup_weather": True}
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": "Select channel", "reply_markup": keyboard},
+            )
             return
 
-        if text.startswith('/list_weather_channels') and self.is_superadmin(user_id):
+        if text.startswith("/list_weather_channels") and self.is_superadmin(user_id):
             rows = self.list_weather_channels()
             if not rows:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No weather channels'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "No weather channels"}
+                )
                 return
             for r in rows:
 
-                last = r['last_published_at']
+                last = r["last_published_at"]
                 if last:
                     last = self.format_time(last, self.get_tz_offset(user_id))
                 else:
-                    last = 'never'
+                    last = "never"
                 keyboard = {
-                    'inline_keyboard': [[
-                        {'text': 'Run now', 'callback_data': f'wrnow:{r["channel_id"]}'},
-                        {'text': 'Stop', 'callback_data': f'wstop:{r["channel_id"]}'}
-                    ]]
+                    "inline_keyboard": [
+                        [
+                            {"text": "Run now", "callback_data": f'wrnow:{r["channel_id"]}'},
+                            {"text": "Stop", "callback_data": f'wstop:{r["channel_id"]}'},
+                        ]
+                    ]
                 }
                 await self.api_request(
-                    'sendMessage',
+                    "sendMessage",
                     {
-                        'chat_id': user_id,
-                        'text': f"{r['title'] or r['channel_id']} at {r['post_time']} last {last}",
-                        'reply_markup': keyboard,
+                        "chat_id": user_id,
+                        "text": f"{r['title'] or r['channel_id']} at {r['post_time']} last {last}",
+                        "reply_markup": keyboard,
                     },
                 )
 
             return
 
-        if text.startswith('/set_assets_channel') and self.is_superadmin(user_id):
+        if text.startswith("/set_assets_channel") and self.is_superadmin(user_id):
             parts = text.split(maxsplit=1)
-            confirmed = len(parts) > 1 and parts[1].strip().lower() == 'confirm'
+            confirmed = len(parts) > 1 and parts[1].strip().lower() == "confirm"
             if not confirmed:
                 await self.api_request(
-                    'sendMessage',
+                    "sendMessage",
                     {
-                        'chat_id': user_id,
-                        'text': (
-                            'Команда `/set_assets_channel` устанавливает один и тот же канал для '
-                            'хранилища погоды и распознавания. Используйте её только если это '
-                            'действительно необходимо и подтвердите действие командой '
-                            '`/set_assets_channel confirm`. Для раздельных складов вызовите '
-                            'по очереди `/set_weather_assets_channel` и `/set_recognition_channel`.'
+                        "chat_id": user_id,
+                        "text": (
+                            "Команда `/set_assets_channel` устанавливает один и тот же канал для "
+                            "хранилища погоды и распознавания. Используйте её только если это "
+                            "действительно необходимо и подтвердите действие командой "
+                            "`/set_assets_channel confirm`. Для раздельных складов вызовите "
+                            "по очереди `/set_weather_assets_channel` и `/set_recognition_channel`."
                         ),
-                        'parse_mode': 'Markdown',
+                        "parse_mode": "Markdown",
                     },
                 )
                 return
             await self._prompt_channel_selection(
                 user_id,
-                pending_key='set_assets',
-                callback_prefix='asset_ch',
-                prompt='Select asset channel',
+                pending_key="set_assets",
+                callback_prefix="asset_ch",
+                prompt="Select asset channel",
             )
             return
 
-        if text.startswith('/set_weather_assets_channel') and self.is_superadmin(user_id):
+        if text.startswith("/set_weather_assets_channel") and self.is_superadmin(user_id):
             await self._prompt_channel_selection(
                 user_id,
-                pending_key='set_weather_assets',
-                callback_prefix='weather_ch',
-                prompt='Select weather assets channel',
+                pending_key="set_weather_assets",
+                callback_prefix="weather_ch",
+                prompt="Select weather assets channel",
             )
             return
 
-        if text.startswith('/set_recognition_channel') and self.is_superadmin(user_id):
+        if text.startswith("/set_recognition_channel") and self.is_superadmin(user_id):
             await self._prompt_channel_selection(
                 user_id,
-                pending_key='set_recognition',
-                callback_prefix='recognition_ch',
-                prompt='Select recognition channel',
+                pending_key="set_recognition",
+                callback_prefix="recognition_ch",
+                prompt="Select recognition channel",
             )
             return
 
-
-
-        if text.startswith('/weather') and self.is_superadmin(user_id):
+        if text.startswith("/weather") and self.is_superadmin(user_id):
 
             parts = text.split(maxsplit=1)
-            if len(parts) > 1 and parts[1].lower() == 'now':
+            if len(parts) > 1 and parts[1].lower() == "now":
                 await self.collect_weather(force=True)
                 await self.collect_sea(force=True)
 
-            cur = self.db.execute('SELECT id, name FROM cities ORDER BY id')
+            cur = self.db.execute("SELECT id, name FROM cities ORDER BY id")
             rows = cur.fetchall()
             if not rows:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'No cities'})
+                await self.api_request("sendMessage", {"chat_id": user_id, "text": "No cities"})
                 return
             lines = []
             for r in rows:
                 w = self.db.execute(
-                    'SELECT temperature, weather_code, wind_speed, is_day, timestamp FROM weather_cache_hour WHERE city_id=? ORDER BY timestamp DESC LIMIT 1',
-                    (r['id'],),
+                    "SELECT temperature, weather_code, wind_speed, is_day, timestamp FROM weather_cache_hour WHERE city_id=? ORDER BY timestamp DESC LIMIT 1",
+                    (r["id"],),
                 ).fetchone()
                 if w:
-                    emoji = weather_emoji(w['weather_code'], w['is_day'])
+                    emoji = weather_emoji(w["weather_code"], w["is_day"])
                     lines.append(
                         f"{r['name']}: {w['temperature']:.1f}°C {emoji} wind {w['wind_speed']:.1f} m/s at {w['timestamp']}"
-
                     )
                 else:
                     lines.append(f"{r['name']}: no data")
 
-            cur = self.db.execute('SELECT id, name FROM seas ORDER BY id')
+            cur = self.db.execute("SELECT id, name FROM seas ORDER BY id")
             sea_rows = cur.fetchall()
             for r in sea_rows:
-                row = self._get_sea_cache(r['id'])
-                if row and row['current'] is not None:
-                    emoji = "\U0001F30A"
+                row = self._get_sea_cache(r["id"])
+                if row and row["current"] is not None:
+                    emoji = "\U0001f30a"
                     lines.append(
                         f"{r['name']}: {emoji} {row['current']:.1f}°C {row['morning']:.1f}/{row['day']:.1f}/{row['evening']:.1f}/{row['night']:.1f}"
                     )
                 else:
                     lines.append(f"{r['name']}: no data")
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': '\n'.join(lines)})
+            await self.api_request("sendMessage", {"chat_id": user_id, "text": "\n".join(lines)})
             return
 
-        if text.startswith('/regweather') and self.is_superadmin(user_id):
+        if text.startswith("/regweather") and self.is_superadmin(user_id):
             parts = text.split(maxsplit=2)
             if len(parts) < 3:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Usage: /regweather <post_url> <template>'
-                })
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "Usage: /regweather <post_url> <template>"},
+                )
                 return
             parsed = await self.parse_post_url(parts[1])
             if not parsed:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Invalid post URL'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Invalid post URL"}
+                )
                 return
             template = parts[2]
             chat_id, msg_id = parsed
             resp = await self.api_request(
-                'copyMessage',
+                "copyMessage",
                 {
-                    'chat_id': user_id,
-                    'from_chat_id': chat_id,
-                    'message_id': msg_id,
+                    "chat_id": user_id,
+                    "from_chat_id": chat_id,
+                    "message_id": msg_id,
                 },
             )
-            if not resp.get('ok') or not resp.get('result'):
+            if not resp.get("ok") or not resp.get("result"):
                 resp = await self.api_request(
-                    'forwardMessage',
+                    "forwardMessage",
                     {
-                        'chat_id': user_id,
-                        'from_chat_id': chat_id,
-                        'message_id': msg_id,
+                        "chat_id": user_id,
+                        "from_chat_id": chat_id,
+                        "message_id": msg_id,
                     },
                 )
-            elif (
-                not resp['result'].get('text')
-                and not resp['result'].get('caption')
-            ):
+            elif not resp["result"].get("text") and not resp["result"].get("caption"):
                 await self.api_request(
-                    'deleteMessage',
-                    {'chat_id': user_id, 'message_id': resp['result']['message_id']},
+                    "deleteMessage",
+                    {"chat_id": user_id, "message_id": resp["result"]["message_id"]},
                 )
                 resp = await self.api_request(
-                    'forwardMessage',
+                    "forwardMessage",
                     {
-                        'chat_id': user_id,
-                        'from_chat_id': chat_id,
-                        'message_id': msg_id,
+                        "chat_id": user_id,
+                        "from_chat_id": chat_id,
+                        "message_id": msg_id,
                     },
                 )
-            if not resp.get('ok'):
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Cannot read post'})
+            if not resp.get("ok"):
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Cannot read post"}
+                )
                 return
 
-            base_text = resp['result'].get('text')
-            base_caption = resp['result'].get('caption')
+            base_text = resp["result"].get("text")
+            base_caption = resp["result"].get("caption")
             base_text = self.strip_header(base_text)
             base_caption = self.strip_header(base_caption)
-            markup = resp['result'].get('reply_markup')
+            markup = resp["result"].get("reply_markup")
 
             if base_text is None and base_caption is None:
-                base_text = ''
-            await self.api_request('deleteMessage', {'chat_id': user_id, 'message_id': resp['result']['message_id']})
+                base_text = ""
+            await self.api_request(
+                "deleteMessage", {"chat_id": user_id, "message_id": resp["result"]["message_id"]}
+            )
             self.db.execute(
-
-                'INSERT OR REPLACE INTO weather_posts (chat_id, message_id, template, base_text, base_caption, reply_markup) VALUES (?, ?, ?, ?, ?, ?)',
-                (chat_id, msg_id, template, base_text, base_caption, json.dumps(markup) if markup else None)
-
+                "INSERT OR REPLACE INTO weather_posts (chat_id, message_id, template, base_text, base_caption, reply_markup) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    chat_id,
+                    msg_id,
+                    template,
+                    base_text,
+                    base_caption,
+                    json.dumps(markup) if markup else None,
+                ),
             )
             self.db.commit()
             # Ensure data is available for the placeholders right away
             # so the post gets updated immediately after registration.
             await self.collect_weather(force=True)
             await self.collect_sea(force=True)
-            await self.update_weather_posts({int(m.group(1)) for m in re.finditer(r"{(\d+)\|", template)})
-            await self.api_request('sendMessage', {
-                'chat_id': user_id,
-                'text': 'Weather post registered'
-            })
+            await self.update_weather_posts(
+                {int(m.group(1)) for m in re.finditer(r"{(\d+)\|", template)}
+            )
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": "Weather post registered"}
+            )
             return
 
-
-
         # handle time input for scheduling
-        if user_id in self.pending and 'await_time' in self.pending[user_id]:
+        if user_id in self.pending and "await_time" in self.pending[user_id]:
             time_str = text.strip()
             try:
                 if len(time_str.split()) == 1:
-                    dt = datetime.strptime(time_str, '%H:%M')
+                    dt = datetime.strptime(time_str, "%H:%M")
                     pub_time = datetime.combine(date.today(), dt.time())
                 else:
-                    pub_time = datetime.strptime(time_str, '%d.%m.%Y %H:%M')
+                    pub_time = datetime.strptime(time_str, "%d.%m.%Y %H:%M")
             except ValueError:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Invalid time format'
-                })
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Invalid time format"}
+                )
                 return
             offset = self.get_tz_offset(user_id)
             pub_time_utc = pub_time - self.parse_offset(offset)
             if pub_time_utc <= datetime.utcnow():
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Time must be in future'
-                })
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Time must be in future"}
+                )
                 return
             data = self.pending.pop(user_id)
-            if 'reschedule_id' in data:
-                self.update_schedule_time(data['reschedule_id'], pub_time_utc.isoformat())
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'Rescheduled for {self.format_time(pub_time_utc.isoformat(), offset)}'
-                })
+            if "reschedule_id" in data:
+                self.update_schedule_time(data["reschedule_id"], pub_time_utc.isoformat())
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": f"Rescheduled for {self.format_time(pub_time_utc.isoformat(), offset)}",
+                    },
+                )
             else:
                 test = await self.api_request(
-                    'forwardMessage',
+                    "forwardMessage",
                     {
-                        'chat_id': user_id,
-                        'from_chat_id': data['from_chat_id'],
-                        'message_id': data['message_id']
-                    }
+                        "chat_id": user_id,
+                        "from_chat_id": data["from_chat_id"],
+                        "message_id": data["message_id"],
+                    },
                 )
-                if not test.get('ok'):
-                    await self.api_request('sendMessage', {
-                        'chat_id': user_id,
-                        'text': f"Add the bot to channel {data['from_chat_id']} (reader role) first"
-                    })
+                if not test.get("ok"):
+                    await self.api_request(
+                        "sendMessage",
+                        {
+                            "chat_id": user_id,
+                            "text": f"Add the bot to channel {data['from_chat_id']} (reader role) first",
+                        },
+                    )
                     return
-                self.add_schedule(data['from_chat_id'], data['message_id'], data['selected'], pub_time_utc.isoformat())
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f"Scheduled to {len(data['selected'])} channels for {self.format_time(pub_time_utc.isoformat(), offset)}"
-                })
+                self.add_schedule(
+                    data["from_chat_id"],
+                    data["message_id"],
+                    data["selected"],
+                    pub_time_utc.isoformat(),
+                )
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": f"Scheduled to {len(data['selected'])} channels for {self.format_time(pub_time_utc.isoformat(), offset)}",
+                    },
+                )
             return
 
-        if user_id in self.pending and self.pending[user_id].get('weather_time'):
+        if user_id in self.pending and self.pending[user_id].get("weather_time"):
             time_str = text.strip()
             try:
-                dt = datetime.strptime(time_str, '%H:%M')
+                dt = datetime.strptime(time_str, "%H:%M")
             except ValueError:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Invalid time format'})
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Invalid time format"}
+                )
                 return
-            self.add_weather_channel(self.pending[user_id]['channel'], time_str)
+            self.add_weather_channel(self.pending[user_id]["channel"], time_str)
             del self.pending[user_id]
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather channel registered'})
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": "Weather channel registered"}
+            )
             return
 
         # start scheduling on forwarded message
-        if 'forward_from_chat' in message and self.is_authorized(user_id):
-            from_chat = message['forward_from_chat']['id']
-            msg_id = message['forward_from_message_id']
-            cur = self.db.execute('SELECT chat_id, title FROM channels')
+        if "forward_from_chat" in message and self.is_authorized(user_id):
+            from_chat = message["forward_from_chat"]["id"]
+            msg_id = message["forward_from_message_id"]
+            cur = self.db.execute("SELECT chat_id, title FROM channels")
             rows = cur.fetchall()
             if not rows:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'No channels available'
-                })
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "No channels available"}
+                )
                 return
             keyboard = {
-                'inline_keyboard': [
-                    [{'text': r['title'], 'callback_data': f'addch:{r["chat_id"]}'}] for r in rows
-                ] + [[{'text': 'Done', 'callback_data': 'chdone'}]]
+                "inline_keyboard": [
+                    [{"text": r["title"], "callback_data": f'addch:{r["chat_id"]}'}] for r in rows
+                ]
+                + [[{"text": "Done", "callback_data": "chdone"}]]
             }
             self.pending[user_id] = {
-                'from_chat_id': from_chat,
-                'message_id': msg_id,
-                'selected': set()
+                "from_chat_id": from_chat,
+                "message_id": msg_id,
+                "selected": set(),
             }
-            await self.api_request('sendMessage', {
-                'chat_id': user_id,
-                'text': 'Select channels',
-                'reply_markup': keyboard
-            })
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": "Select channels", "reply_markup": keyboard},
+            )
             return
         else:
             if not self.is_authorized(user_id):
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Not authorized'
-                })
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
             else:
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Please forward a post from a channel'
-                })
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "Please forward a post from a channel"},
+                )
 
     async def handle_callback(self, query):
-        user_id = query['from']['id']
-        data = query['data']
-        if data == 'pair:new':
+        user_id = query["from"]["id"]
+        data = query["data"]
+        if data == "pair:new":
             if not self.is_authorized(user_id):
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Недостаточно прав',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Недостаточно прав",
+                        "show_alert": True,
                     },
                 )
                 return
-            message = query.get('message') or {}
+            message = query.get("message") or {}
             existing = self._get_active_pairing_token(user_id)
             device_label = existing[2] if existing else _PAIRING_DEFAULT_NAME
             try:
                 code, expires_at = self._issue_pairing_token(user_id, device_label)
             except RuntimeError:
-                logging.error('Failed to regenerate pairing code for user %s', user_id)
+                logging.error("Failed to regenerate pairing code for user %s", user_id)
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Не удалось сгенерировать код',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Не удалось сгенерировать код",
+                        "show_alert": True,
                     },
                 )
                 return
@@ -7562,38 +7607,36 @@ class Bot:
                 replace_photo=True,
             )
             await self.api_request(
-                'answerCallbackQuery',
+                "answerCallbackQuery",
                 {
-                    'callback_query_id': query['id'],
-                    'text': 'Новый код создан',
+                    "callback_query_id": query["id"],
+                    "text": "Новый код создан",
                 },
             )
             return
-        if data.startswith('dev:revoke:'):
+        if data.startswith("dev:revoke:"):
             if not self.is_authorized(user_id):
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Недостаточно прав',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Недостаточно прав",
+                        "show_alert": True,
                     },
                 )
                 return
-            device_id = data.split(':', 2)[2]
-            message = query.get('message') or {}
+            device_id = data.split(":", 2)[2]
+            message = query.get("message") or {}
             revoked = False
             with self.db:
-                revoked = revoke_device(
-                    self.db, device_id=device_id, expected_user_id=user_id
-                )
+                revoked = revoke_device(self.db, device_id=device_id, expected_user_id=user_id)
             if not revoked:
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Устройство не найдено',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Устройство не найдено",
+                        "show_alert": True,
                     },
                 )
                 return
@@ -7603,18 +7646,16 @@ class Bot:
                 code, expires_at, _ = existing
             else:
                 try:
-                    code, expires_at = self._issue_pairing_token(
-                        user_id, _PAIRING_DEFAULT_NAME
-                    )
+                    code, expires_at = self._issue_pairing_token(user_id, _PAIRING_DEFAULT_NAME)
                     replace_photo = True
                 except RuntimeError:
-                    logging.error('Failed to regenerate pairing code for user %s', user_id)
+                    logging.error("Failed to regenerate pairing code for user %s", user_id)
                     await self.api_request(
-                        'answerCallbackQuery',
+                        "answerCallbackQuery",
                         {
-                            'callback_query_id': query['id'],
-                            'text': 'Не удалось обновить код',
-                            'show_alert': True,
+                            "callback_query_id": query["id"],
+                            "text": "Не удалось обновить код",
+                            "show_alert": True,
                         },
                     )
                     return
@@ -7628,26 +7669,26 @@ class Bot:
                 replace_photo=replace_photo,
             )
             await self.api_request(
-                'answerCallbackQuery',
+                "answerCallbackQuery",
                 {
-                    'callback_query_id': query['id'],
-                    'text': 'Устройство отозвано',
+                    "callback_query_id": query["id"],
+                    "text": "Устройство отозвано",
                 },
             )
             return
-        if data.startswith('dev:rotate:'):
+        if data.startswith("dev:rotate:"):
             if not self.is_authorized(user_id):
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Недостаточно прав',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Недостаточно прав",
+                        "show_alert": True,
                     },
                 )
                 return
-            device_id = data.split(':', 2)[2]
-            message = query.get('message') or {}
+            device_id = data.split(":", 2)[2]
+            message = query.get("message") or {}
             with self.db:
                 rotated = rotate_device_secret(
                     self.db,
@@ -7656,11 +7697,11 @@ class Bot:
                 )
             if not rotated:
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Устройство не найдено',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Устройство не найдено",
+                        "show_alert": True,
                     },
                 )
                 return
@@ -7676,13 +7717,13 @@ class Bot:
                     )
                     replace_photo = True
                 except RuntimeError:
-                    logging.error('Failed to regenerate pairing code for user %s', user_id)
+                    logging.error("Failed to regenerate pairing code for user %s", user_id)
                     await self.api_request(
-                        'answerCallbackQuery',
+                        "answerCallbackQuery",
                         {
-                            'callback_query_id': query['id'],
-                            'text': 'Не удалось обновить код',
-                            'show_alert': True,
+                            "callback_query_id": query["id"],
+                            "text": "Не удалось обновить код",
+                            "show_alert": True,
                         },
                     )
                     return
@@ -7696,38 +7737,38 @@ class Bot:
                 replace_photo=replace_photo,
             )
             await self.api_request(
-                'answerCallbackQuery',
+                "answerCallbackQuery",
                 {
-                    'callback_query_id': query['id'],
-                    'text': f'Новый секрет: {secret}',
-                    'show_alert': True,
+                    "callback_query_id": query["id"],
+                    "text": f"Новый секрет: {secret}",
+                    "show_alert": True,
                 },
             )
             return
-        if data == 'pairing_regen':
+        if data == "pairing_regen":
             if not self.is_authorized(user_id):
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Недостаточно прав',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Недостаточно прав",
+                        "show_alert": True,
                     },
                 )
                 return
-            message = query.get('message') or {}
+            message = query.get("message") or {}
             existing = self._get_active_pairing_token(user_id)
             device_label = existing[2] if existing else _PAIRING_DEFAULT_NAME
             try:
                 code, expires_at = self._issue_pairing_token(user_id, device_label)
             except RuntimeError:
-                logging.error('Failed to regenerate pairing code for user %s', user_id)
+                logging.error("Failed to regenerate pairing code for user %s", user_id)
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Не удалось сгенерировать код',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Не удалось сгенерировать код",
+                        "show_alert": True,
                     },
                 )
                 return
@@ -7739,284 +7780,362 @@ class Bot:
                 message=message,
             )
             await self.api_request(
-                'answerCallbackQuery',
+                "answerCallbackQuery",
                 {
-                    'callback_query_id': query['id'],
-                    'text': 'Новый код создан',
+                    "callback_query_id": query["id"],
+                    "text": "Новый код создан",
                 },
             )
             return
-        if data.startswith('addch:') and user_id in self.pending:
-            chat_id = int(data.split(':')[1])
-            if 'selected' in self.pending[user_id]:
-                s = self.pending[user_id]['selected']
+        if data.startswith("addch:") and user_id in self.pending:
+            chat_id = int(data.split(":")[1])
+            if "selected" in self.pending[user_id]:
+                s = self.pending[user_id]["selected"]
                 if chat_id in s:
                     s.remove(chat_id)
                 else:
                     s.add(chat_id)
-        elif data == 'chdone' and user_id in self.pending:
+        elif data == "chdone" and user_id in self.pending:
             info = self.pending[user_id]
-            if not info.get('selected'):
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Select at least one channel'})
+            if not info.get("selected"):
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Select at least one channel"}
+                )
             else:
-                self.pending[user_id]['await_time'] = True
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': 'Enter time (HH:MM or DD.MM.YYYY HH:MM)'
-                })
-        elif data.startswith('ws_ch:') and user_id in self.pending and self.pending[user_id].get('setup_weather'):
-            cid = int(data.split(':')[1])
-            self.pending[user_id] = {'channel': cid, 'weather_time': False, 'setup_weather': True}
-            keyboard = {'inline_keyboard': [[{'text': '17:55', 'callback_data': 'ws_time:17:55'}, {'text': 'Custom', 'callback_data': 'ws_custom'}]]}
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Select time', 'reply_markup': keyboard})
-        elif data == 'ws_custom' and user_id in self.pending and self.pending[user_id].get('setup_weather'):
-            self.pending[user_id]['weather_time'] = True
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Enter time HH:MM'})
-        elif data.startswith('ws_time:') and user_id in self.pending and self.pending[user_id].get('setup_weather'):
-            time_str = data.split(':', 1)[1]
-            self.add_weather_channel(self.pending[user_id]['channel'], time_str)
+                self.pending[user_id]["await_time"] = True
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "Enter time (HH:MM or DD.MM.YYYY HH:MM)"},
+                )
+        elif (
+            data.startswith("ws_ch:")
+            and user_id in self.pending
+            and self.pending[user_id].get("setup_weather")
+        ):
+            cid = int(data.split(":")[1])
+            self.pending[user_id] = {"channel": cid, "weather_time": False, "setup_weather": True}
+            keyboard = {
+                "inline_keyboard": [
+                    [
+                        {"text": "17:55", "callback_data": "ws_time:17:55"},
+                        {"text": "Custom", "callback_data": "ws_custom"},
+                    ]
+                ]
+            }
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": "Select time", "reply_markup": keyboard}
+            )
+        elif (
+            data == "ws_custom"
+            and user_id in self.pending
+            and self.pending[user_id].get("setup_weather")
+        ):
+            self.pending[user_id]["weather_time"] = True
+            await self.api_request("sendMessage", {"chat_id": user_id, "text": "Enter time HH:MM"})
+        elif (
+            data.startswith("ws_time:")
+            and user_id in self.pending
+            and self.pending[user_id].get("setup_weather")
+        ):
+            time_str = data.split(":", 1)[1]
+            self.add_weather_channel(self.pending[user_id]["channel"], time_str)
             del self.pending[user_id]
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather channel registered'})
-        elif data.startswith('flowers_preview:'):
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": "Weather channel registered"}
+            )
+        elif data.startswith("flowers_preview:"):
             if not self.is_superadmin(user_id):
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Недостаточно прав',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Недостаточно прав",
+                        "show_alert": True,
                     },
                 )
                 return
-            action = data.split(':', 1)[1] if ':' in data else ''
+            action = data.split(":", 1)[1] if ":" in data else ""
             await self._handle_flowers_preview_callback(user_id, action, query)
             return
-        elif data.startswith('asset_ch:') and user_id in self.pending and self.pending[user_id].get('set_assets'):
-            cid = int(data.split(':')[1])
+        elif (
+            data.startswith("asset_ch:")
+            and user_id in self.pending
+            and self.pending[user_id].get("set_assets")
+        ):
+            cid = int(data.split(":")[1])
             self.set_asset_channel(cid)
             del self.pending[user_id]
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Asset channel set'})
-        elif data.startswith('weather_ch:') and user_id in self.pending and self.pending[user_id].get('set_weather_assets'):
-            cid = int(data.split(':')[1])
+            await self.api_request("sendMessage", {"chat_id": user_id, "text": "Asset channel set"})
+        elif (
+            data.startswith("weather_ch:")
+            and user_id in self.pending
+            and self.pending[user_id].get("set_weather_assets")
+        ):
+            cid = int(data.split(":")[1])
             self.set_weather_assets_channel(cid)
             del self.pending[user_id]
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather assets channel set'})
-        elif data.startswith('recognition_ch:') and user_id in self.pending and self.pending[user_id].get('set_recognition'):
-            cid = int(data.split(':')[1])
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": "Weather assets channel set"}
+            )
+        elif (
+            data.startswith("recognition_ch:")
+            and user_id in self.pending
+            and self.pending[user_id].get("set_recognition")
+        ):
+            cid = int(data.split(":")[1])
             self.set_recognition_channel(cid)
             del self.pending[user_id]
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Recognition channel set'})
-        elif data.startswith('wrnow:') and self.is_superadmin(user_id):
-            cid = int(data.split(':')[1])
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": "Recognition channel set"}
+            )
+        elif data.startswith("wrnow:") and self.is_superadmin(user_id):
+            cid = int(data.split(":")[1])
 
             ok = await self.publish_weather(cid, None, record=False)
-            msg = 'Posted' if ok else 'No asset to publish'
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': msg})
+            msg = "Posted" if ok else "No asset to publish"
+            await self.api_request("sendMessage", {"chat_id": user_id, "text": msg})
 
-        elif data.startswith('wstop:') and self.is_superadmin(user_id):
-            cid = int(data.split(':')[1])
+        elif data.startswith("wstop:") and self.is_superadmin(user_id):
+            cid = int(data.split(":")[1])
             self.remove_weather_channel(cid)
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Channel removed'})
-        elif data.startswith('wbtn_del:') and self.is_superadmin(user_id):
-            _, cid, mid = data.split(':')
+            await self.api_request("sendMessage", {"chat_id": user_id, "text": "Channel removed"})
+        elif data.startswith("wbtn_del:") and self.is_superadmin(user_id):
+            _, cid, mid = data.split(":")
             chat_id = int(cid)
             msg_id = int(mid)
             row = self.db.execute(
-                'SELECT base_markup FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                "SELECT base_markup FROM weather_link_posts WHERE chat_id=? AND message_id=?",
                 (chat_id, msg_id),
             ).fetchone()
-            markup = json.loads(row['base_markup']) if row and row['base_markup'] else {}
+            markup = json.loads(row["base_markup"]) if row and row["base_markup"] else {}
             await self.api_request(
-                'editMessageReplyMarkup',
+                "editMessageReplyMarkup",
                 {
-                    'chat_id': chat_id,
-                    'message_id': msg_id,
-                    'reply_markup': markup,
+                    "chat_id": chat_id,
+                    "message_id": msg_id,
+                    "reply_markup": markup,
                 },
             )
             self.db.execute(
-                'UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?',
+                "UPDATE weather_posts SET reply_markup=? WHERE chat_id=? AND message_id=?",
                 (json.dumps(markup) if markup else None, chat_id, msg_id),
             )
             self.db.execute(
-                'DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?',
+                "DELETE FROM weather_link_posts WHERE chat_id=? AND message_id=?",
                 (chat_id, msg_id),
             )
             self.db.commit()
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather buttons removed'})
-        elif data.startswith('wpost_del:') and self.is_superadmin(user_id):
-            _, cid, mid = data.split(':')
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": "Weather buttons removed"}
+            )
+        elif data.startswith("wpost_del:") and self.is_superadmin(user_id):
+            _, cid, mid = data.split(":")
             chat_id = int(cid)
             msg_id = int(mid)
             row = self.db.execute(
-                'SELECT base_text, base_caption, reply_markup FROM weather_posts WHERE chat_id=? AND message_id=?',
+                "SELECT base_text, base_caption, reply_markup FROM weather_posts WHERE chat_id=? AND message_id=?",
                 (chat_id, msg_id),
             ).fetchone()
             if row:
-                markup = json.loads(row['reply_markup']) if row['reply_markup'] else None
-                if row['base_caption'] is not None:
+                markup = json.loads(row["reply_markup"]) if row["reply_markup"] else None
+                if row["base_caption"] is not None:
                     payload = {
-                        'chat_id': chat_id,
-                        'message_id': msg_id,
-                        'caption': row['base_caption'],
+                        "chat_id": chat_id,
+                        "message_id": msg_id,
+                        "caption": row["base_caption"],
                     }
-                    method = 'editMessageCaption'
+                    method = "editMessageCaption"
                 else:
                     payload = {
-                        'chat_id': chat_id,
-                        'message_id': msg_id,
-                        'text': row['base_text'] or '',
+                        "chat_id": chat_id,
+                        "message_id": msg_id,
+                        "text": row["base_text"] or "",
                     }
-                    method = 'editMessageText'
+                    method = "editMessageText"
                 if markup:
-                    payload['reply_markup'] = markup
+                    payload["reply_markup"] = markup
                 await self.api_request(method, payload)
                 self.db.execute(
-                    'DELETE FROM weather_posts WHERE chat_id=? AND message_id=?',
+                    "DELETE FROM weather_posts WHERE chat_id=? AND message_id=?",
                     (chat_id, msg_id),
                 )
                 self.db.commit()
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Weather removed'})
-        elif data.startswith('approve:') and self.is_superadmin(user_id):
-            uid = int(data.split(':')[1])
+            await self.api_request("sendMessage", {"chat_id": user_id, "text": "Weather removed"})
+        elif data.startswith("approve:") and self.is_superadmin(user_id):
+            uid = int(data.split(":")[1])
             if self.approve_user(uid):
-                cur = self.db.execute('SELECT username FROM users WHERE user_id=?', (uid,))
+                cur = self.db.execute("SELECT username FROM users WHERE user_id=?", (uid,))
                 row = cur.fetchone()
-                uname = row['username'] if row else None
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'{self.format_user(uid, uname)} approved',
-                    'parse_mode': 'Markdown'
-                })
-                await self.api_request('sendMessage', {'chat_id': uid, 'text': 'You are approved'})
+                uname = row["username"] if row else None
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": f"{self.format_user(uid, uname)} approved",
+                        "parse_mode": "Markdown",
+                    },
+                )
+                await self.api_request("sendMessage", {"chat_id": uid, "text": "You are approved"})
             else:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'User not in pending list'})
-        elif data.startswith('reject:') and self.is_superadmin(user_id):
-            uid = int(data.split(':')[1])
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "User not in pending list"}
+                )
+        elif data.startswith("reject:") and self.is_superadmin(user_id):
+            uid = int(data.split(":")[1])
             if self.reject_user(uid):
-                cur = self.db.execute('SELECT username FROM rejected_users WHERE user_id=?', (uid,))
+                cur = self.db.execute("SELECT username FROM rejected_users WHERE user_id=?", (uid,))
                 row = cur.fetchone()
-                uname = row['username'] if row else None
-                await self.api_request('sendMessage', {
-                    'chat_id': user_id,
-                    'text': f'{self.format_user(uid, uname)} rejected',
-                    'parse_mode': 'Markdown'
-                })
-                await self.api_request('sendMessage', {'chat_id': uid, 'text': 'Your registration was rejected'})
+                uname = row["username"] if row else None
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": f"{self.format_user(uid, uname)} rejected",
+                        "parse_mode": "Markdown",
+                    },
+                )
+                await self.api_request(
+                    "sendMessage", {"chat_id": uid, "text": "Your registration was rejected"}
+                )
             else:
-                await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'User not in pending list'})
-        elif data.startswith('cancel:') and self.is_authorized(user_id):
-            sid = int(data.split(':')[1])
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "User not in pending list"}
+                )
+        elif data.startswith("cancel:") and self.is_authorized(user_id):
+            sid = int(data.split(":")[1])
             self.remove_schedule(sid)
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': f'Schedule {sid} cancelled'})
-        elif data.startswith('resch:') and self.is_authorized(user_id):
-            sid = int(data.split(':')[1])
-            self.pending[user_id] = {'reschedule_id': sid, 'await_time': True}
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Enter new time'})
-        elif data.startswith('city_del:') and self.is_superadmin(user_id):
-            cid = int(data.split(':')[1])
-            self.db.execute('DELETE FROM cities WHERE id=?', (cid,))
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": f"Schedule {sid} cancelled"}
+            )
+        elif data.startswith("resch:") and self.is_authorized(user_id):
+            sid = int(data.split(":")[1])
+            self.pending[user_id] = {"reschedule_id": sid, "await_time": True}
+            await self.api_request("sendMessage", {"chat_id": user_id, "text": "Enter new time"})
+        elif data.startswith("city_del:") and self.is_superadmin(user_id):
+            cid = int(data.split(":")[1])
+            self.db.execute("DELETE FROM cities WHERE id=?", (cid,))
             self.db.commit()
-            await self.api_request('editMessageReplyMarkup', {
-                'chat_id': query['message']['chat']['id'],
-                'message_id': query['message']['message_id'],
-                'reply_markup': {}
-            })
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': f'City {cid} deleted'})
-        elif data.startswith('sea_del:') and self.is_superadmin(user_id):
-            sid = int(data.split(':')[1])
-            self.db.execute('DELETE FROM seas WHERE id=?', (sid,))
+            await self.api_request(
+                "editMessageReplyMarkup",
+                {
+                    "chat_id": query["message"]["chat"]["id"],
+                    "message_id": query["message"]["message_id"],
+                    "reply_markup": {},
+                },
+            )
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": f"City {cid} deleted"}
+            )
+        elif data.startswith("sea_del:") and self.is_superadmin(user_id):
+            sid = int(data.split(":")[1])
+            self.db.execute("DELETE FROM seas WHERE id=?", (sid,))
             self.db.commit()
-            await self.api_request('editMessageReplyMarkup', {
-                'chat_id': query['message']['chat']['id'],
-                'message_id': query['message']['message_id'],
-                'reply_markup': {}
-            })
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': f'Sea {sid} deleted'})
+            await self.api_request(
+                "editMessageReplyMarkup",
+                {
+                    "chat_id": query["message"]["chat"]["id"],
+                    "message_id": query["message"]["message_id"],
+                    "reply_markup": {},
+                },
+            )
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": f"Sea {sid} deleted"}
+            )
 
-        elif data.startswith('amber_sea:') and user_id in self.pending and self.pending[user_id].get('amber_sea'):
-            sid = int(data.split(':')[1])
+        elif (
+            data.startswith("amber_sea:")
+            and user_id in self.pending
+            and self.pending[user_id].get("amber_sea")
+        ):
+            sid = int(data.split(":")[1])
             self.set_amber_sea(sid)
             del self.pending[user_id]
-            await self.api_request('sendMessage', {'chat_id': user_id, 'text': 'Sea selected'})
+            await self.api_request("sendMessage", {"chat_id": user_id, "text": "Sea selected"})
             await self.show_amber_channels(user_id)
-        elif data.startswith('amber_toggle:') and self.is_superadmin(user_id):
-            cid = int(data.split(':')[1])
+        elif data.startswith("amber_toggle:") and self.is_superadmin(user_id):
+            cid = int(data.split(":")[1])
             if self.is_amber_channel(cid):
-                self.db.execute('DELETE FROM amber_channels WHERE channel_id=?', (cid,))
+                self.db.execute("DELETE FROM amber_channels WHERE channel_id=?", (cid,))
                 self.db.commit()
                 enabled = False
             else:
-                self.db.execute('INSERT OR IGNORE INTO amber_channels (channel_id) VALUES (?)', (cid,))
+                self.db.execute(
+                    "INSERT OR IGNORE INTO amber_channels (channel_id) VALUES (?)", (cid,)
+                )
                 self.db.commit()
                 enabled = True
-            row = self.db.execute('SELECT title FROM channels WHERE chat_id=?', (cid,)).fetchone()
-            title = row['title'] if row else str(cid)
-            icon = '✅' if enabled else '❌'
-            btn = 'Выключить отправку' if enabled else 'Включить отправку'
-            keyboard = {'inline_keyboard': [[{'text': btn, 'callback_data': f'amber_toggle:{cid}'}]]}
-            await self.api_request('editMessageText', {
-                'chat_id': query['message']['chat']['id'],
-                'message_id': query['message']['message_id'],
-                'text': f"{title} {icon}",
-                'reply_markup': keyboard,
-            })
-        elif data == 'rubric_dashboard' and self.is_superadmin(user_id):
-            await self._send_rubric_dashboard(user_id, message=query.get('message'))
-        elif data.startswith('rubric_overview:') and self.is_superadmin(user_id):
-            code = data.split(':', 1)[1]
-            await self._send_rubric_overview(user_id, code, message=query.get('message'))
-        elif data.startswith('rubric_publish_confirm:') and self.is_superadmin(user_id):
-            parts = data.split(':', 2)
+            row = self.db.execute("SELECT title FROM channels WHERE chat_id=?", (cid,)).fetchone()
+            title = row["title"] if row else str(cid)
+            icon = "✅" if enabled else "❌"
+            btn = "Выключить отправку" if enabled else "Включить отправку"
+            keyboard = {
+                "inline_keyboard": [[{"text": btn, "callback_data": f"amber_toggle:{cid}"}]]
+            }
+            await self.api_request(
+                "editMessageText",
+                {
+                    "chat_id": query["message"]["chat"]["id"],
+                    "message_id": query["message"]["message_id"],
+                    "text": f"{title} {icon}",
+                    "reply_markup": keyboard,
+                },
+            )
+        elif data == "rubric_dashboard" and self.is_superadmin(user_id):
+            await self._send_rubric_dashboard(user_id, message=query.get("message"))
+        elif data.startswith("rubric_overview:") and self.is_superadmin(user_id):
+            code = data.split(":", 1)[1]
+            await self._send_rubric_overview(user_id, code, message=query.get("message"))
+        elif data.startswith("rubric_publish_confirm:") and self.is_superadmin(user_id):
+            parts = data.split(":", 2)
             if len(parts) < 3:
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Некорректный запрос рубрики',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Некорректный запрос рубрики",
+                        "show_alert": True,
                     },
                 )
                 return
             _, code, mode = parts
-            if mode not in {'prod', 'test'}:
+            if mode not in {"prod", "test"}:
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Неизвестный режим запуска',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Неизвестный режим запуска",
+                        "show_alert": True,
                     },
                 )
                 return
             self._set_rubric_pending_run(user_id, code, mode)
-            await self._send_rubric_overview(user_id, code, message=query.get('message'))
+            await self._send_rubric_overview(user_id, code, message=query.get("message"))
             await self.api_request(
-                'answerCallbackQuery',
+                "answerCallbackQuery",
                 {
-                    'callback_query_id': query['id'],
-                    'text': 'Подтвердите запуск кнопкой ниже',
+                    "callback_query_id": query["id"],
+                    "text": "Подтвердите запуск кнопкой ниже",
                 },
             )
-        elif data.startswith('rubric_publish_cancel:') and self.is_superadmin(user_id):
-            code = data.split(':', 1)[1]
+        elif data.startswith("rubric_publish_cancel:") and self.is_superadmin(user_id):
+            code = data.split(":", 1)[1]
             self._clear_rubric_pending_run(user_id, code)
-            await self._send_rubric_overview(user_id, code, message=query.get('message'))
-        elif data.startswith('rubric_publish_execute:') and self.is_superadmin(user_id):
-            parts = data.split(':', 2)
+            await self._send_rubric_overview(user_id, code, message=query.get("message"))
+        elif data.startswith("rubric_publish_execute:") and self.is_superadmin(user_id):
+            parts = data.split(":", 2)
             if len(parts) < 3:
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Некорректный запрос рубрики',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Некорректный запрос рубрики",
+                        "show_alert": True,
                     },
                 )
                 return
             _, code, mode = parts
-            is_test = mode == 'test'
-            run_label = 'Тестовая' if is_test else 'Рабочая'
+            is_test = mode == "test"
+            run_label = "Тестовая" if is_test else "Рабочая"
             try:
                 job_id = self.enqueue_rubric(
                     code,
@@ -8024,23 +8143,23 @@ class Bot:
                     initiator_id=user_id,
                 )
             except Exception as exc:  # noqa: PERF203 - feedback path
-                logging.exception('Failed to enqueue rubric %s (test=%s)', code, is_test)
+                logging.exception("Failed to enqueue rubric %s (test=%s)", code, is_test)
                 self._clear_rubric_pending_run(user_id, code)
-                await self._send_rubric_overview(user_id, code, message=query.get('message'))
+                await self._send_rubric_overview(user_id, code, message=query.get("message"))
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Ошибка запуска рубрики',
-                        'show_alert': True,
+                        "callback_query_id": query["id"],
+                        "text": "Ошибка запуска рубрики",
+                        "show_alert": True,
                     },
                 )
-                reason = str(exc).strip() or 'неизвестная ошибка'
+                reason = str(exc).strip() or "неизвестная ошибка"
                 await self.api_request(
-                    'sendMessage',
+                    "sendMessage",
                     {
-                        'chat_id': user_id,
-                        'text': (
+                        "chat_id": user_id,
+                        "text": (
                             f"⚠️ {run_label.lower()} публикация рубрики {code} не запущена.\n"
                             f"Причина: {reason}"
                         ),
@@ -8048,206 +8167,206 @@ class Bot:
                 )
             else:
                 logging.info(
-                    'Enqueued %s publication for rubric %s (job_id=%s, user_id=%s)',
-                    'test' if is_test else 'prod',
+                    "Enqueued %s publication for rubric %s (job_id=%s, user_id=%s)",
+                    "test" if is_test else "prod",
                     code,
                     job_id,
                     user_id,
                 )
                 self._clear_rubric_pending_run(user_id, code)
-                await self._send_rubric_overview(user_id, code, message=query.get('message'))
+                await self._send_rubric_overview(user_id, code, message=query.get("message"))
                 await self.api_request(
-                    'answerCallbackQuery',
+                    "answerCallbackQuery",
                     {
-                        'callback_query_id': query['id'],
-                        'text': 'Задача поставлена в очередь',
+                        "callback_query_id": query["id"],
+                        "text": "Задача поставлена в очередь",
                     },
                 )
                 await self.api_request(
-                    'sendMessage',
+                    "sendMessage",
                     {
-                        'chat_id': user_id,
-                        'text': (
+                        "chat_id": user_id,
+                        "text": (
                             f"✅ {run_label} публикация рубрики {code} поставлена в очередь"
                             f" (задача #{job_id})."
                         ),
                     },
                 )
-        elif data.startswith('rubric_toggle:') and self.is_superadmin(user_id):
-            code = data.split(':', 1)[1]
+        elif data.startswith("rubric_toggle:") and self.is_superadmin(user_id):
+            code = data.split(":", 1)[1]
             self._clear_rubric_pending_run(user_id, code)
             rubric = self.data.get_rubric_by_code(code)
             if rubric:
                 config = self._normalize_rubric_config(rubric.config)
-                config['enabled'] = not config.get('enabled', True)
+                config["enabled"] = not config.get("enabled", True)
                 self.data.save_rubric_config(code, config)
-                await self._send_rubric_overview(user_id, code, message=query.get('message'))
-        elif data.startswith('rubric_channel:') and self.is_superadmin(user_id):
-            parts = data.split(':')
+                await self._send_rubric_overview(user_id, code, message=query.get("message"))
+        elif data.startswith("rubric_channel:") and self.is_superadmin(user_id):
+            parts = data.split(":")
             if len(parts) >= 3:
                 code = parts[1]
                 self._clear_rubric_pending_run(user_id, code)
                 target = parts[2]
-                field = 'channel_id' if target == 'main' else 'test_channel_id'
+                field = "channel_id" if target == "main" else "test_channel_id"
                 self.pending[user_id] = {
-                    'rubric_input': {
-                        'mode': 'channel_picker',
-                        'code': code,
-                        'field': field,
-                        'message': query.get('message'),
-                        'page': 0,
-                        'search': '',
-                        'search_mode': False,
-                        'search_charset': 'rus',
-                        'return_mode': None,
+                    "rubric_input": {
+                        "mode": "channel_picker",
+                        "code": code,
+                        "field": field,
+                        "message": query.get("message"),
+                        "page": 0,
+                        "search": "",
+                        "search_mode": False,
+                        "search_charset": "rus",
+                        "return_mode": None,
                     }
                 }
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_city:') and self.is_superadmin(user_id):
-            code = data.split(':', 1)[1] if ':' in data else ''
+        elif data.startswith("rubric_city:") and self.is_superadmin(user_id):
+            code = data.split(":", 1)[1] if ":" in data else ""
             if code:
                 self._clear_rubric_pending_run(user_id, code)
                 self.pending[user_id] = {
-                    'rubric_input': {
-                        'mode': 'city_picker',
-                        'code': code,
-                        'message': query.get('message'),
-                        'page': 0,
-                        'search': '',
-                        'search_mode': False,
-                        'search_charset': 'rus',
+                    "rubric_input": {
+                        "mode": "city_picker",
+                        "code": code,
+                        "message": query.get("message"),
+                        "page": 0,
+                        "search": "",
+                        "search_mode": False,
+                        "search_charset": "rus",
                     }
                 }
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_channel_page:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'channel_picker':
+        elif data.startswith("rubric_channel_page:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "channel_picker":
                 try:
-                    page = int(data.split(':', 1)[1])
+                    page = int(data.split(":", 1)[1])
                 except ValueError:
                     page = 0
-                state['page'] = max(page, 0)
+                state["page"] = max(page, 0)
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_city_page:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'city_picker':
+        elif data.startswith("rubric_city_page:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "city_picker":
                 try:
-                    page = int(data.split(':', 1)[1])
+                    page = int(data.split(":", 1)[1])
                 except ValueError:
                     page = 0
-                state['page'] = max(page, 0)
+                state["page"] = max(page, 0)
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_channel_search_toggle' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'channel_picker':
-                state['search_mode'] = not state.get('search_mode', False)
-                if state['search_mode']:
-                    state.setdefault('search_charset', 'rus')
+        elif data == "rubric_channel_search_toggle" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "channel_picker":
+                state["search_mode"] = not state.get("search_mode", False)
+                if state["search_mode"]:
+                    state.setdefault("search_charset", "rus")
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_city_search_toggle' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'city_picker':
-                state['search_mode'] = not state.get('search_mode', False)
-                if state['search_mode']:
-                    state.setdefault('search_charset', 'rus')
+        elif data == "rubric_city_search_toggle" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "city_picker":
+                state["search_mode"] = not state.get("search_mode", False)
+                if state["search_mode"]:
+                    state.setdefault("search_charset", "rus")
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_channel_search_charset:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'channel_picker':
-                key = data.split(':', 1)[1]
+        elif data.startswith("rubric_channel_search_charset:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "channel_picker":
+                key = data.split(":", 1)[1]
                 if key in CHANNEL_SEARCH_CHARSETS:
-                    state['search_charset'] = key
+                    state["search_charset"] = key
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_city_search_charset:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'city_picker':
-                key = data.split(':', 1)[1]
+        elif data.startswith("rubric_city_search_charset:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "city_picker":
+                key = data.split(":", 1)[1]
                 if key in CHANNEL_SEARCH_CHARSETS:
-                    state['search_charset'] = key
+                    state["search_charset"] = key
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_channel_search_add:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'channel_picker':
-                hex_value = data.split(':', 1)[1]
+        elif data.startswith("rubric_channel_search_add:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "channel_picker":
+                hex_value = data.split(":", 1)[1]
                 try:
-                    char = bytes.fromhex(hex_value).decode('utf-8')
+                    char = bytes.fromhex(hex_value).decode("utf-8")
                 except ValueError:
-                    char = ''
+                    char = ""
                 if char:
-                    state['search'] = (state.get('search') or '') + char
-                    state['page'] = 0
+                    state["search"] = (state.get("search") or "") + char
+                    state["page"] = 0
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_city_search_add:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'city_picker':
-                hex_value = data.split(':', 1)[1]
+        elif data.startswith("rubric_city_search_add:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "city_picker":
+                hex_value = data.split(":", 1)[1]
                 try:
-                    char = bytes.fromhex(hex_value).decode('utf-8')
+                    char = bytes.fromhex(hex_value).decode("utf-8")
                 except ValueError:
-                    char = ''
+                    char = ""
                 if char:
-                    state['search'] = (state.get('search') or '') + char
-                    state['page'] = 0
+                    state["search"] = (state.get("search") or "") + char
+                    state["page"] = 0
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_channel_search_del' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'channel_picker':
-                current = state.get('search') or ''
+        elif data == "rubric_channel_search_del" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "channel_picker":
+                current = state.get("search") or ""
                 if current:
-                    state['search'] = current[:-1]
-                    state['page'] = 0
+                    state["search"] = current[:-1]
+                    state["page"] = 0
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_city_search_del' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'city_picker':
-                current = state.get('search') or ''
+        elif data == "rubric_city_search_del" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "city_picker":
+                current = state.get("search") or ""
                 if current:
-                    state['search'] = current[:-1]
-                    state['page'] = 0
+                    state["search"] = current[:-1]
+                    state["page"] = 0
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_channel_search_clear' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'channel_picker':
-                state['search'] = ''
-                state['page'] = 0
+        elif data == "rubric_channel_search_clear" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "channel_picker":
+                state["search"] = ""
+                state["page"] = 0
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_city_search_clear' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'city_picker':
-                state['search'] = ''
-                state['page'] = 0
+        elif data == "rubric_city_search_clear" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "city_picker":
+                state["search"] = ""
+                state["page"] = 0
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_channel_search_done' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'channel_picker':
-                state['search_mode'] = False
-                state['page'] = 0
+        elif data == "rubric_channel_search_done" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "channel_picker":
+                state["search_mode"] = False
+                state["page"] = 0
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_city_search_done' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'city_picker':
-                state['search_mode'] = False
-                state['page'] = 0
+        elif data == "rubric_city_search_done" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "city_picker":
+                state["search_mode"] = False
+                state["page"] = 0
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_channel_set:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'channel_picker':
-                value = data.split(':', 1)[1]
+        elif data.startswith("rubric_channel_set:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "channel_picker":
+                value = data.split(":", 1)[1]
                 channel_id: int | None
                 try:
                     channel_id = int(value)
                 except ValueError:
                     channel_id = None
-                if state.get('return_mode') == 'schedule_wizard':
-                    schedule = state.setdefault('schedule', {})
-                    schedule['channel_id'] = channel_id
-                    state['mode'] = 'schedule_wizard'
-                    state['step'] = 'main'
-                    state['search_mode'] = False
+                if state.get("return_mode") == "schedule_wizard":
+                    schedule = state.setdefault("schedule", {})
+                    schedule["channel_id"] = channel_id
+                    state["mode"] = "schedule_wizard"
+                    state["step"] = "main"
+                    state["search_mode"] = False
                     await self._edit_rubric_input_message(user_id)
                 else:
-                    code = state.get('code')
-                    field = state.get('field')
+                    code = state.get("code")
+                    field = state.get("field")
                     if code and field:
                         config = self._normalize_rubric_config(
                             self.data.get_rubric_config(code) or {}
@@ -8257,7 +8376,7 @@ class Bot:
                         else:
                             config[field] = channel_id
                         self.data.save_rubric_config(code, config)
-                    message_obj = state.get('message')
+                    message_obj = state.get("message")
                     del self.pending[user_id]
                     if code:
                         await self._send_rubric_overview(
@@ -8265,36 +8384,34 @@ class Bot:
                             code,
                             message=message_obj,
                         )
-        elif data.startswith('rubric_city_set:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'city_picker':
-                raw_value = data.split(':', 1)[1]
+        elif data.startswith("rubric_city_set:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "city_picker":
+                raw_value = data.split(":", 1)[1]
                 city_id: int | None
                 try:
                     city_id = int(raw_value)
                 except ValueError:
                     city_id = None
-                code = state.get('code')
+                code = state.get("code")
                 if code:
-                    config = self._normalize_rubric_config(
-                        self.data.get_rubric_config(code) or {}
-                    )
+                    config = self._normalize_rubric_config(self.data.get_rubric_config(code) or {})
                     if city_id is None:
-                        config.pop('weather_city', None)
-                        config.pop('weather_city_id', None)
+                        config.pop("weather_city", None)
+                        config.pop("weather_city_id", None)
                     else:
                         row = self.db.execute(
-                            'SELECT id, name FROM cities WHERE id=?',
+                            "SELECT id, name FROM cities WHERE id=?",
                             (city_id,),
                         ).fetchone()
                         if row:
-                            config['weather_city_id'] = int(row['id'])
-                            config['weather_city'] = row['name']
+                            config["weather_city_id"] = int(row["id"])
+                            config["weather_city"] = row["name"]
                         else:
-                            config.pop('weather_city', None)
-                            config.pop('weather_city_id', None)
+                            config.pop("weather_city", None)
+                            config.pop("weather_city_id", None)
                     self.data.save_rubric_config(code, config)
-                message_obj = state.get('message')
+                message_obj = state.get("message")
                 del self.pending[user_id]
                 if code:
                     await self._send_rubric_overview(
@@ -8302,26 +8419,26 @@ class Bot:
                         code,
                         message=message_obj,
                     )
-        elif data == 'rubric_channel_clear' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'channel_picker':
-                if state.get('return_mode') == 'schedule_wizard':
-                    schedule = state.setdefault('schedule', {})
-                    schedule['channel_id'] = None
-                    state['mode'] = 'schedule_wizard'
-                    state['step'] = 'main'
-                    state['search_mode'] = False
+        elif data == "rubric_channel_clear" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "channel_picker":
+                if state.get("return_mode") == "schedule_wizard":
+                    schedule = state.setdefault("schedule", {})
+                    schedule["channel_id"] = None
+                    state["mode"] = "schedule_wizard"
+                    state["step"] = "main"
+                    state["search_mode"] = False
                     await self._edit_rubric_input_message(user_id)
                 else:
-                    code = state.get('code')
-                    field = state.get('field')
+                    code = state.get("code")
+                    field = state.get("field")
                     if code and field:
                         config = self._normalize_rubric_config(
                             self.data.get_rubric_config(code) or {}
                         )
                         config.pop(field, None)
                         self.data.save_rubric_config(code, config)
-                    message_obj = state.get('message')
+                    message_obj = state.get("message")
                     del self.pending[user_id]
                     if code:
                         await self._send_rubric_overview(
@@ -8329,18 +8446,16 @@ class Bot:
                             code,
                             message=message_obj,
                         )
-        elif data == 'rubric_city_clear' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'city_picker':
-                code = state.get('code')
+        elif data == "rubric_city_clear" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "city_picker":
+                code = state.get("code")
                 if code:
-                    config = self._normalize_rubric_config(
-                        self.data.get_rubric_config(code) or {}
-                    )
-                    config.pop('weather_city', None)
-                    config.pop('weather_city_id', None)
+                    config = self._normalize_rubric_config(self.data.get_rubric_config(code) or {})
+                    config.pop("weather_city", None)
+                    config.pop("weather_city_id", None)
                     self.data.save_rubric_config(code, config)
-                message_obj = state.get('message')
+                message_obj = state.get("message")
                 del self.pending[user_id]
                 if code:
                     await self._send_rubric_overview(
@@ -8348,17 +8463,17 @@ class Bot:
                         code,
                         message=message_obj,
                     )
-        elif data == 'rubric_channel_cancel' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
+        elif data == "rubric_channel_cancel" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
             if state:
-                if state.get('return_mode') == 'schedule_wizard':
-                    state['mode'] = 'schedule_wizard'
-                    state['step'] = 'main'
-                    state['search_mode'] = False
+                if state.get("return_mode") == "schedule_wizard":
+                    state["mode"] = "schedule_wizard"
+                    state["step"] = "main"
+                    state["search_mode"] = False
                     await self._edit_rubric_input_message(user_id)
                 else:
-                    code = state.get('code')
-                    message_obj = state.get('message')
+                    code = state.get("code")
+                    message_obj = state.get("message")
                     del self.pending[user_id]
                     if code:
                         await self._send_rubric_overview(
@@ -8366,11 +8481,11 @@ class Bot:
                             code,
                             message=message_obj,
                         )
-        elif data == 'rubric_city_cancel' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'city_picker':
-                code = state.get('code')
-                message_obj = state.get('message')
+        elif data == "rubric_city_cancel" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "city_picker":
+                code = state.get("code")
+                message_obj = state.get("message")
                 del self.pending[user_id]
                 if code:
                     await self._send_rubric_overview(
@@ -8378,14 +8493,14 @@ class Bot:
                         code,
                         message=message_obj,
                     )
-        elif data.startswith('rubric_sched_add:') and self.is_superadmin(user_id):
-            code = data.split(':', 1)[1]
+        elif data.startswith("rubric_sched_add:") and self.is_superadmin(user_id):
+            code = data.split(":", 1)[1]
             self._clear_rubric_pending_run(user_id, code)
             rubric = self.data.get_rubric_by_code(code)
             if not rubric:
                 return
             config = self._normalize_rubric_config(rubric.config)
-            default_days = config.get('days')
+            default_days = config.get("days")
             if isinstance(default_days, (list, tuple)):
                 days_value: Any = list(default_days)
             elif default_days:
@@ -8393,29 +8508,29 @@ class Bot:
             else:
                 days_value = []
             schedule = {
-                'time': None,
-                'tz': config.get('tz') or TZ_OFFSET,
-                'days': days_value,
-                'channel_id': config.get('channel_id'),
-                'enabled': True,
+                "time": None,
+                "tz": config.get("tz") or TZ_OFFSET,
+                "days": days_value,
+                "channel_id": config.get("channel_id"),
+                "enabled": True,
             }
             self.pending[user_id] = {
-                'rubric_input': {
-                    'mode': 'schedule_wizard',
-                    'code': code,
-                    'action': 'schedule_add',
-                    'message': query.get('message'),
-                    'schedule': schedule,
-                    'step': 'main',
-                    'search': '',
-                    'search_mode': False,
-                    'search_charset': 'rus',
-                    'page': 0,
+                "rubric_input": {
+                    "mode": "schedule_wizard",
+                    "code": code,
+                    "action": "schedule_add",
+                    "message": query.get("message"),
+                    "schedule": schedule,
+                    "step": "main",
+                    "search": "",
+                    "search_mode": False,
+                    "search_charset": "rus",
+                    "page": 0,
                 }
             }
             await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_sched_edit:') and self.is_superadmin(user_id):
-            parts = data.split(':')
+        elif data.startswith("rubric_sched_edit:") and self.is_superadmin(user_id):
+            parts = data.split(":")
             if len(parts) == 3:
                 code, idx_str = parts[1], parts[2]
                 self._clear_rubric_pending_run(user_id, code)
@@ -8427,148 +8542,150 @@ class Bot:
                 if not rubric:
                     return
                 config = self._normalize_rubric_config(rubric.config)
-                schedules = config.get('schedules', [])
+                schedules = config.get("schedules", [])
                 if 0 <= idx < len(schedules):
                     schedule = dict(schedules[idx])
                     self.pending[user_id] = {
-                        'rubric_input': {
-                            'mode': 'schedule_wizard',
-                            'code': code,
-                            'action': 'schedule_edit',
-                            'index': idx,
-                            'message': query.get('message'),
-                            'schedule': schedule,
-                            'step': 'main',
-                            'search': '',
-                            'search_mode': False,
-                            'search_charset': 'rus',
-                            'page': 0,
+                        "rubric_input": {
+                            "mode": "schedule_wizard",
+                            "code": code,
+                            "action": "schedule_edit",
+                            "index": idx,
+                            "message": query.get("message"),
+                            "schedule": schedule,
+                            "step": "main",
+                            "search": "",
+                            "search_mode": False,
+                            "search_charset": "rus",
+                            "page": 0,
                         }
                     }
                     await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_sched_toggle:') and self.is_superadmin(user_id):
-            parts = data.split(':')
+        elif data.startswith("rubric_sched_toggle:") and self.is_superadmin(user_id):
+            parts = data.split(":")
             if len(parts) == 3:
                 code, idx_str = parts[1], parts[2]
                 self._clear_rubric_pending_run(user_id, code)
                 rubric = self.data.get_rubric_by_code(code)
                 if rubric:
                     config = self._normalize_rubric_config(rubric.config)
-                    schedules = config.get('schedules', [])
+                    schedules = config.get("schedules", [])
                     try:
                         idx = int(idx_str)
                     except ValueError:
                         idx = -1
                     if 0 <= idx < len(schedules):
                         schedule = schedules[idx]
-                        schedule['enabled'] = not schedule.get('enabled', True)
+                        schedule["enabled"] = not schedule.get("enabled", True)
                         self.data.save_rubric_config(code, config)
-                        await self._send_rubric_overview(user_id, code, message=query.get('message'))
-        elif data == 'rubric_sched_time' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                state['step'] = 'time_hours'
+                        await self._send_rubric_overview(
+                            user_id, code, message=query.get("message")
+                        )
+        elif data == "rubric_sched_time" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                state["step"] = "time_hours"
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_sched_hour:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
+        elif data.startswith("rubric_sched_hour:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
                 try:
-                    hour = int(data.split(':', 1)[1])
+                    hour = int(data.split(":", 1)[1])
                 except ValueError:
                     hour = 0
-                state['temp_hour'] = max(0, min(hour, 23))
-                state['step'] = 'time_minutes'
+                state["temp_hour"] = max(0, min(hour, 23))
+                state["step"] = "time_minutes"
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_sched_minute:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
+        elif data.startswith("rubric_sched_minute:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
                 try:
-                    minute = int(data.split(':', 1)[1])
+                    minute = int(data.split(":", 1)[1])
                 except ValueError:
                     minute = 0
-                hour = int(state.get('temp_hour', 0))
+                hour = int(state.get("temp_hour", 0))
                 minute = max(0, min(minute, 59))
-                state.pop('temp_hour', None)
-                schedule = state.setdefault('schedule', {})
-                schedule['time'] = f"{hour:02d}:{minute:02d}"
-                state['step'] = 'main'
+                state.pop("temp_hour", None)
+                schedule = state.setdefault("schedule", {})
+                schedule["time"] = f"{hour:02d}:{minute:02d}"
+                state["step"] = "main"
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_sched_time_back' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                state['step'] = 'time_hours'
+        elif data == "rubric_sched_time_back" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                state["step"] = "time_hours"
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_sched_time_cancel' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                state.pop('temp_hour', None)
-                state['step'] = 'main'
+        elif data == "rubric_sched_time_cancel" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                state.pop("temp_hour", None)
+                state["step"] = "main"
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_sched_days' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                state['step'] = 'days'
+        elif data == "rubric_sched_days" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                state["step"] = "days"
                 await self._edit_rubric_input_message(user_id)
-        elif data.startswith('rubric_sched_day:') and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                day = data.split(':', 1)[1]
-                schedule = state.setdefault('schedule', {})
-                days = schedule.get('days')
+        elif data.startswith("rubric_sched_day:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                day = data.split(":", 1)[1]
+                schedule = state.setdefault("schedule", {})
+                days = schedule.get("days")
                 if not isinstance(days, list):
                     days = list(days) if isinstance(days, tuple) else []
                 if day in days:
                     days.remove(day)
                 else:
                     days.append(day)
-                schedule['days'] = days
+                schedule["days"] = days
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_sched_days_all' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                schedule = state.setdefault('schedule', {})
-                schedule['days'] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+        elif data == "rubric_sched_days_all" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                schedule = state.setdefault("schedule", {})
+                schedule["days"] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_sched_days_clear' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                schedule = state.setdefault('schedule', {})
-                schedule['days'] = []
+        elif data == "rubric_sched_days_clear" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                schedule = state.setdefault("schedule", {})
+                schedule["days"] = []
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_sched_days_done' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                state['step'] = 'main'
+        elif data == "rubric_sched_days_done" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                state["step"] = "main"
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_sched_toggle_enabled' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                schedule = state.setdefault('schedule', {})
-                schedule['enabled'] = not schedule.get('enabled', True)
+        elif data == "rubric_sched_toggle_enabled" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                schedule = state.setdefault("schedule", {})
+                schedule["enabled"] = not schedule.get("enabled", True)
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_sched_channel' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                state['mode'] = 'channel_picker'
-                state['return_mode'] = 'schedule_wizard'
-                state['field'] = 'channel_id'
-                state['page'] = 0
-                state['search_mode'] = False
+        elif data == "rubric_sched_channel" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                state["mode"] = "channel_picker"
+                state["return_mode"] = "schedule_wizard"
+                state["field"] = "channel_id"
+                state["page"] = 0
+                state["search_mode"] = False
                 await self._edit_rubric_input_message(user_id)
-        elif data == 'rubric_sched_save' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                code = state.get('code')
+        elif data == "rubric_sched_save" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                code = state.get("code")
                 if code:
                     self._clear_rubric_pending_run(user_id, code)
-                schedule_data = dict(state.get('schedule') or {})
-                if isinstance(schedule_data.get('days'), tuple):
-                    schedule_data['days'] = list(schedule_data['days'])
-                action = state.get('action')
-                message_obj = state.get('message')
+                schedule_data = dict(state.get("schedule") or {})
+                if isinstance(schedule_data.get("days"), tuple):
+                    schedule_data["days"] = list(schedule_data["days"])
+                action = state.get("action")
+                message_obj = state.get("message")
                 try:
-                    if action == 'schedule_edit':
-                        index = int(state.get('index', 0))
+                    if action == "schedule_edit":
+                        index = int(state.get("index", 0))
                         self.data.update_rubric_schedule(code, index, schedule_data)
                     else:
                         self.data.add_rubric_schedule(code, schedule_data)
@@ -8580,13 +8697,13 @@ class Bot:
                         code,
                         message=message_obj,
                     )
-        elif data == 'rubric_sched_cancel' and self.is_superadmin(user_id):
-            state = self.pending.get(user_id, {}).get('rubric_input')
-            if state and state.get('mode') == 'schedule_wizard':
-                code = state.get('code')
+        elif data == "rubric_sched_cancel" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                code = state.get("code")
                 if code:
                     self._clear_rubric_pending_run(user_id, code)
-                message_obj = state.get('message')
+                message_obj = state.get("message")
                 del self.pending[user_id]
                 if code:
                     await self._send_rubric_overview(
@@ -8594,8 +8711,8 @@ class Bot:
                         code,
                         message=message_obj,
                     )
-        elif data.startswith('rubric_sched_del:') and self.is_superadmin(user_id):
-            parts = data.split(':')
+        elif data.startswith("rubric_sched_del:") and self.is_superadmin(user_id):
+            parts = data.split(":")
             if len(parts) == 3:
                 code, idx_str = parts[1], parts[2]
                 self._clear_rubric_pending_run(user_id, code)
@@ -8604,57 +8721,63 @@ class Bot:
                 except ValueError:
                     idx = -1
                 if idx >= 0 and self.data.remove_rubric_schedule(code, idx):
-                    await self._send_rubric_overview(user_id, code, message=query.get('message'))
+                    await self._send_rubric_overview(user_id, code, message=query.get("message"))
                 else:
-                    await self.api_request('sendMessage', {
-                        'chat_id': user_id,
-                        'text': 'Не удалось удалить расписание',
-                    })
-        await self.api_request('answerCallbackQuery', {'callback_query_id': query['id']})
-
+                    await self.api_request(
+                        "sendMessage",
+                        {
+                            "chat_id": user_id,
+                            "text": "Не удалось удалить расписание",
+                        },
+                    )
+        await self.api_request("answerCallbackQuery", {"callback_query_id": query["id"]})
 
     async def process_due(self):
         """Publish due scheduled messages."""
         now = datetime.utcnow().isoformat()
         logging.info("Scheduler check at %s", now)
         cur = self.db.execute(
-            'SELECT * FROM schedule WHERE sent=0 AND publish_time<=? ORDER BY publish_time',
+            "SELECT * FROM schedule WHERE sent=0 AND publish_time<=? ORDER BY publish_time",
             (now,),
         )
         rows = cur.fetchall()
-        logging.info("Due ids: %s", [r['id'] for r in rows])
+        logging.info("Due ids: %s", [r["id"] for r in rows])
         for row in rows:
             try:
                 resp = await self.api_request(
-                    'forwardMessage',
+                    "forwardMessage",
                     {
-                        'chat_id': row['target_chat_id'],
-                        'from_chat_id': row['from_chat_id'],
-                        'message_id': row['message_id'],
+                        "chat_id": row["target_chat_id"],
+                        "from_chat_id": row["from_chat_id"],
+                        "message_id": row["message_id"],
                     },
                 )
-                ok = resp.get('ok', False)
-                if not ok and resp.get('error_code') == 400 and 'not' in resp.get('description', '').lower():
+                ok = resp.get("ok", False)
+                if (
+                    not ok
+                    and resp.get("error_code") == 400
+                    and "not" in resp.get("description", "").lower()
+                ):
                     resp = await self.api_request(
-                        'copyMessage',
+                        "copyMessage",
                         {
-                            'chat_id': row['target_chat_id'],
-                            'from_chat_id': row['from_chat_id'],
-                            'message_id': row['message_id'],
+                            "chat_id": row["target_chat_id"],
+                            "from_chat_id": row["from_chat_id"],
+                            "message_id": row["message_id"],
                         },
                     )
-                    ok = resp.get('ok', False)
+                    ok = resp.get("ok", False)
                 if ok:
                     self.db.execute(
-                        'UPDATE schedule SET sent=1, sent_at=? WHERE id=?',
-                        (datetime.utcnow().isoformat(), row['id']),
+                        "UPDATE schedule SET sent=1, sent_at=? WHERE id=?",
+                        (datetime.utcnow().isoformat(), row["id"]),
                     )
                     self.db.commit()
-                    logging.info('Published schedule %s', row['id'])
+                    logging.info("Published schedule %s", row["id"])
                 else:
-                    logging.error('Failed to publish %s: %s', row['id'], resp)
+                    logging.error("Failed to publish %s: %s", row["id"], resp)
             except Exception:
-                logging.exception('Error publishing schedule %s', row['id'])
+                logging.exception("Error publishing schedule %s", row["id"])
 
     async def process_weather_channels(self):
         now_utc = datetime.utcnow()
@@ -8663,18 +8786,12 @@ class Bot:
             try:
                 ok = await self.publish_weather(job.channel_id, None)
                 if ok:
-                    next_run = self.next_weather_run(
-                        job.post_time, TZ_OFFSET, reference=now_utc
-                    )
+                    next_run = self.next_weather_run(job.post_time, TZ_OFFSET, reference=now_utc)
                     self.data.mark_weather_job_run(job.id, next_run)
                 else:
-                    self.data.record_weather_job_failure(
-                        job.id, "publish failed"
-                    )
+                    self.data.record_weather_job_failure(job.id, "publish failed")
             except Exception:
-                logging.exception(
-                    "Failed to publish weather for %s", job.channel_id
-                )
+                logging.exception("Failed to publish weather for %s", job.channel_id)
 
     async def process_rubric_schedule(self, reference: datetime | None = None) -> None:
         now = reference or datetime.utcnow()
@@ -8822,9 +8939,7 @@ class Bot:
         flag = "✅" if enabled else "❌"
         key = schedule.get("key")
         suffix = f" key={key}" if key else ""
-        return (
-            f"#{index + 1}: {time_str} (tz {tz_value}) → {channel_repr}, дни: {days_repr} {flag}{suffix}"
-        )
+        return f"#{index + 1}: {time_str} (tz {tz_value}) → {channel_repr}, дни: {days_repr} {flag}{suffix}"
 
     def _get_channel_title(self, chat_id: int | None) -> str:
         if chat_id is None:
@@ -8867,9 +8982,7 @@ class Bot:
         labels = [self._weekday_label(day) for day in days]
         return ", ".join(labels) if labels else "—"
 
-    def _get_rubric_input_message_target(
-        self, state: dict[str, Any]
-    ) -> tuple[int, int] | None:
+    def _get_rubric_input_message_target(self, state: dict[str, Any]) -> tuple[int, int] | None:
         message = state.get("message")
         if not message:
             return None
@@ -8880,9 +8993,7 @@ class Bot:
             return None
         return chat_id, message_id
 
-    def _render_channel_search_keyboard(
-        self, state: dict[str, Any]
-    ) -> tuple[str, dict[str, Any]]:
+    def _render_channel_search_keyboard(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         search = state.get("search") or ""
         charset_key = state.get("search_charset") or "rus"
         charset = CHANNEL_SEARCH_CHARSETS.get(charset_key) or CHANNEL_SEARCH_CHARSETS["rus"]
@@ -8921,9 +9032,7 @@ class Bot:
         keyboard_rows.append(control_row)
         return "\n".join(lines), {"inline_keyboard": keyboard_rows}
 
-    def _render_city_search_keyboard(
-        self, state: dict[str, Any]
-    ) -> tuple[str, dict[str, Any]]:
+    def _render_city_search_keyboard(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         search = state.get("search") or ""
         charset_key = state.get("search_charset") or "rus"
         charset = CHANNEL_SEARCH_CHARSETS.get(charset_key) or CHANNEL_SEARCH_CHARSETS["rus"]
@@ -8962,9 +9071,7 @@ class Bot:
         keyboard_rows.append(control_row)
         return "\n".join(lines), {"inline_keyboard": keyboard_rows}
 
-    def _render_channel_picker(
-        self, state: dict[str, Any]
-    ) -> tuple[str, dict[str, Any]]:
+    def _render_channel_picker(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         if state.get("search_mode"):
             return self._render_channel_search_keyboard(state)
         code = state.get("code") or ""
@@ -8994,14 +9101,10 @@ class Bot:
             schedule = state.get("schedule") or {}
             current_id = schedule.get("channel_id")
             if current_id is None:
-                config = self._normalize_rubric_config(
-                    self.data.get_rubric_config(code) or {}
-                )
+                config = self._normalize_rubric_config(self.data.get_rubric_config(code) or {})
                 current_id = config.get("channel_id")
         else:
-            config = self._normalize_rubric_config(
-                self.data.get_rubric_config(code) or {}
-            )
+            config = self._normalize_rubric_config(self.data.get_rubric_config(code) or {})
             current_id = config.get(field)
         lines = [
             f"Выбор канала для {code}",
@@ -9028,13 +9131,9 @@ class Bot:
             )
         nav_row: list[dict[str, Any]] = []
         if page > 0:
-            nav_row.append(
-                {"text": "◀️", "callback_data": f"rubric_channel_page:{page - 1}"}
-            )
+            nav_row.append({"text": "◀️", "callback_data": f"rubric_channel_page:{page - 1}"})
         if page < max_page:
-            nav_row.append(
-                {"text": "▶️", "callback_data": f"rubric_channel_page:{page + 1}"}
-            )
+            nav_row.append({"text": "▶️", "callback_data": f"rubric_channel_page:{page + 1}"})
         if nav_row:
             keyboard_rows.append(nav_row)
         keyboard_rows.append(
@@ -9050,14 +9149,10 @@ class Bot:
             ]
         )
         cancel_text = "Назад" if state.get("return_mode") == "schedule_wizard" else "Отмена"
-        keyboard_rows.append(
-            [{"text": cancel_text, "callback_data": "rubric_channel_cancel"}]
-        )
+        keyboard_rows.append([{"text": cancel_text, "callback_data": "rubric_channel_cancel"}])
         return "\n".join(lines), {"inline_keyboard": keyboard_rows}
 
-    def _render_city_picker(
-        self, state: dict[str, Any]
-    ) -> tuple[str, dict[str, Any]]:
+    def _render_city_picker(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         if state.get("search_mode"):
             return self._render_city_search_keyboard(state)
         code = state.get("code") or ""
@@ -9082,9 +9177,7 @@ class Bot:
             f"SELECT id, name FROM cities{where_clause} ORDER BY name ASC LIMIT ? OFFSET ?",
             params + [per_page, offset],
         ).fetchall()
-        config = self._normalize_rubric_config(
-            self.data.get_rubric_config(code) or {}
-        )
+        config = self._normalize_rubric_config(self.data.get_rubric_config(code) or {})
         current_id = config.get("weather_city_id")
         current_name = config.get("weather_city")
         lines = [
@@ -9102,9 +9195,12 @@ class Bot:
             city_id = row["id"]
             name = row["name"] or str(city_id)
             display = name if len(name) <= 50 else name[:47] + "…"
-            prefix = "✅ " if current_id == city_id or (
-                current_id is None and current_name and name == current_name
-            ) else ""
+            prefix = (
+                "✅ "
+                if current_id == city_id
+                or (current_id is None and current_name and name == current_name)
+                else ""
+            )
             keyboard_rows.append(
                 [
                     {
@@ -9132,9 +9228,7 @@ class Bot:
                 },
             ]
         )
-        keyboard_rows.append(
-            [{"text": "Отмена", "callback_data": "rubric_city_cancel"}]
-        )
+        keyboard_rows.append([{"text": "Отмена", "callback_data": "rubric_city_cancel"}])
         return "\n".join(lines), {"inline_keyboard": keyboard_rows}
 
     def _build_time_hours_keyboard(self) -> dict[str, Any]:
@@ -9215,18 +9309,16 @@ class Bot:
         )
         return {"inline_keyboard": rows}
 
-    def _render_schedule_wizard(
-        self, state: dict[str, Any]
-    ) -> tuple[str, dict[str, Any]]:
+    def _render_schedule_wizard(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         code = state.get("code") or ""
         schedule = state.setdefault("schedule", {})
-        config = self._normalize_rubric_config(
-            self.data.get_rubric_config(code) or {}
-        )
+        config = self._normalize_rubric_config(self.data.get_rubric_config(code) or {})
         schedule.setdefault("tz", schedule.get("tz") or config.get("tz") or TZ_OFFSET)
         if schedule.get("days") is None and config.get("days") is not None:
             fallback_days = config.get("days")
-            schedule["days"] = list(fallback_days) if isinstance(fallback_days, (list, tuple)) else fallback_days
+            schedule["days"] = (
+                list(fallback_days) if isinstance(fallback_days, (list, tuple)) else fallback_days
+            )
         lines = [f"Настройка расписания для {code}"]
         time_value = schedule.get("time") or "--:--"
         lines.append(f"Время: {time_value} (TZ {schedule.get('tz')})")
@@ -9448,9 +9540,11 @@ class Bot:
 
         keyboard_rows: list[list[dict[str, Any]]] = []
         toggle_text = "Выключить" if enabled else "Включить"
-        keyboard_rows.append([
-            {"text": toggle_text, "callback_data": f"rubric_toggle:{rubric.code}"},
-        ])
+        keyboard_rows.append(
+            [
+                {"text": toggle_text, "callback_data": f"rubric_toggle:{rubric.code}"},
+            ]
+        )
         if pending_mode:
             keyboard_rows.append(
                 [
@@ -9978,7 +10072,9 @@ class Bot:
                     entry["mood"] = mood_text
             return entry
 
-        def _collect_color_palettes_from_results(result_payload: dict[str, Any]) -> list[dict[str, Any]]:
+        def _collect_color_palettes_from_results(
+            result_payload: dict[str, Any],
+        ) -> list[dict[str, Any]]:
             raw_colors = result_payload.get("colors") if isinstance(result_payload, dict) else None
             if not raw_colors:
                 return []
@@ -10078,14 +10174,10 @@ class Bot:
                 )
             result_palettes: list[dict[str, Any]] = []
             if isinstance(asset.vision_results, dict):
-                result_palettes = _collect_color_palettes_from_results(
-                    asset.vision_results
-                )
+                result_palettes = _collect_color_palettes_from_results(asset.vision_results)
                 vision_palettes.extend(result_palettes)
             if asset.vision_caption and not result_palettes:
-                vision_palettes.extend(
-                    _collect_color_palettes_from_caption(asset.vision_caption)
-                )
+                vision_palettes.extend(_collect_color_palettes_from_caption(asset.vision_caption))
 
             recognized_flowers = [
                 str(variety).strip()
@@ -10113,11 +10205,7 @@ class Bot:
                     _add_hint(results_mapping.get(key))
                 tags_value = results_mapping.get("tags")
                 if isinstance(tags_value, (list, tuple, set)):
-                    tags = [
-                        str(tag or "").strip()
-                        for tag in tags_value
-                        if str(tag or "").strip()
-                    ]
+                    tags = [str(tag or "").strip() for tag in tags_value if str(tag or "").strip()]
                     if tags:
                         _add_hint("Теги: " + ", ".join(tags))
                 display_map = {
@@ -10287,14 +10375,20 @@ class Bot:
                 sample = []
             payload["instruction"] = template.format(
                 palette_title=palette.get("title") or "палитра утра",
-                palette_descriptors=", ".join(sample) if sample else palette.get("title") or "ласковый свет",
+                palette_descriptors=(
+                    ", ".join(sample) if sample else palette.get("title") or "ласковый свет"
+                ),
             )
         elif pattern.kind == "tradition":
             flowers = features.get("flowers") or []
             if not flowers:
                 return None
             flower_entry = rng.choice(flowers)
-            notes = kb.traditions.get(flower_entry["id"], {}).get("notes") if flower_entry.get("id") else None
+            notes = (
+                kb.traditions.get(flower_entry["id"], {}).get("notes")
+                if flower_entry.get("id")
+                else None
+            )
             if not notes:
                 return None
             payload["instruction"] = template.format(
@@ -10395,6 +10489,7 @@ class Bot:
             pattern_ids.append(choice_pattern.id)
             break
         cities = sorted({asset.city for asset in assets if asset.city})
+
         def _filter_metrics(payload: Mapping[str, Any] | None) -> dict[str, Any]:
             if not isinstance(payload, Mapping):
                 return {}
@@ -10420,9 +10515,7 @@ class Bot:
 
         if weather_block:
             today_metrics = (
-                weather_block.get("today")
-                if isinstance(weather_block.get("today"), dict)
-                else {}
+                weather_block.get("today") if isinstance(weather_block.get("today"), dict) else {}
             )
             yesterday_metrics = (
                 weather_block.get("yesterday")
@@ -10477,9 +10570,7 @@ class Bot:
         }
         return plan, plan_meta
 
-    def _flowers_contains_banned_word(
-        self, text: str, banned_words: Iterable[str]
-    ) -> bool:
+    def _flowers_contains_banned_word(self, text: str, banned_words: Iterable[str]) -> bool:
         lowered = text.casefold()
         tokens = {token.strip() for token in re.split(r"\W+", lowered) if token.strip()}
         for word in banned_words:
@@ -10497,14 +10588,8 @@ class Bot:
     def _jaccard_similarity(a: str, b: str) -> float:
         words_a = [token for token in re.split(r"\W+", a.lower()) if token]
         words_b = [token for token in re.split(r"\W+", b.lower()) if token]
-        bigrams_a = {
-            f"{words_a[i]} {words_a[i + 1]}"
-            for i in range(len(words_a) - 1)
-        }
-        bigrams_b = {
-            f"{words_b[i]} {words_b[i + 1]}"
-            for i in range(len(words_b) - 1)
-        }
+        bigrams_a = {f"{words_a[i]} {words_a[i + 1]}" for i in range(len(words_a) - 1)}
+        bigrams_b = {f"{words_b[i]} {words_b[i + 1]}" for i in range(len(words_b) - 1)}
         if not bigrams_a or not bigrams_b:
             return 0.0
         intersection = len(bigrams_a & bigrams_b)
@@ -10604,10 +10689,9 @@ class Bot:
         if not selected_assets or not asset_seasons:
             logging.warning(
                 "Unable to assemble seasonal-consistent flowers assets: have seasons %s",
-                sorted({
-                    self._resolve_asset_season(asset) or "unknown"
-                    for asset in candidate_assets
-                }),
+                sorted(
+                    {self._resolve_asset_season(asset) or "unknown" for asset in candidate_assets}
+                ),
             )
             return None
         if selected_target is not None and selected_target < min_count:
@@ -10879,9 +10963,7 @@ class Bot:
         if trailing_hashtags:
             caption_parts.append(" ".join(trailing_hashtags))
         preview_caption = "\n\n".join(caption_parts)
-        publish_caption, parse_mode = self._build_flowers_publish_caption(
-            preview_caption
-        )
+        publish_caption, parse_mode = self._build_flowers_publish_caption(preview_caption)
         combined_hashtags = city_hashtags + trailing_hashtags
         return preview_caption, publish_caption, parse_mode, combined_hashtags
 
@@ -10923,11 +11005,9 @@ class Bot:
             return None
         return f"#{cleaned}"
 
-    def _build_flowers_publish_caption(
-        self, preview_caption: str
-    ) -> tuple[str, str | None]:
+    def _build_flowers_publish_caption(self, preview_caption: str) -> tuple[str, str | None]:
         preview_text = str(preview_caption or "").strip()
-        link = "<a href=\"https://t.me/addlist/sW-rkrslxqo1NTVi\">📂 Полюбить 39</a>"
+        link = '<a href="https://t.me/addlist/sW-rkrslxqo1NTVi">📂 Полюбить 39</a>'
         parse_mode = "HTML"
         if not preview_text:
             return link, parse_mode
@@ -11060,9 +11140,7 @@ class Bot:
         if not yesterday_line_source and previous_weather_line:
             yesterday_line_source = previous_weather_line
         weather_today_line = self._normalize_weather_preview_line(today_line_source)
-        weather_yesterday_line = self._normalize_weather_preview_line(
-            yesterday_line_source
-        )
+        weather_yesterday_line = self._normalize_weather_preview_line(yesterday_line_source)
         metadata = {
             "rubric_code": rubric.code,
             "asset_ids": asset_ids,
@@ -11074,7 +11152,9 @@ class Bot:
             "weather_today_line": weather_today_line,
             "weather_yesterday_line": weather_yesterday_line,
             "weather_line": weather_today_line,
-            "pattern_ids": list(plan_meta.get("pattern_ids", [])) if isinstance(plan_meta, dict) else None,
+            "pattern_ids": (
+                list(plan_meta.get("pattern_ids", [])) if isinstance(plan_meta, dict) else None
+            ),
             "plan": plan,
         }
         self.data.record_post_history(
@@ -11087,9 +11167,7 @@ class Bot:
         await self._cleanup_assets(assets)
         return True
 
-    def _resolve_flowers_target(
-        self, state: dict[str, Any], *, to_test: bool
-    ) -> int | None:
+    def _resolve_flowers_target(self, state: dict[str, Any], *, to_test: bool) -> int | None:
         key = "test_channel_id" if to_test else "channel_id"
         value = state.get(key)
         if isinstance(value, int):
@@ -11097,8 +11175,7 @@ class Bot:
         default_type = state.get("default_channel_type")
         default_value = state.get("default_channel_id")
         if isinstance(default_value, int) and (
-            (to_test and default_type == "test")
-            or (not to_test and default_type == "main")
+            (to_test and default_type == "test") or (not to_test and default_type == "main")
         ):
             return default_value
         return None
@@ -11130,18 +11207,12 @@ class Bot:
         ]
         send_row: list[dict[str, Any]] = []
         if self._resolve_flowers_target(state, to_test=True) is not None:
-            send_row.append(
-                {"text": "🧪 В тест", "callback_data": "flowers_preview:send_test"}
-            )
+            send_row.append({"text": "🧪 В тест", "callback_data": "flowers_preview:send_test"})
         if self._resolve_flowers_target(state, to_test=False) is not None:
-            send_row.append(
-                {"text": "📣 В канал", "callback_data": "flowers_preview:send_main"}
-            )
+            send_row.append({"text": "📣 В канал", "callback_data": "flowers_preview:send_main"})
         if send_row:
             rows.append(send_row)
-        rows.append([
-            {"text": "✖️ Отмена", "callback_data": "flowers_preview:cancel"}
-        ])
+        rows.append([{"text": "✖️ Отмена", "callback_data": "flowers_preview:cancel"}])
         return {"inline_keyboard": rows}
 
     @staticmethod
@@ -11149,9 +11220,7 @@ class Bot:
         line = str(value or "").strip()
         return line if line else "не публиковалось"
 
-    def _lookup_previous_flowers_post(
-        self, rubric_id: int
-    ) -> tuple[str | None, str | None]:
+    def _lookup_previous_flowers_post(self, rubric_id: int) -> tuple[str | None, str | None]:
         previous_text: str | None = None
         previous_weather: str | None = None
         try:
@@ -11178,18 +11247,11 @@ class Bot:
             if payload.get("test"):
                 continue
             if previous_text is None:
-                text = (
-                    payload.get("greeting")
-                    or payload.get("text")
-                    or payload.get("caption")
-                )
+                text = payload.get("greeting") or payload.get("text") or payload.get("caption")
                 if text:
                     previous_text = str(text)
             if previous_weather is None:
-                candidate = (
-                    payload.get("weather_today_line")
-                    or payload.get("weather_line")
-                )
+                candidate = payload.get("weather_today_line") or payload.get("weather_line")
                 candidate_str = str(candidate or "").strip()
                 if candidate_str:
                     previous_weather = candidate_str
@@ -11240,9 +11302,7 @@ class Bot:
             _add_section("Подпись на медиа показана выше.", 0)
         else:
             _add_section("Подпись пока не сгенерирована.", 0)
-        weather_today_line = self._normalize_weather_preview_line(
-            state.get("weather_today_line")
-        )
+        weather_today_line = self._normalize_weather_preview_line(state.get("weather_today_line"))
         weather_yesterday_line = self._normalize_weather_preview_line(
             state.get("weather_yesterday_line")
         )
@@ -11262,9 +11322,7 @@ class Bot:
             state[html_key] = escaped
             return escaped
 
-        weather_today_html = _ensure_weather_html(
-            "weather_today_line", weather_today_line
-        )
+        weather_today_html = _ensure_weather_html("weather_today_line", weather_today_line)
         weather_yesterday_html = _ensure_weather_html(
             "weather_yesterday_line", weather_yesterday_line
         )
@@ -11276,7 +11334,7 @@ class Bot:
             escaped_instructions = _escape_block_line(instructions)
             instructions_block = (
                 "Инструкции оператора:\n"
-                f"<blockquote expandable=\"true\">{escaped_instructions}</blockquote>"
+                f'<blockquote expandable="true">{escaped_instructions}</blockquote>'
             )
             fallback_block: str | None = None
             if len(instructions_block) > 600:
@@ -11284,7 +11342,7 @@ class Bot:
                 escaped_truncated = _escape_block_line(truncated)
                 fallback_block = (
                     "Инструкции оператора:\n"
-                    f"<blockquote expandable=\"true\">{escaped_truncated}</blockquote>"
+                    f'<blockquote expandable="true">{escaped_truncated}</blockquote>'
                 )
                 if fallback_block == instructions_block:
                     fallback_block = None
@@ -11331,15 +11389,11 @@ class Bot:
             tag_prefix = f"[{', '.join(tags)}] " if tags else ""
             pattern_lines.append(f"{idx}. {tag_prefix}{instruction}")
         if pattern_lines:
-            escaped_patterns = "\n".join(
-                _escape_block_line(line) for line in pattern_lines
-            )
+            escaped_patterns = "\n".join(_escape_block_line(line) for line in pattern_lines)
             pattern_block = (
-                f"Паттерны:\n"
-                f"<blockquote expandable=\"true\">{escaped_patterns}</blockquote>"
+                f"Паттерны:\n" f'<blockquote expandable="true">{escaped_patterns}</blockquote>'
             )
             _add_section(pattern_block, 3)
-
 
         weather_lines: list[str] = []
         seen_weather: set[str] = set()
@@ -11361,9 +11415,7 @@ class Bot:
                     label="Сегодня",
                 )
                 _add_weather_line(
-                    today_line
-                    if not location_label
-                    else f"{location_label}: {today_line}"
+                    today_line if not location_label else f"{location_label}: {today_line}"
                 )
             yesterday_metrics = plan_weather.get("yesterday")
             if isinstance(yesterday_metrics, Mapping) and yesterday_metrics:
@@ -11372,9 +11424,7 @@ class Bot:
                     label="Вчера",
                 )
                 _add_weather_line(
-                    yesterday_line
-                    if not location_label
-                    else f"{location_label}: {yesterday_line}"
+                    yesterday_line if not location_label else f"{location_label}: {yesterday_line}"
                 )
             sea_info = plan_weather.get("sea")
             if isinstance(sea_info, Mapping) and sea_info:
@@ -11404,9 +11454,7 @@ class Bot:
                         label="Сегодня",
                     )
                     _add_weather_line(
-                        today_line
-                        if not details_location
-                        else f"{details_location}: {today_line}"
+                        today_line if not details_location else f"{details_location}: {today_line}"
                     )
             if (
                 (not isinstance(plan_weather, Mapping))
@@ -11448,12 +11496,9 @@ class Bot:
                         _add_weather_line("Море: " + ", ".join(sea_parts))
 
         if weather_lines:
-            escaped_weather = "\n".join(
-                _escape_block_line(line) for line in weather_lines
-            )
+            escaped_weather = "\n".join(_escape_block_line(line) for line in weather_lines)
             weather_block = (
-                f"Погода:\n"
-                f"<blockquote expandable=\"true\">{escaped_weather}</blockquote>"
+                f"Погода:\n" f'<blockquote expandable="true">{escaped_weather}</blockquote>'
             )
             _add_section(weather_block, 3)
 
@@ -11471,9 +11516,7 @@ class Bot:
             block_sections: list[str] = []
             if system_prompt:
                 escaped_system = _escape_block_line(system_prompt)
-                block_sections.append(
-                    f"<b>System prompt</b>:\n{escaped_system}"
-                )
+                block_sections.append(f"<b>System prompt</b>:\n{escaped_system}")
             if user_prompt:
                 escaped_user = _escape_block_line(user_prompt)
                 block_sections.append(f"<b>User prompt</b>:\n{escaped_user}")
@@ -11481,7 +11524,7 @@ class Bot:
                 block_html = "\n\n".join(block_sections)
                 service_block = (
                     f"Служебно{suffix}:\n"
-                    f"<blockquote expandable=\"true\">{block_html}</blockquote>"
+                    f'<blockquote expandable="true">{block_html}</blockquote>'
                 )
                 _add_section(service_block, 3)
         if "previous_main_post_text" in state:
@@ -11493,9 +11536,7 @@ class Bot:
                 if len(full_block) > 600:
                     truncated_prev = self._safe_preview_truncate(previous_text, 600)
                     escaped_truncated_prev = html.escape(truncated_prev)
-                    fallback_text = (
-                        f"Предыдущая публикация: {escaped_truncated_prev}"
-                    )
+                    fallback_text = f"Предыдущая публикация: {escaped_truncated_prev}"
                     if fallback_text == full_block:
                         fallback_text = None
                 _add_section(full_block, 2, fallback=fallback_text)
@@ -11628,6 +11669,7 @@ class Bot:
                 except ValueError:
                     return None
             return None
+
         prompt_payload = self._build_flowers_prompt_payload(plan, plan_meta)
         serialized_plan = str(prompt_payload.get("serialized_plan") or "{}")
         plan_system_prompt = str(prompt_payload.get("system_prompt") or "")
@@ -11671,9 +11713,8 @@ class Bot:
                 if stored_text:
                     previous_main_post_text = str(stored_text)
             if previous_weather_line is None:
-                stored_weather = (
-                    previous_state.get("weather_yesterday_line")
-                    or previous_state.get("weather_line")
+                stored_weather = previous_state.get("weather_yesterday_line") or previous_state.get(
+                    "weather_line"
                 )
                 stored_weather_str = str(stored_weather or "").strip()
                 if stored_weather_str:
@@ -11699,9 +11740,7 @@ class Bot:
         if not yesterday_line_source and previous_weather_line:
             yesterday_line_source = previous_weather_line
         weather_today_line = self._normalize_weather_preview_line(today_line_source)
-        weather_yesterday_line = self._normalize_weather_preview_line(
-            yesterday_line_source
-        )
+        weather_yesterday_line = self._normalize_weather_preview_line(yesterday_line_source)
         weather_today_line_html = html.escape(weather_today_line)
         weather_yesterday_line_html = html.escape(weather_yesterday_line)
         state: dict[str, Any] = {
@@ -11740,8 +11779,12 @@ class Bot:
             "preview_chat_id": initiator_id,
             "media_message_ids": [],
             "caption_message_id": None,
-            "instruction_prompt_id": previous_state.get("instruction_prompt_id") if previous_state else None,
-            "awaiting_instruction": previous_state.get("awaiting_instruction") if previous_state else False,
+            "instruction_prompt_id": (
+                previous_state.get("instruction_prompt_id") if previous_state else None
+            ),
+            "awaiting_instruction": (
+                previous_state.get("awaiting_instruction") if previous_state else False
+            ),
             "channel_id": _to_int(main_channel_raw),
             "test_channel_id": _to_int(test_channel_raw),
             "default_channel_id": int(default_channel),
@@ -11857,9 +11900,7 @@ class Bot:
         weather_today_line = self._normalize_weather_preview_line(today_line_source)
         if not yesterday_line_source:
             yesterday_line_source = state.get("weather_yesterday_line")
-        weather_yesterday_line = self._normalize_weather_preview_line(
-            yesterday_line_source
-        )
+        weather_yesterday_line = self._normalize_weather_preview_line(yesterday_line_source)
         state["weather_today_line"] = weather_today_line
         state["weather_yesterday_line"] = weather_yesterday_line
         state["weather_today_line_html"] = html.escape(weather_today_line)
@@ -11974,9 +12015,7 @@ class Bot:
         self.pending_flowers_previews.pop(user_id, None)
         confirmation_text = "Публикация отправлена."
         if message_id:
-            confirmation_text = (
-                f"{confirmation_text}\n{self.post_url(channel_id, message_id)}"
-            )
+            confirmation_text = f"{confirmation_text}\n{self.post_url(channel_id, message_id)}"
         await self.api_request(
             "sendMessage",
             {
@@ -11993,15 +12032,19 @@ class Bot:
         query: dict[str, Any],
     ) -> None:
         state = self.pending_flowers_previews.get(user_id)
-        if action in {
-            "regen_photos",
-            "regen_caption",
-            "instruction",
-            "download_prompt",
-            "send_test",
-            "send_main",
-            "cancel",
-        } and not state:
+        if (
+            action
+            in {
+                "regen_photos",
+                "regen_caption",
+                "instruction",
+                "download_prompt",
+                "send_test",
+                "send_main",
+                "cancel",
+            }
+            and not state
+        ):
             await self.api_request(
                 "answerCallbackQuery",
                 {
@@ -12013,9 +12056,7 @@ class Bot:
             return
         if action == "regen_photos":
             rubric_code = state.get("rubric_code") if state else None
-            rubric = (
-                self.data.get_rubric_by_code(rubric_code) if rubric_code else None
-            )
+            rubric = self.data.get_rubric_by_code(rubric_code) if rubric_code else None
             if not rubric:
                 await self.api_request(
                     "answerCallbackQuery",
@@ -12120,9 +12161,7 @@ class Bot:
             return
         if action == "regen_caption":
             rubric_code = state.get("rubric_code") if state else None
-            rubric = (
-                self.data.get_rubric_by_code(rubric_code) if rubric_code else None
-            )
+            rubric = self.data.get_rubric_by_code(rubric_code) if rubric_code else None
             if not rubric:
                 await self.api_request(
                     "answerCallbackQuery",
@@ -12176,9 +12215,7 @@ class Bot:
             state["plan_meta"] = plan_meta or {}
             state["pattern_ids"] = list((plan_meta or {}).get("pattern_ids", []))
             prompt_payload = self._build_flowers_prompt_payload(plan, plan_meta)
-            state["serialized_plan"] = str(
-                prompt_payload.get("serialized_plan") or "{}"
-            )
+            state["serialized_plan"] = str(prompt_payload.get("serialized_plan") or "{}")
             plan_system_prompt = str(prompt_payload.get("system_prompt") or "")
             plan_user_prompt = str(prompt_payload.get("user_prompt") or "")
             plan_request_text = str(prompt_payload.get("request_text") or "")
@@ -12329,11 +12366,7 @@ class Bot:
         min_len = int(length_cfg.get("min") or 420)
         max_len = int(length_cfg.get("max") or 520)
         banned_words_raw = meta.get("banned_words") if isinstance(meta, dict) else []
-        banned_words = {
-            str(word).strip()
-            for word in (banned_words_raw or [])
-            if str(word).strip()
-        }
+        banned_words = {str(word).strip() for word in (banned_words_raw or []) if str(word).strip()}
         patterns = [
             item
             for item in plan_dict.get("patterns") or []
@@ -12412,18 +12445,14 @@ class Bot:
                 )
 
         weather_info = (
-            plan_dict.get("weather")
-            if isinstance(plan_dict.get("weather"), dict)
-            else {}
+            plan_dict.get("weather") if isinstance(plan_dict.get("weather"), dict) else {}
         )
         raw_weather_payload: dict[str, Any] = {}
         if isinstance(weather_info, dict) and weather_info:
             cities_value = weather_info.get("cities")
             if isinstance(cities_value, (list, tuple, set)):
                 normalized_cities = [
-                    str(city or "").strip()
-                    for city in cities_value
-                    if str(city or "").strip()
+                    str(city or "").strip() for city in cities_value if str(city or "").strip()
                 ]
                 if normalized_cities:
                     raw_weather_payload["cities"] = normalized_cities
@@ -12511,9 +12540,7 @@ class Bot:
             "Сохраняй утреннюю интонацию: скажи «Доброе утро» и фразу вроде «Порадую вас цветами…», мягко перечисляя несколько распознанных цветов и подчеркивая заботу о читателях."
         )
         if banned_words:
-            rule_items.append(
-                "Не используй слова: " + ", ".join(sorted(banned_words))
-            )
+            rule_items.append("Не используй слова: " + ", ".join(sorted(banned_words)))
         rules = [f"{idx}. {text}" for idx, text in enumerate(rule_items, 1)]
         header = (
             "Доброе утро! Ты — редактор телеграм-канала про погоду, уют и цветы. "
@@ -12588,16 +12615,12 @@ class Bot:
                         or raw_weather_text_compact
                         or json.dumps(raw_weather_payload, ensure_ascii=False, sort_keys=True)
                     )
-                context_sections.append(
-                    "Сырые данные погоды (JSON):\n" + weather_payload_text
-                )
+                context_sections.append("Сырые данные погоды (JSON):\n" + weather_payload_text)
 
             flower_text = ""
             if config.get("include_flowers") and flower_names_text:
                 flower_text = flower_names_text
-                context_sections.append(
-                    "Цветы на фото (распознаны): " + flower_text
-                )
+                context_sections.append("Цветы на фото (распознаны): " + flower_text)
 
             trimmed_previous = previous_text
             previous_limit = config.get("previous_limit")
@@ -12609,9 +12632,7 @@ class Bot:
             trimmed_instructions = extra_instructions
             instructions_limit = config.get("instructions_limit")
             if trimmed_instructions and instructions_limit:
-                trimmed_instructions = _smart_trim(
-                    trimmed_instructions, int(instructions_limit)
-                )
+                trimmed_instructions = _smart_trim(trimmed_instructions, int(instructions_limit))
             if trimmed_instructions:
                 context_sections.append("Доп. инструкция: " + trimmed_instructions)
 
@@ -12686,9 +12707,7 @@ class Bot:
         # Gradually trim the lengthier optional sections before falling back.
         for limit_value in (480, 360, 240, 180, 140, 100, 80, 60):
             _maybe_adjust("previous_limit", limit_value, lambda: bool(previous_text))
-            _maybe_adjust(
-                "instructions_limit", limit_value, lambda: bool(extra_instructions)
-            )
+            _maybe_adjust("instructions_limit", limit_value, lambda: bool(extra_instructions))
             if len(user_prompt) <= prompt_limit:
                 break
 
@@ -12703,10 +12722,7 @@ class Bot:
         _maybe_adjust("include_weather", False, lambda: bool(raw_weather_text_pretty))
 
         def _build_fallback_prompt(state: Mapping[str, Any]) -> str:
-            ideas = [
-                re.sub(r"^\d+\.\s*", "", line)
-                for line in pattern_lines[:3]
-            ]
+            ideas = [re.sub(r"^\d+\.\s*", "", line) for line in pattern_lines[:3]]
             ideas_text = "; ".join(idea for idea in ideas if idea)
             if len(ideas_text) > 360:
                 ideas_text = ideas_text[:357].rstrip() + "…"
@@ -12729,9 +12745,7 @@ class Bot:
                 context_lines.extend(photos_lines)
             flower_text = str(state.get("flower_text") or "").strip()
             if flower_text:
-                context_lines.append(
-                    "Цветы на фото (распознаны): " + flower_text
-                )
+                context_lines.append("Цветы на фото (распознаны): " + flower_text)
             instructions_text = str(state.get("instructions_text") or "").strip()
             if instructions_text:
                 context_lines.append("Доп. инструкция: " + instructions_text)
@@ -12739,15 +12753,11 @@ class Bot:
                 fallback_lines.append("Контекст:")
                 fallback_lines.extend(context_lines)
             if banned_words:
-                fallback_lines.append(
-                    "Избегай слов: " + ", ".join(sorted(list(banned_words))[:8])
-                )
+                fallback_lines.append("Избегай слов: " + ", ".join(sorted(list(banned_words))[:8]))
             fallback_lines.append(
                 "Пиши естественно, как живой человек; уместные эмодзи допустимы без перебора."
             )
-            fallback_lines.append(
-                "Верни JSON с ключами greeting и hashtags (не менее двух тегов)."
-            )
+            fallback_lines.append("Верни JSON с ключами greeting и hashtags (не менее двух тегов).")
             return "\n".join(fallback_lines)
 
         used_fallback = False
@@ -12876,7 +12886,9 @@ class Bot:
                 )
                 continue
             return greeting, hashtags, resolved_plan, resolved_meta
-        logging.warning("Не удалось получить новый текст для рубрики flowers, используем запасной вариант")
+        logging.warning(
+            "Не удалось получить новый текст для рубрики flowers, используем запасной вариант"
+        )
         return (
             self._default_flowers_greeting(cities),
             self._default_hashtags("flowers"),
@@ -12918,7 +12930,9 @@ class Bot:
         hashtags: Iterable[str],
     ) -> bool:
         normalized_text = text.strip().lower()
-        normalized_tags = sorted({str(tag).lstrip("#").lower() for tag in hashtags if str(tag).strip()})
+        normalized_tags = sorted(
+            {str(tag).lstrip("#").lower() for tag in hashtags if str(tag).strip()}
+        )
         if not normalized_text:
             return False
         recent_metadata = self.data.get_recent_rubric_metadata(rubric_code, limit=5)
@@ -12999,16 +13013,12 @@ class Bot:
             for idx, asset in enumerate(assets, start=1):
                 source_path, should_cleanup = await self._ensure_asset_source(asset)
                 if not source_path:
-                    logging.warning(
-                        "Asset %s missing source file for guess_arch overlay", asset.id
-                    )
+                    logging.warning("Asset %s missing source file for guess_arch overlay", asset.id)
                     for created in overlay_paths:
                         self._remove_file(created)
                     return False
                 source_files.append((asset.id, source_path, should_cleanup))
-                path = self._overlay_number(
-                    asset, idx, config, source_path=source_path
-                )
+                path = self._overlay_number(asset, idx, config, source_path=source_path)
                 if not path:
                     for created in overlay_paths:
                         self._remove_file(created)
@@ -13197,11 +13207,7 @@ class Bot:
             return None
 
         def _sky_tokens(values: Iterable[NormalizedSky]) -> list[str]:
-            tokens = {
-                token
-                for token in (_sky_token(item) for item in values)
-                if token
-            }
+            tokens = {token for token in (_sky_token(item) for item in values) if token}
             return sorted(tokens)
 
         def _emit_log(label: str, **fields: Any) -> None:
@@ -13312,7 +13318,11 @@ class Bot:
                 clouds_label=clouds_label,
             )
             logging.warning("SEA_RUBRIC no_candidates sea_id=%s", sea_id)
-            temp_want_sunset = storm_state != "strong_storm" and sky_bucket in {"clear", "mostly_clear", "partly_cloudy"}
+            temp_want_sunset = storm_state != "strong_storm" and sky_bucket in {
+                "clear",
+                "mostly_clear",
+                "partly_cloudy",
+            }
             await self._handle_sea_no_candidates(
                 rubric,
                 channel_id,
@@ -13345,7 +13355,9 @@ class Bot:
                 candidate["season_match"] = False
                 null_doy_asset_ids.append(candidate["asset"].id)
             else:
-                match = is_in_season_window(shot_doy, today_doy=today_doy, window=season_window_days)
+                match = is_in_season_window(
+                    shot_doy, today_doy=today_doy, window=season_window_days
+                )
                 candidate["season_match"] = match
                 if match:
                     kept_asset_ids.append(candidate["asset"].id)
@@ -13485,7 +13497,11 @@ class Bot:
                 if not stage_cfg.allow_false_sky and stage_cfg.false_sky_penalty:
                     components["FalseSkyPenalty"] += stage_cfg.false_sky_penalty
                     score -= stage_cfg.false_sky_penalty
-            elif sky_visible is True and stage_cfg.require_visible_sky and stage_cfg.visible_sky_bonus:
+            elif (
+                sky_visible is True
+                and stage_cfg.require_visible_sky
+                and stage_cfg.visible_sky_bonus
+            ):
                 components["VisibleSkyBonus"] = stage_cfg.visible_sky_bonus
                 score += stage_cfg.visible_sky_bonus
 
@@ -13501,7 +13517,11 @@ class Bot:
                 score -= stage_cfg.mismatch_penalty
 
             if stage_cfg.require_allowed_sky:
-                if similarity != "match" and photo_sky is not None and photo_sky.weather_tag != "unknown":
+                if (
+                    similarity != "match"
+                    and photo_sky is not None
+                    and photo_sky.weather_tag != "unknown"
+                ):
                     penalty = stage_cfg.required_sky_penalty
                     if penalty:
                         components["RequiredSkyPenalty"] += penalty
@@ -13564,7 +13584,10 @@ class Bot:
             pool_counts[f"pool_after_{stage_cfg.name}"] = len(stage_results)
 
             if stage_results:
-                def _ordering(item: tuple[float, dict[str, Any], dict[str, Any]]) -> tuple[float, float, int]:
+
+                def _ordering(
+                    item: tuple[float, dict[str, Any], dict[str, Any]],
+                ) -> tuple[float, float, int]:
                     score_value, _reason_payload, candidate_payload = item
                     age_value = float(candidate_payload.get("age_bonus") or 0.0)
                     asset_obj = candidate_payload["asset"]
@@ -13677,9 +13700,7 @@ class Bot:
         want_sunset = (
             storm_state != "strong_storm"
             and sky_visible
-            and not (
-                clear_guard_hard and chosen_photo_sky_tag in {"mostly_cloudy", "overcast"}
-            )
+            and not (clear_guard_hard and chosen_photo_sky_tag in {"mostly_cloudy", "overcast"})
         )
         if enable_facts:
             fact_sentence_value, fact_id_value, fact_info = self._prepare_sea_fact(
@@ -13715,8 +13736,7 @@ class Bot:
             shot_doy=selected_candidate.get("shot_doy"),
             photo_doy=selected_candidate.get("photo_doy"),
             score=selected_details.get("score"),
-            wave_photo=selected_candidate.get("photo_wave")
-            or selected_candidate.get("wave_score"),
+            wave_photo=selected_candidate.get("photo_wave") or selected_candidate.get("wave_score"),
             wave_target_score=target_wave_score,
             photo_sky=_sky_token(selected_candidate.get("photo_sky_struct")),
             photo_sky_daypart=selected_candidate.get("photo_sky_daypart"),
@@ -13952,10 +13972,7 @@ class Bot:
                     )
                     resolved_wind_ms = fallback_speed
                     resolved_wind_kmh = fallback_speed * 3.6
-                    resolved_wind_class = (
-                        fallback_class
-                        or classify_wind_kph(resolved_wind_kmh)
-                    )
+                    resolved_wind_class = fallback_class or classify_wind_kph(resolved_wind_kmh)
                 else:
                     logging.warning(
                         "SEA_RUBRIC test_wind_cache_missing sea_id=%s",
@@ -14139,9 +14156,7 @@ class Bot:
                 lines.append(fact_sentence.strip())
             text = " ".join(lines).strip()
             sentences = [
-                segment.strip()
-                for segment in re.split(r"(?<=[.!?…])\s+", text)
-                if segment.strip()
+                segment.strip() for segment in re.split(r"(?<=[.!?…])\s+", text) if segment.strip()
             ]
             return " ".join(sentences[:3])
 
@@ -14211,7 +14226,7 @@ class Bot:
             "- Основной текст должен быть не длиннее 350 символов.\n"
             "- Если place_hashtag задан — включи его в массив hashtags.\n"
             "- Не вставляй хэштеги в caption; верни их только в массиве hashtags.\n"
-            "Ответ строго в формате JSON: {\"caption\": string, \"hashtags\": string[]}."
+            'Ответ строго в формате JSON: {"caption": string, "hashtags": string[]}.'
         )
         schema = {
             "type": "object",
@@ -14291,7 +14306,7 @@ class Bot:
                 fallback_caption += f" {weather_text}"
             return fallback_caption, self._default_hashtags("guess_arch")
         prompt = (
-            "Подготовь подпись на русском языке для конкурса \"Угадай архитектуру\". "
+            'Подготовь подпись на русском языке для конкурса "Угадай архитектуру". '
             f"В альбоме {asset_count} пронумерованных фотографий. "
             "Попроси подписчиков написать свои варианты в комментариях."
         )
@@ -14390,7 +14405,7 @@ class Bot:
             "Всегда используй русский язык."
         )
         user_prompt_parts = [
-            "Сгенерируй JSON:\n{ \"caption\": string, \"hashtags\": string[] }\n",
+            'Сгенерируй JSON:\n{ "caption": string, "hashtags": string[] }\n',
             f"storm_state: {storm_state}",
             f"sunset_selected: {sunset_selected}",
             f"wind_strength: {wind_class if wind_class else 'null'}",
@@ -14399,19 +14414,19 @@ class Bot:
         ]
         if storm_state != "calm":
             user_prompt_parts.append(
-                "- Если storm_state != \"calm\", первая фраза — про шторм на #море."
+                '- Если storm_state != "calm", первая фраза — про шторм на #море.'
             )
         else:
             if sunset_selected:
                 user_prompt_parts.append(
-                    "- Если storm_state == \"calm\" и sunset_selected — вариация «Порадую закатом над #море…»"
+                    '- Если storm_state == "calm" и sunset_selected — вариация «Порадую закатом над #море…»'
                 )
             else:
                 user_prompt_parts.append(
-                    "- Если storm_state == \"calm\" и не sunset_selected — вариация «Порадую вас #море…»"
+                    '- Если storm_state == "calm" и не sunset_selected — вариация «Порадую вас #море…»'
                 )
         user_prompt_parts.append(
-            "- В массиве hashtags обязательно должны быть \"#море\" и \"#БалтийскоеМоре\"."
+            '- В массиве hashtags обязательно должны быть "#море" и "#БалтийскоеМоре".'
         )
         if place_hashtag:
             user_prompt_parts.append(
@@ -14524,7 +14539,9 @@ class Bot:
                 except ValueError:
                     logging.warning("Cannot convert '%s' to int, using default %s", value, default)
                     return default
-        logging.warning("Unexpected type %s for int conversion, using default %s", type(value).__name__, default)
+        logging.warning(
+            "Unexpected type %s for int conversion, using default %s", type(value).__name__, default
+        )
         return default
 
     def _safe_float(self, value: Any, default: float | None = None) -> float | None:
@@ -14542,7 +14559,11 @@ class Bot:
             except ValueError:
                 logging.warning("Cannot convert '%s' to float, using default %s", value, default)
                 return default
-        logging.warning("Unexpected type %s for float conversion, using default %s", type(value).__name__, default)
+        logging.warning(
+            "Unexpected type %s for float conversion, using default %s",
+            type(value).__name__,
+            default,
+        )
         return default
 
     def _parse_datetime_iso(self, value: str | None) -> datetime:
@@ -14578,13 +14599,18 @@ class Bot:
             return None
 
         sunny_syn = {
-            "sunny", "clear", "sun", "sunlight", "bright", "blue_sky",
-            "ясно", "солнечно", "голубое_небо", "blue sky"
+            "sunny",
+            "clear",
+            "sun",
+            "sunlight",
+            "bright",
+            "blue_sky",
+            "ясно",
+            "солнечно",
+            "голубое_небо",
+            "blue sky",
         }
-        cloudy_syn = {
-            "cloudy", "overcast", "rain", "storm clouds",
-            "пасмурно", "облачно", "дождь"
-        }
+        cloudy_syn = {"cloudy", "overcast", "rain", "storm clouds", "пасмурно", "облачно", "дождь"}
 
         tags = vision_results.get("tags")
         if not isinstance(tags, list):
@@ -14759,8 +14785,7 @@ class Bot:
                 sunset_tag = "sunset" in tags
                 sunset_category = bool({"закат", "sunset"} & categories)
                 prefer_sunsets = (
-                    desired_wave_score_value is not None
-                    and desired_wave_score_value <= 2.0
+                    desired_wave_score_value is not None and desired_wave_score_value <= 2.0
                 )
                 if prefer_sunsets and sunset_tag:
                     sunset_tag_priority = 1
@@ -14778,9 +14803,7 @@ class Bot:
                 record["wave_penalty"] = wave_penalty
 
                 thematic_bias = 0.0
-                asset_sky = self._extract_asset_sky(
-                    getattr(asset, "vision_results", None)
-                )
+                asset_sky = self._extract_asset_sky(getattr(asset, "vision_results", None))
                 if desired_sky_normalized and asset_sky:
                     if desired_sky_normalized == asset_sky:
                         thematic_bias += 1.0
@@ -14792,10 +14815,7 @@ class Bot:
                             thematic_bias += 2.0
                         elif sunset_category:
                             thematic_bias += 1.0
-                    if (
-                        desired_wave_score_value >= 6.0
-                        and storm_synonyms.intersection(tags)
-                    ):
+                    if desired_wave_score_value >= 6.0 and storm_synonyms.intersection(tags):
                         storm_bonus = max(0.0, 0.5 + wave_penalty)
                         if storm_bonus:
                             thematic_bias += storm_bonus
@@ -14826,9 +14846,7 @@ class Bot:
                 )
             if debug_enabled and len(debug_records) < 5:
                 record["key"] = sort_key
-                record["types"] = tuple(
-                    type(component).__name__ for component in sort_key
-                )
+                record["types"] = tuple(type(component).__name__ for component in sort_key)
                 debug_records.append(record)
             return sort_key
 
@@ -14875,9 +14893,7 @@ class Bot:
                 await self._cleanup_assets([full_asset])
                 return
             except Exception:
-                logging.exception(
-                    "Failed to cleanup asset %s after publishing", asset_id
-                )
+                logging.exception("Failed to cleanup asset %s after publishing", asset_id)
         await self._fallback_cleanup_asset(asset)
 
     async def _fallback_cleanup_asset(self, asset: dict[str, Any]) -> None:
@@ -14948,9 +14964,7 @@ class Bot:
         except Exception:
             logging.exception("Failed to remove file %s", path)
 
-    def _compatible_photo_weather_classes(
-        self, actual_class: str | None
-    ) -> set[str] | None:
+    def _compatible_photo_weather_classes(self, actual_class: str | None) -> set[str] | None:
         if actual_class is None:
             return None
         normalized_actual = Bot._normalize_weather_enum(actual_class)
@@ -15086,9 +15100,7 @@ class Bot:
             return None
         sea_lat = sea_row["lat"]
         sea_lon = sea_row["lon"]
-        city_rows = self.data.conn.execute(
-            "SELECT id, name, lat, lon FROM cities"
-        ).fetchall()
+        city_rows = self.data.conn.execute("SELECT id, name, lat, lon FROM cities").fetchall()
         if not city_rows:
             return None
         min_distance = None
@@ -15142,9 +15154,7 @@ class Bot:
             return None, None
         sea_lat = sea_row["lat"]
         sea_lon = sea_row["lon"]
-        city_rows = self.data.conn.execute(
-            "SELECT id, name, lat, lon FROM cities"
-        ).fetchall()
+        city_rows = self.data.conn.execute("SELECT id, name, lat, lon FROM cities").fetchall()
         if not city_rows:
             return None, None
         min_distance = None
@@ -15240,9 +15250,7 @@ class Bot:
         cities_value = payload.get("cities")
         if isinstance(cities_value, (list, tuple, set)):
             locations = [
-                str(city or "").strip()
-                for city in cities_value
-                if str(city or "").strip()
+                str(city or "").strip() for city in cities_value if str(city or "").strip()
             ]
             if locations:
                 return ", ".join(locations)
@@ -15260,9 +15268,7 @@ class Bot:
             return city_name.strip()
         return None
 
-    def _positive_temperature_trend(
-        self, current: float | None, previous: float | None
-    ) -> str:
+    def _positive_temperature_trend(self, current: float | None, previous: float | None) -> str:
         if current is None:
             return ""
         current_text = self._format_temperature_value(current) or ""
@@ -15484,9 +15490,7 @@ class Bot:
         weather_code = weather_row["weather_code"]
         weather_class = self._classify_weather_code(weather_code)
         weather_condition = (
-            WEATHER_TAG_TRANSLATIONS.get(weather_class, weather_class)
-            if weather_class
-            else None
+            WEATHER_TAG_TRANSLATIONS.get(weather_class, weather_class) if weather_class else None
         )
         snapshot: dict[str, Any] = {
             "id": row["id"],
@@ -15566,8 +15570,8 @@ class Bot:
                 day_key = "yesterday"
             else:
                 continue
-            samples = dayparts.setdefault(day_key, {}).setdefault(segment, {}).setdefault(
-                "samples", []
+            samples = (
+                dayparts.setdefault(day_key, {}).setdefault(segment, {}).setdefault("samples", [])
             )
             samples.append(
                 {
@@ -15686,7 +15690,14 @@ class Bot:
 
             if isinstance(day_payload, Mapping):
                 _ingest(day_payload.get(segment_key))
-                for container_key in ("segments", "dayparts", "parts", "periods", "details", "summary"):
+                for container_key in (
+                    "segments",
+                    "dayparts",
+                    "parts",
+                    "periods",
+                    "details",
+                    "summary",
+                ):
                     container = day_payload.get(container_key)
                     if isinstance(container, Mapping):
                         _ingest(container.get(segment_key))
@@ -15763,9 +15774,7 @@ class Bot:
                     segment_payload = {}
                     segments[segment_key] = segment_payload
                 samples = (
-                    segment_payload.get("samples")
-                    if isinstance(segment_payload, Mapping)
-                    else None
+                    segment_payload.get("samples") if isinstance(segment_payload, Mapping) else None
                 )
                 if isinstance(samples, list) and samples:
                     codes = [
@@ -15790,14 +15799,12 @@ class Bot:
                     temperatures = [
                         float(sample["temperature"])
                         for sample in samples
-                        if isinstance(sample, Mapping)
-                        and sample.get("temperature") is not None
+                        if isinstance(sample, Mapping) and sample.get("temperature") is not None
                     ]
                     winds = [
                         float(sample["wind_speed"])
                         for sample in samples
-                        if isinstance(sample, Mapping)
-                        and sample.get("wind_speed") is not None
+                        if isinstance(sample, Mapping) and sample.get("wind_speed") is not None
                     ]
                     segment_payload.update(
                         {
@@ -15808,11 +15815,7 @@ class Bot:
                             "wind_speed": _avg(winds),
                         }
                     )
-                    if (
-                        segment_payload.get("condition") is None
-                        and not temperatures
-                        and not winds
-                    ):
+                    if segment_payload.get("condition") is None and not temperatures and not winds:
                         segments.pop(segment_key, None)
                 else:
                     fallback_segment = _build_fallback_segment(
@@ -15862,9 +15865,7 @@ class Bot:
             trend_wind_previous_value,
         )
         trends = [
-            piece
-            for piece in (snapshot["trend_temperature"], snapshot["trend_wind"])
-            if piece
+            piece for piece in (snapshot["trend_temperature"], snapshot["trend_wind"]) if piece
         ]
         snapshot["trend_summary"] = " и ".join(trends)
         if snapshot["trend_summary"]:
@@ -15982,6 +15983,7 @@ class Bot:
             line = f"{headline} {city_list}: {details}."
         else:
             line = f"{headline} {city_list}."
+
         def _condition_from_code(value: Any) -> str | None:
             code: int | None
             if isinstance(value, Mapping):
@@ -16077,12 +16079,10 @@ class Bot:
             }
             if yesterday_parts:
                 yesterday_metrics["parts"] = yesterday_parts
+
         def _drop_empty(metrics: dict[str, Any]) -> dict[str, Any]:
-            return {
-                key: value
-                for key, value in metrics.items()
-                if value is not None
-            }
+            return {key: value for key, value in metrics.items() if value is not None}
+
         return {
             "city": city_snapshot,
             "sea": coast_snapshot,
@@ -16166,7 +16166,6 @@ class Bot:
         draw.text(position, text, fill=(255, 255, 255, 230), font=font)
         return image
 
-
     async def schedule_loop(self):
         """Background scheduler running at configurable intervals."""
 
@@ -16181,7 +16180,7 @@ class Bot:
                     await self.process_weather_channels()
                     await self.process_rubric_schedule()
                 except Exception:
-                    logging.exception('Weather collection failed')
+                    logging.exception("Weather collection failed")
                 await asyncio.sleep(SCHED_INTERVAL_SEC)
         except asyncio.CancelledError:
             pass
@@ -16344,50 +16343,50 @@ async def health_handler(request: web.Request) -> web.Response:
 
 
 async def ensure_webhook(bot: Bot, base_url: str):
-    expected = base_url.rstrip('/') + '/webhook'
-    info = await bot.api_request('getWebhookInfo')
-    current = info.get('result', {}).get('url')
+    expected = base_url.rstrip("/") + "/webhook"
+    info = await bot.api_request("getWebhookInfo")
+    current = info.get("result", {}).get("url")
     if current != expected:
-        logging.info('Registering webhook %s', expected)
-        resp = await bot.api_request('setWebhook', {'url': expected})
-        if not resp.get('ok'):
-            logging.error('Failed to register webhook: %s', resp)
+        logging.info("Registering webhook %s", expected)
+        resp = await bot.api_request("setWebhook", {"url": expected})
+        if not resp.get("ok"):
+            logging.error("Failed to register webhook: %s", resp)
             raise RuntimeError(f"Webhook registration failed: {resp}")
-        logging.info('Webhook registered successfully')
+        logging.info("Webhook registered successfully")
     else:
-        logging.info('Webhook already registered at %s', current)
+        logging.info("Webhook already registered at %s", current)
 
 
 async def attach_device(request: web.Request) -> web.Response:
     app = request.app
-    bot: Bot = app['bot']
-    user_limiter: TokenBucketLimiter = app['attach_user_rate_limiter']
+    bot: Bot = app["bot"]
+    user_limiter: TokenBucketLimiter = app["attach_user_rate_limiter"]
 
     try:
         payload = await request.json()
     except json.JSONDecodeError:
-        return web.json_response({'error': 'invalid_payload'}, status=400)
+        return web.json_response({"error": "invalid_payload"}, status=400)
 
     if not isinstance(payload, dict):
-        return web.json_response({'error': 'invalid_payload'}, status=400)
+        return web.json_response({"error": "invalid_payload"}, status=400)
 
     try:
         code = normalize_pairing_token(payload)
     except PairingTokenError as exc:
         logging.warning(
-            'DEVICE attach invalid token ip=%s reason=%s',
+            "DEVICE attach invalid token ip=%s reason=%s",
             request.remote,
             exc.message,
         )
         return web.json_response(
-            {'error': 'invalid_token', 'message': exc.message},
+            {"error": "invalid_token", "message": exc.message},
             status=400,
         )
 
-    raw_name = payload.get('name')
-    provided_name = str(raw_name).strip() if isinstance(raw_name, str) else ''
+    raw_name = payload.get("name")
+    provided_name = str(raw_name).strip() if isinstance(raw_name, str) else ""
 
-    ip = request.remote or 'unknown'
+    ip = request.remote or "unknown"
 
     conn = bot.db
     now_iso = datetime.utcnow().isoformat()
@@ -16401,19 +16400,19 @@ async def attach_device(request: web.Request) -> web.Response:
     )
     row = cur.fetchone()
     if row:
-        user_for_limit = int(row['user_id']) if isinstance(row, sqlite3.Row) else int(row[0])
-        allowance = await user_limiter.allow(f'user:{user_for_limit}')
+        user_for_limit = int(row["user_id"]) if isinstance(row, sqlite3.Row) else int(row[0])
+        allowance = await user_limiter.allow(f"user:{user_for_limit}")
         if not allowance.allowed:
-            logging.warning('DEVICE attach user rate-limit user=%s ip=%s', user_for_limit, ip)
-            request['rate_limit_log'] = {
-                'result': 'hit',
-                'scope': 'user',
-                'limit': user_limiter.capacity,
-                'window': user_limiter.window,
-                'key': f'user:{user_for_limit}',
-                'retry_after': allowance.retry_after_seconds,
+            logging.warning("DEVICE attach user rate-limit user=%s ip=%s", user_for_limit, ip)
+            request["rate_limit_log"] = {
+                "result": "hit",
+                "scope": "user",
+                "limit": user_limiter.capacity,
+                "window": user_limiter.window,
+                "key": f"user:{user_for_limit}",
+                "retry_after": allowance.retry_after_seconds,
             }
-            record_rate_limit_drop('/v1/devices/attach', 'user')
+            record_rate_limit_drop("/v1/devices/attach", "user")
             headers: dict[str, str] | None = None
             if (
                 allowance.retry_after_seconds is not None
@@ -16421,28 +16420,24 @@ async def attach_device(request: web.Request) -> web.Response:
                 and math.isfinite(allowance.retry_after_seconds)
             ):
                 headers = {
-                    'Retry-After': str(
-                        max(0, int(math.ceil(allowance.retry_after_seconds)))
-                    )
+                    "Retry-After": str(max(0, int(math.ceil(allowance.retry_after_seconds))))
                 }
-            return web.json_response({'error': 'rate_limited'}, status=429, headers=headers)
+            return web.json_response({"error": "rate_limited"}, status=429, headers=headers)
 
     with conn:
         info = consume_pairing_token(conn, code=code)
         if not info:
-            logging.warning('DEVICE attach invalid token ip=%s', ip)
+            logging.warning("DEVICE attach invalid token ip=%s", ip)
             return web.json_response(
                 {
-                    'error': 'invalid_token',
-                    'message': 'Токен недействителен или срок его действия истёк.',
+                    "error": "invalid_token",
+                    "message": "Токен недействителен или срок его действия истёк.",
                 },
                 status=400,
             )
 
         user_id, default_name = info
-        effective_name = (
-            provided_name or str(default_name or '').strip() or _PAIRING_DEFAULT_NAME
-        )
+        effective_name = provided_name or str(default_name or "").strip() or _PAIRING_DEFAULT_NAME
         device_id = str(uuid4())
         secret = secrets.token_hex(32)
         create_device(
@@ -16465,36 +16460,37 @@ async def attach_device(request: web.Request) -> web.Response:
             },
         )
         logging.info(
-            'DEVICE attach success user=%s device=%s name=%s ip=%s',
+            "DEVICE attach success user=%s device=%s name=%s ip=%s",
             user_id,
             device_id,
             effective_name,
             ip,
         )
     payload: dict[str, str] = {
-        'device_id': device_id,
-        'device_secret': secret,
+        "device_id": device_id,
+        "device_secret": secret,
     }
     if effective_name:
-        payload['name'] = effective_name
+        payload["name"] = effective_name
 
     return web.json_response(payload)
 
 
 async def handle_webhook(request):
-    bot: Bot = request.app['bot']
+    bot: Bot = request.app["bot"]
     try:
         data = await request.json()
         logging.info("Received webhook: %s", data)
     except Exception:
         logging.exception("Invalid webhook payload")
-        return web.Response(text='bad request', status=400)
+        return web.Response(text="bad request", status=400)
     try:
         await bot.handle_update(data)
     except Exception:
         logging.exception("Error handling update")
-        return web.Response(text='error', status=500)
-    return web.Response(text='ok')
+        return web.Response(text="error", status=500)
+    return web.Response(text="ok")
+
 
 def create_app():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -16503,22 +16499,20 @@ def create_app():
 
     bot = Bot(token, DB_PATH)
     uploads_config = bot.uploads_config
-    app = web.Application(
-        client_max_size=uploads_config.max_upload_bytes + 1024
-    )
-    app['bot'] = bot
-    app['uploads_config'] = uploads_config
-    app['started_at'] = datetime.now(UTC)
-    app['version'] = APP_VERSION
-    app['attach_user_rate_limiter'] = TokenBucketLimiter(
-        _env_int('RL_ATTACH_USER_PER_MIN', 3),
-        _env_int('RL_ATTACH_USER_WINDOW_SEC', 60),
+    app = web.Application(client_max_size=uploads_config.max_upload_bytes + 1024)
+    app["bot"] = bot
+    app["uploads_config"] = uploads_config
+    app["started_at"] = datetime.now(UTC)
+    app["version"] = APP_VERSION
+    app["attach_user_rate_limiter"] = TokenBucketLimiter(
+        _env_int("RL_ATTACH_USER_PER_MIN", 3),
+        _env_int("RL_ATTACH_USER_WINDOW_SEC", 60),
     )
 
     storage = create_storage_from_env(supabase=bot.supabase)
     upload_metrics = UploadMetricsRecorder(emitter=LoggingMetricsEmitter())
     bot.upload_metrics = upload_metrics
-    app['upload_metrics'] = upload_metrics
+    app["upload_metrics"] = upload_metrics
 
     class _UploadTelegramAdapter:
         def __init__(self, bot: Bot):
@@ -16579,11 +16573,11 @@ def create_app():
     app.middlewares.append(create_hmac_middleware(bot.db))
     app.middlewares.append(create_rate_limit_middleware())
 
-    app.router.add_post('/webhook', handle_webhook)
-    app.router.add_get('/privet', privet_handler)
-    app.router.add_get('/v1/health', health_handler)
-    app.router.add_post('/v1/devices/attach', attach_device)
-    app.router.add_get('/metrics', metrics_handler)
+    app.router.add_post("/webhook", handle_webhook)
+    app.router.add_get("/privet", privet_handler)
+    app.router.add_get("/v1/health", health_handler)
+    app.router.add_post("/v1/devices/attach", attach_device)
+    app.router.add_get("/metrics", metrics_handler)
 
     webhook_base = os.getenv("WEBHOOK_URL")
     if not webhook_base:
@@ -16598,14 +16592,13 @@ def create_app():
         except Exception:
             logging.exception("Error during startup")
             raise
-        app['schedule_task'] = asyncio.create_task(bot.schedule_loop())
+        app["schedule_task"] = asyncio.create_task(bot.schedule_loop())
 
     async def cleanup_background(app: web.Application):
         await bot.close()
-        app['schedule_task'].cancel()
+        app["schedule_task"].cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await app['schedule_task']
-
+            await app["schedule_task"]
 
     app.on_startup.append(start_background)
     app.on_cleanup.append(cleanup_background)
@@ -16613,8 +16606,6 @@ def create_app():
     return app
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     web.run_app(create_app(), port=int(os.getenv("PORT", 8080)))
-
-

@@ -36,9 +36,7 @@ def _ensure_assets_source(conn: sqlite3.Connection) -> None:
         CHECK (source IN ({allowed}))
         """
     )
-    conn.execute(
-        "UPDATE assets SET source='mobile' WHERE upload_id IS NOT NULL"
-    )
+    conn.execute("UPDATE assets SET source='mobile' WHERE upload_id IS NOT NULL")
 
 
 def run(conn: sqlite3.Connection) -> None:

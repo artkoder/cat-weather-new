@@ -50,11 +50,15 @@ class DummySession:
 
 
 def _load_schema(conn: sqlite3.Connection) -> None:
-    asset_channel_path = Path(__file__).resolve().parents[1] / "migrations" / "0004_asset_channel.sql"
+    asset_channel_path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "0004_asset_channel.sql"
+    )
     conn.executescript(asset_channel_path.read_text(encoding="utf-8"))
     schema_path = Path(__file__).resolve().parents[1] / "migrations" / "0012_core_schema.sql"
     conn.executescript(schema_path.read_text(encoding="utf-8"))
-    upgrade_path = Path(__file__).resolve().parents[1] / "migrations" / "0014_split_asset_channels.sql"
+    upgrade_path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "0014_split_asset_channels.sql"
+    )
     conn.executescript(upgrade_path.read_text(encoding="utf-8"))
     uploader_path = Path(__file__).resolve().parents[1] / "migrations" / "0018_uploader_init.py"
     spec = importlib.util.spec_from_file_location("_migration_0018_uploader_init", uploader_path)
@@ -63,36 +67,54 @@ def _load_schema(conn: sqlite3.Connection) -> None:
         spec.loader.exec_module(module)
         if hasattr(module, "run"):
             module.run(conn)
-    assets_uploads_path = Path(__file__).resolve().parents[1] / "migrations" / "0020_assets_uploads.py"
-    spec_uploads = importlib.util.spec_from_file_location("_migration_0020_assets_uploads", assets_uploads_path)
+    assets_uploads_path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "0020_assets_uploads.py"
+    )
+    spec_uploads = importlib.util.spec_from_file_location(
+        "_migration_0020_assets_uploads", assets_uploads_path
+    )
     if spec_uploads and spec_uploads.loader:
         module_uploads = importlib.util.module_from_spec(spec_uploads)
         spec_uploads.loader.exec_module(module_uploads)
         if hasattr(module_uploads, "run"):
             module_uploads.run(conn)
-    mobile_sources_path = Path(__file__).resolve().parents[1] / "migrations" / "0021_mobile_sources.py"
-    spec_sources = importlib.util.spec_from_file_location("_migration_0021_mobile_sources", mobile_sources_path)
+    mobile_sources_path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "0021_mobile_sources.py"
+    )
+    spec_sources = importlib.util.spec_from_file_location(
+        "_migration_0021_mobile_sources", mobile_sources_path
+    )
     if spec_sources and spec_sources.loader:
         module_sources = importlib.util.module_from_spec(spec_sources)
         spec_sources.loader.exec_module(module_sources)
         if hasattr(module_sources, "run"):
             module_sources.run(conn)
-    sea_conditions_path = Path(__file__).resolve().parents[1] / "migrations" / "0023_sea_conditions.py"
-    spec_sea = importlib.util.spec_from_file_location("_migration_0023_sea_conditions", sea_conditions_path)
+    sea_conditions_path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "0023_sea_conditions.py"
+    )
+    spec_sea = importlib.util.spec_from_file_location(
+        "_migration_0023_sea_conditions", sea_conditions_path
+    )
     if spec_sea and spec_sea.loader:
         module_sea = importlib.util.module_from_spec(spec_sea)
         spec_sea.loader.exec_module(module_sea)
         if hasattr(module_sea, "run"):
             module_sea.run(conn)
     sea_assets_path = Path(__file__).resolve().parents[1] / "migrations" / "0024_sea_assets_shot.py"
-    spec_sea_assets = importlib.util.spec_from_file_location("_migration_0024_sea_assets_shot", sea_assets_path)
+    spec_sea_assets = importlib.util.spec_from_file_location(
+        "_migration_0024_sea_assets_shot", sea_assets_path
+    )
     if spec_sea_assets and spec_sea_assets.loader:
         module_sea_assets = importlib.util.module_from_spec(spec_sea_assets)
         spec_sea_assets.loader.exec_module(module_sea_assets)
         if hasattr(module_sea_assets, "run"):
             module_sea_assets.run(conn)
-    photo_metadata_path = Path(__file__).resolve().parents[1] / "migrations" / "0027_assets_photo_metadata.py"
-    spec_photo_metadata = importlib.util.spec_from_file_location("_migration_0027_assets_photo_metadata", photo_metadata_path)
+    photo_metadata_path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "0027_assets_photo_metadata.py"
+    )
+    spec_photo_metadata = importlib.util.spec_from_file_location(
+        "_migration_0027_assets_photo_metadata", photo_metadata_path
+    )
     if spec_photo_metadata and spec_photo_metadata.loader:
         module_photo_metadata = importlib.util.module_from_spec(spec_photo_metadata)
         spec_photo_metadata.loader.exec_module(module_photo_metadata)
@@ -306,13 +328,13 @@ def test_asset_vision_schema_definition():
             "framing": {
                 "type": "string",
                 "description": (
-                "Кадровка/ракурс снимка. Используй один из вариантов: close_up, medium, wide."
-            ),
-            "enum": [
-                "close_up",
-                "medium",
-                "wide",
-            ],
+                    "Кадровка/ракурс снимка. Используй один из вариантов: close_up, medium, wide."
+                ),
+                "enum": [
+                    "close_up",
+                    "medium",
+                    "wide",
+                ],
             },
             "architecture_close_up": {
                 "type": "boolean",

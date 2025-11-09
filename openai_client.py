@@ -97,6 +97,7 @@ def strictify_schema(schema: dict[str, Any]) -> dict[str, Any]:
     process_node(schema, is_root=True)
     return schema
 
+
 import httpx
 
 
@@ -354,9 +355,7 @@ class OpenAIClient:
             json_schema_section = {}
         schema_name = json_schema_section.get("name")
         if not schema_name or not str(schema_name).strip():
-            raise ValueError(
-                "OpenAI payload must include text.format.name (json_schema)"
-            )
+            raise ValueError("OpenAI payload must include text.format.name (json_schema)")
         schema_body = json_schema_section.get("schema")
         schema_keys: list[str] | None = None
         schema_key_count: int | None = None
@@ -369,7 +368,6 @@ class OpenAIClient:
             schema_name,
             strict_flag,
             schema_key_count,
-
             schema_keys,
         )
 

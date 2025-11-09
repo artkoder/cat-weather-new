@@ -49,7 +49,9 @@ async def test_record_openai_usage_logs_success(tmp_path, caplog, monkeypatch):
     insert_kwargs = mock_insert.await_args.kwargs
     assert insert_kwargs["meta"]["job"]["payload_keys"] == ["foo"]
 
-    record = next(rec for rec in caplog.records if rec.message == "Supabase token usage insert succeeded")
+    record = next(
+        rec for rec in caplog.records if rec.message == "Supabase token usage insert succeeded"
+    )
     assert record.log_token_usage == payload
     await bot.close()
 
@@ -75,6 +77,8 @@ async def test_record_openai_usage_logs_failure(tmp_path, caplog, monkeypatch):
     )
     await bot._record_openai_usage("gpt-4o", response)
 
-    record = next(rec for rec in caplog.records if "Supabase token usage insert failed" in rec.message)
+    record = next(
+        rec for rec in caplog.records if "Supabase token usage insert failed" in rec.message
+    )
     assert record.log_token_usage == payload
     await bot.close()

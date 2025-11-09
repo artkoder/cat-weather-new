@@ -62,7 +62,9 @@ class FailingTelegram(TelegramStub):
         super().__init__()
         self.error = error
 
-    async def send_photo(self, *, chat_id: int, photo: Path, caption: str | None = None) -> dict[str, object]:
+    async def send_photo(
+        self, *, chat_id: int, photo: Path, caption: str | None = None
+    ) -> dict[str, object]:
         raise self.error
 
     async def send_document(
@@ -83,7 +85,9 @@ class FlakyTelegram(TelegramStub):
         self.failures = failures
         self.error = error or RuntimeError("transient error")
 
-    async def send_photo(self, *, chat_id: int, photo: Path, caption: str | None = None) -> dict[str, object]:
+    async def send_photo(
+        self, *, chat_id: int, photo: Path, caption: str | None = None
+    ) -> dict[str, object]:
         if self.failures > 0:
             self.failures -= 1
             raise self.error
@@ -132,9 +136,7 @@ def _setup_connection(
     return conn
 
 
-def _prepare_upload(
-    conn: sqlite3.Connection, *, file_key: str, gps_redacted: bool = False
-) -> str:
+def _prepare_upload(conn: sqlite3.Connection, *, file_key: str, gps_redacted: bool = False) -> str:
     create_device(
         conn,
         device_id="device-1",
@@ -500,9 +502,7 @@ async def test_process_upload_job_success_records_asset(
     assert asset.longitude == pytest.approx(37.6, rel=1e-6)
     assert asset.exif_present is True
 
-    fetched = data.get_asset_by_message(
-        config.assets_channel_id, telegram.calls[0]["message_id"]
-    )
+    fetched = data.get_asset_by_message(config.assets_channel_id, telegram.calls[0]["message_id"])
     assert fetched is not None
     assert fetched.id == asset.id
 
@@ -527,9 +527,7 @@ async def test_process_upload_job_success_records_asset(
     assert exif_log.latitude == pytest.approx(55.5, rel=1e-6)
     assert exif_log.longitude == pytest.approx(37.6, rel=1e-6)
 
-    raw_log = next(
-        record for record in caplog.records if record.message == "MOBILE_EXIF_RAW"
-    )
+    raw_log = next(record for record in caplog.records if record.message == "MOBILE_EXIF_RAW")
     assert raw_log.asset_id == row["asset_id"]
     assert raw_log.upload_id == upload_id
     assert raw_log.has_exif is True
@@ -650,7 +648,9 @@ async def test_process_upload_skips_gps_for_redacted_upload(
     base_extract = _extract_image_metadata
     skip_flags: list[bool] = []
 
-    def capture_extract_image_metadata(path: Path, *, skip_gps: bool = False) -> ImageMetadataResult:
+    def capture_extract_image_metadata(
+        path: Path, *, skip_gps: bool = False
+    ) -> ImageMetadataResult:
         skip_flags.append(skip_gps)
         return base_extract(path, skip_gps=skip_gps)
 
@@ -683,9 +683,7 @@ async def test_process_upload_skips_gps_for_redacted_upload(
 
     assert skip_flags == [True]
 
-    row = conn.execute(
-        "SELECT asset_id FROM uploads WHERE id=?", (upload_id,)
-    ).fetchone()
+    row = conn.execute("SELECT asset_id FROM uploads WHERE id=?", (upload_id,)).fetchone()
     assert row is not None and row["asset_id"] is not None
     asset = data.get_asset(row["asset_id"])
     assert asset is not None
@@ -1015,9 +1013,7 @@ async def test_process_upload_marks_exif_present_without_gps(
         recognition_channel_id=recognition_channel_id,
     )
     data = DataAccess(conn)
-    image_path = create_sample_image_with_invalid_gps(
-        tmp_path / "asset-invalid-gps.jpg"
-    )
+    image_path = create_sample_image_with_invalid_gps(tmp_path / "asset-invalid-gps.jpg")
     file_key = "invalid-gps-key"
     storage = StorageStub({file_key: image_path})
     telegram = TelegramStub()
@@ -1080,9 +1076,7 @@ async def test_process_upload_marks_exif_present_without_gps(
     assert exif_log.latitude is None
     assert exif_log.longitude is None
 
-    raw_log = next(
-        record for record in caplog.records if record.message == "MOBILE_EXIF_RAW"
-    )
+    raw_log = next(record for record in caplog.records if record.message == "MOBILE_EXIF_RAW")
     assert raw_log.asset_id == row["asset_id"]
     assert raw_log.upload_id == upload_id
     assert raw_log.has_exif is True
@@ -1199,9 +1193,7 @@ async def test_ingest_job_uses_stored_coordinates_when_result_missing_gps(
     monkeypatch.setattr(Bot, "_download_file", fake_download_file)
     monkeypatch.setattr(Bot, "api_request", fake_api_request)
     monkeypatch.setattr(Bot, "_reverse_geocode", fake_reverse_geocode)
-    monkeypatch.setattr(
-        sys.modules["main"], "ingest_photo", fake_ingest_photo
-    )
+    monkeypatch.setattr(sys.modules["main"], "ingest_photo", fake_ingest_photo)
 
     job = Job(
         id=301,
@@ -1515,9 +1507,7 @@ async def test_ingest_job_preserves_existing_exif_flag_on_parse_failure(
     monkeypatch.setattr(Bot, "api_request", fake_api_request)
     monkeypatch.setattr(Bot, "_reverse_geocode", fake_reverse_geocode)
     monkeypatch.setattr(Bot, "_extract_gps", fake_extract_gps)
-    monkeypatch.setattr(
-        sys.modules["main"], "ingest_photo", fake_ingest_photo
-    )
+    monkeypatch.setattr(sys.modules["main"], "ingest_photo", fake_ingest_photo)
 
     job = Job(
         id=302,

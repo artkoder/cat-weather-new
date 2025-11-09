@@ -29,9 +29,7 @@ def run(conn: sqlite3.Connection) -> None:
 
     for column_name, column_def in columns_to_add:
         if not _column_exists(conn, "sea_conditions", column_name):
-            conn.execute(
-                f"ALTER TABLE sea_conditions ADD COLUMN {column_name} {column_def}"
-            )
+            conn.execute(f"ALTER TABLE sea_conditions ADD COLUMN {column_name} {column_def}")
             print(f"Added column {column_name} to sea_conditions")
         else:
             print(f"Column {column_name} already exists in sea_conditions")

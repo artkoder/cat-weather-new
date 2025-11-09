@@ -323,10 +323,7 @@ async def test_build_flowers_plan_uses_single_rotating_pattern(tmp_path):
     city_snapshot = weather_block.get("city")
     assert city_snapshot is not None
     summary = weather_block.get("trend_summary")
-    assert (
-        summary
-        == "свежесть бодрит — около 4°C и ветер стал спокойнее — около 5 м/с"
-    )
+    assert summary == "свежесть бодрит — около 4°C и ветер стал спокойнее — около 5 м/с"
     assert city_snapshot["trend_temperature_value"] == 4.0
     assert city_snapshot["trend_wind_value"] == 4.8
     assert city_snapshot["trend_temperature_previous_value"] == 9.0
@@ -453,9 +450,7 @@ async def test_rubric_scheduler_enqueues_jobs(tmp_path):
     config = {
         "enabled": True,
         "tz": "+00:00",
-        "schedules": [
-            {"time": "00:00", "channel_id": -100}
-        ],
+        "schedules": [{"time": "00:00", "channel_id": -100}],
         "assets": {"categories": ["flowers"], "min": 4, "max": 4},
     }
     _insert_rubric(bot, "flowers", config, rubric_id=1)
@@ -476,9 +471,7 @@ async def test_rubric_scheduler_respects_timezone(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {
         "enabled": True,
-        "schedules": [
-            {"time": "10:00", "channel_id": -900, "tz": "+03:00"}
-        ],
+        "schedules": [{"time": "10:00", "channel_id": -900, "tz": "+03:00"}],
     }
     _insert_rubric(bot, "guess_arch", config, rubric_id=2)
     reference = datetime(2024, 3, 1, 6, 0, 0)
@@ -486,9 +479,7 @@ async def test_rubric_scheduler_respects_timezone(tmp_path):
         time_str="10:00", tz_offset="+03:00", days=None, reference=reference
     )
     await bot.process_rubric_schedule(reference=reference)
-    row = bot.db.execute(
-        "SELECT payload FROM jobs_queue WHERE name='publish_rubric'"
-    ).fetchone()
+    row = bot.db.execute("SELECT payload FROM jobs_queue WHERE name='publish_rubric'").fetchone()
     assert row is not None
     payload = json.loads(row["payload"])
     assert payload["rubric_code"] == "guess_arch"
@@ -509,9 +500,7 @@ async def test_enqueue_rubric_manual_and_test_channels(tmp_path):
     _insert_rubric(bot, "flowers", config, rubric_id=5)
 
     job_id = bot.enqueue_rubric("flowers")
-    row = bot.db.execute(
-        "SELECT status, payload FROM jobs_queue WHERE id=?", (job_id,)
-    ).fetchone()
+    row = bot.db.execute("SELECT status, payload FROM jobs_queue WHERE id=?", (job_id,)).fetchone()
     assert row is not None
     payload = json.loads(row["payload"])
     assert payload["schedule_key"] == "manual"
@@ -807,9 +796,7 @@ async def test_publish_flowers_varied_asset_counts(tmp_path, asset_count, expect
     bot.api_request = fake_api  # type: ignore[assignment]
     ok = await bot.publish_rubric("flowers", channel_id=-500)
     assert ok
-    send_call = next(
-        call for call in calls if call["method"] in {"sendPhoto", "sendMediaGroup"}
-    )
+    send_call = next(call for call in calls if call["method"] in {"sendPhoto", "sendMediaGroup"})
     assert send_call["method"] == expected_method
     data = send_call["data"]
     assert data is not None
@@ -1109,7 +1096,11 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
     state = bot.pending_flowers_previews.get(1234)
     assert state is not None
     assert state.get("media_message_ids") == [50]
-    preview_send = [call for call in calls if call[0] == "sendPhoto" and call[1] and call[1].get("chat_id") == 1234]
+    preview_send = [
+        call
+        for call in calls
+        if call[0] == "sendPhoto" and call[1] and call[1].get("chat_id") == 1234
+    ]
     assert preview_send, "Expected preview to use sendPhoto"
     preview_payload = preview_send[0][1]
     assert preview_payload is not None
@@ -1135,7 +1126,11 @@ async def test_flowers_preview_single_photo_paths(tmp_path):
 
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb-photo"})
 
-    final_send = [call for call in calls if call[0] == "sendPhoto" and call[1] and call[1].get("chat_id") == -500]
+    final_send = [
+        call
+        for call in calls
+        if call[0] == "sendPhoto" and call[1] and call[1].get("chat_id") == -500
+    ]
     assert final_send, "Expected finalize to use sendPhoto"
     final_payload = final_send[0][1]
     assert final_payload is not None
@@ -1233,7 +1228,9 @@ async def test_flowers_preview_document_media_paths(tmp_path):
     assert state.get("asset_kinds") == ["document"]
 
     preview_send = [
-        call for call in calls if call[0] == "sendDocument" and call[1] and call[1].get("chat_id") == 1234
+        call
+        for call in calls
+        if call[0] == "sendDocument" and call[1] and call[1].get("chat_id") == 1234
     ]
     assert preview_send, "Expected preview to use sendDocument"
     preview_payload = preview_send[0][1]
@@ -1261,7 +1258,9 @@ async def test_flowers_preview_document_media_paths(tmp_path):
     await bot._handle_flowers_preview_callback(1234, "send_main", {"id": "cb-doc"})
 
     final_send = [
-        call for call in calls if call[0] == "sendDocument" and call[1] and call[1].get("chat_id") == -500
+        call
+        for call in calls
+        if call[0] == "sendDocument" and call[1] and call[1].get("chat_id") == -500
     ]
     assert final_send, "Expected finalize to use sendDocument"
     final_payload = final_send[0][1]
@@ -1435,9 +1434,7 @@ async def test_flowers_preview_document_with_image_filename(tmp_path):
     confirmations = [
         call["data"]
         for call in call_log
-        if call["method"] == "sendMessage"
-        and call["data"]
-        and call["data"].get("chat_id") == 1234
+        if call["method"] == "sendMessage" and call["data"] and call["data"].get("chat_id") == 1234
     ]
     assert confirmations, "Expected confirmation messages to be sent to operator"
     expected_link = posted_link.get("url")
@@ -1572,9 +1569,7 @@ async def test_flowers_preview_reuses_converted_photo_id(tmp_path):
     confirmations = [
         call["data"]
         for call in calls
-        if call["method"] == "sendMessage"
-        and call["data"]
-        and call["data"].get("chat_id") == 1234
+        if call["method"] == "sendMessage" and call["data"] and call["data"].get("chat_id") == 1234
     ]
     assert confirmations, "Expected confirmation messages to be sent to operator"
     expected_link = posted_link.get("url")
@@ -1823,22 +1818,18 @@ async def test_flowers_preview_service_block(tmp_path):
     escaped_system = html.escape(state["plan_system_prompt"])
     escaped_user = html.escape(state["plan_user_prompt"])
     assert (
-        "<blockquote expandable=\"true\">"
+        '<blockquote expandable="true">'
         f"<b>System prompt</b>:\n{escaped_system}"
         "\n\n"
         f"<b>User prompt</b>:\n{escaped_user}"
-        "</blockquote>"
-        in text
+        "</blockquote>" in text
     )
     assert "Шаблоны:" not in text
     assert (
         "Погода сегодня: Калининград: Сегодня: переменная облачность, температура 6°C, ветер 3 м/с"
         in text
     )
-    assert (
-        "Погода вчера: Калининград: Вчера: пасмурно, температура 4°C, ветер 5 м/с"
-        in text
-    )
+    assert "Погода вчера: Калининград: Вчера: пасмурно, температура 4°C, ветер 5 м/с" in text
     assert "Море: вода 9°C, волна 0.4 м" in text
     assert "Предыдущая публикация: Вчерашний текст" in text
     assert "Попытки подбора фото: 3" in text
@@ -1936,37 +1927,22 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     assert "Доброе утро! Ты — редактор телеграм-канала про погоду, уют и цветы." in user_prompt
     assert "«Порадую вас цветами…»" in user_prompt
     assert "назови несколько распознанных цветов" in user_prompt
-    comparison_rule = (
-        "Сравнивай сегодня и вчера, опираясь на сырые погодные данные; если изменения ощутимые, коротко озвучь их"
-    )
-    photo_timeliness_rule = (
-        "Помни: фотографии сделаны заранее, поэтому не описывай их как отражение сегодняшней погоды."
-    )
+    comparison_rule = "Сравнивай сегодня и вчера, опираясь на сырые погодные данные; если изменения ощутимые, коротко озвучь их"
+    photo_timeliness_rule = "Помни: фотографии сделаны заранее, поэтому не описывай их как отражение сегодняшней погоды."
     assert comparison_rule in user_prompt
     assert photo_timeliness_rule in user_prompt
     assert "positive_intro" not in user_prompt
     assert "trend_summary" not in user_prompt
     assert "Утро радует" not in user_prompt
     assert any(comparison_rule in rule for rule in prompt_payload["rules"])
-    assert any(
-        photo_timeliness_rule in rule for rule in prompt_payload["rules"]
-    )
-    assert any(
-        "Пиши естественно, как живой человек" in rule
-        for rule in prompt_payload["rules"]
-    )
-    assert any(
-        "Игнорируй микроколебания погоды" in rule
-        for rule in prompt_payload["rules"]
-    )
+    assert any(photo_timeliness_rule in rule for rule in prompt_payload["rules"])
+    assert any("Пиши естественно, как живой человек" in rule for rule in prompt_payload["rules"])
+    assert any("Игнорируй микроколебания погоды" in rule for rule in prompt_payload["rules"])
     assert any(
         "Сопоставляй температуру, ветер и другие показатели" in rule
         for rule in prompt_payload["rules"]
     )
-    assert any(
-        "Приветствие опирай на реальные фото" in rule
-        for rule in prompt_payload["rules"]
-    )
+    assert any("Приветствие опирай на реальные фото" in rule for rule in prompt_payload["rules"])
     system_timeliness_clause = (
         "Фотографии сделаны заранее, поэтому не описывай их как отражение сегодняшней погоды."
     )
@@ -1986,7 +1962,9 @@ async def test_flowers_prompt_contains_raw_weather_json(tmp_path, monkeypatch):
     assert "Подсказки: Весенний букет в вазе; Тёплый солнечный луч на столе" in short_prompt
     assert "Локация: Светлогорск" in short_prompt
 
-    fake_photo_context = [{"flowers": ["ромашка"], "hints": ["Лёгкий ветер"], "location": "Балтика"}]
+    fake_photo_context = [
+        {"flowers": ["ромашка"], "hints": ["Лёгкий ветер"], "location": "Балтика"}
+    ]
 
     class DummyAsset:
         def __init__(self, city: str):
@@ -2129,9 +2107,7 @@ async def test_flowers_prompt_preserves_all_photo_descriptions(tmp_path):
     photo_context = [
         {
             "flowers": [f"цветок {idx}", f"деталь {idx}"],
-            "hints": [
-                f"подсказка {idx}-{hint}" for hint in range(1, 8)
-            ],
+            "hints": [f"подсказка {idx}-{hint}" for hint in range(1, 8)],
             "location": f"Локация {idx}",
         }
         for idx in range(1, 7)
@@ -2166,9 +2142,7 @@ async def test_flowers_prompt_preserves_all_photo_descriptions(tmp_path):
     primary_payload = bot._build_flowers_prompt_payload(plan, plan_meta)
     assert not primary_payload["used_fallback"]
     primary_lines = [
-        line
-        for line in primary_payload["user_prompt"].splitlines()
-        if line.startswith("Фото ")
+        line for line in primary_payload["user_prompt"].splitlines() if line.startswith("Фото ")
     ]
     assert len(primary_lines) == 6
     for idx in range(1, 7):
@@ -2196,9 +2170,7 @@ async def test_flowers_prompt_preserves_all_photo_descriptions(tmp_path):
     fallback_payload = bot._build_flowers_prompt_payload(fallback_plan, fallback_meta)
     assert fallback_payload["used_fallback"]
     fallback_lines = [
-        line
-        for line in fallback_payload["user_prompt"].splitlines()
-        if line.startswith("Фото ")
+        line for line in fallback_payload["user_prompt"].splitlines() if line.startswith("Фото ")
     ]
     assert len(fallback_lines) == 6
     for idx in range(1, 7):
@@ -2228,7 +2200,7 @@ async def test_flowers_preview_instructions_escaped(tmp_path):
     text = bot._render_flowers_preview_text(state)
 
     assert "Инструкции оператора:" in text
-    assert "<blockquote expandable=\"true\">" in text
+    assert '<blockquote expandable="true">' in text
     assert "&lt;script&gt;" in text
     assert "&amp; проверь" in text
     assert "<script>" not in text
@@ -2257,7 +2229,7 @@ async def test_flowers_preview_previous_text_html_escaped(tmp_path):
     assert "&lt;b&gt;Важное объявление&lt;/b&gt;" in text
     assert "&lt;a href=&quot;https://example.com&quot;&gt;ссылка&lt;/a&gt;" in text
     assert "<b>" not in text
-    assert "<a href=\"https://example.com\"" not in text
+    assert '<a href="https://example.com"' not in text
     assert "…" in text
 
     await bot.close()
@@ -2344,7 +2316,7 @@ async def test_flowers_preview_truncates_long_payload(tmp_path):
     assert "Выберите действие" in text
     assert "Инструкции оператора" in text
     assert "…" in text
-    assert "<blockquote expandable=\"true\">" in text
+    assert '<blockquote expandable="true">' in text
 
     await bot.close()
 
@@ -2429,9 +2401,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     posted_link: dict[str, str] = {}
     message_counter = {"value": 200}
     openai_calls: list[dict[str, Any]] = []
-    document_uploads: list[
-        tuple[dict[str, Any] | None, dict[str, tuple[str, bytes]] | None]
-    ] = []
+    document_uploads: list[tuple[dict[str, Any] | None, dict[str, tuple[str, bytes]] | None]] = []
 
     class DummyOpenAI:
         def __init__(self) -> None:
@@ -2512,9 +2482,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     assert html.escape(weather_today) not in publish_caption
     assert weather_yesterday == weather_yesterday_initial
     assert state.get("weather_line") == weather_today
-    summary_updates = [
-        data for method, data in api_calls if method == "editMessageText" and data
-    ]
+    summary_updates = [data for method, data in api_calls if method == "editMessageText" and data]
     assert summary_updates, "Ожидалось обновление текста предпросмотра"
     assert summary_updates[-1].get("parse_mode") == "HTML"
     summary_text = str(summary_updates[-1].get("text") or "")
@@ -2546,7 +2514,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     escaped_system = html.escape(plan_system_prompt)
     escaped_user = html.escape(plan_user_prompt)
     expected_block = (
-        "<blockquote expandable=\"true\">"
+        '<blockquote expandable="true">'
         f"<b>System prompt</b>:\n{escaped_system}"
         "\n\n"
         f"<b>User prompt</b>:\n{escaped_user}"
@@ -2598,9 +2566,7 @@ async def test_flowers_preview_regenerate_and_finalize(tmp_path):
     download_confirmations = [
         data
         for method, data in api_calls
-        if method == "answerCallbackQuery"
-        and data
-        and data.get("text") == "Промпт отправлен."
+        if method == "answerCallbackQuery" and data and data.get("text") == "Промпт отправлен."
     ]
     assert download_confirmations, "Ожидалось подтверждение отправки промпта"
 
@@ -2897,9 +2863,7 @@ async def test_generate_flowers_retries_on_banned_cliches(tmp_path):
     assert isinstance(plan, dict)
     assert isinstance(plan_meta, dict)
     banned_words = plan_meta.get("banned_words") or []
-    assert {"прекрасный", "волшебный", "неповторимый", "самый-самый"}.issubset(
-        set(banned_words)
-    )
+    assert {"прекрасный", "волшебный", "неповторимый", "самый-самый"}.issubset(set(banned_words))
     for word in ["прекрасный", "волшебный", "неповторимый", "самый-самый"]:
         sample = f"Это {word} букет!"
         assert bot._flowers_contains_banned_word(sample, banned_words)
@@ -2912,11 +2876,17 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
     config = {"enabled": True}
     _insert_rubric(bot, "flowers", config, rubric_id=1)
     rubric = bot.data.get_rubric_by_code("flowers")
-    bot.data.record_post_history(1, 1, None, rubric.id, {
-        "rubric_code": "flowers",
-        "greeting": "Тёплый кот мурчит радостно",
-        "hashtags": ["#котопогода"],
-    })
+    bot.data.record_post_history(
+        1,
+        1,
+        None,
+        rubric.id,
+        {
+            "rubric_code": "flowers",
+            "greeting": "Тёплый кот мурчит радостно",
+            "hashtags": ["#котопогода"],
+        },
+    )
 
     calls: list[dict[str, Any]] = []
 
@@ -2974,10 +2944,13 @@ async def test_generate_flowers_retries_on_duplicate(tmp_path):
     assert hashtags == ["#котопогода", "#цветы"]
     assert len(calls) >= 2
     # Первая попытка должна быть отклонена из-за повторяющейся биграммы
-    assert bot._jaccard_similarity(
-        "Тёплый кот мурчит радостно",
-        "Тёплый кот мурчит у окна",
-    ) >= 0.4
+    assert (
+        bot._jaccard_similarity(
+            "Тёплый кот мурчит радостно",
+            "Тёплый кот мурчит у окна",
+        )
+        >= 0.4
+    )
     assert isinstance(calls[0], dict)
     assert calls[0]["schema"] == {
         "type": "object",
@@ -3161,73 +3134,190 @@ async def test_rubric_channel_and_schedule_edit_flow(tmp_path):
     guess_message = {"chat": {"id": 1}, "message_id": guess_info["message_id"]}
 
     await bot.handle_update(
-        {"callback_query": {"id": "f0", "from": {"id": 1}, "data": "rubric_toggle:flowers", "message": flowers_message}}
+        {
+            "callback_query": {
+                "id": "f0",
+                "from": {"id": 1},
+                "data": "rubric_toggle:flowers",
+                "message": flowers_message,
+            }
+        }
     )
     await bot.handle_update(
-        {"callback_query": {"id": "g0", "from": {"id": 1}, "data": "rubric_toggle:guess_arch", "message": guess_message}}
+        {
+            "callback_query": {
+                "id": "g0",
+                "from": {"id": 1},
+                "data": "rubric_toggle:guess_arch",
+                "message": guess_message,
+            }
+        }
     )
 
     await bot.handle_update(
-        {"callback_query": {"id": "f1", "from": {"id": 1}, "data": "rubric_channel:flowers:main", "message": flowers_message}}
+        {
+            "callback_query": {
+                "id": "f1",
+                "from": {"id": 1},
+                "data": "rubric_channel:flowers:main",
+                "message": flowers_message,
+            }
+        }
     )
     await bot.handle_update(
-        {"callback_query": {"id": "f2", "from": {"id": 1}, "data": "rubric_channel_set:-100", "message": flowers_message}}
+        {
+            "callback_query": {
+                "id": "f2",
+                "from": {"id": 1},
+                "data": "rubric_channel_set:-100",
+                "message": flowers_message,
+            }
+        }
     )
     await bot.handle_update(
-        {"callback_query": {"id": "f3", "from": {"id": 1}, "data": "rubric_channel:flowers:test", "message": flowers_message}}
+        {
+            "callback_query": {
+                "id": "f3",
+                "from": {"id": 1},
+                "data": "rubric_channel:flowers:test",
+                "message": flowers_message,
+            }
+        }
     )
     await bot.handle_update(
-        {"callback_query": {"id": "f4", "from": {"id": 1}, "data": "rubric_channel_set:-200", "message": flowers_message}}
+        {
+            "callback_query": {
+                "id": "f4",
+                "from": {"id": 1},
+                "data": "rubric_channel_set:-200",
+                "message": flowers_message,
+            }
+        }
     )
 
     await bot.handle_update(
-        {"callback_query": {"id": "f5", "from": {"id": 1}, "data": "rubric_sched_add:flowers", "message": flowers_message}}
+        {
+            "callback_query": {
+                "id": "f5",
+                "from": {"id": 1},
+                "data": "rubric_sched_add:flowers",
+                "message": flowers_message,
+            }
+        }
     )
     wizard_message = bot.pending[1]["rubric_input"]["message"]
     wizard_callback = {"id": "f6", "from": {"id": 1}, "message": wizard_message}
     await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_time"}})
     await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_hour:9"}})
-    await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_minute:30"}})
+    await bot.handle_update(
+        {"callback_query": {**wizard_callback, "data": "rubric_sched_minute:30"}}
+    )
     await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_days"}})
     await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_day:mon"}})
     await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_day:tue"}})
-    await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_days_done"}})
+    await bot.handle_update(
+        {"callback_query": {**wizard_callback, "data": "rubric_sched_days_done"}}
+    )
     await bot.handle_update({"callback_query": {**wizard_callback, "data": "rubric_sched_save"}})
 
     await bot.handle_update(
-        {"callback_query": {"id": "f7", "from": {"id": 1}, "data": "rubric_sched_toggle:flowers:0", "message": flowers_message}}
+        {
+            "callback_query": {
+                "id": "f7",
+                "from": {"id": 1},
+                "data": "rubric_sched_toggle:flowers:0",
+                "message": flowers_message,
+            }
+        }
     )
 
     await bot.handle_update(
-        {"callback_query": {"id": "g1", "from": {"id": 1}, "data": "rubric_channel:guess_arch:main", "message": guess_message}}
+        {
+            "callback_query": {
+                "id": "g1",
+                "from": {"id": 1},
+                "data": "rubric_channel:guess_arch:main",
+                "message": guess_message,
+            }
+        }
     )
     await bot.handle_update(
-        {"callback_query": {"id": "g2", "from": {"id": 1}, "data": "rubric_channel_set:-300", "message": guess_message}}
+        {
+            "callback_query": {
+                "id": "g2",
+                "from": {"id": 1},
+                "data": "rubric_channel_set:-300",
+                "message": guess_message,
+            }
+        }
     )
     await bot.handle_update(
-        {"callback_query": {"id": "g3", "from": {"id": 1}, "data": "rubric_channel:guess_arch:test", "message": guess_message}}
+        {
+            "callback_query": {
+                "id": "g3",
+                "from": {"id": 1},
+                "data": "rubric_channel:guess_arch:test",
+                "message": guess_message,
+            }
+        }
     )
     await bot.handle_update(
-        {"callback_query": {"id": "g4", "from": {"id": 1}, "data": "rubric_channel_set:-400", "message": guess_message}}
+        {
+            "callback_query": {
+                "id": "g4",
+                "from": {"id": 1},
+                "data": "rubric_channel_set:-400",
+                "message": guess_message,
+            }
+        }
     )
     await bot.handle_update(
-        {"callback_query": {"id": "g5", "from": {"id": 1}, "data": "rubric_sched_add:guess_arch", "message": guess_message}}
+        {
+            "callback_query": {
+                "id": "g5",
+                "from": {"id": 1},
+                "data": "rubric_sched_add:guess_arch",
+                "message": guess_message,
+            }
+        }
     )
     g_wizard_message = bot.pending[1]["rubric_input"]["message"]
     g_wizard_callback = {"id": "g6", "from": {"id": 1}, "message": g_wizard_message}
     await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_time"}})
-    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_hour:10"}})
-    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_minute:15"}})
+    await bot.handle_update(
+        {"callback_query": {**g_wizard_callback, "data": "rubric_sched_hour:10"}}
+    )
+    await bot.handle_update(
+        {"callback_query": {**g_wizard_callback, "data": "rubric_sched_minute:15"}}
+    )
     await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_days"}})
-    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_day:wed"}})
-    await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_days_done"}})
+    await bot.handle_update(
+        {"callback_query": {**g_wizard_callback, "data": "rubric_sched_day:wed"}}
+    )
+    await bot.handle_update(
+        {"callback_query": {**g_wizard_callback, "data": "rubric_sched_days_done"}}
+    )
     await bot.handle_update({"callback_query": {**g_wizard_callback, "data": "rubric_sched_save"}})
 
     await bot.handle_update(
-        {"callback_query": {"id": "f8", "from": {"id": 1}, "data": "rubric_toggle:flowers", "message": flowers_message}}
+        {
+            "callback_query": {
+                "id": "f8",
+                "from": {"id": 1},
+                "data": "rubric_toggle:flowers",
+                "message": flowers_message,
+            }
+        }
     )
     await bot.handle_update(
-        {"callback_query": {"id": "g7", "from": {"id": 1}, "data": "rubric_toggle:guess_arch", "message": guess_message}}
+        {
+            "callback_query": {
+                "id": "g7",
+                "from": {"id": 1},
+                "data": "rubric_toggle:guess_arch",
+                "message": guess_message,
+            }
+        }
     )
 
     flowers_config = bot.data.get_rubric_config("flowers")
@@ -3271,7 +3361,6 @@ async def test_overlay_size_stays_within_expected_ratio(tmp_path):
         assert 0.10 <= ratio <= 0.16
 
     await bot.close()
-
 
 
 @pytest.mark.asyncio
@@ -3386,8 +3475,12 @@ async def test_rubric_publish_callback_success(tmp_path):
     assert bot.rubric_pending_runs == {}
 
     ack_payloads = [payload for method, payload, _ in api_calls if method == "answerCallbackQuery"]
-    assert any(payload and payload.get("callback_query_id") == "cb-success" for payload in ack_payloads)
-    assert any(payload and "Задача поставлена" in payload.get("text", "") for payload in ack_payloads)
+    assert any(
+        payload and payload.get("callback_query_id") == "cb-success" for payload in ack_payloads
+    )
+    assert any(
+        payload and "Задача поставлена" in payload.get("text", "") for payload in ack_payloads
+    )
 
     send_payloads = [payload for method, payload, _ in api_calls if method == "sendMessage"]
     assert send_payloads, "callback should send confirmation message"
@@ -3455,7 +3548,9 @@ async def test_rubric_publish_callback_error(tmp_path):
     )
 
     ack_payloads = [payload for method, payload, _ in api_calls if method == "answerCallbackQuery"]
-    assert any(payload and payload.get("callback_query_id") == "cb-error" for payload in ack_payloads)
+    assert any(
+        payload and payload.get("callback_query_id") == "cb-error" for payload in ack_payloads
+    )
     assert any(payload and payload.get("show_alert") is True for payload in ack_payloads)
     assert bot.rubric_pending_runs == {}
 
@@ -3523,7 +3618,9 @@ async def test_rubric_publish_cancel_resets_pending(tmp_path):
     assert bot.rubric_pending_runs == {}
     assert invoked["called"] is False
     ack_payloads = [payload for method, payload, _ in api_calls if method == "answerCallbackQuery"]
-    assert any(payload and payload.get("callback_query_id") == "cb-cancel" for payload in ack_payloads)
+    assert any(
+        payload and payload.get("callback_query_id") == "cb-cancel" for payload in ack_payloads
+    )
 
     await bot.close()
 
@@ -3578,9 +3675,7 @@ async def test_pick_sea_asset_prioritizes_tags_and_categories():
     sunset_tag.payload["last_used_at"] = "2023-01-01T00:00:00"
     storm_tag.payload["last_used_at"] = "2023-01-01T00:00:00"
 
-    selected_calm = bot._pick_sea_asset(
-        [sunset_category], desired_wave_score=2, desired_sky=None
-    )
+    selected_calm = bot._pick_sea_asset([sunset_category], desired_wave_score=2, desired_sky=None)
     assert selected_calm is sunset_category
 
     selected_calm_prefers_tag = bot._pick_sea_asset(
@@ -3652,7 +3747,10 @@ async def test_publish_sea_soft_truncation_preserves_footer(tmp_path):
 
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     now = datetime.utcnow().isoformat()
-    bot.db.execute("INSERT OR REPLACE INTO seas (id, name, lat, lon) VALUES (?, ?, ?, ?)", (1, "Балтика", 54.95, 20.2))
+    bot.db.execute(
+        "INSERT OR REPLACE INTO seas (id, name, lat, lon) VALUES (?, ?, ?, ?)",
+        (1, "Балтика", 54.95, 20.2),
+    )
     bot.db.execute(
         """
         INSERT OR REPLACE INTO sea_cache (
@@ -3920,7 +4018,10 @@ async def test_operator_message_has_wind_two_units_and_gusts(tmp_path):
         )
 
         async def fake_generate(self, **_kwargs):
-            return "Сегодня шторм на море — ветер ощутимо шумит у побережья.", ["#море", "#БалтийскоеМоре"]
+            return "Сегодня шторм на море — ветер ощутимо шумит у побережья.", [
+                "#море",
+                "#БалтийскоеМоре",
+            ]
 
         bot._generate_sea_caption = fake_generate.__get__(bot, Bot)
 
@@ -3948,7 +4049,9 @@ async def test_operator_message_has_wind_two_units_and_gusts(tmp_path):
         assert "7.2 м/с" in message_text
         assert "порывы до 50 км/ч" in message_text
 
-        row = bot.db.execute("SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1").fetchone()
+        row = bot.db.execute(
+            "SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         assert row is not None
         metadata = json.loads(row["metadata"])
         assert metadata.get("wind_gust_kmh") == pytest.approx(50.4, rel=0.05)
@@ -4003,6 +4106,7 @@ async def test_publish_sea_handles_no_candidates(tmp_path):
 @pytest.mark.asyncio
 async def test_generate_sea_copy_fallback():
     from main import Bot
+
     bot = Bot("dummy", ":memory:")
     caption, hashtags = await bot._generate_sea_copy(
         storm_state="calm",

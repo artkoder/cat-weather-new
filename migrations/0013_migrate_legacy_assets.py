@@ -36,9 +36,7 @@ def run(conn: sqlite3.Connection) -> None:
 
         channel_row = None
         if _table_exists(conn, "asset_channel"):
-            channel_row = conn.execute(
-                "SELECT channel_id FROM asset_channel LIMIT 1"
-            ).fetchone()
+            channel_row = conn.execute("SELECT channel_id FROM asset_channel LIMIT 1").fetchone()
         if channel_row and channel_row["channel_id"] is not None:
             default_channel = int(channel_row["channel_id"])
         else:

@@ -17,11 +17,9 @@ class Storage(Protocol):
         key: str,
         stream: AsyncIterator[bytes],
         content_type: str,
-    ) -> str:
-        ...
+    ) -> str: ...
 
-    async def get_url(self, *, key: str) -> str:
-        ...
+    async def get_url(self, *, key: str) -> str: ...
 
 
 class LocalStorage:

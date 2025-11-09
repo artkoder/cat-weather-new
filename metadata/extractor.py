@@ -141,7 +141,11 @@ def extract_metadata_from_file(
                             exif_payload = _merge_exif_payloads(exif_payload, retry_payload)
                             exif_ifds = _merge_exif_ifds(
                                 exif_ifds,
-                                {name: values for name, values in retry_ifds.items() if name != "GPS"},
+                                {
+                                    name: values
+                                    for name, values in retry_ifds.items()
+                                    if name != "GPS"
+                                },
                             )
                         else:
                             exif_payload = retry_payload
@@ -160,10 +164,14 @@ def extract_metadata_from_file(
                     fallback_source: str | None = None
 
                     if pil_exif_cached:
-                        pillow_exif, pillow_gps, pillow_ifds = _extract_from_pillow_exif(pil_exif_cached)
+                        pillow_exif, pillow_gps, pillow_ifds = _extract_from_pillow_exif(
+                            pil_exif_cached
+                        )
                         if pillow_gps:
                             fallback_payload = dict(pillow_exif)
-                            fallback_ifds = {name: dict(values) for name, values in pillow_ifds.items()}
+                            fallback_ifds = {
+                                name: dict(values) for name, values in pillow_ifds.items()
+                            }
                             fallback_gps = dict(pillow_gps)
                             fallback_source = "pillow"
                             pillow_issue = _validate_gps_payload(fallback_gps)
@@ -183,7 +191,9 @@ def extract_metadata_from_file(
 
                     if retry_issue and (not fallback_gps) and exifread is not None:
                         try:
-                            exifread_payload, exifread_gps, exifread_ifds = _extract_with_exifread(data)
+                            exifread_payload, exifread_gps, exifread_ifds = _extract_with_exifread(
+                                data
+                            )
                         except Exception:
                             logging.debug("exifread failed during GPS fallback", exc_info=True)
                         else:
@@ -333,7 +343,7 @@ def _ensure_heif_registered() -> None:
 
 
 def _extract_from_piexif(
-    exif_dict: Mapping[str, Any]
+    exif_dict: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, dict[str, Any]]]:
     exif_payload: dict[str, Any] = {}
     gps_info: dict[str, Any] = {}
@@ -388,9 +398,7 @@ def _validate_gps_payload(gps_info: Mapping[str, Any] | None) -> str | None:
     return None
 
 
-def _merge_exif_payloads(
-    base: Mapping[str, Any], updates: Mapping[str, Any]
-) -> dict[str, Any]:
+def _merge_exif_payloads(base: Mapping[str, Any], updates: Mapping[str, Any]) -> dict[str, Any]:
     if not updates:
         return dict(base)
     merged = dict(base)
@@ -407,9 +415,7 @@ def _merge_exif_ifds(
 ) -> dict[str, dict[str, Any]]:
     if not updates:
         return {key: dict(value) for key, value in base.items()}
-    merged: dict[str, dict[str, Any]] = {
-        key: dict(value) for key, value in base.items()
-    }
+    merged: dict[str, dict[str, Any]] = {key: dict(value) for key, value in base.items()}
     for ifd_name, ifd_values in updates.items():
         existing = merged.get(ifd_name, {})
         combined = dict(existing)
@@ -442,9 +448,7 @@ def _capture_gps_snapshot(
     return snapshot
 
 
-def _clear_gps_blocks(
-    exif_payload: dict[str, Any], exif_ifds: dict[str, dict[str, Any]]
-) -> None:
+def _clear_gps_blocks(exif_payload: dict[str, Any], exif_ifds: dict[str, dict[str, Any]]) -> None:
     exif_payload.pop("GPSInfo", None)
     exif_payload.pop("GPS", None)
     gps_ifd = exif_ifds.pop("GPS", None)
@@ -537,9 +541,8 @@ def _extract_with_exifread(
         normalized = _normalize_exif_value(values)
         raw_serialized = _serialize_exif_raw_value(values)
 
-        if (
-            printable_normalized is not None
-            and _should_use_ascii_printable(tag_name, field, printable_normalized)
+        if printable_normalized is not None and _should_use_ascii_printable(
+            tag_name, field, printable_normalized
         ):
             normalized = printable_normalized
             raw_serialized = _serialize_exif_raw_value(printable_normalized)
@@ -595,9 +598,7 @@ def _build_photo_meta(
     captured_at = _select_captured_at(exif_payload, gps_info)
     photo.captured_at = captured_at
 
-    photo.raw_exif = {
-        key: dict(value) for key, value in exif_ifds.items() if key != "GPS"
-    }
+    photo.raw_exif = {key: dict(value) for key, value in exif_ifds.items() if key != "GPS"}
     photo.raw_gps = dict(exif_ifds.get("GPS", {}))
 
     return photo
@@ -1083,9 +1084,7 @@ def _serialize_exif_raw_value(value: Any) -> Any:
     return str(value)
 
 
-def _serialize_exif_ifd(
-    ifd_name: str, source_ifd: Mapping[int, Any]
-) -> dict[str, Any]:
+def _serialize_exif_ifd(ifd_name: str, source_ifd: Mapping[int, Any]) -> dict[str, Any]:
     tag_map = piexif.TAGS.get(ifd_name, {})
     result: dict[str, Any] = {}
     for tag_id, raw_value in source_ifd.items():

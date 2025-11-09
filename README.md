@@ -77,12 +77,16 @@ The backend consumes the public API contract via the `api/contract` git submodul
 The project provides standard Make targets for local development and CI:
 
 ```bash
-make install   # Install dependencies (production + dev)
-make lint      # Run ruff linting
-make test      # Run unit tests (excluding integration & e2e)
-make test-all  # Run all tests including integration tests
-make clean     # Clean up cache files
+make install    # Install dependencies (production + dev)
+make lint       # Run Ruff lint and Black checks
+make lint-fix   # Auto-format with Black and Ruff
+make typecheck  # Run mypy static analysis
+make test       # Run unit tests (excluding integration & e2e)
+make test-all   # Run all tests including integration tests
+make clean      # Clean up cache files
 ```
+
+The `dev-requirements.txt` bundle provides the tooling used in CI (Ruff, Black, mypy, pytest).
 
 ### Running tests
 

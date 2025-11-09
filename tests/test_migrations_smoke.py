@@ -43,7 +43,10 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
         upload_sql_row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='uploads'"
         ).fetchone()
-        assert upload_sql_row is not None and "CHECK (source IN ('mobile','telegram'))" in upload_sql_row[0]
+        assert (
+            upload_sql_row is not None
+            and "CHECK (source IN ('mobile','telegram'))" in upload_sql_row[0]
+        )
         asset_indexes = _index_names(conn, "assets")
         assert "idx_assets_upload_id" in asset_indexes
         assert "idx_assets_created_at" in asset_indexes
@@ -52,7 +55,10 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
         asset_sql_row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='assets'"
         ).fetchone()
-        assert asset_sql_row is not None and "CHECK (source IN ('mobile','telegram'))" in asset_sql_row[0]
+        assert (
+            asset_sql_row is not None
+            and "CHECK (source IN ('mobile','telegram'))" in asset_sql_row[0]
+        )
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row

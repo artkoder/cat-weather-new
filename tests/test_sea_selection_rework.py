@@ -1,4 +1,5 @@
 """Tests for the reworked sea selection logic."""
+
 import os
 import sys
 from datetime import date, datetime

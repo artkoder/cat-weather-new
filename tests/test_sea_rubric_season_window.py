@@ -1,4 +1,5 @@
 """Integration test for sea rubric day-of-year based season window."""
+
 import json
 import logging
 import os
@@ -66,7 +67,9 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
     requests_log: list[dict[str, Any]] = []
     expected_webhook = webhook_url.rstrip("/") + "/webhook"
 
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+    async def fake_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
         entry = {"method": method, "data": data, "files": files}
         requests_log.append(entry)
         if method == "getWebhookInfo":
@@ -210,12 +213,15 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
         nov_5_doy = 310
 
         # Verify filtering logic
-        assert is_in_season_window(oct_doy, today_doy=nov_5_doy, window=45) is True, \
-            f"October (doy {oct_doy}) should be within window of Nov 5 (doy {nov_5_doy})"
-        assert is_in_season_window(mar_doy, today_doy=nov_5_doy, window=45) is False, \
-            f"March (doy {mar_doy}) should be outside window of Nov 5 (doy {nov_5_doy})"
-        assert is_in_season_window(dec_doy, today_doy=nov_5_doy, window=45) is True, \
-            f"December (doy {dec_doy}) should be within window of Nov 5 (doy {nov_5_doy})"
+        assert (
+            is_in_season_window(oct_doy, today_doy=nov_5_doy, window=45) is True
+        ), f"October (doy {oct_doy}) should be within window of Nov 5 (doy {nov_5_doy})"
+        assert (
+            is_in_season_window(mar_doy, today_doy=nov_5_doy, window=45) is False
+        ), f"March (doy {mar_doy}) should be outside window of Nov 5 (doy {nov_5_doy})"
+        assert (
+            is_in_season_window(dec_doy, today_doy=nov_5_doy, window=45) is True
+        ), f"December (doy {dec_doy}) should be within window of Nov 5 (doy {nov_5_doy})"
 
         # Now let's verify the actual candidates are filtered correctly
         candidates = bot.data.fetch_sea_candidates(rubric.id, limit=10)
@@ -225,9 +231,7 @@ async def test_sea_rubric_seasonal_window_day_of_year(monkeypatch, tmp_path):
         current_doy = datetime.utcnow().timetuple().tm_yday
         for candidate in candidates:
             candidate["season_match"] = is_in_season_window(
-                candidate.get("shot_doy"),
-                today_doy=current_doy,
-                window=45
+                candidate.get("shot_doy"), today_doy=current_doy, window=45
             )
 
         # At least some candidates should have season_match depending on current date
@@ -267,7 +271,9 @@ async def test_sea_rubric_seasonal_window_year_wraparound(monkeypatch, tmp_path)
 
     requests_log: list[dict[str, Any]] = []
 
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+    async def fake_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
         entry = {"method": method, "data": data, "files": files}
         requests_log.append(entry)
         if method == "getWebhookInfo":
@@ -378,10 +384,12 @@ async def test_sea_rubric_seasonal_window_year_wraparound(monkeypatch, tmp_path)
         jan_5_doy = 5
 
         # Verify wraparound filtering logic
-        assert is_in_season_window(dec_doy, today_doy=jan_5_doy, window=45) is True, \
-            f"December 20 (doy {dec_doy}) should be within window of Jan 5 (doy {jan_5_doy}) due to wraparound"
-        assert is_in_season_window(jun_doy, today_doy=jan_5_doy, window=45) is False, \
-            f"June (doy {jun_doy}) should be outside window of Jan 5 (doy {jan_5_doy})"
+        assert (
+            is_in_season_window(dec_doy, today_doy=jan_5_doy, window=45) is True
+        ), f"December 20 (doy {dec_doy}) should be within window of Jan 5 (doy {jan_5_doy}) due to wraparound"
+        assert (
+            is_in_season_window(jun_doy, today_doy=jan_5_doy, window=45) is False
+        ), f"June (doy {jun_doy}) should be outside window of Jan 5 (doy {jan_5_doy})"
 
         # Verify candidates are fetched and can be filtered
         candidates = bot.data.fetch_sea_candidates(rubric.id, limit=10)
@@ -391,9 +399,7 @@ async def test_sea_rubric_seasonal_window_year_wraparound(monkeypatch, tmp_path)
         current_doy = datetime.utcnow().timetuple().tm_yday
         for candidate in candidates:
             candidate["season_match"] = is_in_season_window(
-                candidate.get("shot_doy"),
-                today_doy=current_doy,
-                window=45
+                candidate.get("shot_doy"), today_doy=current_doy, window=45
             )
 
         # Verify the filtering function works without error
@@ -432,7 +438,9 @@ async def test_sea_rubric_logging_includes_shot_doy_and_reasons(monkeypatch, tmp
     caplog.set_level(logging.INFO)
     caplog.clear()
 
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+    async def fake_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
         if method == "getWebhookInfo":
             return {"ok": True, "result": {"url": ""}}
         if method == "setWebhook":
@@ -446,14 +454,18 @@ async def test_sea_rubric_logging_includes_shot_doy_and_reasons(monkeypatch, tmp
     async def fake_generate_sea_caption(self, **_kwargs) -> tuple[str, list[str]]:
         return "Короткий тестовый текст", ["#море", "#тест"]
 
-    monkeypatch.setattr(main_module.Bot, "_generate_sea_caption", fake_generate_sea_caption, raising=False)
+    monkeypatch.setattr(
+        main_module.Bot, "_generate_sea_caption", fake_generate_sea_caption, raising=False
+    )
 
     async def fake_reverse_geocode(self, *_args, **_kwargs) -> dict[str, Any]:
         return {}
 
     monkeypatch.setattr(main_module.Bot, "_reverse_geocode", fake_reverse_geocode, raising=False)
 
-    def fake_prepare_sea_fact(self, *, sea_id: int, storm_state: str, enable_facts: bool, now: datetime, rng=None):
+    def fake_prepare_sea_fact(
+        self, *, sea_id: int, storm_state: str, enable_facts: bool, now: datetime, rng=None
+    ):
         return None, None, {"reason": "test"}
 
     monkeypatch.setattr(main_module.Bot, "_prepare_sea_fact", fake_prepare_sea_fact, raising=False)
@@ -461,7 +473,9 @@ async def test_sea_rubric_logging_includes_shot_doy_and_reasons(monkeypatch, tmp
     async def fake_ensure_asset_source(self, asset):
         return asset.local_path, False
 
-    monkeypatch.setattr(main_module.Bot, "_ensure_asset_source", fake_ensure_asset_source, raising=False)
+    monkeypatch.setattr(
+        main_module.Bot, "_ensure_asset_source", fake_ensure_asset_source, raising=False
+    )
 
     app = main_module.create_app()
     async with TestServer(app) as server:
@@ -566,7 +580,10 @@ async def test_sea_rubric_logging_includes_shot_doy_and_reasons(monkeypatch, tmp
 
     assert any(event.get("event") == "season_window" for event in events)
     assert any(event.get("event") == "stage_shortlist" for event in events)
-    assert any(event.get("event") == "candidate_discard" and event.get("reason") == "wave_missing" for event in events)
+    assert any(
+        event.get("event") == "candidate_discard" and event.get("reason") == "wave_missing"
+        for event in events
+    )
     assert any(event.get("event") == "selected" for event in events)
 
     if db_path.exists():

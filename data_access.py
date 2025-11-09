@@ -61,7 +61,6 @@ class Asset:
     _local_path: str | None = None
     _rubric_id: int | None = None
 
-
     # ------------------------------------------------------------------
     # Compatibility helpers
     # ------------------------------------------------------------------
@@ -773,9 +772,7 @@ class DataAccess:
         )
 
     @staticmethod
-    def _collect_categories(
-        hashtags: str | None, categories: Iterable[str] | None
-    ) -> list[str]:
+    def _collect_categories(hashtags: str | None, categories: Iterable[str] | None) -> list[str]:
         if categories is not None:
             candidates = list(dict.fromkeys(categories))
         elif hashtags:
@@ -1011,9 +1008,7 @@ class DataAccess:
         return payload
 
     @staticmethod
-    def _build_tg_message_identifier(
-        tg_chat_id: int | None, message_id: int | None
-    ) -> str | None:
+    def _build_tg_message_identifier(tg_chat_id: int | None, message_id: int | None) -> str | None:
         if tg_chat_id is None and message_id is None:
             return None
         if tg_chat_id is not None and message_id is not None:
@@ -1119,11 +1114,11 @@ class DataAccess:
         file_meta = file_meta or {}
 
         existing = self.get_asset_by_message(tg_chat_id, message_id)
-        shot_at_value = shot_at_utc if shot_at_utc is not None else (
-            existing.shot_at_utc if existing else None
+        shot_at_value = (
+            shot_at_utc if shot_at_utc is not None else (existing.shot_at_utc if existing else None)
         )
-        shot_doy_value = shot_doy if shot_doy is not None else (
-            existing.shot_doy if existing else None
+        shot_doy_value = (
+            shot_doy if shot_doy is not None else (existing.shot_doy if existing else None)
         )
         if photo_doy is not None:
             photo_doy_value = int(photo_doy)
@@ -1336,9 +1331,7 @@ class DataAccess:
         self.conn.commit()
         return asset_id
 
-    def update_recognized_message(
-        self, asset_id: str | int, *, message_id: int | None
-    ) -> None:
+    def update_recognized_message(self, asset_id: str | int, *, message_id: int | None) -> None:
         """Store the Telegram message that acknowledged the asset."""
 
         asset = self.get_asset(str(asset_id))
@@ -1539,13 +1532,9 @@ class DataAccess:
         if exif_present is not None:
             payload_updates["exif_present"] = bool(exif_present)
         if local_path is not _UNSET:
-            payload_updates["local_path"] = (
-                str(local_path) if local_path is not None else None
-            )
+            payload_updates["local_path"] = str(local_path) if local_path is not None else None
         if vision_category is not None:
-            payload_updates["vision_category"] = self._normalize_vision_category(
-                vision_category
-            )
+            payload_updates["vision_category"] = self._normalize_vision_category(vision_category)
         if vision_arch_view is not None:
             payload_updates["vision_arch_view"] = vision_arch_view
         if vision_photo_weather is not None:
@@ -1584,9 +1573,7 @@ class DataAccess:
         if performed_write:
             self.conn.commit()
 
-    def update_asset_categories_merge(
-        self, asset_id: str | int, to_add: Iterable[str]
-    ) -> None:
+    def update_asset_categories_merge(self, asset_id: str | int, to_add: Iterable[str]) -> None:
         row = self.get_asset(str(asset_id))
         if not row:
             logging.warning("Attempted to update categories for missing asset %s", asset_id)
@@ -1700,7 +1687,9 @@ class DataAccess:
         payload_json = row_dict.get("payload_json")
         payload_data = self._decode_payload_blob(payload_json)
         created_at_raw = row_dict.get("created_at")
-        created_at = str(created_at_raw) if created_at_raw is not None else datetime.utcnow().isoformat()
+        created_at = (
+            str(created_at_raw) if created_at_raw is not None else datetime.utcnow().isoformat()
+        )
         raw_vision: str | None
         if "vision_payload" in keys:
             raw_payload_value = row_dict.get("vision_payload")
@@ -1793,11 +1782,7 @@ class DataAccess:
             photo_doy=photo_doy_val,
             photo_wave=photo_wave_val,
             sky_visible_hint=sky_visible_hint,
-            source=(
-                str(row_dict.get("source"))
-                if row_dict.get("source") is not None
-                else None
-            ),
+            source=(str(row_dict.get("source")) if row_dict.get("source") is not None else None),
             captured_at=captured_at_val,
             doy=doy_val,
             daypart=daypart_val,
@@ -1859,8 +1844,7 @@ class DataAccess:
         if rubric_id is not None:
             conditions.append("json_extract(a.payload_json, '$.rubric_id') = ?")
             query_params.append(rubric_id)
-        sql = (
-            """
+        sql = """
             SELECT a.*, vr.result_json AS vision_payload
             FROM assets a
             LEFT JOIN vision_results vr
@@ -1872,7 +1856,6 @@ class DataAccess:
                  LIMIT 1
              )
             """
-        )
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY COALESCE(json_extract(a.payload_json, '$.last_used_at'), a.created_at) ASC, a.id ASC"
@@ -2033,9 +2016,7 @@ class DataAccess:
                 if not hints:
                     return None
                 normalized_tags = {
-                    str(tag).strip().lower().replace(" ", "_")
-                    for tag in hints
-                    if str(tag).strip()
+                    str(tag).strip().lower().replace(" ", "_") for tag in hints if str(tag).strip()
                 }
                 if normalized_tags & {
                     "storm",
@@ -2133,9 +2114,7 @@ class DataAccess:
                 tag_values = set()
             photo_sky_candidate = normalize_sky(vision.get("photo_sky"), tags=tag_values)
             if photo_sky_candidate is None:
-                photo_sky_candidate = normalize_sky(
-                    vision.get("weather_image"), tags=tag_values
-                )
+                photo_sky_candidate = normalize_sky(vision.get("weather_image"), tags=tag_values)
             photo_sky = photo_sky_candidate
             is_sunset = bool(vision.get("is_sunset"))
             sky_visible_source = _parse_sky_hint(asset.sky_visible_hint)
@@ -2293,9 +2272,7 @@ class DataAccess:
                     normalized_tags.append(text)
             normalized_tag_set = set(normalized_tags)
             category = (
-                result.get("category")
-                or result.get("caption")
-                or result.get("primary_scene")
+                result.get("category") or result.get("caption") or result.get("primary_scene")
             )
             if not category and normalized_tags:
                 category = normalized_tags[0]
@@ -2319,14 +2296,10 @@ class DataAccess:
                 label = weather_info.get("label")
                 description = weather_info.get("description")
                 photo_weather = (
-                    str(description).strip() or str(label).strip()
-                    if description or label
-                    else None
+                    str(description).strip() or str(label).strip() if description or label else None
                 )
             if not photo_weather and result.get("photo_weather_display") is not None:
-                photo_weather = (
-                    str(result.get("photo_weather_display")).strip() or None
-                )
+                photo_weather = str(result.get("photo_weather_display")).strip() or None
             if not photo_weather and result.get("photo_weather") is not None:
                 photo_weather = str(result.get("photo_weather")).strip() or None
             flowers_raw = result.get("flower_varieties")
@@ -2339,11 +2312,7 @@ class DataAccess:
                             if isinstance(entry, str):
                                 value = entry.strip()
                             elif isinstance(entry, dict):
-                                value = str(
-                                    entry.get("label")
-                                    or entry.get("name")
-                                    or ""
-                                ).strip()
+                                value = str(entry.get("label") or entry.get("name") or "").strip()
                             else:
                                 value = ""
                             if value:
@@ -2660,9 +2629,7 @@ class DataAccess:
         self.conn.commit()
 
     def list_weather_jobs(self) -> list[WeatherJob]:
-        rows = self.conn.execute(
-            "SELECT * FROM weather_jobs ORDER BY channel_id"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM weather_jobs ORDER BY channel_id").fetchall()
         return [self._weather_job_from_row(r) for r in rows]
 
     def _weather_job_from_row(self, row: sqlite3.Row) -> WeatherJob:
@@ -2671,9 +2638,7 @@ class DataAccess:
             channel_id=row["channel_id"],
             post_time=row["post_time"],
             run_at=datetime.fromisoformat(row["run_at"]),
-            last_run_at=datetime.fromisoformat(row["last_run_at"])
-            if row["last_run_at"]
-            else None,
+            last_run_at=datetime.fromisoformat(row["last_run_at"]) if row["last_run_at"] else None,
             failures=row["failures"] or 0,
             last_error=row["last_error"],
         )
@@ -2818,9 +2783,7 @@ class DataAccess:
         )
 
     def list_rubrics(self) -> list[Rubric]:
-        rows = self.conn.execute(
-            "SELECT * FROM rubrics ORDER BY id"
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM rubrics ORDER BY id").fetchall()
         return [self._rubric_from_row(r) for r in rows]
 
     def get_rubric_by_code(self, code: str) -> Rubric | None:
@@ -2960,9 +2923,7 @@ class DataAccess:
     def delete_rubric(self, code: str) -> bool:
         """Rubrics are immutable in production deployments."""
 
-        raise NotImplementedError(
-            "Deleting rubrics is disabled to protect fixed configurations"
-        )
+        raise NotImplementedError("Deleting rubrics is disabled to protect fixed configurations")
 
     def get_rubric_schedule_state(
         self, rubric_code: str, schedule_key: str
@@ -2978,16 +2939,8 @@ class DataAccess:
         ).fetchone()
         if not row:
             return None
-        next_run = (
-            datetime.fromisoformat(row["next_run_at"])
-            if row["next_run_at"]
-            else None
-        )
-        last_run = (
-            datetime.fromisoformat(row["last_run_at"])
-            if row["last_run_at"]
-            else None
-        )
+        next_run = datetime.fromisoformat(row["next_run_at"]) if row["next_run_at"] else None
+        last_run = datetime.fromisoformat(row["last_run_at"]) if row["last_run_at"] else None
         return RubricScheduleState(
             rubric_code=row["rubric_code"],
             schedule_key=row["schedule_key"],
@@ -3020,9 +2973,7 @@ class DataAccess:
         )
         self.conn.commit()
 
-    def mark_rubric_run(
-        self, rubric_code: str, schedule_key: str, run_at: datetime
-    ) -> None:
+    def mark_rubric_run(self, rubric_code: str, schedule_key: str, run_at: datetime) -> None:
         now = datetime.utcnow().isoformat()
         self.conn.execute(
             """
@@ -3138,11 +3089,7 @@ class DataAccess:
             payload = json.loads(payload_raw) if payload_raw else {}
         except json.JSONDecodeError:
             payload = {}
-        available_at = (
-            datetime.fromisoformat(row["available_at"])
-            if row["available_at"]
-            else None
-        )
+        available_at = datetime.fromisoformat(row["available_at"]) if row["available_at"] else None
         created_at = datetime.fromisoformat(row["created_at"])
         updated_at = datetime.fromisoformat(row["updated_at"])
         return JobRecord(
@@ -3236,9 +3183,7 @@ def revoke_device(
     """Mark the device secret as revoked."""
 
     if expected_user_id is not None:
-        row = conn.execute(
-            "SELECT user_id FROM devices WHERE id=?", (device_id,)
-        ).fetchone()
+        row = conn.execute("SELECT user_id FROM devices WHERE id=?", (device_id,)).fetchone()
         if not row:
             return False
         if isinstance(row, sqlite3.Row):
@@ -3299,9 +3244,7 @@ def get_device(conn: sqlite3.Connection, *, device_id: str) -> sqlite3.Row | Non
     return cur.fetchone()
 
 
-def get_device_secret(
-    conn: sqlite3.Connection, *, device_id: str
-) -> tuple[str, str | None] | None:
+def get_device_secret(conn: sqlite3.Connection, *, device_id: str) -> tuple[str, str | None] | None:
     """Return the shared secret and revoked_at timestamp for a device."""
 
     cur = conn.execute(
@@ -3636,9 +3579,7 @@ def link_upload_asset(
     )
 
 
-def fetch_upload_record(
-    conn: sqlite3.Connection, *, upload_id: str
-) -> dict[str, Any] | None:
+def fetch_upload_record(conn: sqlite3.Connection, *, upload_id: str) -> dict[str, Any] | None:
     cur = conn.execute(
         """
         SELECT id, device_id, status, error, file_ref, asset_id, source, gps_redacted_by_client, created_at, updated_at

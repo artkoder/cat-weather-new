@@ -106,7 +106,9 @@ class StorageStub:
         self.mapping = mapping
         self.get_calls: list[str] = []
 
-    async def put_stream(self, *, key: str, stream, content_type: str) -> str:  # pragma: no cover - not used
+    async def put_stream(
+        self, *, key: str, stream, content_type: str
+    ) -> str:  # pragma: no cover - not used
         raise NotImplementedError
 
     async def get_url(self, *, key: str) -> str:

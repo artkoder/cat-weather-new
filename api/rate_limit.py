@@ -45,9 +45,7 @@ class TokenBucketLimiter:
         self._window = max(1, int(window_seconds))
         self._buckets: dict[str, _Bucket] = {}
         self._lock = asyncio.Lock()
-        self._refill_rate = (
-            self._capacity / self._window if self._window > 0 else float("inf")
-        )
+        self._refill_rate = self._capacity / self._window if self._window > 0 else float("inf")
 
     @property
     def capacity(self) -> int:
@@ -199,7 +197,9 @@ def create_rate_limit_middleware() -> web.middleware:
     ]
 
     @web.middleware
-    async def middleware(request: web.Request, handler: Callable[[web.Request], web.StreamResponse]):
+    async def middleware(
+        request: web.Request, handler: Callable[[web.Request], web.StreamResponse]
+    ):
         canonical = _route_canonical(request)
         route_key = (request.method.upper(), canonical)
 
@@ -256,9 +256,7 @@ def create_rate_limit_middleware() -> web.middleware:
                     "retry_after": retry_after_seconds,
                 }
                 record_rate_limit_drop(rule.path, rule.scope)
-                return web.json_response(
-                    {"error": "rate_limited"}, status=429, headers=headers
-                )
+                return web.json_response({"error": "rate_limited"}, status=429, headers=headers)
         response = await handler(request)
         return response
 

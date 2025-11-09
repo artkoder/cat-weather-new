@@ -58,9 +58,7 @@ def _canonical_query(params: MultiMapping[str] | Mapping[str, Sequence[str]]) ->
         return "-"
     encoded = []
     for key, value in items:
-        encoded.append(
-            f"{quote(str(key), safe='~-._')}={quote(str(value), safe='~-._')}"
-        )
+        encoded.append(f"{quote(str(key), safe='~-._')}={quote(str(value), safe='~-._')}")
     return "&".join(encoded)
 
 
@@ -149,21 +147,12 @@ def create_hmac_middleware(conn) -> web.middleware:
         content_sha = headers.get("X-Content-SHA256")
         idempotency_key = headers.get("Idempotency-Key")
 
-        if (
-            not device_id
-            or not timestamp_raw
-            or not nonce
-            or not signature
-            or not content_sha
-        ):
+        if not device_id or not timestamp_raw or not nonce or not signature or not content_sha:
             record_hmac_failure("missing_headers")
             return _json_error(400, "invalid_headers", "Missing required HMAC headers.")
 
         content_sha = content_sha.strip().lower()
-        if not (
-            len(content_sha) == 64
-            and all(c in "0123456789abcdef" for c in content_sha)
-        ):
+        if not (len(content_sha) == 64 and all(c in "0123456789abcdef" for c in content_sha)):
             record_hmac_failure("content_sha_format")
             return _json_error(
                 400,
@@ -189,7 +178,9 @@ def create_hmac_middleware(conn) -> web.middleware:
 
         if not (len(signature) == 64 and all(c in "0123456789abcdef" for c in signature)):
             record_hmac_failure("signature_format")
-            return _json_error(400, "invalid_headers", "X-Signature must be 64 lowercase hex characters.")
+            return _json_error(
+                400, "invalid_headers", "X-Signature must be 64 lowercase hex characters."
+            )
 
         record = get_device_secret(conn, device_id=device_id)
         if not record:
@@ -237,7 +228,9 @@ def create_hmac_middleware(conn) -> web.middleware:
             record_hmac_failure("bad_signature")
             return _json_error(401, "invalid_signature", "Signature verification failed.")
 
-        if not register_nonce(conn, device_id=device_id, nonce=nonce, ttl_seconds=_NONCE_TTL_SECONDS):
+        if not register_nonce(
+            conn, device_id=device_id, nonce=nonce, ttl_seconds=_NONCE_TTL_SECONDS
+        ):
             logging.warning("SEC reject nonce-reuse id=%s nonce=%s", device_id, nonce)
             record_hmac_failure("nonce_replay")
             return _json_error(403, "nonce_reused", "Nonce has already been used.")

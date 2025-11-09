@@ -45,9 +45,7 @@ def _convert_to_srgb(image: Image.Image) -> Image.Image:
         try:
             src_profile = ImageCms.ImageCmsProfile(io.BytesIO(icc_profile))
             dst_profile = ImageCms.createProfile("sRGB")
-            converted = ImageCms.profileToProfile(
-                image, src_profile, dst_profile, outputMode="RGB"
-            )
+            converted = ImageCms.profileToProfile(image, src_profile, dst_profile, outputMode="RGB")
         except Exception:
             logging.exception("Failed to convert ICC profile to sRGB")
             converted = image.convert("RGB")
@@ -143,10 +141,11 @@ def ensure_photo_file_for_telegram(
                 break
         else:
             logging.warning(
-                "Compressed photo remains above %s bytes at min quality %s", target_bytes, min_quality
+                "Compressed photo remains above %s bytes at min quality %s",
+                target_bytes,
+                min_quality,
             )
     finally:
         image.close()
         gc.collect()
     return temp_path
-

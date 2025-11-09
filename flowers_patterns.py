@@ -30,7 +30,11 @@ except Exception:  # pragma: no cover - fallback parser
             return value
 
     def _fallback_yaml_load(text: str) -> Any:
-        lines = [line.rstrip("\n") for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+        lines = [
+            line.rstrip("\n")
+            for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
         index = 0
 
         def parse_block(indent: int) -> Any:
@@ -174,6 +178,7 @@ class FlowerKnowledgeBase:
             return key
         return self._flower_lookup.get(key)
 
+
 def _load_yaml(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as fh:
         text = fh.read()
@@ -186,7 +191,9 @@ def _load_yaml(path: Path) -> Any:
 
 def _load_patterns(path: Path) -> tuple[list[FlowerPattern], set[str]]:
     raw = _load_yaml(path)
-    banned_words = {str(word).strip().lower() for word in raw.get("banned_words", []) if str(word).strip()}
+    banned_words = {
+        str(word).strip().lower() for word in raw.get("banned_words", []) if str(word).strip()
+    }
     patterns: list[FlowerPattern] = []
     for entry in raw.get("patterns", []):
         if not isinstance(entry, Mapping):

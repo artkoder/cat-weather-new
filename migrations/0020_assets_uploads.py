@@ -102,12 +102,8 @@ def _ensure_new_assets_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_assets_upload_id ON assets(upload_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_assets_created_at ON assets(created_at)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_upload_id ON assets(upload_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_created_at ON assets(created_at)")
 
 
 def _build_tg_message_id(data: dict[str, object]) -> str | None:
@@ -336,12 +332,8 @@ def run(conn: sqlite3.Connection) -> None:
     if _has_target_layout(columns):
         with conn:
             conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_assets_upload_id ON assets(upload_id)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_assets_created_at ON assets(created_at)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_upload_id ON assets(upload_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_created_at ON assets(created_at)")
             _rebuild_vision_results(conn)
             _rebuild_posts_history(conn)
         return

@@ -160,7 +160,9 @@ def test_extract_metadata_combines_gps_timestamp(tmp_path: Path) -> None:
     assert photo_meta.captured_at == expected
 
 
-def test_extract_metadata_falls_back_to_exifread(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_extract_metadata_falls_back_to_exifread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     image_path = create_sample_image(tmp_path / "fallback.jpg")
 
     original_load = piexif.load

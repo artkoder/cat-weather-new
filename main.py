@@ -357,7 +357,6 @@ WEATHER_ALIAS_MAP: dict[str, str | None] = {
     "twilight": "night",
     "dusk": "night",
     "evening": "night",
-    "sunset": "night",
 }
 
 FLOWERS_PREVIEW_MAX_LENGTH = 4000

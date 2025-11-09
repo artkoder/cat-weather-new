@@ -3,6 +3,29 @@
 ## Objective
 Ensure GitHub Actions runs correctly on the default branch (main) after merges, with all test suites passing (lint, unit, contract).
 
+## Latest Update: Tooling Alignment (Current)
+
+### Configuration Alignment
+- ✅ **Ruff Configuration** - Enforces E,F,I,B,UP rules with E203 explicitly ignored (conflicts with Black)
+- ✅ **Black Configuration** - line-length=100, target-version=py311 confirmed
+- ✅ **MyPy Configuration** - disallow_untyped_defs=true enforced (all functions must have type annotations)
+- ✅ **Dev Dependencies** - All tools (pytest, pytest-asyncio, ruff, black, mypy) in dev-requirements.txt
+
+### Dead Code Removal
+- ✅ **Removed legacy sunset→night mapping** - Line 360 in main.py removed `"sunset": "night"` from WEATHER_ALIAS_MAP
+  - Sunset is now tracked via `is_sunset` boolean field, not weather condition mapping
+  - Prevents confusion between time-of-day indicators and weather conditions
+
+### CI Workflow Verification
+- ✅ **Python Version** - Consistently uses Python 3.11 across all jobs
+- ✅ **Caching** - pip cache enabled in all jobs for faster builds
+- ✅ **Lint Job** - Runs `ruff check .`, `black --check .`, and `mypy .` in sequence
+- ✅ **Test Job** - Runs `pytest -q` with proper environment variables
+
+### Documentation
+- ✅ **README Updated** - Added "Tooling Configuration" section documenting CI checks and standards
+- ✅ **CI Commands Documented** - All tooling commands clearly listed with Make targets
+
 ## Changes Made
 
 ### 1. GitHub Actions Workflow Improvements

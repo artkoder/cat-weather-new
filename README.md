@@ -88,6 +88,22 @@ make clean      # Clean up cache files
 
 The `dev-requirements.txt` bundle provides the tooling used in CI (Ruff, Black, mypy, pytest).
 
+### Tooling Configuration
+
+The project enforces strict code quality standards:
+
+- **Ruff**: Lints code for errors (E), pyflakes (F), import sorting (I), bugbear (B), and pyupgrade (UP) rules
+- **Black**: Formats code with line-length=100 and target-version=py311
+- **MyPy**: Type-checks all code with `disallow_untyped_defs=true` (all functions must have type annotations)
+
+The CI workflow runs these checks in sequence:
+1. `ruff check .` - Lint all Python files
+2. `black --check .` - Verify formatting
+3. `mypy .` - Type-check all source files
+4. `pytest -q` - Run unit tests (excluding integration & e2e)
+
+All checks must pass before merging to main.
+
 ### Running tests
 
 Tests are organized with markers:

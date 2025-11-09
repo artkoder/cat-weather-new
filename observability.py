@@ -85,7 +85,7 @@ def bind_context(**updates: Any) -> contextvars.Token[dict[str, Any]]:
 
 
 @contextlib.contextmanager
-def context(**updates: Any):
+def context(**updates: Any) -> Any:
     token = bind_context(**updates)
     try:
         yield
@@ -353,7 +353,7 @@ def _resolve_route_label(request: web.Request) -> str:
 
 
 @web.middleware
-async def observability_middleware(request: web.Request, handler):
+async def observability_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
     ip = _client_ip(request)
     token = bind_context(

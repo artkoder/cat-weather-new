@@ -8,6 +8,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from time import perf_counter
+from typing import Any
 from urllib.parse import quote
 
 from aiohttp import web
@@ -128,11 +129,11 @@ async def _read_body(request: web.Request) -> bytes:
     return body
 
 
-def create_hmac_middleware(conn) -> web.middleware:
+def create_hmac_middleware(conn: Any) -> web.middleware:
     """Return middleware that enforces HMAC signatures for protected routes."""
 
     @web.middleware
-    async def middleware(request: web.Request, handler):
+    async def middleware(request: web.Request, handler: Any) -> web.StreamResponse:
         start = perf_counter()
         method = request.method.upper()
         path = _normalize_path(request.rel_url.path)

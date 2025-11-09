@@ -34,9 +34,7 @@ def run(conn: sqlite3.Connection) -> None:
 
     conn.execute("ALTER TABLE devices ADD COLUMN secret TEXT")
 
-    rows = conn.execute(
-        "SELECT id FROM devices"
-    ).fetchall()
+    rows = conn.execute("SELECT id FROM devices").fetchall()
     for row in rows:
         device_id = row["id"] if isinstance(row, sqlite3.Row) else row[0]
         conn.execute(

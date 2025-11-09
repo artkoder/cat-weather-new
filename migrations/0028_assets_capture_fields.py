@@ -163,11 +163,15 @@ def run(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_doy ON assets(doy)")
     if _column_exists(conn, "assets", "daypart") and not _index_exists(conn, "idx_assets_daypart"):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_daypart ON assets(daypart)")
-    if _column_exists(conn, "assets", "vision_weather_tag") and not _index_exists(conn, "idx_assets_vision_weather"):
+    if _column_exists(conn, "assets", "vision_weather_tag") and not _index_exists(
+        conn, "idx_assets_vision_weather"
+    ):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_assets_vision_weather ON assets(vision_weather_tag)"
         )
-    if _column_exists(conn, "assets", "sea_wave_score") and not _index_exists(conn, "idx_assets_sea_wave_score"):
+    if _column_exists(conn, "assets", "sea_wave_score") and not _index_exists(
+        conn, "idx_assets_sea_wave_score"
+    ):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_assets_sea_wave_score ON assets(sea_wave_score)"
         )

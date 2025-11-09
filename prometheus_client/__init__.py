@@ -13,7 +13,9 @@ class _MetricSample:
 
 
 class _Metric:
-    def __init__(self, name: str, documentation: str, *, metric_type: str, labelnames: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self, name: str, documentation: str, *, metric_type: str, labelnames: tuple[str, ...] = ()
+    ) -> None:
         self.name = name
         self.documentation = documentation
         self.metric_type = metric_type
@@ -43,11 +45,14 @@ class _Metric:
         self.labels().set(value)
 
     def _render_samples(self) -> list[str]:
-        lines: list[str] = [f"# HELP {self.name} {self.documentation}", f"# TYPE {self.name} {self.metric_type}"]
+        lines: list[str] = [
+            f"# HELP {self.name} {self.documentation}",
+            f"# TYPE {self.name} {self.metric_type}",
+        ]
         for label_values, sample in self._samples.items():
             if self.metric_type == "histogram":
                 label_pairs = ",".join(
-                    f"{label}=\"{value}\""
+                    f'{label}="{value}"'
                     for label, value in zip(self._labelnames, label_values, strict=True)
                 )
                 prefix = f"{self.name}_"
@@ -56,7 +61,8 @@ class _Metric:
                 lines.append(f"{prefix}count{suffix} {sample.count}")
             else:
                 labels = ",".join(
-                    f"{label}=\"{value}\"" for label, value in zip(self._labelnames, label_values, strict=True)
+                    f'{label}="{value}"'
+                    for label, value in zip(self._labelnames, label_values, strict=True)
                 )
                 rendered = f"{self.name}"
                 if labels:
@@ -92,21 +98,29 @@ class _MetricChild:
 _REGISTRY: list[_Metric] = []
 
 
-def _create_metric(name: str, documentation: str, metric_type: str, labelnames: tuple[str, ...]) -> _Metric:
+def _create_metric(
+    name: str, documentation: str, metric_type: str, labelnames: tuple[str, ...]
+) -> _Metric:
     metric = _Metric(name, documentation, metric_type=metric_type, labelnames=labelnames)
     _REGISTRY.append(metric)
     return metric
 
 
-def Counter(name: str, documentation: str, labelnames: tuple[str, ...] | list[str] = ()):  # noqa: N802
+def Counter(
+    name: str, documentation: str, labelnames: tuple[str, ...] | list[str] = ()
+):  # noqa: N802
     return _create_metric(name, documentation, "counter", tuple(labelnames))
 
 
-def Gauge(name: str, documentation: str, labelnames: tuple[str, ...] | list[str] = ()):  # noqa: N802
+def Gauge(
+    name: str, documentation: str, labelnames: tuple[str, ...] | list[str] = ()
+):  # noqa: N802
     return _create_metric(name, documentation, "gauge", tuple(labelnames))
 
 
-def Histogram(name: str, documentation: str, labelnames: tuple[str, ...] | list[str] = ()):  # noqa: N802
+def Histogram(
+    name: str, documentation: str, labelnames: tuple[str, ...] | list[str] = ()
+):  # noqa: N802
     return _create_metric(name, documentation, "histogram", tuple(labelnames))
 
 

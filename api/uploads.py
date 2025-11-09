@@ -148,7 +148,9 @@ def load_uploads_config() -> UploadsConfig:
             if parsed <= 0:
                 raise ValueError
         except ValueError:
-            logging.warning("Invalid MAX_IMAGE_SIDE=%s; ignoring downscale override", max_image_side_raw)
+            logging.warning(
+                "Invalid MAX_IMAGE_SIDE=%s; ignoring downscale override", max_image_side_raw
+            )
         else:
             max_image_side = parsed
 
@@ -244,9 +246,7 @@ async def handle_create_upload(request: web.Request) -> web.Response:
 
     recognition_channel_id = get_recognition_channel_id(conn)
     asset_channel_id = (
-        recognition_channel_id
-        if recognition_channel_id is not None
-        else get_asset_channel_id(conn)
+        recognition_channel_id if recognition_channel_id is not None else get_asset_channel_id(conn)
     )
     if asset_channel_id is None:
         logging.error(
@@ -466,9 +466,7 @@ def register_upload_jobs(
                     source_value = record.get("source")
                     if source_value:
                         upload_source = str(source_value)
-                    gps_redacted_by_client = bool(
-                        record.get("gps_redacted_by_client")
-                    )
+                    gps_redacted_by_client = bool(record.get("gps_redacted_by_client"))
                     file_ref = record.get("file_ref")
                     if not file_ref:
                         raise RuntimeError("upload missing file_ref")
@@ -574,9 +572,7 @@ def register_upload_jobs(
                                 exif_sections_payload.setdefault(required_ifd, {})
                             exif_datetime_payload: dict[str, Any] = {}
                             if download and download.path.exists():
-                                exif_datetime_payload = _extract_exif_datetimes(
-                                    download.path
-                                )
+                                exif_datetime_payload = _extract_exif_datetimes(download.path)
                             metadata_payload = {
                                 "exif": exif_payload,
                                 "gps": gps_payload,
@@ -635,9 +631,7 @@ def register_upload_jobs(
                                 raw_gps_payload = dict(exif_sections_payload.get("GPS") or {})
 
                             gps_ifd_present = bool(raw_gps_payload)
-                            gps_coordinates_present = (
-                                latitude is not None and longitude is not None
-                            )
+                            gps_coordinates_present = latitude is not None and longitude is not None
                             photo_meta_log_payload = {
                                 "has_exif": bool(raw_exif_payload),
                                 "has_gps": gps_coordinates_present,
@@ -657,9 +651,7 @@ def register_upload_jobs(
                                     "upload_id": upload_id,
                                     "has_exif": photo_meta_log_payload["has_exif"],
                                     "has_gps": photo_meta_log_payload["has_gps"],
-                                    "gps_ifd_present": photo_meta_log_payload[
-                                        "gps_ifd_present"
-                                    ],
+                                    "gps_ifd_present": photo_meta_log_payload["gps_ifd_present"],
                                     "photo_meta_raw": _serialize_for_log(photo_meta_log_payload),
                                 },
                             )
@@ -755,11 +747,7 @@ def register_upload_jobs(
                         set_upload_status(conn, id=upload_id, status="done")
                         record_upload_status_change()
                         conn.commit()
-                        if (
-                            should_cleanup_local_download
-                            and download
-                            and download.path.exists()
-                        ):
+                        if should_cleanup_local_download and download and download.path.exists():
                             with contextlib.suppress(Exception):
                                 download.path.unlink()
                         if upload_source and upload_source.lower() == "mobile":
@@ -825,6 +813,8 @@ def setup_upload_routes(
         app["uploads_config"] = config
     app.router.add_post("/v1/uploads", handle_create_upload)
     app.router.add_get("/v1/uploads/{id}/status", handle_get_upload_status)
+
+
 RAW_EXIF_LOG_MAX_LENGTH = 64 * 1024
 
 

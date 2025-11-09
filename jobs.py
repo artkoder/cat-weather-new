@@ -115,9 +115,7 @@ class JobQueue:
             self._workers.append(asyncio.create_task(self._worker_loop()))
         for interval, callback, name in self._periodic_specs:
             self._periodic_tasks.append(
-                asyncio.create_task(
-                    self._periodic_loop(interval, callback, name=name)
-                )
+                asyncio.create_task(self._periodic_loop(interval, callback, name=name))
             )
 
     async def stop(self) -> None:
@@ -199,9 +197,7 @@ class JobQueue:
             self.conn.commit()
             start_time = time.perf_counter()
             attempt_number = job.attempts + 1
-            logging.info(
-                "Starting job %s (%s) attempt %s", job.id, job.name, attempt_number
-            )
+            logging.info("Starting job %s (%s) attempt %s", job.id, job.name, attempt_number)
             try:
                 await handler(job)
             except JobDelayed as delayed:
@@ -232,9 +228,7 @@ class JobQueue:
                 )
                 self.conn.commit()
                 duration = time.perf_counter() - start_time
-                logging.info(
-                    "Completed job %s (%s) in %.3f seconds", job.id, job.name, duration
-                )
+                logging.info("Completed job %s (%s) in %.3f seconds", job.id, job.name, duration)
         self._inflight.discard(job.id)
         self._update_queue_depth_metric()
 
@@ -243,7 +237,7 @@ class JobQueue:
         if attempts >= self.max_attempts:
             await self._mark_failed(job, error, attempts)
             return
-        delay_seconds = min(3600, 2 ** attempts)
+        delay_seconds = min(3600, 2**attempts)
         available_at = datetime.utcnow() + timedelta(seconds=delay_seconds)
         self.conn.execute(
             """
@@ -300,18 +294,12 @@ class JobQueue:
             job = self._row_to_job(row)
             self._inflight.add(job_id)
             await self._queue.put(job)
-            logging.debug(
-                "Queued job %s (%s) for worker", job.id, job.name
-            )
+            logging.debug("Queued job %s (%s) for worker", job.id, job.name)
 
     def _row_to_job(self, row: sqlite3.Row) -> Job:
         payload = row["payload"]
         data = json.loads(payload) if payload else {}
-        available = (
-            datetime.fromisoformat(row["available_at"])
-            if row["available_at"]
-            else None
-        )
+        available = datetime.fromisoformat(row["available_at"]) if row["available_at"] else None
         return Job(
             id=row["id"],
             name=row["name"],
@@ -381,21 +369,15 @@ class JobQueue:
         )
         self.conn.commit()
         job_id = int(cur.lastrowid)
-        logging.info(
-            "Enqueued job %s (%s) with status %s", job_id, name, status
-        )
+        logging.info("Enqueued job %s (%s) with status %s", job_id, name, status)
         if status == "queued" and self._running:
-            row = self.conn.execute(
-                "SELECT * FROM jobs_queue WHERE id=?", (job_id,)
-            ).fetchone()
+            row = self.conn.execute("SELECT * FROM jobs_queue WHERE id=?", (job_id,)).fetchone()
             if row:
                 job = self._row_to_job(row)
                 self._inflight.add(job_id)
                 loop = self._loop or asyncio.get_running_loop()
                 loop.call_soon(self._queue.put_nowait, job)
-                logging.debug(
-                    "Dispatched job %s (%s) to worker queue", job.id, job.name
-                )
+                logging.debug("Dispatched job %s (%s) to worker queue", job.id, job.name)
         self._update_queue_depth_metric()
         return job_id
 
@@ -413,9 +395,7 @@ class JobQueue:
         if self._running:
             interval_value, cb, cb_name = spec
             self._periodic_tasks.append(
-                asyncio.create_task(
-                    self._periodic_loop(interval_value, cb, name=cb_name)
-                )
+                asyncio.create_task(self._periodic_loop(interval_value, cb, name=cb_name))
             )
 
 

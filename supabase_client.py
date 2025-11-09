@@ -41,11 +41,7 @@ class SupabaseClient:
         *,
         timeout: float = 10.0,
     ) -> None:
-        env_key = (
-            key
-            or os.getenv("SUPABASE_KEY")
-            or os.getenv("SUPABASE_ANON_KEY")
-        )
+        env_key = key or os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY")
         config = SupabaseConfig(url or os.getenv("SUPABASE_URL"), env_key)
         self._enabled = bool(config.url and config.key)
         self._client: httpx.AsyncClient | None = None
@@ -59,9 +55,7 @@ class SupabaseClient:
                 "Authorization": f"Bearer {config.key}",
                 "Content-Type": "application/json",
             }
-            self._client = httpx.AsyncClient(
-                base_url=rest_base, timeout=timeout, headers=headers
-            )
+            self._client = httpx.AsyncClient(base_url=rest_base, timeout=timeout, headers=headers)
             self._api_base = api_base
             self._storage_base = api_base + "/storage/v1"
 

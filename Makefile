@@ -5,18 +5,23 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-15s %s\n", $$1, $$2}'
 
 install: ## Install dependencies (production + dev)
-	python -m pip install --upgrade pip setuptools wheel --break-system-packages
-	pip install -r requirements.txt --break-system-packages
-	pip install pytest pytest-asyncio ruff --break-system-packages
+        python -m pip install --upgrade pip setuptools wheel --break-system-packages
+        pip install -r requirements.txt --break-system-packages
+        pip install -r dev-requirements.txt --break-system-packages
 
-lint: ## Run linting with ruff
-	ruff check .
+lint: ## Run static analysis (Ruff + Black)
+        ruff check .
+        black --check .
 
-lint-fix: ## Run linting with automatic fixes
-	ruff check --fix .
+lint-fix: ## Run linting and formatting with automatic fixes
+        black .
+        ruff check --fix .
+
+typecheck: ## Run mypy type checks
+        mypy .
 
 test: ## Run tests (excluding e2e and integration)
-	pytest
+        pytest -q
 
 test-all: ## Run all tests including integration
 	pytest -m ""

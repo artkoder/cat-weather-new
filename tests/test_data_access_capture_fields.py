@@ -152,5 +152,7 @@ def test_fetch_sea_candidates_uses_capture_metadata() -> None:
         assert cand["capture_daypart"] in {"morning", "day", "evening", "night"}
         assert cand["capture_doy"] == asset.doy
 
-    for asset_id, daypart in {cand["asset"].id: cand["asset"].daypart for cand in candidates}.items():
+    for asset_id, daypart in {
+        cand["asset"].id: cand["asset"].daypart for cand in candidates
+    }.items():
         assert daypart in {"morning", "day", "evening", "night"}

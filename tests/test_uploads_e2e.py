@@ -117,7 +117,9 @@ class FakeSupabaseClient:
         return False, kwargs, "error"
 
 
-def _make_test_image_bytes(*, size: tuple[int, int] = (32, 24), color: tuple[int, int, int] = (255, 0, 0)) -> bytes:
+def _make_test_image_bytes(
+    *, size: tuple[int, int] = (32, 24), color: tuple[int, int, int] = (255, 0, 0)
+) -> bytes:
     buffer = BytesIO()
     Image.new("RGB", size, color=color).save(buffer, format="JPEG")
     return buffer.getvalue()
@@ -324,11 +326,13 @@ class UploadTestEnv:
         self.conn.commit()
 
 
-def _multipart_body(content: bytes, *, filename: str = "photo.jpg", content_type: str = "image/jpeg") -> tuple[bytes, str]:
+def _multipart_body(
+    content: bytes, *, filename: str = "photo.jpg", content_type: str = "image/jpeg"
+) -> tuple[bytes, str]:
     boundary = "catweatherboundary"
     parts = [
         f"--{boundary}\r\n",
-        f"Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n",
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n',
         f"Content-Type: {content_type}\r\n\r\n",
     ]
     closing = ["\r\n", f"--{boundary}--\r\n"]
@@ -526,7 +530,9 @@ async def test_uploads_rejects_when_channel_missing(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_uploads_records_gps_headers(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_uploads_records_gps_headers(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     env = UploadTestEnv(tmp_path)
     await env.start()
     try:
@@ -759,7 +765,7 @@ async def test_uploads_reject_large_file(tmp_path: Path):
             max_image_side=None,
         )
         assert env.server is not None
-        env.server.app['uploads_config'] = env.config  # type: ignore[index]
+        env.server.app["uploads_config"] = env.config  # type: ignore[index]
 
         body, boundary = _multipart_body(b"x" * 4096)
         status, payload = await _signed_post(
@@ -910,9 +916,7 @@ async def test_upload_processing_with_vision(tmp_path: Path):
         labels = json.loads(asset_row["labels_json"])
         assert labels.get("caption") == "Красный цветок"
         assert "flower" in labels.get("categories", [])
-        expected_identifier = (
-            f"{env.assets_channel_id}:{env.telegram.calls[0]['message_id']}"
-        )
+        expected_identifier = f"{env.assets_channel_id}:{env.telegram.calls[0]['message_id']}"
         assert asset_row["tg_message_id"] == expected_identifier
         payload_blob = asset_row["payload_json"]
         assert payload_blob

@@ -48,9 +48,7 @@ def _normalize_raw_token(raw: str) -> str:
 
     normalized = candidate.upper()
     if not _PAIRING_TOKEN_PATTERN.fullmatch(normalized):
-        raise PairingTokenError(
-            "Недопустимый формат токена: ожидаем 6–8 символов A-Z и 2-9."
-        )
+        raise PairingTokenError("Недопустимый формат токена: ожидаем 6–8 символов A-Z и 2-9.")
 
     return normalized
 

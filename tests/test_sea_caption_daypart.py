@@ -93,9 +93,13 @@ class TestDayPartMapping:
 
 
 @pytest.mark.asyncio
-async def test_sea_caption_includes_day_part_params(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_sea_caption_includes_day_part_params(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Test that day_part parameters are included in the payload."""
-    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False)
+    monkeypatch.setattr(
+        main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False
+    )
     bot = main_module.Bot("dummy", str(tmp_path / "daypart.db"))
     bot.supabase = DummySupabase()
     bot.openai = CapturingOpenAI()
@@ -137,9 +141,13 @@ async def test_sea_caption_includes_day_part_params(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
-async def test_sea_caption_evening_without_morning_wishes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_sea_caption_evening_without_morning_wishes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Test that evening captions don't contain morning wishes."""
-    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False)
+    monkeypatch.setattr(
+        main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False
+    )
 
     class MorningWishCapturingOpenAI(CapturingOpenAI):
         async def generate_json(self, **kwargs) -> OpenAIResponse:  # type: ignore[override]
@@ -215,9 +223,13 @@ async def test_sea_caption_evening_without_morning_wishes(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_sea_caption_without_day_part(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_sea_caption_without_day_part(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Test that captions work without day_part parameters (backward compatibility)."""
-    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False)
+    monkeypatch.setattr(
+        main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False
+    )
     bot = main_module.Bot("dummy", str(tmp_path / "no_daypart.db"))
     bot.supabase = DummySupabase()
     bot.openai = CapturingOpenAI()

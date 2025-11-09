@@ -16,6 +16,7 @@ from main import Bot, create_app
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 os.environ.setdefault("WEBHOOK_URL", "https://example.com")
 
+
 @pytest.mark.asyncio
 async def test_startup_cleanup(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "prod.sqlite"))
@@ -24,11 +25,12 @@ async def test_startup_cleanup(monkeypatch, tmp_path):
     async def dummy(method, data=None):
         return {"ok": True}
 
-    app['bot'].api_request = dummy  # type: ignore
+    app["bot"].api_request = dummy  # type: ignore
 
     runner = web.AppRunner(app)
     await runner.setup()
     await runner.cleanup()
+
 
 @pytest.mark.asyncio
 async def test_registration_queue(tmp_path):
@@ -55,8 +57,8 @@ async def test_registration_queue(tmp_path):
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 2}}})
     assert bot.is_rejected(2)
     assert not bot.is_pending(2)
-    assert calls[-1][0] == 'sendMessage'
-    assert calls[-1][1]['text'] == 'Access denied by administrator'
+    assert calls[-1][0] == "sendMessage"
+    assert calls[-1][1]["text"] == "Access denied by administrator"
 
     await bot.close()
 
@@ -79,10 +81,10 @@ async def test_superadmin_user_management(tmp_path):
     await bot.handle_update({"message": {"text": "/pending", "from": {"id": 1}}})
     assert bot.is_pending(2)
     pending_msg = calls[-1]
-    assert pending_msg[0] == 'sendMessage'
-    assert pending_msg[1]['reply_markup']['inline_keyboard'][0][0]['callback_data'] == 'approve:2'
-    assert 'tg://user?id=2' in pending_msg[1]['text']
-    assert pending_msg[1]['parse_mode'] == 'Markdown'
+    assert pending_msg[0] == "sendMessage"
+    assert pending_msg[1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "approve:2"
+    assert "tg://user?id=2" in pending_msg[1]["text"]
+    assert pending_msg[1]["parse_mode"] == "Markdown"
 
     await bot.handle_update({"message": {"text": "/approve 2", "from": {"id": 1}}})
     assert bot.get_user(2)
@@ -118,9 +120,9 @@ async def test_list_users_links(tmp_path):
 
     await bot.handle_update({"message": {"text": "/list_users", "from": {"id": 1}}})
     msg = calls[-1][1]
-    assert msg['parse_mode'] == 'Markdown'
-    assert 'tg://user?id=1' in msg['text']
-    assert 'tg://user?id=2' in msg['text']
+    assert msg["parse_mode"] == "Markdown"
+    assert "tg://user?id=1" in msg["text"]
+    assert "tg://user?id=2" in msg["text"]
 
     await bot.close()
 
@@ -165,13 +167,15 @@ async def test_channel_tracking(tmp_path):
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
 
     # bot added to channel
-    await bot.handle_update({
-        "my_chat_member": {
-            "chat": {"id": -100, "title": "Chan"},
-            "new_chat_member": {"status": "administrator"}
+    await bot.handle_update(
+        {
+            "my_chat_member": {
+                "chat": {"id": -100, "title": "Chan"},
+                "new_chat_member": {"status": "administrator"},
+            }
         }
-    })
-    cur = bot.db.execute('SELECT title FROM channels WHERE chat_id=?', (-100,))
+    )
+    cur = bot.db.execute("SELECT title FROM channels WHERE chat_id=?", (-100,))
     row = cur.fetchone()
     assert row and row["title"] == "Chan"
 
@@ -184,13 +188,15 @@ async def test_channel_tracking(tmp_path):
     assert calls[-1][1]["text"] == "Not authorized"
 
     # bot removed from channel
-    await bot.handle_update({
-        "my_chat_member": {
-            "chat": {"id": -100, "title": "Chan"},
-            "new_chat_member": {"status": "left"}
+    await bot.handle_update(
+        {
+            "my_chat_member": {
+                "chat": {"id": -100, "title": "Chan"},
+                "new_chat_member": {"status": "left"},
+            }
         }
-    })
-    cur = bot.db.execute('SELECT * FROM channels WHERE chat_id=?', (-100,))
+    )
+    cur = bot.db.execute("SELECT * FROM channels WHERE chat_id=?", (-100,))
     assert cur.fetchone() is None
 
     await bot.close()
@@ -238,9 +244,7 @@ async def test_pair_command_generates_token(tmp_path):
     await bot.handle_callback(query)
 
     assert any(method == "answerCallbackQuery" for method, _ in calls)
-    new_row = bot.db.execute(
-        "SELECT code FROM pairing_tokens WHERE user_id=?", (1,)
-    ).fetchone()
+    new_row = bot.db.execute("SELECT code FROM pairing_tokens WHERE user_id=?", (1,)).fetchone()
     assert new_row is not None
     assert new_row["code"] != initial_code
 
@@ -324,9 +328,7 @@ async def test_mobile_command_and_callbacks(tmp_path, caplog):
     assert first_mobile_log.user_id == 1
     assert first_mobile_log.has_devices is True
 
-    row = bot.db.execute(
-        "SELECT code FROM pairing_tokens WHERE user_id=?", (1,)
-    ).fetchone()
+    row = bot.db.execute("SELECT code FROM pairing_tokens WHERE user_id=?", (1,)).fetchone()
     assert row is not None
     initial_code = row["code"]
     assert first_mobile_log.code_len == len(initial_code)
@@ -341,9 +343,7 @@ async def test_mobile_command_and_callbacks(tmp_path, caplog):
     assert reuse_log.has_devices is True
     assert reuse_log.code_len == len(initial_code)
 
-    row = bot.db.execute(
-        "SELECT code FROM pairing_tokens WHERE user_id=?", (1,)
-    ).fetchone()
+    row = bot.db.execute("SELECT code FROM pairing_tokens WHERE user_id=?", (1,)).fetchone()
     assert row is not None
     assert row["code"] == initial_code
 
@@ -357,9 +357,7 @@ async def test_mobile_command_and_callbacks(tmp_path, caplog):
         }
     )
     assert multipart_calls and multipart_calls[-1][0] == "editMessageMedia"
-    row = bot.db.execute(
-        "SELECT code FROM pairing_tokens WHERE user_id=?", (1,)
-    ).fetchone()
+    row = bot.db.execute("SELECT code FROM pairing_tokens WHERE user_id=?", (1,)).fetchone()
     assert row and row["code"] != initial_code
 
     calls.clear()
@@ -372,17 +370,13 @@ async def test_mobile_command_and_callbacks(tmp_path, caplog):
             "message": {"message_id": 77, "chat": {"id": 1}},
         }
     )
-    edit_payload = next(
-        data for method, data in calls if method == "editMessageCaption"
-    )
+    edit_payload = next(data for method, data in calls if method == "editMessageCaption")
     edit_caption = edit_payload["caption"]
     assert "Office Pixel" not in edit_caption
     assert "Revoked Phone" not in edit_caption
     assert "Backup Phone" in edit_caption
     edit_keyboard = edit_payload["reply_markup"]["inline_keyboard"]
-    edit_callbacks = [
-        btn["callback_data"] for row in edit_keyboard for btn in row
-    ]
+    edit_callbacks = [btn["callback_data"] for row in edit_keyboard for btn in row]
     assert all("dev-1" not in cb for cb in edit_callbacks)
     assert all("dev-3" not in cb for cb in edit_callbacks)
     assert any("dev-2" in cb for cb in edit_callbacks)
@@ -412,8 +406,7 @@ async def test_mobile_command_and_callbacks(tmp_path, caplog):
         }
     )
     assert any(
-        method == "answerCallbackQuery"
-        and data["text"].startswith("Новый секрет")
+        method == "answerCallbackQuery" and data["text"].startswith("Новый секрет")
         for method, data in calls
     )
     new_secret = bot.db.execute(
@@ -605,32 +598,42 @@ async def test_schedule_flow(tmp_path):
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
 
     # bot added to two channels
-    await bot.handle_update({
-        "my_chat_member": {
-            "chat": {"id": -100, "title": "Chan1"},
-            "new_chat_member": {"status": "administrator"}
+    await bot.handle_update(
+        {
+            "my_chat_member": {
+                "chat": {"id": -100, "title": "Chan1"},
+                "new_chat_member": {"status": "administrator"},
+            }
         }
-    })
-    await bot.handle_update({
-        "my_chat_member": {
-            "chat": {"id": -101, "title": "Chan2"},
-            "new_chat_member": {"status": "administrator"}
+    )
+    await bot.handle_update(
+        {
+            "my_chat_member": {
+                "chat": {"id": -101, "title": "Chan2"},
+                "new_chat_member": {"status": "administrator"},
+            }
         }
-    })
+    )
 
     # forward a message to schedule
-    await bot.handle_update({
-        "message": {
-            "forward_from_chat": {"id": 500},
-            "forward_from_message_id": 7,
-            "from": {"id": 1}
+    await bot.handle_update(
+        {
+            "message": {
+                "forward_from_chat": {"id": 500},
+                "forward_from_message_id": 7,
+                "from": {"id": 1},
+            }
         }
-    })
+    )
     assert calls[-1][1]["reply_markup"]["inline_keyboard"][-1][0]["callback_data"] == "chdone"
 
     # select channels and finish
-    await bot.handle_update({"callback_query": {"from": {"id": 1}, "data": "addch:-100", "id": "q"}})
-    await bot.handle_update({"callback_query": {"from": {"id": 1}, "data": "addch:-101", "id": "q"}})
+    await bot.handle_update(
+        {"callback_query": {"from": {"id": 1}, "data": "addch:-100", "id": "q"}}
+    )
+    await bot.handle_update(
+        {"callback_query": {"from": {"id": 1}, "data": "addch:-101", "id": "q"}}
+    )
     await bot.handle_update({"callback_query": {"from": {"id": 1}, "data": "chdone", "id": "q"}})
 
     time_str = (datetime.now() + timedelta(minutes=5)).strftime("%H:%M")
@@ -653,7 +656,9 @@ async def test_schedule_flow(tmp_path):
     # cancel first schedule
     cur = bot.db.execute("SELECT id FROM schedule ORDER BY id")
     sid = cur.fetchone()["id"]
-    await bot.handle_update({"callback_query": {"from": {"id": 1}, "data": f"cancel:{sid}", "id": "c"}})
+    await bot.handle_update(
+        {"callback_query": {"from": {"id": 1}, "data": f"cancel:{sid}", "id": "c"}}
+    )
     cur = bot.db.execute("SELECT * FROM schedule WHERE id=?", (sid,))
     assert cur.fetchone() is None
 
@@ -708,7 +713,9 @@ async def test_add_button(tmp_path):
             "result": {
                 "message_id": 42,
                 "reply_markup": {
-                    "inline_keyboard": [[{"text": "old", "url": "u"}, {"text": "btn", "url": "https://example.com"}]]
+                    "inline_keyboard": [
+                        [{"text": "old", "url": "u"}, {"text": "btn", "url": "https://example.com"}]
+                    ]
                 },
             },
         },
@@ -731,22 +738,26 @@ async def test_add_button(tmp_path):
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
 
-    await bot.handle_update({
-        "message": {
-            "text": "/addbutton https://t.me/c/123/5 btn https://example.com",
-            "from": {"id": 1},
+    await bot.handle_update(
+        {
+            "message": {
+                "text": "/addbutton https://t.me/c/123/5 btn https://example.com",
+                "from": {"id": 1},
+            }
         }
-    })
+    )
     edit_calls = [c for c in calls if c[0] == "editMessageReplyMarkup"]
     assert len(edit_calls) == 1
     assert len(edit_calls[0][1]["reply_markup"]["inline_keyboard"]) == 2
 
-    await bot.handle_update({
-        "message": {
-            "text": "/addbutton https://t.me/c/123/5 ask locals https://example.com",
-            "from": {"id": 1},
+    await bot.handle_update(
+        {
+            "message": {
+                "text": "/addbutton https://t.me/c/123/5 ask locals https://example.com",
+                "from": {"id": 1},
+            }
         }
-    })
+    )
 
     # check that button text with spaces is parsed correctly
     edit_calls = [c for c in calls if c[0] == "editMessageReplyMarkup"]
@@ -773,12 +784,14 @@ async def test_delete_button(tmp_path):
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
 
-    await bot.handle_update({
-        "message": {
-            "text": "/delbutton https://t.me/c/123/5",
-            "from": {"id": 1},
+    await bot.handle_update(
+        {
+            "message": {
+                "text": "/delbutton https://t.me/c/123/5",
+                "from": {"id": 1},
+            }
         }
-    })
+    )
 
     assert calls[-1][0] == "editMessageReplyMarkup"
     assert calls[-1][1]["reply_markup"] == {}
@@ -791,6 +804,7 @@ async def test_add_weather_button(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
 
     calls = []
+
     async def dummy(method, data=None):
         calls.append((method, data))
         if method == "forwardMessage":
@@ -804,7 +818,6 @@ async def test_add_weather_button(tmp_path):
     bot.set_latest_weather_post(-100, 7)
     await bot.start()
 
-
     bot.db.execute("INSERT INTO cities (id, name, lat, lon) VALUES (1, 'c', 0, 0)")
     bot.db.execute(
         "INSERT INTO weather_cache_hour (city_id, timestamp, temperature, weather_code, wind_speed, is_day) VALUES (1, ?, 15.0, 1, 3, 1)",
@@ -814,14 +827,14 @@ async def test_add_weather_button(tmp_path):
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
 
-    await bot.handle_update({
-        "message": {
-
-            "text": "/addweatherbutton https://t.me/c/123/5 K. {1|temperature}",
-
-            "from": {"id": 1},
+    await bot.handle_update(
+        {
+            "message": {
+                "text": "/addweatherbutton https://t.me/c/123/5 K. {1|temperature}",
+                "from": {"id": 1},
+            }
         }
-    })
+    )
 
     assert any(c[0] == "editMessageReplyMarkup" for c in calls)
     payload = [c[1] for c in calls if c[0] == "editMessageReplyMarkup"][0]
@@ -829,15 +842,14 @@ async def test_add_weather_button(tmp_path):
     assert len(payload["reply_markup"]["inline_keyboard"]) == 1
     assert payload["reply_markup"]["inline_keyboard"][0][0]["url"].endswith("/7")
 
-    assert "\u00B0C" in payload["reply_markup"]["inline_keyboard"][0][0]["text"]
+    assert "\u00b0C" in payload["reply_markup"]["inline_keyboard"][0][0]["text"]
 
     calls.clear()
     await bot.update_weather_buttons()
     up_payload = [c[1] for c in calls if c[0] == "editMessageReplyMarkup"][0]
 
     assert len(up_payload["reply_markup"]["inline_keyboard"]) == 1
-    assert "\u00B0C" in up_payload["reply_markup"]["inline_keyboard"][0][0]["text"]
-
+    assert "\u00b0C" in up_payload["reply_markup"]["inline_keyboard"][0][0]["text"]
 
     await bot.close()
 
@@ -1136,26 +1148,29 @@ async def test_delbutton_clears_weather_record(tmp_path):
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
 
-    await bot.handle_update({
-        "message": {
-            "text": "/addweatherbutton https://t.me/c/123/5 K. {1|temperature}",
-            "from": {"id": 1},
+    await bot.handle_update(
+        {
+            "message": {
+                "text": "/addweatherbutton https://t.me/c/123/5 K. {1|temperature}",
+                "from": {"id": 1},
+            }
         }
-    })
+    )
 
     assert bot.db.execute("SELECT COUNT(*) FROM weather_link_posts").fetchone()[0] == 1
 
-    await bot.handle_update({
-        "message": {
-            "text": "/delbutton https://t.me/c/123/5",
-            "from": {"id": 1},
+    await bot.handle_update(
+        {
+            "message": {
+                "text": "/delbutton https://t.me/c/123/5",
+                "from": {"id": 1},
+            }
         }
-    })
+    )
 
     assert bot.db.execute("SELECT COUNT(*) FROM weather_link_posts").fetchone()[0] == 0
     assert calls[-1][0] == "editMessageReplyMarkup"
     assert calls[-1][1]["reply_markup"] == {}
-
 
     await bot.close()
 
@@ -1210,6 +1225,5 @@ async def test_multiple_weather_buttons_same_row(tmp_path):
     payload = [c[1] for c in calls if c[0] == "editMessageReplyMarkup"][0]
     assert len(payload["reply_markup"]["inline_keyboard"]) == 1
     assert len(payload["reply_markup"]["inline_keyboard"][0]) == 2
-
 
     await bot.close()

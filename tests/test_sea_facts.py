@@ -192,7 +192,9 @@ async def test_storm_persisting_flag(tmp_path):
             rubric.id,
             {"storm_state": "storm", "sea_id": 1},
         )
-        post_id_row = bot.db.execute("SELECT id FROM posts_history ORDER BY id DESC LIMIT 1").fetchone()
+        post_id_row = bot.db.execute(
+            "SELECT id FROM posts_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         assert post_id_row is not None
         post_id = post_id_row[0]
         yesterday = (datetime.utcnow() - timedelta(days=1, hours=1)).isoformat()
@@ -208,7 +210,9 @@ async def test_storm_persisting_flag(tmp_path):
         caption_text = html.unescape(caption_html)
         assert "Продолжает штормить" in caption_text
 
-        row = bot.db.execute("SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1").fetchone()
+        row = bot.db.execute(
+            "SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         assert row is not None
         metadata = json.loads(row[0])
         assert metadata.get("storm_persisting") is True
@@ -272,7 +276,9 @@ async def test_caption_includes_fact_sentence_once(tmp_path):
         assert "#море #БалтийскоеМоре" in caption_text
         assert "📂 Полюбить 39" in caption_text
 
-        row = bot.db.execute("SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1").fetchone()
+        row = bot.db.execute(
+            "SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
         assert row is not None
         metadata = json.loads(row[0])
         assert metadata.get("fact_id")

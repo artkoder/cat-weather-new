@@ -51,8 +51,12 @@ async def async_record_usage_noop(self, *args: Any, **kwargs: Any) -> None:  # t
 
 
 @pytest.mark.asyncio
-async def test_sea_caption_prompt_fact_numbers_and_limit_instruction(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False)
+async def test_sea_caption_prompt_fact_numbers_and_limit_instruction(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False
+    )
     bot = main_module.Bot("dummy", str(tmp_path / "prompt.db"))
     bot.supabase = DummySupabase()
     bot.openai = CapturingOpenAI()
@@ -106,8 +110,12 @@ async def test_sea_caption_prompt_fact_numbers_and_limit_instruction(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_sea_logging_prefixes(monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False)
+async def test_sea_logging_prefixes(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False
+    )
 
     async def fake_reverse_geocode(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"city": "Зеленоградск"}

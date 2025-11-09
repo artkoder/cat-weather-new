@@ -19,6 +19,7 @@ class NormalizedSky:
     def __str__(self) -> str:  # pragma: no cover - used for logging readability
         return self.token()
 
+
 _SKY_POSITIVE_KEYWORDS = {
     "sky",
     "clear_sky",
@@ -243,8 +244,7 @@ def sky_similarity(photo_sky: NormalizedSky | None, allowed: set[NormalizedSky])
         photo_sky.daypart == "evening"
         and photo_sky.weather_tag in {"sunny", "mostly_clear"}
         and any(
-            candidate.daypart == "day"
-            and candidate.weather_tag in {"sunny", "mostly_clear"}
+            candidate.daypart == "day" and candidate.weather_tag in {"sunny", "mostly_clear"}
             for candidate in allowed
         )
     ):

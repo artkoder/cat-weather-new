@@ -195,7 +195,9 @@ async def test_ingestion_helper_mobile_and_telegram_payloads_align(
 
         telegram_ingest = TelegramStub(start_message_id=mobile_message_id)
 
-        async def fake_publish(chat_id: int, local_path: str, caption: str | None, *, caption_entities=None):
+        async def fake_publish(
+            chat_id: int, local_path: str, caption: str | None, *, caption_entities=None
+        ):
             response = await telegram_ingest.send_photo(
                 chat_id=chat_id,
                 photo=Path(local_path),
@@ -316,4 +318,3 @@ async def test_ingestion_helper_mobile_and_telegram_payloads_align(
     finally:
         await bot.close()
         conn_mobile.close()
-

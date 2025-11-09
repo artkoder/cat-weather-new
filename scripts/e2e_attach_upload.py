@@ -80,9 +80,7 @@ def _canonical_query(items: Sequence[tuple[str, str]]) -> str:
     for key in sorted(grouped):
         values = sorted(grouped[key])
         for value in values:
-            encoded.append(
-                f"{quote(str(key), safe='~-._')}={quote(str(value), safe='~-._')}"
-            )
+            encoded.append(f"{quote(str(key), safe='~-._')}={quote(str(value), safe='~-._')}")
     return "&".join(encoded) if encoded else "-"
 
 
@@ -210,7 +208,9 @@ def _run_helper_create_pairing(
     return code
 
 
-def _attach_device(client: httpx.Client, base_url: str, code: str, device_name: str) -> DeviceCredentials:
+def _attach_device(
+    client: httpx.Client, base_url: str, code: str, device_name: str
+) -> DeviceCredentials:
     url = f"{base_url}/devices/attach"
     _log("Calling /devices/attach")
     response = client.post(url, json={"token": code, "name": device_name})
@@ -289,9 +289,7 @@ def _poll_status(
                 asset_id=str(asset_id) if asset_id else None,
             )
         if status == "failed":
-            raise RuntimeError(
-                f"Upload {upload_id} failed with error: {error or 'unknown error'}"
-            )
+            raise RuntimeError(f"Upload {upload_id} failed with error: {error or 'unknown error'}")
         time.sleep(random.uniform(*_POLL_DELAY_RANGE))
 
 
@@ -337,8 +335,12 @@ def _verify_supabase_object(
 
 def run(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the attach->upload->process E2E flow")
-    parser.add_argument("--base-url", default=_env("E2E_BASE_URL"), help="API base URL, e.g. https://host/v1")
-    parser.add_argument("--user-id", type=int, default=int(_env("E2E_USER_ID", "0")), help="Telegram user id")
+    parser.add_argument(
+        "--base-url", default=_env("E2E_BASE_URL"), help="API base URL, e.g. https://host/v1"
+    )
+    parser.add_argument(
+        "--user-id", type=int, default=int(_env("E2E_USER_ID", "0")), help="Telegram user id"
+    )
     parser.add_argument("--device-name", default=_env("E2E_DEVICE_NAME", "E2E Android"))
     parser.add_argument("--timeout", type=float, default=float(_env("E2E_TIMEOUT_S", "60")))
     parser.add_argument(
@@ -394,9 +396,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         attach_start = time.perf_counter()
         creds = _attach_device(client, base_url, code, args.device_name)
         attach_duration = time.perf_counter() - attach_start
-        _log(
-            f"Attached device {creds.name} (id={creds.device_id}) in {attach_duration:.2f}s"
-        )
+        _log(f"Attached device {creds.name} (id={creds.device_id}) in {attach_duration:.2f}s")
 
         filename, content_type, file_bytes = make_test_image()
         body, multipart_content_type = build_multipart(
@@ -459,7 +459,9 @@ def run(argv: Sequence[str] | None = None) -> int:
             if not args.supabase_url:
                 raise RuntimeError("SUPABASE_URL must be provided when storage backend is supabase")
             if not record.get("file_ref"):
-                raise RuntimeError("Asset record does not contain file_ref for storage verification")
+                raise RuntimeError(
+                    "Asset record does not contain file_ref for storage verification"
+                )
             _verify_supabase_object(
                 client,
                 file_ref=str(record["file_ref"]),

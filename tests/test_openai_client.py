@@ -18,9 +18,7 @@ PNG_BASE64 = (
 )
 PNG_BYTES = base64.b64decode(PNG_BASE64)
 
-JPEG_BASE64 = (
-    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAAaACgDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/AP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAQUCf//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQMBAT8Bf//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQIBAT8Bf//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEABj8Cf//Z"
-)
+JPEG_BASE64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAAaACgDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/AP/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAQUCf//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQMBAT8Bf//EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQIBAT8Bf//EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEABj8Cf//Z"
 JPEG_BYTES = base64.b64decode(JPEG_BASE64)
 
 
@@ -336,9 +334,7 @@ async def test_logs_invalid_json_schema_details(monkeypatch, caplog):
         }
     }
 
-    monkeypatch.setattr(
-        "httpx.AsyncClient", lambda timeout=120: ErrorAsyncClient(error_payload)
-    )
+    monkeypatch.setattr("httpx.AsyncClient", lambda timeout=120: ErrorAsyncClient(error_payload))
 
     client = OpenAIClient("test-key")
     oversized_value = "x" * 1200
@@ -507,13 +503,7 @@ async def test_schema_summary_logging_handles_embedded_format(monkeypatch, caplo
         captured["payload"] = payload
 
     response_payload = {
-        "output": [
-            {
-                "content": [
-                    {"type": "output_text", "text": json.dumps({"ok": True})}
-                ]
-            }
-        ],
+        "output": [{"content": [{"type": "output_text", "text": json.dumps({"ok": True})}]}],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         "id": "resp_embedded",
     }
@@ -550,13 +540,7 @@ async def test_schema_summary_logging_handles_embedded_format(monkeypatch, caplo
 @pytest.mark.asyncio
 async def test_schema_summary_logging_handles_legacy_format(monkeypatch, caplog):
     response_payload = {
-        "output": [
-            {
-                "content": [
-                    {"type": "output_text", "text": json.dumps({"ok": True})}
-                ]
-            }
-        ],
+        "output": [{"content": [{"type": "output_text", "text": json.dumps({"ok": True})}]}],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         "id": "resp_legacy",
     }

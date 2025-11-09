@@ -73,7 +73,9 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
     requests_log: list[dict[str, Any]] = []
     expected_webhook = webhook_url.rstrip("/") + "/webhook"
 
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+    async def fake_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
         entry = {"method": method, "data": data, "files": files}
         requests_log.append(entry)
         if method == "getWebhookInfo":
@@ -230,7 +232,19 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
         )
         bot.db.execute(
             "UPDATE sea_conditions SET wave_height_m=?, wind_speed_10m_ms=?, wind_speed_10m_kmh=?, wind_gusts_10m_ms=?, wind_gusts_10m_kmh=?, wind_units=?, wind_gusts_units=?, wind_time_ref=?, cloud_cover_pct=?, updated=? WHERE sea_id=?",
-            (1.6, 12.0, 43.2, 15.0, 54.0, "m/s", "km/h", datetime.utcnow().isoformat(), 65.0, datetime.utcnow().isoformat(), 1),
+            (
+                1.6,
+                12.0,
+                43.2,
+                15.0,
+                54.0,
+                "m/s",
+                "km/h",
+                datetime.utcnow().isoformat(),
+                65.0,
+                datetime.utcnow().isoformat(),
+                1,
+            ),
         )
         bot.db.execute(
             "UPDATE weather_cache_hour SET wind_speed=?, timestamp=? WHERE city_id=?",
@@ -263,7 +277,19 @@ async def test_sea_rubric_end_to_end(monkeypatch, tmp_path):
 
         bot.db.execute(
             "UPDATE sea_conditions SET wave_height_m=?, wind_speed_10m_ms=?, wind_speed_10m_kmh=?, wind_gusts_10m_ms=?, wind_gusts_10m_kmh=?, wind_units=?, wind_gusts_units=?, wind_time_ref=?, cloud_cover_pct=?, updated=? WHERE sea_id=?",
-            (2.2, 16.0, 57.6, 20.0, 72.0, "m/s", "km/h", datetime.utcnow().isoformat(), 85.0, datetime.utcnow().isoformat(), 1),
+            (
+                2.2,
+                16.0,
+                57.6,
+                20.0,
+                72.0,
+                "m/s",
+                "km/h",
+                datetime.utcnow().isoformat(),
+                85.0,
+                datetime.utcnow().isoformat(),
+                1,
+            ),
         )
         bot.db.execute(
             "UPDATE weather_cache_hour SET wind_speed=?, timestamp=? WHERE city_id=?",

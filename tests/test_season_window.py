@@ -1,4 +1,5 @@
 """Tests for the seasonal window filter (day-of-year based)."""
+
 import os
 import sys
 from datetime import date, datetime, timedelta

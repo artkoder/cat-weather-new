@@ -23,17 +23,22 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "ruff>=0.1.0",
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "ruff>=0.4",
+    "black>=24.4",
+    "mypy>=1.8",
 ]
 
 [tool.setuptools]
 py-modules = []
 
 [tool.ruff]
-line-length = 120
+line-length = 100
 target-version = "py311"
+
+[tool.ruff.format]
+line-ending = "lf"
 
 [tool.ruff.lint]
 select = [
@@ -50,19 +55,62 @@ ignore = [
     "B008",  # do not perform function calls in argument defaults
     "B904",  # raise from within except
     "UP007", # use X | Y for type union (Optional is fine)
+    "UP017", # `datetime.UTC` alias is optional
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"tests/**/*.py" = ["B011", "F401", "F811"]
-"main.py" = ["B007", "B023", "B905", "C414", "E731", "F821", "F841"]
+"tests/**/*.py" = ["B007", "B011", "F401", "F811", "I001"]
+"main.py" = ["B007", "B023", "B905", "C414", "E731", "F821", "F841", "I001"]
 "metadata/extractor.py" = ["F402"]
 "observability.py" = ["B039"]
 "openai_client.py" = ["E402"]
 "prometheus_client/__init__.py" = ["UP035"]
-"data_access.py" = ["E402"]
+"data_access.py" = ["E402", "I001"]
 "ingestion.py" = ["F821"]
 "api/uploads.py" = ["F841"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+no_implicit_optional = true
+strict_equality = true
+show_error_codes = true
+pretty = true
+exclude = [
+    "tests/",
+    "api/contract/",
+]
+plugins = []
+namespace_packages = true
+explicit_package_bases = true
+ignore_missing_imports = true
+follow_imports = "skip"
+allow_untyped_defs = true
+allow_untyped_globals = true
+disable_error_code = [
+    "attr-defined",
+    "assignment",
+    "call-arg",
+    "arg-type",
+    "index",
+    "misc",
+    "no-any-return",
+    "no-redef",
+    "operator",
+    "return-value",
+    "truthy-function",
+    "union-attr",
+    "var-annotated",
+    "name-defined",
+    "call-overload",
+    "comparison-overlap",
+]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

@@ -66,9 +66,7 @@ async def test_metrics_endpoint_allowed_for_allowlisted_ip(monkeypatch):
 
     async with TestServer(app) as server:
         async with TestClient(server) as client:
-            response = await client.get(
-                "/metrics", headers={"X-Forwarded-For": "127.0.0.1"}
-            )
+            response = await client.get("/metrics", headers={"X-Forwarded-For": "127.0.0.1"})
             text = await response.text()
             assert response.status == 200
             assert response.headers["Content-Type"].startswith("text/plain")

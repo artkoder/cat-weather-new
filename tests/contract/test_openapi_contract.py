@@ -110,9 +110,7 @@ class ContractServerContext:
         return BytesIO(b"\xff" * size)
 
     def make_oversized_payload_stream(self, extra_bytes: int = 1) -> BytesIO:
-        return self.make_payload_stream(
-            self.uploads_config.max_upload_bytes + max(1, extra_bytes)
-        )
+        return self.make_payload_stream(self.uploads_config.max_upload_bytes + max(1, extra_bytes))
 
 
 def _make_test_image_bytes(size: tuple[int, int] = (48, 32)) -> bytes:
@@ -194,9 +192,7 @@ async def _obtain_device_credentials(
     user_id: int,
     device_name: str,
 ):
-    token = contract_server.issue_pairing_token(
-        user_id=user_id, device_name=device_name
-    )
+    token = contract_server.issue_pairing_token(user_id=user_id, device_name=device_name)
     response = await _call_attach(
         contract_server,
         openapi_schema,
@@ -287,9 +283,7 @@ def openapi_schema() -> schemathesis.schemas.BaseSchema:
             allow_module_level=True,
         )
     try:
-        return schemathesis_loaders.from_path(
-            contract_path, validate_schema=False
-        )
+        return schemathesis_loaders.from_path(contract_path, validate_schema=False)
     except TypeError:
         # Older Schemathesis versions don't support validate_schema.
         # Fall back to the default behavior so local development with
@@ -323,7 +317,9 @@ def contract_server(
     conn.row_factory = sqlite3.Row
     apply_migrations(conn)
     conn.execute("DELETE FROM asset_channel")
-    conn.execute("INSERT OR REPLACE INTO asset_channel (channel_id) VALUES (?)", (ASSET_CHANNEL_ID,))
+    conn.execute(
+        "INSERT OR REPLACE INTO asset_channel (channel_id) VALUES (?)", (ASSET_CHANNEL_ID,)
+    )
     conn.execute("DELETE FROM recognition_channel")
     conn.execute(
         "INSERT OR REPLACE INTO recognition_channel (channel_id) VALUES (?)",
@@ -466,7 +462,9 @@ async def test_contract_upload_and_status(contract_server: ContractServerContext
 
 
 @pytest.mark.asyncio
-async def test_contract_rejects_bad_signature(contract_server: ContractServerContext, openapi_schema):
+async def test_contract_rejects_bad_signature(
+    contract_server: ContractServerContext, openapi_schema
+):
     token = contract_server.issue_pairing_token(user_id=1401, device_name="Spec Invalid")
     attach_operation = openapi_schema["/v1/devices/attach"]["post"]
     attach_case = attach_operation.make_case()
@@ -532,9 +530,7 @@ async def test_contract_upload_rejects_reused_idempotency_key(
         device_name="Spec Conflict",
     )
     idempotency_key = str(uuid.uuid4())
-    contract_server.register_upload_conflict(
-        device_id=device_id, idempotency_key=idempotency_key
-    )
+    contract_server.register_upload_conflict(device_id=device_id, idempotency_key=idempotency_key)
     files = {
         "file": ("conflict.jpg", _make_test_image_bytes(), "image/jpeg"),
     }

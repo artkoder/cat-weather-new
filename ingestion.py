@@ -38,11 +38,9 @@ except Exception:  # pragma: no cover - typing fallback
 
 
 class MetricsEmitter(Protocol):
-    def increment(self, name: str, value: float = 1.0) -> None:
-        ...
+    def increment(self, name: str, value: float = 1.0) -> None: ...
 
-    def observe(self, name: str, value: float) -> None:
-        ...
+    def observe(self, name: str, value: float) -> None: ...
 
 
 class TelegramClient(Protocol):
@@ -52,8 +50,7 @@ class TelegramClient(Protocol):
         chat_id: int,
         photo: Path,
         caption: str | None = None,
-    ) -> Any:
-        ...
+    ) -> Any: ...
 
     async def send_document(
         self,
@@ -63,8 +60,7 @@ class TelegramClient(Protocol):
         file_name: str,
         caption: str | None = None,
         content_type: str | None = None,
-    ) -> Any:
-        ...
+    ) -> Any: ...
 
 
 @dataclass(slots=True)
@@ -602,11 +598,7 @@ def _extract_gps_decimal(gps_info: dict[str, Any]) -> tuple[float | None, float 
         while len(numeric_parts) < 3:
             numeric_parts.append(0.0)
 
-        decimal = (
-            numeric_parts[0]
-            + numeric_parts[1] / 60.0
-            + numeric_parts[2] / 3600.0
-        )
+        decimal = numeric_parts[0] + numeric_parts[1] / 60.0 + numeric_parts[2] / 3600.0
         if ref:
             ref_letter = ref.strip().upper()[:1]
             if ref_letter in {"S", "W"}:
@@ -689,20 +681,14 @@ def extract_exif_datetimes(image_source: str | Path | BinaryIO) -> dict[str, str
 
     result: dict[str, str] = {}
     exif_ifd = exif_dict.get("Exif") or {}
-    original_value = _decode_exif_datetime_value(
-        exif_ifd.get(piexif.ExifIFD.DateTimeOriginal)
-    )
+    original_value = _decode_exif_datetime_value(exif_ifd.get(piexif.ExifIFD.DateTimeOriginal))
     if original_value:
         result["exif_datetime_original"] = original_value
-    digitized_value = _decode_exif_datetime_value(
-        exif_ifd.get(piexif.ExifIFD.DateTimeDigitized)
-    )
+    digitized_value = _decode_exif_datetime_value(exif_ifd.get(piexif.ExifIFD.DateTimeDigitized))
     if digitized_value:
         result["exif_datetime_digitized"] = digitized_value
     zeroth_ifd = exif_dict.get("0th") or {}
-    image_datetime_value = _decode_exif_datetime_value(
-        zeroth_ifd.get(piexif.ImageIFD.DateTime)
-    )
+    image_datetime_value = _decode_exif_datetime_value(zeroth_ifd.get(piexif.ImageIFD.DateTime))
     if image_datetime_value:
         result["exif_datetime"] = image_datetime_value
     best_value = (
@@ -805,8 +791,6 @@ def extract_image_metadata(path: Path, *, skip_gps: bool = False) -> ImageMetada
         exif_ifds=exif_ifds_raw,
         photo=photo_meta,
     )
-
-
 
 
 def extract_categories(vision: dict[str, Any] | None) -> list[str]:
@@ -1038,7 +1022,9 @@ async def _ingest_photo_internal(
             shot_at_utc_value = None
             shot_doy_value = None
 
-        exif_datetime_original = (exif_payload or {}).get("DateTimeOriginal") if exif_payload else None
+        exif_datetime_original = (
+            (exif_payload or {}).get("DateTimeOriginal") if exif_payload else None
+        )
         original_local = _parse_datetime_original(exif_datetime_original)
         if original_local is not None:
             shot_at_utc_value = int(original_local.astimezone(UTC).timestamp())
@@ -1099,15 +1085,15 @@ async def _ingest_photo_internal(
                             },
                         )
                     except Exception:
-                        logging.exception("Vision token usage logging failed for source %s", inputs.source)
+                        logging.exception(
+                            "Vision token usage logging failed for source %s", inputs.source
+                        )
         elif inputs.vision.enabled and not context.openai:
             logging.warning(
                 "Vision requested for %s but OpenAI client is unavailable; skipping", inputs.source
             )
         elif inputs.vision.enabled and not inputs.vision.model:
-            logging.warning(
-                "Vision requested for %s but model is missing; skipping", inputs.source
-            )
+            logging.warning("Vision requested for %s but model is missing; skipping", inputs.source)
 
         categories = extract_categories(vision_payload)
         caption = build_caption(
@@ -1212,7 +1198,7 @@ async def _ingest_photo_internal(
 
             combined_categories: list[str] = []
             seen_categories: set[str] = set()
-            for value in (inputs.categories or []):
+            for value in inputs.categories or []:
                 text = str(value).strip()
                 if text and text not in seen_categories:
                     combined_categories.append(text)

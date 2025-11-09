@@ -45,9 +45,7 @@ _SENSITIVE_KEYS = (
 _HEADER_RE = re.compile(
     r"(?i)(x-signature|signature|secret|token|authorization)([:=]\s*)([^\s,;]+)"
 )
-_JSON_RE = re.compile(
-    r"(?i)(\"(?:secret|token|x-signature|authorization)\"\s*:\s*)\"[^\"]*\""
-)
+_JSON_RE = re.compile(r"(?i)(\"(?:secret|token|x-signature|authorization)\"\s*:\s*)\"[^\"]*\"")
 
 
 def _redact_value(key: str | None, value: Any) -> Any:
@@ -60,7 +58,7 @@ def _redact_value(key: str | None, value: Any) -> Any:
             redacted,
         )
         redacted = _JSON_RE.sub(
-            lambda match: f"{match.group(1)}\"***\"",
+            lambda match: f'{match.group(1)}"***"',
             redacted,
         )
         return redacted

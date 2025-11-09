@@ -10,7 +10,11 @@ import pytest
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import main as main_module  # noqa: E402
-from tests.fixtures.sea import create_sea_asset, create_stub_image, seed_sea_environment  # noqa: E402
+from tests.fixtures.sea import (
+    create_sea_asset,
+    create_stub_image,
+    seed_sea_environment,
+)  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -110,7 +114,9 @@ async def test_clear_prefers_sunny_visible_sky(
 
     bot.openai = DummyOpenAI()
 
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+    async def fake_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
         if method == "sendPhoto":
             return {"ok": True, "result": {"message_id": 600}}
         return {"ok": True}
@@ -124,7 +130,9 @@ async def test_clear_prefers_sunny_visible_sky(
 
     published: dict[str, Any] = {}
 
-    def capture_post_history(channel_id: int, message_id: int, asset_id: str, rubric_id: int, metadata: dict[str, Any]) -> None:
+    def capture_post_history(
+        channel_id: int, message_id: int, asset_id: str, rubric_id: int, metadata: dict[str, Any]
+    ) -> None:
         published["asset_id"] = asset_id
         published["metadata"] = metadata
 
@@ -236,7 +244,9 @@ async def test_logs_steps_present(
 
     bot.openai = DummyOpenAI()
 
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+    async def fake_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
         if method == "sendPhoto":
             return {"ok": True, "result": {"message_id": 700}}
         return {"ok": True}
@@ -250,7 +260,9 @@ async def test_logs_steps_present(
 
     await bot.publish_rubric("sea")
 
-    log_lines = [record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()]
+    log_lines = [
+        record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()
+    ]
     combined = "\n".join(log_lines)
 
     assert "SEA_RUBRIC stage B0" in combined
@@ -265,7 +277,9 @@ async def test_logs_steps_present(
 
 
 @pytest.mark.asyncio
-async def test_soft_penalties_logged_for_strict_stage(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_soft_penalties_logged_for_strict_stage(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Ensure strict B0 stage keeps penalized candidates with explicit penalty logging."""
 
     caplog.set_level(logging.INFO)
@@ -329,7 +343,9 @@ async def test_soft_penalties_logged_for_strict_stage(tmp_path: Path, caplog: py
         bot.db.execute("UPDATE assets SET shot_doy=? WHERE id=?", (today_doy, asset_id))
     bot.db.commit()
 
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+    async def fake_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
         if method == "sendPhoto":
             return {"ok": True, "result": {"message_id": 4242}}
         return {"ok": True}
@@ -343,7 +359,9 @@ async def test_soft_penalties_logged_for_strict_stage(tmp_path: Path, caplog: py
 
     await bot.publish_rubric("sea")
 
-    log_lines = [record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()]
+    log_lines = [
+        record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()
+    ]
     penalized_logs = [
         line
         for line in log_lines
@@ -361,7 +379,9 @@ async def test_soft_penalties_logged_for_strict_stage(tmp_path: Path, caplog: py
 
 
 @pytest.mark.asyncio
-async def test_empty_pool_logs_selection_empty(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_empty_pool_logs_selection_empty(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Verify that empty candidate pools log selection_empty after soft filtering."""
 
     caplog.set_level(logging.INFO)
@@ -393,7 +413,9 @@ async def test_empty_pool_logs_selection_empty(tmp_path: Path, caplog: pytest.Lo
     )
     bot.data.save_rubric_config("sea", updated_config)
 
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+    async def fake_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
         return {"ok": True}
 
     bot.api_request = fake_api_request.__get__(bot, main_module.Bot)
@@ -402,7 +424,9 @@ async def test_empty_pool_logs_selection_empty(tmp_path: Path, caplog: pytest.Lo
     result = await bot.publish_rubric("sea")
     assert result is True
 
-    log_lines = [record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()]
+    log_lines = [
+        record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()
+    ]
     combined = "\n".join(log_lines)
     assert "SEA_RUBRIC selection_empty" in combined
     assert "reason=no_candidates" in combined
@@ -527,14 +551,16 @@ async def test_sky_scoring_partly_cloudy_prefers_matching(tmp_path: Path) -> Non
             }
             content = {
                 "caption": "Тестовая подпись для проверки выбора.",
-                "hashtags": ["#море", "#БалтийскоеМоре"]
+                "hashtags": ["#море", "#БалтийскоеМоре"],
             }
             return OpenAIResponse(content, usage)
 
     bot.openai = DummyOpenAI()
 
     # Mock API requests
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+    async def fake_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
         if method == "sendPhoto":
             return {"ok": True, "result": {"message_id": 501}}
         return {"ok": True}
@@ -561,7 +587,9 @@ async def test_sky_scoring_partly_cloudy_prefers_matching(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_logs_not_truncated_and_prefixed(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_logs_not_truncated_and_prefixed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test that SEA_RUBRIC logs are multi-line and not truncated."""
     bot = main_module.Bot("dummy", str(tmp_path / "logs.db"))
 
@@ -621,16 +649,15 @@ async def test_logs_not_truncated_and_prefixed(tmp_path: Path, caplog: pytest.Lo
                 "endpoint": "/v1/responses",
                 "request_id": "test-req",
             }
-            content = {
-                "caption": "Тестовая подпись.",
-                "hashtags": ["#море", "#БалтийскоеМоре"]
-            }
+            content = {"caption": "Тестовая подпись.", "hashtags": ["#море", "#БалтийскоеМоре"]}
             return OpenAIResponse(content, usage)
 
     bot.openai = DummyOpenAI()
 
     # Mock API requests
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:
+    async def fake_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
         if method == "sendPhoto":
             return {"ok": True, "result": {"message_id": 501}}
         return {"ok": True}
@@ -649,7 +676,9 @@ async def test_logs_not_truncated_and_prefixed(tmp_path: Path, caplog: pytest.Lo
     assert result is True
 
     # Check that logs are properly formatted and not truncated
-    messages = [record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()]
+    messages = [
+        record.getMessage() for record in caplog.records if "SEA_RUBRIC" in record.getMessage()
+    ]
 
     # Should have separate weather, season, pool, top5, and selected logs
     weather_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC weather ")]
@@ -709,7 +738,7 @@ async def test_prompt_soft_intro_and_constraints(tmp_path: Path) -> None:
             }
             content = {
                 "caption": "Порадую вас морем — побережье зовёт вдохнуть глубже.",
-                "hashtags": ["#море", "#БалтийскоеМоре"]
+                "hashtags": ["#море", "#БалтийскоеМоре"],
             }
             return OpenAIResponse(content, usage)
 

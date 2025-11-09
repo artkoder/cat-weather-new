@@ -17,6 +17,7 @@ _UNSET = object()
 import sqlite3
 
 from sea_selection import NormalizedSky, infer_sky_visible
+from utils_wave import wave_m_to_score
 from zoneinfo import ZoneInfo
 
 PAIRING_TOKEN_TTL_SECONDS = 600
@@ -2204,6 +2205,7 @@ class DataAccess:
         *,
         limit: int = 48,
         season_range: tuple[int, int] | None = None,
+        target_wave_score: float | None = None,
     ) -> list[dict[str, Any]]:
         extra_where: list[str] = []
         extra_params: list[Any] = []
@@ -2340,11 +2342,13 @@ class DataAccess:
         for asset in assets:
             vision = asset.vision_results or {}
             raw_wave: Any = asset.photo_wave
-            if raw_wave is None:
+            if raw_wave is not None:
+                wave_score = float(wave_m_to_score(raw_wave))
+            else:
                 raw_wave = vision.get("sea_wave_score")
                 if isinstance(raw_wave, dict):
                     raw_wave = raw_wave.get("value")
-            wave_score = Asset._to_float(raw_wave)
+                wave_score = Asset._to_float(raw_wave)
             tags_raw = vision.get("tags")
             if isinstance(tags_raw, list):
                 tag_values = {
@@ -2417,6 +2421,16 @@ class DataAccess:
                     "capture_daypart": asset.daypart,
                 }
             )
+
+        if target_wave_score is not None and target_wave_score <= 1:
+            has_calm_candidate = any(
+                c["wave_score"] is not None and c["wave_score"] <= 2 for c in candidates
+            )
+            if has_calm_candidate:
+                candidates = [
+                    c for c in candidates if c["wave_score"] is None or c["wave_score"] < 5
+                ]
+
         return candidates
 
     def mark_assets_used(self, asset_ids: Iterable[str | int]) -> None:

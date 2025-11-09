@@ -13429,6 +13429,23 @@ class Bot:
             similarity = sky_similarity(photo_sky, allowed_hard)
             season_match = candidate.get("season_match")
 
+            hard_failure_reasons: list[str] = []
+            if photo_wave_val is None and not stage_cfg.allow_missing_wave:
+                hard_failure_reasons.append("missing_wave")
+            if stage_cfg.require_visible_sky and sky_visible is not True:
+                hard_failure_reasons.append("require_visible_sky")
+            if sky_visible is None and not stage_cfg.allow_unknown_sky:
+                hard_failure_reasons.append("unknown_sky_not_allowed")
+            if sky_visible is False and not stage_cfg.allow_false_sky:
+                hard_failure_reasons.append("false_sky_not_allowed")
+            if stage_cfg.require_allowed_sky:
+                if photo_sky is None:
+                    hard_failure_reasons.append("allowed_sky_missing")
+                elif similarity != "match":
+                    hard_failure_reasons.append("allowed_sky_mismatch")
+            if stage_cfg.season_required and not season_match:
+                hard_failure_reasons.append("season_mismatch")
+
             components: dict[str, float] = {
                 "SkyMatchBonus": 0.0,
                 "SkyUnknownPenalty": 0.0,
@@ -13538,6 +13555,9 @@ class Bot:
                 "sky_visible": sky_visible,
                 "sky_similarity": similarity,
             }
+            reasons["hard_failure"] = bool(hard_failure_reasons)
+            if hard_failure_reasons:
+                reasons["hard_failure_reasons"] = hard_failure_reasons
             return score, reasons
 
         selected_candidate: dict[str, Any] | None = None
@@ -13623,23 +13643,29 @@ class Bot:
                     visible_sky_bonus=component_payload.get("VisibleSkyBonus"),
                 )
 
-            if sorted_results:
-                best_score, best_reasons, best_candidate = sorted_results[0]
-                best_reasons["stage"] = stage_cfg.name
-                selected_candidate = best_candidate
-                selected_details = {
-                    "score": best_score,
-                    "reasons": best_reasons,
-                    "stage": stage_cfg.name,
-                    "corridor": corridor,
-                }
+            viable_results = [
+                item for item in sorted_results if item[1].get("hard_failure") is False
+            ]
 
-                if stage_cfg.name == "AN" and clear_guard_hard:
-                    chosen_sky = best_candidate.get("photo_sky_struct")
-                    if chosen_sky and chosen_sky.weather_tag in {"mostly_cloudy", "overcast"}:
-                        sky_critical_mismatch = True
+            if not viable_results:
+                continue
 
-                break
+            best_score, best_reasons, best_candidate = viable_results[0]
+            best_reasons["stage"] = stage_cfg.name
+            selected_candidate = best_candidate
+            selected_details = {
+                "score": best_score,
+                "reasons": best_reasons,
+                "stage": stage_cfg.name,
+                "corridor": corridor,
+            }
+
+            if stage_cfg.name == "AN" and clear_guard_hard:
+                chosen_sky = best_candidate.get("photo_sky_struct")
+                if chosen_sky and chosen_sky.weather_tag in {"mostly_cloudy", "overcast"}:
+                    sky_critical_mismatch = True
+
+            break
 
         if selected_candidate is None:
             sea_log(

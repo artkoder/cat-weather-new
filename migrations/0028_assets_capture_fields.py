@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 
 try:
-    from zoneinfo import ZoneInfo
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 except Exception:  # pragma: no cover - zoneinfo may be missing in some environments
     ZoneInfo = None  # type: ignore[assignment]
+    ZoneInfoNotFoundError = Exception  # type: ignore[assignment]
 
 
-LOCAL_TZ = ZoneInfo("Europe/Kaliningrad") if ZoneInfo else timezone(timedelta(hours=2))
+def _resolve_local_tz() -> tzinfo:
+    if ZoneInfo is None:
+        return timezone(timedelta(hours=2))
+    try:
+        return ZoneInfo("Europe/Kaliningrad")
+    except ZoneInfoNotFoundError:  # pragma: no cover - fallback for minimal installations
+        return timezone(timedelta(hours=2))
+
+
+LOCAL_TZ = _resolve_local_tz()
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:

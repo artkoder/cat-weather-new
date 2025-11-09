@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from typing import Any
 
 DEFAULT_RUBRICS = {
     "flowers": {
@@ -23,7 +24,7 @@ DEFAULT_RUBRICS = {
 }
 
 
-def _coerce_row_value(row, key, index):
+def _coerce_row_value(row: Any, key: str, index: int) -> Any:
     if row is None:
         return None
     if hasattr(row, "keys") and key in row.keys():
@@ -31,7 +32,7 @@ def _coerce_row_value(row, key, index):
     return row[index]
 
 
-def run(conn):
+def run(conn: Any) -> None:
     now = datetime.utcnow().isoformat()
     for code, payload in DEFAULT_RUBRICS.items():
         title = payload.get("title") or code.title()

@@ -199,7 +199,7 @@ def create_rate_limit_middleware() -> web.middleware:
     @web.middleware
     async def middleware(
         request: web.Request, handler: Callable[[web.Request], web.StreamResponse]
-    ):
+    ) -> web.StreamResponse:
         canonical = _route_canonical(request)
         route_key = (request.method.upper(), canonical)
 

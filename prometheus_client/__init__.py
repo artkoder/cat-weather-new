@@ -108,19 +108,19 @@ def _create_metric(
 
 def Counter(
     name: str, documentation: str, labelnames: tuple[str, ...] | list[str] = ()
-):  # noqa: N802
+) -> _Metric:  # noqa: N802
     return _create_metric(name, documentation, "counter", tuple(labelnames))
 
 
 def Gauge(
     name: str, documentation: str, labelnames: tuple[str, ...] | list[str] = ()
-):  # noqa: N802
+) -> _Metric:  # noqa: N802
     return _create_metric(name, documentation, "gauge", tuple(labelnames))
 
 
 def Histogram(
     name: str, documentation: str, labelnames: tuple[str, ...] | list[str] = ()
-):  # noqa: N802
+) -> _Metric:  # noqa: N802
     return _create_metric(name, documentation, "histogram", tuple(labelnames))
 
 

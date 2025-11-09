@@ -1,4 +1,5 @@
 """Integration tests for sea assets CSV dump."""
+
 import csv
 import json
 import os
@@ -18,8 +19,9 @@ def test_dump_sea_assets_csv_basic(tmp_path):
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    
-    conn.executescript("""
+
+    conn.executescript(
+        """
         CREATE TABLE assets (
             id TEXT PRIMARY KEY,
             upload_id TEXT,
@@ -62,8 +64,9 @@ def test_dump_sea_assets_csv_basic(tmp_path):
             updated_at TEXT NOT NULL,
             FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE CASCADE
         );
-    """)
-    
+    """
+    )
+
     asset1_payload = {
         "city": "Калининград",
         "latitude": 54.71,
@@ -71,21 +74,16 @@ def test_dump_sea_assets_csv_basic(tmp_path):
         "vision_confidence": 0.95,
         "vision_photo_weather": "sunny",
         "local_path": "/data/images/asset1.jpg",
-        "last_used_at": "2024-01-15T10:00:00"
+        "last_used_at": "2024-01-15T10:00:00",
     }
-    
+
     vision1_json = {
         "weather": {
-            "sea": {
-                "wave_score": 3.5,
-                "confidence": 0.88
-            },
-            "sky": {
-                "bucket": "partly_cloudy"
-            }
+            "sea": {"wave_score": 3.5, "confidence": 0.88},
+            "sky": {"bucket": "partly_cloudy"},
         }
     }
-    
+
     conn.execute(
         """
         INSERT INTO assets (
@@ -107,10 +105,10 @@ def test_dump_sea_assets_csv_basic(tmp_path):
             "morning",
             3.5,
             0.88,
-            "partly_cloudy"
-        )
+            "partly_cloudy",
+        ),
     )
-    
+
     conn.execute(
         """
         INSERT INTO vision_results (
@@ -123,17 +121,17 @@ def test_dump_sea_assets_csv_basic(tmp_path):
             "success",
             json.dumps(vision1_json),
             "2024-01-15T08:05:00",
-            "2024-01-15T08:05:00"
-        )
+            "2024-01-15T08:05:00",
+        ),
     )
-    
+
     asset2_payload = {
         "city": "Зеленоградск",
         "latitude": 54.96,
         "longitude": 20.48,
-        "vision_confidence": 0.82
+        "vision_confidence": 0.82,
     }
-    
+
     conn.execute(
         """
         INSERT INTO assets (
@@ -151,23 +149,23 @@ def test_dump_sea_assets_csv_basic(tmp_path):
             json.dumps(asset2_payload),
             5.0,
             16,
-            "day"
-        )
+            "day",
+        ),
     )
-    
+
     conn.commit()
-    
+
     data = DataAccess(conn)
     csv_content = data.dump_sea_assets_csv()
-    
+
     assert csv_content is not None
     assert len(csv_content) > 0
-    
+
     reader = csv.DictReader(StringIO(csv_content))
     rows = list(reader)
-    
+
     assert len(rows) == 2
-    
+
     headers = reader.fieldnames
     assert headers is not None
     expected_headers = [
@@ -186,10 +184,10 @@ def test_dump_sea_assets_csv_basic(tmp_path):
         "exif_present",
         "doy",
         "local_path",
-        "vision_json"
+        "vision_json",
     ]
     assert list(headers) == expected_headers
-    
+
     row1 = rows[0]
     assert row1["asset_id"] == "asset2"
     assert row1["city"] == "Зеленоградск"
@@ -202,7 +200,7 @@ def test_dump_sea_assets_csv_basic(tmp_path):
     assert row1["exif_present"] == "0"
     assert row1["doy"] == "16"
     assert row1["uses_count"] == "0"
-    
+
     row2 = rows[1]
     assert row2["asset_id"] == "asset1"
     assert row2["city"] == "Калининград"
@@ -218,10 +216,10 @@ def test_dump_sea_assets_csv_basic(tmp_path):
     assert row2["doy"] == "15"
     assert row2["local_path"] == "/data/images/asset1.jpg"
     assert row2["uses_count"] == "1"
-    
+
     vision_json_parsed = json.loads(row2["vision_json"])
     assert vision_json_parsed["weather"]["sea"]["wave_score"] == 3.5
-    
+
     conn.close()
 
 
@@ -231,8 +229,9 @@ def test_dump_sea_assets_csv_fallback_to_legacy(tmp_path):
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    
-    conn.executescript("""
+
+    conn.executescript(
+        """
         CREATE TABLE assets (
             id TEXT PRIMARY KEY,
             upload_id TEXT,
@@ -275,14 +274,12 @@ def test_dump_sea_assets_csv_fallback_to_legacy(tmp_path):
             updated_at TEXT NOT NULL,
             FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE CASCADE
         );
-    """)
-    
+    """
+    )
+
     asset_payload = {"city": "Test City"}
-    vision_json = {
-        "sea_wave_score": 6.5,
-        "sky_bucket": "clear"
-    }
-    
+    vision_json = {"sea_wave_score": 6.5, "sky_bucket": "clear"}
+
     conn.execute(
         """
         INSERT INTO assets (
@@ -299,10 +296,10 @@ def test_dump_sea_assets_csv_fallback_to_legacy(tmp_path):
             "telegram",
             json.dumps(asset_payload),
             4.2,
-            17
-        )
+            17,
+        ),
     )
-    
+
     conn.execute(
         """
         INSERT INTO vision_results (
@@ -315,25 +312,25 @@ def test_dump_sea_assets_csv_fallback_to_legacy(tmp_path):
             "success",
             json.dumps(vision_json),
             "2024-01-17T12:05:00",
-            "2024-01-17T12:05:00"
-        )
+            "2024-01-17T12:05:00",
+        ),
     )
-    
+
     conn.commit()
-    
+
     data = DataAccess(conn)
     csv_content = data.dump_sea_assets_csv()
-    
+
     reader = csv.DictReader(StringIO(csv_content))
     rows = list(reader)
-    
+
     assert len(rows) == 1
     row = rows[0]
-    
+
     assert row["asset_id"] == "asset_legacy"
     assert row["wave_score_0_10"] == "6.5"
     assert row["sky_bucket"] == "clear"
-    
+
     conn.close()
 
 
@@ -343,8 +340,9 @@ def test_dump_sea_assets_csv_empty_db(tmp_path):
     db_path = tmp_path / "test.db"
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    
-    conn.executescript("""
+
+    conn.executescript(
+        """
         CREATE TABLE assets (
             id TEXT PRIMARY KEY,
             upload_id TEXT,
@@ -387,16 +385,17 @@ def test_dump_sea_assets_csv_empty_db(tmp_path):
             updated_at TEXT NOT NULL,
             FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE CASCADE
         );
-    """)
-    
+    """
+    )
+
     conn.commit()
-    
+
     data = DataAccess(conn)
     csv_content = data.dump_sea_assets_csv()
-    
+
     lines = csv_content.strip().split("\n")
     assert len(lines) == 1
     assert "asset_id" in lines[0]
     assert "wave_score_0_10" in lines[0]
-    
+
     conn.close()

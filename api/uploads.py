@@ -180,7 +180,7 @@ def _ensure_jobs(app: web.Application) -> JobQueue:
     return jobs
 
 
-def _ensure_db(app: web.Application):
+def _ensure_db(app: web.Application) -> Any:
     conn = app.get("db")
     if not conn:
         raise RuntimeError("Database connection is not configured")
@@ -201,10 +201,10 @@ class StreamStats:
 
 
 async def _iter_file(
-    part,
+    part: Any,
     *,
     max_bytes: int,
-    hasher,
+    hasher: Any,
     stats: StreamStats,
 ) -> AsyncIterator[bytes]:
     while True:
@@ -420,7 +420,7 @@ async def handle_get_upload_status(request: web.Request) -> web.Response:
 
 def register_upload_jobs(
     jobs: JobQueue,
-    conn,
+    conn: Any,
     *,
     storage: Storage,
     data: DataAccess,
@@ -802,7 +802,7 @@ def setup_upload_routes(
     app: web.Application,
     *,
     storage: Storage,
-    conn,
+    conn: Any,
     jobs: JobQueue,
     config: UploadsConfig | None = None,
 ) -> None:

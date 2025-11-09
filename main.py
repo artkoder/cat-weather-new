@@ -1907,12 +1907,12 @@ class Bot:
             else:
                 logging.error("Supabase token usage insert failed", extra=log_context)
 
-    async def start(self):
+    async def start(self) -> None:
         self.session = ClientSession()
         self.running = True
         await self.jobs.start()
 
-    async def close(self):
+    async def close(self) -> None:
         self.running = False
         await self.jobs.stop()
         if self.session:
@@ -1921,7 +1921,7 @@ class Bot:
 
         self.db.close()
 
-    async def handle_edited_message(self, message):
+    async def handle_edited_message(self, message: Any) -> None:
         chat_id = message.get("chat", {}).get("id")
         if chat_id is None:
             return
@@ -1994,7 +1994,7 @@ class Bot:
         data: dict | None = None,
         *,
         files: dict[str, tuple[str, bytes]] | None = None,
-    ):
+    ) -> Any:
         if self.dry_run:
             logging.debug("Simulated API call %s with %s", method, data)
             return {"ok": True, "result": {}}
@@ -2164,7 +2164,7 @@ class Bot:
             return None
         return data
 
-    async def collect_weather(self, force: bool = False):
+    async def collect_weather(self, force: bool = False) -> None:
 
         cur = self.db.execute("SELECT id, lat, lon, name FROM cities")
         updated: set[int] = set()
@@ -2309,7 +2309,7 @@ class Bot:
         if updated:
             await self.update_weather_posts(updated)
 
-    async def collect_sea(self, force: bool = False):
+    async def collect_sea(self, force: bool = False) -> None:
         cur = self.db.execute("SELECT id, lat, lon FROM seas")
         updated: set[int] = set()
         for s in cur.fetchall():
@@ -2494,7 +2494,7 @@ class Bot:
             await self.update_weather_posts()
             await self.check_amber()
 
-    async def check_amber(self):
+    async def check_amber(self) -> None:
         state = self.db.execute(
             "SELECT sea_id, storm_start, active FROM amber_state LIMIT 1"
         ).fetchone()
@@ -2543,7 +2543,7 @@ class Bot:
             )
             self.db.commit()
 
-    async def handle_update(self, update):
+    async def handle_update(self, update: Any) -> None:
         message = update.get("message") or update.get("channel_post")
         if message:
             await self.handle_message(message)
@@ -2556,7 +2556,7 @@ class Bot:
         elif "my_chat_member" in update:
             await self.handle_my_chat_member(update["my_chat_member"])
 
-    async def handle_my_chat_member(self, chat_update):
+    async def handle_my_chat_member(self, chat_update: Any) -> None:
         chat = chat_update["chat"]
         status = chat_update["new_chat_member"]["status"]
         if status in {"administrator", "creator"}:
@@ -2571,7 +2571,7 @@ class Bot:
             self.db.commit()
             logging.info("Removed channel %s", chat["id"])
 
-    def get_user(self, user_id):
+    def get_user(self, user_id: Any) -> Any:
         cur = self.db.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
         return cur.fetchone()
 
@@ -2620,7 +2620,7 @@ class Bot:
         cur = self.db.execute("SELECT 1 FROM rejected_users WHERE user_id=?", (user_id,))
         return cur.fetchone() is not None
 
-    def list_scheduled(self):
+    def list_scheduled(self) -> Any:
         cur = self.db.execute(
             "SELECT s.id, s.target_chat_id, c.title as target_title, "
             "s.publish_time, s.from_chat_id, s.message_id "
@@ -2629,7 +2629,7 @@ class Bot:
         )
         return cur.fetchall()
 
-    def add_schedule(self, from_chat: int, msg_id: int, targets: set[int], pub_time: str):
+    def add_schedule(self, from_chat: int, msg_id: int, targets: set[int], pub_time: str) -> None:
         for chat_id in targets:
             self.db.execute(
                 "INSERT INTO schedule (from_chat_id, message_id, target_chat_id, publish_time) VALUES (?, ?, ?, ?)",
@@ -2638,12 +2638,12 @@ class Bot:
         self.db.commit()
         logging.info("Scheduled %s -> %s at %s", msg_id, list(targets), pub_time)
 
-    def remove_schedule(self, sid: int):
+    def remove_schedule(self, sid: int) -> None:
         self.db.execute("DELETE FROM schedule WHERE id=?", (sid,))
         self.db.commit()
         logging.info("Cancelled schedule %s", sid)
 
-    def update_schedule_time(self, sid: int, pub_time: str):
+    def update_schedule_time(self, sid: int, pub_time: str) -> None:
         self.db.execute("UPDATE schedule SET publish_time=? WHERE id=?", (pub_time, sid))
         self.db.commit()
         logging.info("Rescheduled %s to %s", sid, pub_time)
@@ -2735,10 +2735,10 @@ class Bot:
         row = cur.fetchone()
         return row["tz_offset"] if row and row["tz_offset"] else TZ_OFFSET
 
-    def is_authorized(self, user_id):
+    def is_authorized(self, user_id: Any) -> bool:
         return self.get_user(user_id) is not None
 
-    def is_superadmin(self, user_id):
+    def is_superadmin(self, user_id: Any) -> bool:
         row = self.get_user(user_id)
         return row and row["is_superadmin"]
 
@@ -2746,7 +2746,7 @@ class Bot:
         row = self.db.execute("SELECT sea_id FROM amber_state LIMIT 1").fetchone()
         return row["sea_id"] if row else None
 
-    def set_amber_sea(self, sea_id: int):
+    def set_amber_sea(self, sea_id: int) -> None:
         self.db.execute("DELETE FROM amber_state")
         self.db.execute(
             "INSERT INTO amber_state (sea_id, storm_start, active) VALUES (?, NULL, 0)",
@@ -2762,7 +2762,7 @@ class Bot:
         cur = self.db.execute("SELECT 1 FROM amber_channels WHERE channel_id=?", (channel_id,))
         return cur.fetchone() is not None
 
-    async def show_amber_channels(self, user_id: int):
+    async def show_amber_channels(self, user_id: int) -> None:
         enabled = self.get_amber_channels()
         cur = self.db.execute("SELECT chat_id, title FROM channels")
         rows = cur.fetchall()
@@ -2799,20 +2799,20 @@ class Bot:
                 return resp["result"]["id"], int(m.group(2))
         return None
 
-    def _get_cached_weather(self, city_id: int):
+    def _get_cached_weather(self, city_id: int) -> Any:
         return self.db.execute(
             "SELECT temperature, weather_code, wind_speed, is_day FROM weather_cache_hour "
             "WHERE city_id=? ORDER BY timestamp DESC LIMIT 1",
             (city_id,),
         ).fetchone()
 
-    def _get_period_weather(self, city_id: int):
+    def _get_period_weather(self, city_id: int) -> Any:
         return self.db.execute(
             "SELECT * FROM weather_cache_period WHERE city_id=?",
             (city_id,),
         ).fetchone()
 
-    def _get_sea_cache(self, sea_id: int):
+    def _get_sea_cache(self, sea_id: int) -> Any:
         return self.db.execute(
             "SELECT current, morning, day, evening, night, wave, "
             "morning_wave, day_wave, evening_wave, night_wave FROM sea_cache WHERE sea_id=?",
@@ -3307,7 +3307,7 @@ class Bot:
             return f"https://t.me/c/{str(chat_id)[4:]}/{message_id}"
         return f"https://t.me/{chat_id}/{message_id}"
 
-    async def update_weather_posts(self, cities: set[int] | None = None):
+    async def update_weather_posts(self, cities: set[int] | None = None) -> None:
         """Update all registered posts using cached weather."""
         cur = self.db.execute(
             "SELECT id, chat_id, message_id, template, base_text, base_caption, reply_markup FROM weather_posts"
@@ -3369,7 +3369,7 @@ class Bot:
             return self.post_url(row["chat_id"], row["message_id"])
         return None
 
-    def set_latest_weather_post(self, chat_id: int, message_id: int):
+    def set_latest_weather_post(self, chat_id: int, message_id: int) -> None:
         self.db.execute("DELETE FROM latest_weather_post")
         self.db.execute(
             "INSERT INTO latest_weather_post (chat_id, message_id, published_at) VALUES (?, ?, ?)",
@@ -3377,7 +3377,7 @@ class Bot:
         )
         self.db.commit()
 
-    async def update_weather_buttons(self):
+    async def update_weather_buttons(self) -> None:
         url = self.latest_weather_url()
         if not url:
             return
@@ -3416,14 +3416,14 @@ class Bot:
             )
         self.db.commit()
 
-    def add_weather_channel(self, channel_id: int, post_time: str):
+    def add_weather_channel(self, channel_id: int, post_time: str) -> None:
         next_run = self.next_weather_run(post_time, TZ_OFFSET, allow_past=True)
         self.data.upsert_weather_job(channel_id, post_time, next_run)
 
-    def remove_weather_channel(self, channel_id: int):
+    def remove_weather_channel(self, channel_id: int) -> None:
         self.data.remove_weather_job(channel_id)
 
-    def list_weather_channels(self):
+    def list_weather_channels(self) -> Any:
         jobs = self.data.list_weather_jobs()
         rows = []
         for job in jobs:
@@ -3442,11 +3442,11 @@ class Bot:
             )
         return rows
 
-    def set_asset_channel(self, channel_id: int):
+    def set_asset_channel(self, channel_id: int) -> None:
         self.set_weather_assets_channel(channel_id)
         self.set_recognition_channel(channel_id)
 
-    def set_weather_assets_channel(self, channel_id: int | None):
+    def set_weather_assets_channel(self, channel_id: int | None) -> None:
         self._store_single_channel("asset_channel", channel_id)
         self.weather_assets_channel_id = channel_id
         self.uploads_config = replace(
@@ -3459,7 +3459,7 @@ class Bot:
         row = cur.fetchone()
         return row["channel_id"] if row else None
 
-    def set_recognition_channel(self, channel_id: int | None):
+    def set_recognition_channel(self, channel_id: int | None) -> None:
         self._store_single_channel("recognition_channel", channel_id)
         self.recognition_channel_id = channel_id
 
@@ -3693,7 +3693,7 @@ class Bot:
             return None
 
     @staticmethod
-    def _normalize_gps_ref(ref) -> str | None:
+    def _normalize_gps_ref(ref: Any) -> str | None:
         if ref is None:
             return None
         original_ref = ref
@@ -3717,7 +3717,7 @@ class Bot:
         return None
 
     @staticmethod
-    def _convert_gps(value, ref, axis: str, source: str) -> float | None:
+    def _convert_gps(value: Any, ref: Any, axis: str, source: str) -> float | None:
         if not value:
             return None
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
@@ -4557,7 +4557,7 @@ class Bot:
             logging.exception("Failed to write asset file %s", path)
         return str(path)
 
-    async def _job_ingest(self, job: Job):
+    async def _job_ingest(self, job: Job) -> None:
         asset_id = job.payload.get("asset_id") if job.payload else None
         if not asset_id:
             logging.warning("Ingest job %s missing asset_id", job.id)
@@ -4926,11 +4926,11 @@ class Bot:
         vision_job = self.jobs.enqueue("vision", {"asset_id": asset_id, "tz_offset": tz_offset})
         logging.info("Asset %s queued for vision job %s after ingest", asset_id, vision_job)
 
-    async def _job_vision(self, job: Job):
+    async def _job_vision(self, job: Job) -> None:
         async with self._vision_semaphore:
             await self._job_vision_locked(job)
 
-    async def _job_vision_locked(self, job: Job):
+    async def _job_vision_locked(self, job: Job) -> None:
         def _utf16_length(text: str) -> int:
             return len(text.encode("utf-16-le")) // 2
 
@@ -5977,7 +5977,7 @@ class Bot:
                 duration,
             )
 
-    def next_asset(self, tags: set[str] | None):
+    def next_asset(self, tags: set[str] | None) -> Any:
         logging.info("Selecting asset for tags=%s", tags)
         asset = self.data.get_next_asset(tags)
         if asset:
@@ -6104,7 +6104,7 @@ class Bot:
 
         return ok
 
-    async def handle_message(self, message):
+    async def handle_message(self, message: Any) -> None:
         global TZ_OFFSET
 
         chat_id = message.get("chat", {}).get("id")
@@ -6524,24 +6524,28 @@ class Bot:
         if text.startswith("/dump_sea") and self.is_superadmin(user_id):
             try:
                 from datetime import datetime as dt
+
                 csv_content = self.data.dump_sea_assets_csv()
-                
+
                 timestamp = dt.utcnow().strftime("%Y%m%d_%H%M%S")
                 filename = f"sea_assets_{timestamp}.csv"
-                
+
                 csv_bytes = csv_content.encode("utf-8")
-                
+
                 logging.info(
                     "Dumping sea assets CSV for user %s: %d bytes, %d rows",
                     user_id,
                     len(csv_bytes),
-                    csv_content.count("\n")
+                    csv_content.count("\n"),
                 )
-                
+
                 await self.api_request(
                     "sendDocument",
-                    {"chat_id": user_id, "caption": f"Sea assets dump generated at {timestamp} UTC"},
-                    files={"document": (filename, csv_bytes, "text/csv")},
+                    {
+                        "chat_id": user_id,
+                        "caption": f"Sea assets dump generated at {timestamp} UTC",
+                    },
+                    files={"document": (filename, csv_bytes)},
                 )
             except Exception as e:
                 logging.exception("Failed to generate sea assets CSV dump")
@@ -7582,7 +7586,7 @@ class Bot:
                     {"chat_id": user_id, "text": "Please forward a post from a channel"},
                 )
 
-    async def handle_callback(self, query):
+    async def handle_callback(self, query: Any) -> None:
         user_id = query["from"]["id"]
         data = query["data"]
         if data == "pair:new":
@@ -8747,7 +8751,7 @@ class Bot:
                     )
         await self.api_request("answerCallbackQuery", {"callback_query_id": query["id"]})
 
-    async def process_due(self):
+    async def process_due(self) -> None:
         """Publish due scheduled messages."""
         now = datetime.utcnow().isoformat()
         logging.info("Scheduler check at %s", now)
@@ -8794,7 +8798,7 @@ class Bot:
             except Exception:
                 logging.exception("Error publishing schedule %s", row["id"])
 
-    async def process_weather_channels(self):
+    async def process_weather_channels(self) -> None:
         now_utc = datetime.utcnow()
         jobs = self.data.due_weather_jobs(now_utc)
         for job in jobs:
@@ -13661,9 +13665,7 @@ class Bot:
                 wave_delta_log = reason_payload.get("wave_delta")
                 sky_bucket_log = candidate_payload.get("photo_sky_struct")
                 sky_bucket_str = (
-                    sky_bucket_log.weather_tag
-                    if hasattr(sky_bucket_log, "weather_tag")
-                    else None
+                    sky_bucket_log.weather_tag if hasattr(sky_bucket_log, "weather_tag") else None
                 )
                 age_bonus_log = candidate_payload.get("age_bonus")
                 sea_log(
@@ -16205,7 +16207,7 @@ class Bot:
         draw.text(position, text, fill=(255, 255, 255, 230), font=font)
         return image
 
-    async def schedule_loop(self):
+    async def schedule_loop(self) -> None:
         """Background scheduler running at configurable intervals."""
 
         try:
@@ -16381,7 +16383,7 @@ async def health_handler(request: web.Request) -> web.Response:
     return web.json_response(payload, status=status)
 
 
-async def ensure_webhook(bot: Bot, base_url: str):
+async def ensure_webhook(bot: Bot, base_url: str) -> None:
     expected = base_url.rstrip("/") + "/webhook"
     info = await bot.api_request("getWebhookInfo")
     current = info.get("result", {}).get("url")
@@ -16515,7 +16517,7 @@ async def attach_device(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
-async def handle_webhook(request):
+async def handle_webhook(request: Any) -> web.Response:
     bot: Bot = request.app["bot"]
     try:
         data = await request.json()
@@ -16531,7 +16533,7 @@ async def handle_webhook(request):
     return web.Response(text="ok")
 
 
-def create_app():
+def create_app() -> web.Application:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN not found in environment variables")
@@ -16622,7 +16624,7 @@ def create_app():
     if not webhook_base:
         raise RuntimeError("WEBHOOK_URL not found in environment variables")
 
-    async def start_background(app: web.Application):
+    async def start_background(app: web.Application) -> None:
         logging.info("Application startup")
         try:
             await bot.start()
@@ -16633,7 +16635,7 @@ def create_app():
             raise
         app["schedule_task"] = asyncio.create_task(bot.schedule_loop())
 
-    async def cleanup_background(app: web.Application):
+    async def cleanup_background(app: web.Application) -> None:
         await bot.close()
         app["schedule_task"].cancel()
         with contextlib.suppress(asyncio.CancelledError):

@@ -15,7 +15,9 @@ from tests.fixtures.sea import create_sea_asset, create_stub_image, seed_sea_env
 
 
 @pytest.mark.asyncio
-async def test_calm_sea_prefers_calm_assets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_calm_sea_prefers_calm_assets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """When target wave is ≤0.2m, calm assets (score 0-1) should win."""
 
     bot = Bot("dummy", str(tmp_path / "test_calm.db"))
@@ -60,7 +62,9 @@ async def test_calm_sea_prefers_calm_assets(tmp_path: Path, monkeypatch: pytest.
         photo_sky="sunny",
         sky_visible=True,
     )
-    bot.db.execute("UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 0.0, calm_id))
+    bot.db.execute(
+        "UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 0.0, calm_id)
+    )
 
     moderate_id = create_sea_asset(
         bot,
@@ -73,7 +77,9 @@ async def test_calm_sea_prefers_calm_assets(tmp_path: Path, monkeypatch: pytest.
         photo_sky="sunny",
         sky_visible=True,
     )
-    bot.db.execute("UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 0.8, moderate_id))
+    bot.db.execute(
+        "UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 0.8, moderate_id)
+    )
     bot.db.commit()
 
     class DummyOpenAI:
@@ -104,7 +110,9 @@ async def test_calm_sea_prefers_calm_assets(tmp_path: Path, monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
-async def test_calm_sea_fallback_nearest_wave(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_calm_sea_fallback_nearest_wave(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """When no calm assets exist, selector should choose nearest-wave candidate."""
 
     bot = Bot("dummy", str(tmp_path / "test_calm_fallback.db"))
@@ -149,7 +157,9 @@ async def test_calm_sea_fallback_nearest_wave(tmp_path: Path, monkeypatch: pytes
         photo_sky="sunny",
         sky_visible=True,
     )
-    bot.db.execute("UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 1.2, high_id))
+    bot.db.execute(
+        "UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 1.2, high_id)
+    )
 
     higher_id = create_sea_asset(
         bot,
@@ -162,7 +172,9 @@ async def test_calm_sea_fallback_nearest_wave(tmp_path: Path, monkeypatch: pytes
         photo_sky="sunny",
         sky_visible=True,
     )
-    bot.db.execute("UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 2.0, higher_id))
+    bot.db.execute(
+        "UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 2.0, higher_id)
+    )
     bot.db.commit()
 
     class DummyOpenAI:

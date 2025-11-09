@@ -43,11 +43,9 @@ line-ending = "lf"
 [tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
     "F",   # pyflakes
     "I",   # isort
     "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
     "UP",  # pyupgrade
 ]
 ignore = [
@@ -91,7 +89,7 @@ namespace_packages = true
 explicit_package_bases = true
 ignore_missing_imports = true
 follow_imports = "skip"
-allow_untyped_defs = true
+disallow_untyped_defs = true
 allow_untyped_globals = true
 disable_error_code = [
     "attr-defined",

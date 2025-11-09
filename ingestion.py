@@ -76,7 +76,7 @@ class UploadMetricsRecorder:
                 self.emitter.increment(name, value)
 
     @contextlib.contextmanager
-    def timer(self, name: str):
+    def timer(self, name: str) -> Any:
         start = perf_counter()
         try:
             yield
@@ -87,16 +87,16 @@ class UploadMetricsRecorder:
                 with contextlib.suppress(Exception):
                     self.emitter.observe(name, duration_ms)
 
-    def measure_process(self):
+    def measure_process(self) -> Any:
         return self.timer("process_upload_ms")
 
-    def measure_exif(self):
+    def measure_exif(self) -> Any:
         return self.timer("exif_ms")
 
-    def measure_vision(self):
+    def measure_vision(self) -> Any:
         return self.timer("vision_ms")
 
-    def measure_telegram(self):
+    def measure_telegram(self) -> Any:
         return self.timer("tg_ms")
 
     def record_asset_created(self, count: int = 1) -> None:
@@ -329,10 +329,10 @@ class ImageMetadataResult:
             self.exif_ifds,
         )
 
-    def __iter__(self):
+    def __iter__(self) -> Any:
         yield from self._as_tuple()
 
-    def __getitem__(self, index: int):
+    def __getitem__(self, index: int) -> Any:
         return self._as_tuple()[index]
 
     def __len__(self) -> int:
@@ -834,7 +834,7 @@ def extract_message_id(response: Any) -> int | None:
     return None
 
 
-def _ensure_telemetry(telemetry: Mapping[str, Any] | None):
+def _ensure_telemetry(telemetry: Mapping[str, Any] | None) -> Any:
     if telemetry:
         return telemetry_context(**telemetry)
     return contextlib.nullcontext()

@@ -266,55 +266,55 @@ def backfill_photo_wave(conn: sqlite3.Connection, *, dry_run: bool = False) -> d
 
 def backfill_wave_metrics(conn: sqlite3.Connection, *, dry_run: bool = False) -> dict[str, int]:
     """Backfill vision_wave_score, vision_wave_conf, and vision_sky_bucket from vision_results.
-    
+
     Returns statistics dictionary with counts of updated, unchanged, and missing rows.
     """
     data = DataAccess(conn)
     stats = {"updated": 0, "unchanged": 0, "missing": 0}
-    
+
     for asset in data.iter_assets():
         vision = asset.vision_results or {}
-        
+
         has_wave = asset.vision_wave_score is not None
         has_conf = asset.vision_wave_conf is not None
         has_sky = asset.vision_sky_bucket is not None
-        
+
         if has_wave and has_conf and has_sky:
             stats["unchanged"] += 1
             continue
-        
+
         wave_score, wave_conf = data._parse_wave_score_from_vision(vision)
         sky_bucket = data._parse_sky_bucket_from_vision(vision)
-        
+
         if wave_score is None and sky_bucket is None:
             stats["missing"] += 1
             continue
-        
+
         updates: list[str] = []
         params: list[Any] = []
-        
+
         if not has_wave and wave_score is not None:
             updates.append("vision_wave_score=?")
             params.append(float(wave_score))
-        
+
         if not has_conf and wave_conf is not None:
             updates.append("vision_wave_conf=?")
             params.append(float(wave_conf))
-        
+
         if not has_sky and sky_bucket is not None:
             updates.append("vision_sky_bucket=?")
             params.append(str(sky_bucket))
-        
+
         if not updates:
             stats["unchanged"] += 1
             continue
-        
+
         stats["updated"] += 1
         if not dry_run:
             sql = f"UPDATE assets SET {', '.join(updates)} WHERE id=?"
             params.append(str(asset.id))
             conn.execute(sql, params)
-    
+
     if not dry_run:
         conn.commit()
     return stats
@@ -352,7 +352,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not any((args.fill_doy, args.recalc_sky_visible_flag, args.backfill_wave, args.backfill_wave_metrics)):
+    if not any(
+        (
+            args.fill_doy,
+            args.recalc_sky_visible_flag,
+            args.backfill_wave,
+            args.backfill_wave_metrics,
+        )
+    ):
         parser.error(
             "No action specified. Use --fill-doy, --recalc-sky-visible, --backfill-wave, or --backfill-wave-metrics."
         )

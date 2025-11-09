@@ -43,6 +43,9 @@ class Asset:
     photo_doy: int | None = None
     photo_wave: float | None = None
     sky_visible_hint: str | None = None
+    vision_wave_score: float | None = None
+    vision_wave_conf: float | None = None
+    vision_sky_bucket: str | None = None
     source: str | None = None
     captured_at: str | None = None
     doy: int | None = None
@@ -1068,6 +1071,76 @@ class DataAccess:
             return "unknown"
         return text
 
+    @staticmethod
+    def _parse_wave_score_from_vision(vision_json: dict[str, Any] | None) -> tuple[float | None, float | None]:
+        """Extract wave score and confidence from various vision JSON layouts.
+        
+        Returns: (wave_score, confidence) tuple, both can be None
+        """
+        if not vision_json:
+            return None, None
+        
+        wave_score: float | None = None
+        wave_conf: float | None = None
+        
+        if "weather" in vision_json and isinstance(vision_json["weather"], dict):
+            weather = vision_json["weather"]
+            if "sea" in weather and isinstance(weather["sea"], dict):
+                sea_data = weather["sea"]
+                wave_score = Asset._to_float(sea_data.get("wave_score"))
+                wave_conf = Asset._to_float(sea_data.get("confidence"))
+        
+        if wave_score is None and "sea_state" in vision_json:
+            sea_state = vision_json["sea_state"]
+            if isinstance(sea_state, dict):
+                wave_score = Asset._to_float(sea_state.get("score"))
+                wave_conf = Asset._to_float(sea_state.get("confidence"))
+        
+        if wave_score is None and "sea_wave_score" in vision_json:
+            raw_wave = vision_json["sea_wave_score"]
+            if isinstance(raw_wave, dict):
+                wave_score = Asset._to_float(raw_wave.get("value"))
+                wave_conf = Asset._to_float(raw_wave.get("confidence"))
+            else:
+                wave_score = Asset._to_float(raw_wave)
+        
+        if wave_score is None and "result_text" in vision_json:
+            result_text = str(vision_json["result_text"])
+            import re
+            match = re.search(r"Волнение моря:\s*(\d+(?:\.\d+)?)\s*/\s*10", result_text)
+            if match:
+                wave_score = Asset._to_float(match.group(1))
+        
+        return wave_score, wave_conf
+
+    @staticmethod
+    def _parse_sky_bucket_from_vision(vision_json: dict[str, Any] | None) -> str | None:
+        """Extract sky bucket from vision JSON.
+        
+        Returns: sky bucket string (e.g., "clear", "partly_cloudy", "overcast")
+        """
+        if not vision_json:
+            return None
+        
+        if "weather" in vision_json and isinstance(vision_json["weather"], dict):
+            weather = vision_json["weather"]
+            if "sky" in weather and isinstance(weather["sky"], dict):
+                bucket = weather["sky"].get("bucket")
+                if bucket:
+                    return str(bucket)
+        
+        if "sky_bucket" in vision_json:
+            bucket = vision_json["sky_bucket"]
+            if bucket:
+                return str(bucket)
+        
+        if "sky" in vision_json and isinstance(vision_json["sky"], dict):
+            bucket = vision_json["sky"].get("bucket")
+            if bucket:
+                return str(bucket)
+        
+        return None
+
     @classmethod
     def _vision_category_variants(cls, category: str) -> set[str]:
         canonical = cls._normalize_vision_category(category)
@@ -1388,6 +1461,9 @@ class DataAccess:
         photo_doy: int | None = None,
         photo_wave: float | None = None,
         sky_visible: str | bool | None = None,
+        vision_wave_score: float | None = None,
+        vision_wave_conf: float | None = None,
+        vision_sky_bucket: str | None = None,
     ) -> None:
         """Update selected asset fields while preserving unset values."""
 
@@ -1493,6 +1569,15 @@ class DataAccess:
             column_dirty = True
         if sky_visible is not None:
             columns["sky_visible"] = self._normalize_sky_visible(sky_visible)
+            column_dirty = True
+        if vision_wave_score is not None:
+            columns["vision_wave_score"] = Asset._to_float(vision_wave_score)
+            column_dirty = True
+        if vision_wave_conf is not None:
+            columns["vision_wave_conf"] = Asset._to_float(vision_wave_conf)
+            column_dirty = True
+        if vision_sky_bucket is not None:
+            columns["vision_sky_bucket"] = str(vision_sky_bucket)
             column_dirty = True
         computed_shot_at = columns.get("shot_at_utc", row.shot_at_utc)
         computed_shot_doy = columns.get("shot_doy", row.shot_doy)
@@ -1763,6 +1848,14 @@ class DataAccess:
             if sky_visible_raw is not None and str(sky_visible_raw).strip()
             else None
         )
+        vision_wave_score_val = Asset._to_float(row_dict.get("vision_wave_score"))
+        vision_wave_conf_val = Asset._to_float(row_dict.get("vision_wave_conf"))
+        vision_sky_bucket_raw = row_dict.get("vision_sky_bucket")
+        vision_sky_bucket_val = (
+            str(vision_sky_bucket_raw).strip()
+            if vision_sky_bucket_raw is not None and str(vision_sky_bucket_raw).strip()
+            else None
+        )
 
         return Asset(
             id=str(row_dict.get("id")),
@@ -1782,6 +1875,9 @@ class DataAccess:
             photo_doy=photo_doy_val,
             photo_wave=photo_wave_val,
             sky_visible_hint=sky_visible_hint,
+            vision_wave_score=vision_wave_score_val,
+            vision_wave_conf=vision_wave_conf_val,
+            vision_sky_bucket=vision_sky_bucket_val,
             source=(str(row_dict.get("source")) if row_dict.get("source") is not None else None),
             captured_at=captured_at_val,
             doy=doy_val,
@@ -1828,6 +1924,145 @@ class DataAccess:
             if rubric_id is not None and asset.rubric_id != rubric_id:
                 continue
             yield asset
+
+    def dump_sea_assets_csv(self) -> str:
+        """Generate CSV dump of sea assets with vision metadata.
+        
+        Returns: CSV string with headers and data rows
+        """
+        import csv
+        from io import StringIO
+        
+        query = """
+            SELECT 
+                a.id AS asset_id,
+                a.created_at,
+                json_extract(a.payload_json, '$.last_used_at') AS last_used_at,
+                json_extract(a.payload_json, '$.city') AS city,
+                json_extract(a.payload_json, '$.latitude') AS lat,
+                json_extract(a.payload_json, '$.longitude') AS lon,
+                json_extract(a.payload_json, '$.vision_confidence') AS vision_confidence,
+                json_extract(a.payload_json, '$.vision_photo_weather') AS vision_photo_weather,
+                a.vision_sky_bucket,
+                a.daypart,
+                a.vision_wave_score,
+                a.vision_wave_conf,
+                a.photo_wave,
+                a.sky_visible AS sky_visible_hint,
+                a.exif_json,
+                a.doy,
+                json_extract(a.payload_json, '$.local_path') AS local_path,
+                vr.result_json AS vision_json
+            FROM assets a
+            LEFT JOIN vision_results vr
+              ON vr.asset_id = a.id
+             AND vr.id = (
+                 SELECT id FROM vision_results
+                 WHERE asset_id = a.id
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1
+             )
+            ORDER BY a.created_at DESC
+        """
+        
+        rows = self.conn.execute(query).fetchall()
+        
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        headers = [
+            "asset_id",
+            "created_at",
+            "uses_count",
+            "city",
+            "lat",
+            "lon",
+            "vision_confidence",
+            "vision_photo_weather",
+            "sky_bucket",
+            "daypart",
+            "wave_score_0_10",
+            "wave_conf",
+            "exif_present",
+            "doy",
+            "local_path",
+            "vision_json"
+        ]
+        writer.writerow(headers)
+        
+        for row in rows:
+            asset_id = row["asset_id"]
+            created_at = row["created_at"] or ""
+            
+            last_used = row["last_used_at"]
+            uses_count = 1 if last_used else 0
+            
+            city = row["city"] or ""
+            lat = row["lat"] if row["lat"] is not None else ""
+            lon = row["lon"] if row["lon"] is not None else ""
+            
+            vision_confidence = row["vision_confidence"] if row["vision_confidence"] is not None else ""
+            vision_photo_weather = row["vision_photo_weather"] or ""
+            
+            vision_sky_bucket = row["vision_sky_bucket"] or ""
+            daypart = row["daypart"] or ""
+            
+            vision_wave_score = row["vision_wave_score"]
+            vision_wave_conf = row["vision_wave_conf"]
+            photo_wave = row["photo_wave"]
+            
+            vision_json_raw = row["vision_json"]
+            vision_json: dict[str, Any] | None = None
+            if vision_json_raw:
+                try:
+                    vision_json = json.loads(vision_json_raw)
+                except json.JSONDecodeError:
+                    vision_json = None
+            
+            if vision_wave_score is None and vision_json:
+                parsed_wave, parsed_conf = self._parse_wave_score_from_vision(vision_json)
+                if parsed_wave is not None:
+                    vision_wave_score = parsed_wave
+                if vision_wave_conf is None and parsed_conf is not None:
+                    vision_wave_conf = parsed_conf
+            
+            if not vision_sky_bucket and vision_json:
+                vision_sky_bucket = self._parse_sky_bucket_from_vision(vision_json) or ""
+            
+            if vision_wave_score is None and photo_wave is not None:
+                vision_wave_score = photo_wave
+            
+            wave_score_str = str(vision_wave_score) if vision_wave_score is not None else ""
+            wave_conf_str = str(vision_wave_conf) if vision_wave_conf is not None else ""
+            
+            exif_json_raw = row["exif_json"]
+            exif_present = "1" if exif_json_raw else "0"
+            
+            doy = row["doy"] if row["doy"] is not None else ""
+            local_path = row["local_path"] or ""
+            
+            vision_json_str = json.dumps(vision_json, ensure_ascii=False) if vision_json else ""
+            
+            writer.writerow([
+                asset_id,
+                created_at,
+                uses_count,
+                city,
+                lat,
+                lon,
+                vision_confidence,
+                vision_photo_weather,
+                vision_sky_bucket,
+                daypart,
+                wave_score_str,
+                wave_conf_str,
+                exif_present,
+                doy,
+                local_path,
+                vision_json_str
+            ])
+        
+        return output.getvalue()
 
     def _fetch_assets(
         self,

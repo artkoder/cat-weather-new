@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repeatable migrations and reporting CLI.
 - Weather migration utility now offers `--fill-doy`, `--recalc-sky-visible`, and `--backfill-wave`
   dry-run jobs to audit and repair historical records.
-- Sea selection rework with Kaliningrad timezone-based seasonal windows, wave-score storm classification (≤3.5 calm, <6 storm, ≥6 strong_storm), penalty-based candidate evaluation, and coastal cloud acceptance matrix (B0/B1/B2/AN) with clear guard enforcement.
+- Sea selection rework with Kaliningrad timezone-based seasonal windows, daypart-aware sky normalization, meter-to-score wave conversion (0.2 m → 1 score step, clamped 0–10), configuration-driven B0/B1/B2/AN stages, and clear-guard enforcement that keeps evening sunsets eligible under clear forecasts.
 - Sky visibility integration (`sky_visible`) that skips sky penalties and disables sunset prioritization for assets without visible sky or with `photo_sky="unknown"`.
 - Comprehensive sea selection logging with season metadata (doy_now, doy_range, kept/removed assets), pool counts per stage, top-5 scoring dump, and final selection payload including want_sunset, storm_persisting, wave_corridor, sky_penalty, and sky_critical_mismatch.
 - Test suite covering season window day-of-year matching, wave mapping and corridor computation, sky visibility filtering, coastal cloud policy, sunset logic with clear guard violations, and storm persistence with new wave-score classes.
@@ -36,11 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Schemathesis-powered contract test suite that exercises the latest API surface to guard against regressions in mobile attach, upload, and webhook flows.
 
 ### Changed
-- Sea rubric scoring now reads configuration-driven stage tolerances, applies wave/sky penalties per
-  stage, and enforces calm-day wave caps even in emergency fallback.
+- Sea rubric scoring now applies configuration-driven penalties per B0/B1/B2/AN stage, widening tolerances without dropping pools and enforcing calm-day caps even in emergency fallback.
 - Sea rubric seasonal window now uses Europe/Kaliningrad timezone instead of UTC for day-of-year calculations, ensuring accurate seasonal matching for the local region.
-- Sea rubric storm state classification now based on wave scores (≤3.5 calm, <6 storm, ≥6 strong_storm) instead of raw wave heights for more nuanced weather state determination.
-- Sea rubric candidate evaluation redesigned with penalty-based scoring (penalty = max(0, |score−s|−halfwidth)*0.75) that allows calm-day assets without wave scores (−1.0 bonus) and implements staged fallback progression (season → wave → B1 → wave+broaden → B2 → AN).
+- Sea rubric storm state classification now based on the 0–10 wave score (≤2 calm, <6 storm, ≥6 strong_storm) instead of raw wave heights for more nuanced weather state determination.
+- Sea rubric candidate evaluation redesigned around `StageConfig`, keeping every candidate in the ranked list per stage, degrading sequentially across B0 → B1 → B2 → AN, and falling back to age priority only when no stage produces a winner.
 - Sea rubric sunset logic now requires visible sky and enforces clear guard violations (want_sunset = (storm_state != strong_storm) and sky_visible and not (clear_guard_hard & chosen_sky in {mostly_cloudy, overcast})).
 - Device attach flow now follows [API contract v1.4.1](https://github.com/artkoder/kotopogoda-api-contract/tree/v1.4.1):
   normalizes attach tokens (with legacy `code` support), returns

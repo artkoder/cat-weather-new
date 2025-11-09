@@ -1,163 +1,86 @@
 # Sea Selection Rework - Implementation Summary
 
 ## Overview
-This document summarizes the comprehensive rework of the sea selection logic as specified in the "Rework sea selection" ticket. All acceptance criteria have been met, with extensive logging, new test coverage, and backward-compatible changes.
+The sea rubric now evaluates candidates with daypart-aware sky normalization,
+a wave score derived from sea cache meters, and staged scoring that widens
+constraints without dropping the pool. The pipeline keeps evening sunsets in
+scope, rewards fresh captures, and logs every stage of the decision so operators
+can audit degradations.
 
-## Changes Implemented
+## Key Changes
 
-### 1. Seasonal Window with Kaliningrad Timezone
-- **Change**: Seasonal window now uses `Europe/Kaliningrad` timezone (`zoneinfo.ZoneInfo`) instead of UTC for day-of-year calculations
-- **Implementation**: `main.py` lines 13082-13084
-- **Logging**: Enhanced season log includes:
-  - `doy_now`: Current day of year in Kaliningrad timezone
-  - `doy_range`: [low, high] boundaries of the ±45 day window with wrap-around
-  - `kept`: List of asset IDs within season window
-  - `removed`: List of asset IDs outside season window  
-  - `null_doy`: List of asset IDs with missing shot_doy (now included)
-  - `season_removed`: Boolean flag indicating if filter was released when no candidates remained
+### 1. Daypart + Weather Tag Normalization
+- `data_access.py` parses EXIF capture timestamps and recognition tags to assign
+  `captured_at`, `doy`, and a `daypart` (`morning`, `day`, `evening`, `night`).
+- `sea_selection.NormalizedSky` stores the normalized daypart and weather tag,
+  mapping `sunset` / `dusk` / `twilight` / `evening` hints to
+  `daypart="evening"` while deriving the sky bucket (`sunny`,
+  `partly_cloudy`, etc.) from tags or live cloud cover.
+- Evening assets compatible with clear daytime weather are treated as valid
+  matches, allowing sunsets to participate when the forecast reports clear or
+  mostly clear skies.
 
-### 2. Wave Score Storm Classification
-- **Change**: Storm states now classified by wave scores instead of raw wave heights
-  - calm: score ≤ 3.5
-  - storm: 3.5 < score < 6.0
-  - strong_storm: score ≥ 6.0
-- **Implementation**: `main.py` lines 13035-13040
-- **Wave mapping**: Existing interpolation curve preserved (0.0→0.0, 0.5→3.0, 1.0→5.0, 1.5→7.0, 2.0→8.5, 3.0→10.0)
+### 2. Wave Score Unification
+- `main.wave_m_to_score` converts cached sea wave heights (in meters) to an
+  integer score from 0 to 10 using 0.2 m increments and clamping at both ends.
+  Example: `0.05 m → 0`, `0.45 m → 2`, `1.6 m → 8`, `≥2.0 m → 10`.
+- Vision already reports `sea_wave_score` on the same 0–10 scale; the selector
+  compares the target score from `sea_cache` to each asset’s score.
 
-### 3. Corridor Width Computation
-- **Change**: Derive corridors based on current `wave_height_m` with staged fallback
-  - Calm: center=1.75, halfwidth=1.75+broaden
-  - Storm: center=wave_score, halfwidth=1.0+broaden
-  - Strong storm: center=9.0, halfwidth=1.0+broaden
-- **Implementation**: `main.py` lines 13221-13233
-- **Broadening**: +0.8 added for `wave+broaden` stage fallback
+### 3. Soft-penalty Stage Scoring
+- `sea_selection.StageConfig` describes the B0/B1/B2/AN stages with wave
+  tolerance, sky requirements, and penalty weights.
+- `_publish_sea` builds a wave corridor for each stage and calls
+  `evaluate_stage_candidate`, which always returns a numeric score instead of
+  short-circuiting on mismatches. Penalties cover wave deltas, out-of-corridor
+  overshoot, calm-day caps, sky visibility, sky compatibility, and seasonal
+  mismatch. Bonuses reward fresh captures, sky matches, and visible skies.
+- Stages widen tolerances gradually:
+  - **B0** – Strict: requires season match, visible sky, known sky bucket, and
+    ±1 wave tolerance.
+  - **B1** – Relaxed sky visibility requirement, ±1.8 wave tolerance.
+  - **B2** – Drops season requirement, allows missing wave scores, ±2.5 wave
+    tolerance.
+  - **AN** – Emergency: accepts false/unknown sky, ±3.5 wave tolerance.
+- If every stage produces an empty ranking, a final age-priority fallback picks
+  the least recently used candidate instead of returning `None`.
 
-### 4. Penalty-Based Candidate Evaluation
-- **Change**: New penalty system replaces old bonus-based scoring
-  - Wave penalty: `max(0, |score−center|−halfwidth) * 0.75`
-  - Calm-day bonus: -1.0 penalty when wave_score is missing on calm days
-  - Sky penalty: varies based on match quality (-0.5 exact, 0.0 compatible, 1.0 mismatch)
-  - Final score: `-penalty + age_bonus`
-- **Implementation**: `main.py` lines 13235-13322
-- **Missing scores**: Blocked for storm/strong_storm states until final fallback
+### 4. Logging and Observability
+- Each stage logs its corridor, pool size, and top five candidates with detailed
+  score components. Pool counts accumulate across stages so operators can see
+  how degradation progresses.
+- Final selection logs include the chosen stage, score breakdown, target wave
+  score, actual photo score, normalized sky token, and whether clear-guard rules
+  detected a critical mismatch.
 
-### 5. Coastal Cloud Acceptance Matrix
-- **Change**: Implemented B0/B1/B2/AN sky policy stages
-  - **B0** (season): Strict - requires exact or compatible sky match with allowed_photo_skies
-  - **B1**: Moderate - allows only assets in allowed_photo_skies
-  - **B2**: Relaxed - blocks only overcast on clear days
-  - **AN** (any): Accepts any sky
-- **Implementation**: `main.py` lines 13274-13305
-- **Clear guards**:
-  - `clear_guard_hard`: cloud_cover_pct ≤ 10%
-  - `clear_guard_soft`: cloud_cover_pct ≤ 20%
-- **Sky mismatch tracking**: `sky_critical_mismatch=true` if hard-clear day falls through to AN with mostly_cloudy/overcast
+### 5. Caption Generation Updates
+- `_generate_sea_caption` receives the normalized sky summary, wave height in
+  meters, and the 0–10 score so captions render phrases such as "почти ясно" and
+  "штиль" consistently with the new metrics.
 
-### 6. Fallback Order
-- **Change**: Implemented staged fallback progression
-  1. **season**: B0 sky policy, no wave broadening, requires wave scores for storms
-  2. **wave**: B0 sky policy, no wave broadening, allows missing wave scores
-  3. **B1**: B1 sky policy, no wave broadening, allows missing wave scores
-  4. **wave+broaden**: B1 sky policy, +0.8 wave broadening, allows missing wave scores
-  5. **B2**: B2 sky policy, +0.8 wave broadening, allows missing wave scores
-  6. **AN**: AN sky policy, +0.8 wave broadening, allows missing wave scores
-- **Implementation**: `main.py` lines 13324-13331, 13338-13410
-- **Pool tracking**: Each stage logs pool size after filtering
+### 6. Database & Freshness
+- Migration `0028_assets_capture_fields.py` adds `captured_at`, `doy`, and
+  `daypart` columns with supporting indexes.
+- Candidate loading prioritizes captures from today and yesterday using the new
+  metadata, with graceful fallback to post dates when EXIF timestamps are
+  missing.
 
-### 7. Sky Visibility Integration
-- **Change**: New `sky_visible` field determines if sky penalties apply
-  - Computed from `vision_results.sky_visible` or inferred from `photo_sky`
-  - When `False` or `photo_sky="unknown"`, sky penalties are skipped entirely
-  - Disables sunset prioritization for non-visible sky assets
-- **Implementation**: 
-  - `data_access.py` lines 1728-1732, 1761
-  - `main.py` lines 13246, 13276-13305, 13439, 13442-13446
+### 7. Test Coverage
+- `tests/test_sea_wave_score.py` validates the meter-to-score mapping and sky
+  compatibility helpers.
+- Integration tests in `tests/test_sea_selection.py` verify that an evening calm
+  sunset wins against stormy or stale assets and that degradation keeps returning
+  the best-scoring candidate instead of collapsing to storms.
+- Migration fixtures in `tests/test_vision_results.py` and
+  `tests/test_data_access_capture_fields.py` exercise the new capture columns.
 
-### 8. Reworked Sunset Logic
-- **Change**: `want_sunset` now requires:
-  - `storm_state != "strong_storm"`
-  - `sky_visible = True`
-  - NOT (`clear_guard_hard` AND `chosen_sky` in {mostly_cloudy, overcast})
-- **Implementation**: `main.py` lines 13442-13446
-- **Impact**: Prevents sunset preference on clear days with cloudy assets
-
-### 9. Storm Persistence with New Classes
-- **Change**: Existing 36h storm persistence logic updated to use new wave-score based storm states
-- **Implementation**: Already compatible - `_is_storm_persisting` and `_find_recent_sea_storm_event` use storm_state strings
-- **States recognized**: "calm", "storm", "strong_storm"
-
-### 10. Comprehensive Logging
-- **Change**: All sea selection events now emit Grafana-friendly JSON logs
-- **Weather summary**: `weather` event with wave_height_m, wave_score, wind metrics, cloud_cover_pct, sky_bucket
-- **Season window**: `season` event with doy_now, doy_range, kept/removed/null_doy asset lists
-- **Stage progression**: `attempt <policy>` event per fallback stage (B0/B1/B2/AN) with pool_size, top5 scoring dump, wave_corridor
-- **Top-5 dump**: Each stage logs top 5 candidates with id, wave, sky, penalties, score
-- **Final selection**: `selected` event includes:
-  - asset_id, shot_doy, score, wave_score, photo_sky, season_match
-  - sunset_selected, want_sunset, storm_persisting
-  - wave_corridor, sky_penalty, sky_visible, sky_critical_mismatch
-  - pool_counts (per-stage pool sizes)
-  - reasons (detailed scoring breakdown)
-- **Implementation**: `main.py` lines 13096-13109, 13111-13126, 13208-13219, 13386-13392, 13461-13481
-
-### 11. Metadata Storage
-- **Change**: `record_post_history` now stores all new fields
-- **New fields**:
-  - `clear_guard_hard`, `clear_guard_soft`
-  - `sky_visible`, `sky_critical_mismatch`
-  - `pool_counts` (dict of stage pool sizes)
-  - `want_sunset` (computed per-selection)
-- **Implementation**: `main.py` lines 13692-13735
-
-### 12. Test Coverage
-- **New test file**: `tests/test_sea_selection_rework.py`
-- **Tests**:
-  1. `test_season_window_doy_any_year`: Verifies Kaliningrad timezone and ±45 day wrap-around
-  2. `test_wave_mapping_and_corridor`: Tests interpolation curve and storm classification thresholds
-  3. `test_no_sky_not_filtered`: Verifies sky_visible=False skips sky penalties
-  4. `test_coast_cloud_policy`: Tests B0/B1/B2/AN sky policy matrix and clear guard thresholds
-  5. `test_want_sunset_requires_visible_sky_and_no_clear_guard_violation`: Validates sunset logic
-  6. `test_storm_persisting_true`: Confirms storm persistence uses new wave-score classes
-- **All tests passing**: 315 passed, 2 skipped, 0 failed
-
-## Acceptance Criteria Met
-
-✅ Rubric run follows the specified fallback order (season → wave → B1 → wave+broaden → B2 → AN)
-✅ Logging shows every stage with required fields (season metadata, pool counts, top-5 scoring, final selection payload)
-✅ New tests pass covering all specified behaviors
-✅ Existing sea publications remain single-photo with correct storm/sunset decisions (verified by 77 sea-related tests)
-✅ Storm persistence logic uses new wave-score classes (calm/storm/strong_storm)
-✅ Clear guard enforcement prevents cloudy assets on clear days in sunset mode
-✅ Sky visibility integration skips penalties and disables sunset for non-visible sky
-✅ Season window uses Kaliningrad timezone and includes NULL shot_doy assets
-✅ Penalty-based evaluation with calm-day bonuses and missing score handling
-
-## Files Modified
-
-1. **main.py**: Core sea selection logic rework (lines 13014-13805+)
-2. **data_access.py**: Added `sky_visible` field to candidate fetching (lines 1728-1732, 1761)
-3. **tests/test_sea_selection_rework.py**: New comprehensive test suite (6 tests)
-4. **tests/test_sea_rubric_season_window.py**: Minor lint fixes (lines 131, 325)
-5. **CHANGELOG.md**: Added entries documenting all changes
-
-## Backward Compatibility
-
-- All existing tests pass (315 passed)
-- Wave mapping interpolation curve unchanged
-- Storm persistence logic compatible with new state names
-- Metadata schema extended (not breaking - new fields added)
-- Logging format enhanced (additive - no breaking changes)
-
-## Performance Considerations
-
-- Staged fallback minimizes candidate re-evaluation
-- Pool tracking provides visibility into filtering effectiveness
-- Penalty computation is O(1) per candidate
-- Season window calculation remains O(n) over candidates
-
-## Future Enhancements
-
-- Consider caching Kaliningrad timezone object (currently created per run)
-- Monitor sky_critical_mismatch frequency to tune clear guard thresholds
-- Track pool_counts metrics in Prometheus for alerting
-- Consider exposing fallback stage distribution in Grafana dashboards
+## Acceptance Criteria
+- Evening sunsets stay eligible under clear forecasts thanks to daypart-aware
+  normalization.
+- Wave comparisons use the unified 0–10 scale from both sea cache and vision
+  outputs.
+- Stage degradation only loosens penalties; pools are never dropped entirely.
+- Captions and logs surface the normalized sky, target/actual wave scores, and
+  capture freshness required by the rubric.
+- All lint, type, and test suites pass via GitHub Actions (`ruff`, `black`,
+  `mypy`, `pytest`).

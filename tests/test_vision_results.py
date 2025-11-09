@@ -127,9 +127,7 @@ def _load_schema(conn: sqlite3.Connection) -> None:
         "_migration_0028_assets_capture_fields", assets_capture_fields_path
     )
     if spec_assets_capture_fields and spec_assets_capture_fields.loader:
-        module_assets_capture_fields = importlib.util.module_from_spec(
-            spec_assets_capture_fields
-        )
+        module_assets_capture_fields = importlib.util.module_from_spec(spec_assets_capture_fields)
         spec_assets_capture_fields.loader.exec_module(module_assets_capture_fields)
         if hasattr(module_assets_capture_fields, "run"):
             module_assets_capture_fields.run(conn)

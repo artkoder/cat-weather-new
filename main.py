@@ -6333,6 +6333,7 @@ class Bot:
                     "- `/cities` — показать список городов с кнопками удаления.\n"
                     "- `/addsea <name> <lat> <lon>` — добавить морскую точку для температуры воды.\n"
                     "- `/seas` — показать все морские точки и удалить ненужные.\n"
+                    "- `/dump_sea` — экспортировать CSV со всеми морскими ассетами, метаданными волн/неба и vision_json (только для супер-админов).\n"
                 ),
                 (
                     "*Погодные рассылки*\n"
@@ -6518,6 +6519,36 @@ class Bot:
                 },
             )
             await self._send_mobile_pairing_card(user_id, code, expires_at, devices)
+            return
+
+        if text.startswith("/dump_sea") and self.is_superadmin(user_id):
+            try:
+                from datetime import datetime as dt
+                csv_content = self.data.dump_sea_assets_csv()
+                
+                timestamp = dt.utcnow().strftime("%Y%m%d_%H%M%S")
+                filename = f"sea_assets_{timestamp}.csv"
+                
+                csv_bytes = csv_content.encode("utf-8")
+                
+                logging.info(
+                    "Dumping sea assets CSV for user %s: %d bytes, %d rows",
+                    user_id,
+                    len(csv_bytes),
+                    csv_content.count("\n")
+                )
+                
+                await self.api_request(
+                    "sendDocument",
+                    {"chat_id": user_id, "caption": f"Sea assets dump generated at {timestamp} UTC"},
+                    files={"document": (filename, csv_bytes, "text/csv")},
+                )
+            except Exception as e:
+                logging.exception("Failed to generate sea assets CSV dump")
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": f"❌ Error generating CSV: {e}"},
+                )
             return
 
         if text.startswith("/add_user") and self.is_superadmin(user_id):

@@ -502,8 +502,14 @@ def compatible_skies(bucket: str | None, daypart: str | None) -> set[NormalizedS
     if weather_tags is None:
         weather_tags = {"sunny", "mostly_clear", "partly_cloudy", "mostly_cloudy", "overcast"}
 
+    allowed_dayparts = {normalized_daypart}
+    if normalized_daypart == "morning":
+        allowed_dayparts.add("day")
+
     allowed = {
-        NormalizedSky(daypart=normalized_daypart, weather_tag=tag) for tag in weather_tags
+        NormalizedSky(daypart=allowed_daypart, weather_tag=tag)
+        for allowed_daypart in allowed_dayparts
+        for tag in weather_tags
     }
 
     if normalized_daypart == "day" and bucket in {"clear", "mostly_clear"}:

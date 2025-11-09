@@ -9,7 +9,8 @@ import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from main import is_in_season_window, wave_m_to_score
+from main import is_in_season_window
+from utils_wave import wave_m_to_score
 
 
 def test_season_window_doy_any_year():

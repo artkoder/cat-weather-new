@@ -14,6 +14,7 @@ from main import (
     map_wave_height_to_score,
     season_match,
 )
+from sea_selection import NormalizedSky, sky_similarity
 
 
 @pytest.mark.parametrize(
@@ -137,6 +138,12 @@ def test_bucket_clouds(cloud_pct: float | None, expected: str | None) -> None:
 def test_compatible_skies(bucket: str, daypart: str, expected: set[str]) -> None:
     result = {sky.token() for sky in compatible_skies(bucket, daypart)}
     assert result == expected
+
+
+def test_morning_does_not_match_evening_sunny() -> None:
+    allowed = compatible_skies("clear", "morning")
+    evening_sunny = NormalizedSky(daypart="evening", weather_tag="sunny")
+    assert sky_similarity(evening_sunny, allowed) != "match"
 
 
 def test_compute_season_window_and_match() -> None:

@@ -204,6 +204,7 @@ def sky_similarity(photo_sky: NormalizedSky | None, allowed: set[NormalizedSky])
             and candidate.weather_tag in {"sunny", "mostly_clear"}
             for candidate in allowed
         )
+        and not any(candidate.daypart == "morning" for candidate in allowed)
     ):
         return "match"
     return "mismatch"

@@ -1939,6 +1939,8 @@ class Bot:
                 stats = {"updated": 0, "skipped": 0, "errors": 0}
                 batch_size = 200
                 batch_count = 0
+                error_details_count = 0
+                max_error_details = 10
 
                 assets_to_process = []
                 for asset in self.data.iter_assets():
@@ -1964,12 +1966,35 @@ class Bot:
 
                     for asset in batch:
                         try:
-                            vision = asset.vision_results or {}
+                            vision = asset.vision_results
+
+                            if vision is None:
+                                logging.debug(
+                                    "Backfill skip asset_id=%s reason=no_vision_results",
+                                    asset.id,
+                                )
+                                stats["skipped"] += 1
+                                continue
+
+                            if not isinstance(vision, dict):
+                                logging.error(
+                                    "Backfill error asset_id=%s error_type=InvalidVisionType "
+                                    "error_msg='vision_results is not a dict: %s'",
+                                    asset.id,
+                                    type(vision).__name__,
+                                )
+                                stats["errors"] += 1
+                                continue
+
                             wave_score, wave_conf = self.data._parse_wave_score_from_vision(vision)
                             sky_bucket = self.data._parse_sky_bucket_from_vision(vision)
 
-                            if wave_score is None and sky_bucket is None:
-                                stats["errors"] += 1
+                            if wave_score is None and wave_conf is None and sky_bucket is None:
+                                logging.debug(
+                                    "Backfill skip asset_id=%s reason=no_parseable_data",
+                                    asset.id,
+                                )
+                                stats["skipped"] += 1
                                 continue
 
                             updates: list[str] = []
@@ -1988,6 +2013,10 @@ class Bot:
                                 params.append(str(sky_bucket))
 
                             if not updates:
+                                logging.debug(
+                                    "Backfill skip asset_id=%s reason=fields_already_populated",
+                                    asset.id,
+                                )
                                 stats["skipped"] += 1
                                 continue
 
@@ -1999,11 +2028,21 @@ class Bot:
                             stats["updated"] += 1
 
                         except Exception as e:
-                            logging.exception(
-                                "Error backfilling asset %s: %s",
+                            error_type = type(e).__name__
+                            error_msg = str(e)
+                            logging.error(
+                                "Backfill error asset_id=%s error_type=%s error_msg=%s",
                                 asset.id,
-                                e,
+                                error_type,
+                                error_msg,
                             )
+                            if error_details_count < max_error_details:
+                                logging.debug(
+                                    "Backfill error detail asset_id=%s",
+                                    asset.id,
+                                    exc_info=True,
+                                )
+                                error_details_count += 1
                             stats["errors"] += 1
 
                     if not dry_run:
@@ -2016,6 +2055,14 @@ class Bot:
                         stats,
                     )
                     await asyncio.sleep(0)
+
+                logging.info(
+                    "Backfill waves completed: processed=%d updated=%d skipped=%d errors=%d",
+                    len(assets_to_process),
+                    stats["updated"],
+                    stats["skipped"],
+                    stats["errors"],
+                )
 
                 return stats
 

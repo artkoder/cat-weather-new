@@ -65,7 +65,6 @@ async def test_sea_publish_uses_file_id(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module.Bot, "process_rubric_schedule", bot_noop)
 
     requests_log: list[dict[str, Any]] = []
-    expected_webhook = webhook_url.rstrip("/") + "/webhook"
 
     async def fake_api_request(
         self, method: str, data: Any = None, *, files: Any = None
@@ -200,7 +199,6 @@ async def test_sea_publish_fallback_to_file_download(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module.Bot, "process_rubric_schedule", bot_noop)
 
     requests_log: list[dict[str, Any]] = []
-    expected_webhook = webhook_url.rstrip("/") + "/webhook"
 
     async def fake_api_request(
         self, method: str, data: Any = None, *, files: Any = None

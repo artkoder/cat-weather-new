@@ -13356,7 +13356,7 @@ class Bot:
 
         publish_key = f"sea_{sea_id}_{storm_state}"
         if hasattr(self, "_sea_publish_guard"):
-            guard = getattr(self, "_sea_publish_guard")
+            guard = self._sea_publish_guard
             last_publish_time = guard.get(publish_key)
             if last_publish_time is not None:
                 elapsed = time.time() - last_publish_time
@@ -13773,11 +13773,7 @@ class Bot:
             score -= wave_penalty
 
             # Apply calm guard null wave penalty for B0/B1 stages
-            if (
-                calm_guard_active
-                and photo_wave_val is None
-                and stage_cfg.name in {"B0", "B1"}
-            ):
+            if calm_guard_active and photo_wave_val is None and stage_cfg.name in {"B0", "B1"}:
                 calm_guard_null_penalty = 0.8
                 components["CalmGuardNullWavePenalty"] = calm_guard_null_penalty
                 score -= calm_guard_null_penalty
@@ -14082,7 +14078,9 @@ class Bot:
             }
         else:
             fact_log_info = None
-        photo_wave_selected = selected_candidate.get("photo_wave") or selected_candidate.get("wave_score")
+        photo_wave_selected = selected_candidate.get("photo_wave") or selected_candidate.get(
+            "wave_score"
+        )
         wave_delta_selected = None
         if photo_wave_selected is not None:
             wave_delta_selected = abs(float(photo_wave_selected) - target_wave_value)
@@ -14798,7 +14796,7 @@ class Bot:
 
                 return caption, hashtags, openai_metadata
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 attempt_duration = (time.perf_counter() - attempt_start) * 1000
                 openai_metadata["openai_calls_per_publish"] += 1
                 openai_metadata["timeout_hit"] = 1

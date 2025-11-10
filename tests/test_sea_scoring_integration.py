@@ -88,7 +88,8 @@ async def test_calm_seas_integration_scoring(
         sky_visible=True,
     )
     bot.db.execute(
-        "UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 0.0, calm_0_id)
+        "UPDATE assets SET shot_doy=?, photo_wave=?, wave_score_0_10=?, wave_conf=? WHERE id=?",
+        (today_doy, 0.0, 0.0, 0.95, calm_0_id),
     )
 
     # Create calm asset with wave_score=1
@@ -104,7 +105,8 @@ async def test_calm_seas_integration_scoring(
         sky_visible=True,
     )
     bot.db.execute(
-        "UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 0.2, calm_1_id)
+        "UPDATE assets SET shot_doy=?, photo_wave=?, wave_score_0_10=?, wave_conf=? WHERE id=?",
+        (today_doy, 0.2, 1.0, 0.90, calm_1_id),
     )
 
     # Create stormy asset with wave_score=6
@@ -120,7 +122,8 @@ async def test_calm_seas_integration_scoring(
         sky_visible=True,
     )
     bot.db.execute(
-        "UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 1.2, stormy_6_id)
+        "UPDATE assets SET shot_doy=?, photo_wave=?, wave_score_0_10=?, wave_conf=? WHERE id=?",
+        (today_doy, 1.2, 6.0, 0.88, stormy_6_id),
     )
 
     # Create very stormy asset with wave_score=8
@@ -136,7 +139,8 @@ async def test_calm_seas_integration_scoring(
         sky_visible=True,
     )
     bot.db.execute(
-        "UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, 1.6, stormy_8_id)
+        "UPDATE assets SET shot_doy=?, photo_wave=?, wave_score_0_10=?, wave_conf=? WHERE id=?",
+        (today_doy, 1.6, 8.0, 0.92, stormy_8_id),
     )
 
     # Create asset with NULL wave_score
@@ -152,7 +156,8 @@ async def test_calm_seas_integration_scoring(
         sky_visible=True,
     )
     bot.db.execute(
-        "UPDATE assets SET shot_doy=?, photo_wave=? WHERE id=?", (today_doy, None, null_wave_id)
+        "UPDATE assets SET shot_doy=?, photo_wave=?, wave_score_0_10=?, wave_conf=? WHERE id=?",
+        (today_doy, None, None, None, null_wave_id),
     )
 
     bot.db.commit()

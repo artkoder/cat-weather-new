@@ -200,6 +200,30 @@ class TestUtilsWaveParsers:
         sky_bucket = parse_sky_bucket_from_vision(vision_json)
         assert sky_bucket is None
 
+    def test_parse_wave_score_from_caption_field(self):
+        """Test parsing wave score from caption field (backward compatibility)."""
+        vision_json = {"caption": "Морской пейзаж. Волнение моря: 5/10 (conf=0.80)"}
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score == 5.0
+        assert wave_conf == 0.80
+
+    def test_parse_wave_score_from_caption_without_confidence(self):
+        """Test parsing wave score from caption field without confidence."""
+        vision_json = {"caption": "Красивый вид. Волнение моря: 3/10"}
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score == 3.0
+        assert wave_conf is None
+
+    def test_parse_wave_score_prefers_result_text_over_caption(self):
+        """Test that result_text is preferred over caption when both present."""
+        vision_json = {
+            "result_text": "Волнение моря: 8/10 (conf=0.95)",
+            "caption": "Волнение моря: 3/10 (conf=0.50)",
+        }
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score == 8.0
+        assert wave_conf == 0.95
+
     def test_consistency_between_utils_and_dataaccess(self):
         """Test that DataAccess methods delegate to utils_wave correctly."""
         test_cases = [
@@ -209,6 +233,7 @@ class TestUtilsWaveParsers:
             {"sea_wave_score": 4.5},
             {"result_text": "Волнение моря: 6.0/10 (conf=0.88)"},
             {"result_text": "Волнение моря: 2.5/10"},
+            {"caption": "Волнение моря: 5/10 (conf=0.80)"},
         ]
         for test_case in test_cases:
             utils_result = parse_wave_score_from_vision(test_case)

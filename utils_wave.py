@@ -89,19 +89,25 @@ def parse_wave_score_from_vision(
             wave_score = _to_float(raw_wave)
 
     # Try textual fallback with optional confidence
+    # Check both result_text and caption fields for backward compatibility
+    text_to_parse: str | None = None
     if wave_score is None and "result_text" in vision_json:
-        result_text = str(vision_json["result_text"])
+        text_to_parse = str(vision_json["result_text"])
+    elif wave_score is None and "caption" in vision_json:
+        text_to_parse = str(vision_json["caption"])
+    
+    if text_to_parse:
         # Try pattern with confidence: «Волнение моря: X/10 (conf=Y)»
         match = re.search(
             r"Волнение\s+моря:\s*(\d+(?:\.\d+)?)\s*/\s*10\s*\(\s*conf\s*=\s*(\d+(?:\.\d+)?)\s*\)",
-            result_text,
+            text_to_parse,
         )
         if match:
             wave_score = _to_float(match.group(1))
             wave_conf = _to_float(match.group(2))
         else:
             # Fallback to pattern without confidence: «Волнение моря: X/10»
-            match = re.search(r"Волнение\s+моря:\s*(\d+(?:\.\d+)?)\s*/\s*10", result_text)
+            match = re.search(r"Волнение\s+моря:\s*(\d+(?:\.\d+)?)\s*/\s*10", text_to_parse)
             if match:
                 wave_score = _to_float(match.group(1))
 

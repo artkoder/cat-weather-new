@@ -43,6 +43,9 @@ def temp_db(tmp_path: Path) -> sqlite3.Connection:
             vision_wave_score REAL,
             vision_wave_conf REAL,
             vision_sky_bucket TEXT,
+            wave_score_0_10 REAL,
+            wave_conf REAL,
+            sky_code TEXT,
             captured_at TEXT,
             doy INTEGER,
             daypart TEXT

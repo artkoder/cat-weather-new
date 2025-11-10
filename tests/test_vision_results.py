@@ -135,6 +135,17 @@ def _load_schema(conn: sqlite3.Connection) -> None:
         spec_assets_capture_fields.loader.exec_module(module_assets_capture_fields)
         if hasattr(module_assets_capture_fields, "run"):
             module_assets_capture_fields.run(conn)
+    wave_sky_metrics_path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "0027_add_wave_sky_metrics.py"
+    )
+    spec_wave_sky_metrics = importlib.util.spec_from_file_location(
+        "_migration_0027_add_wave_sky_metrics", wave_sky_metrics_path
+    )
+    if spec_wave_sky_metrics and spec_wave_sky_metrics.loader:
+        module_wave_sky_metrics = importlib.util.module_from_spec(spec_wave_sky_metrics)
+        spec_wave_sky_metrics.loader.exec_module(module_wave_sky_metrics)
+        if hasattr(module_wave_sky_metrics, "run"):
+            module_wave_sky_metrics.run(conn)
 
 
 @pytest.fixture

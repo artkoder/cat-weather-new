@@ -43,6 +43,9 @@ def test_backfill_wave_metrics_from_vision(tmp_path):
             vision_wave_score REAL,
             vision_wave_conf REAL,
             vision_sky_bucket TEXT,
+            wave_score_0_10 REAL,
+            wave_conf REAL,
+            sky_code TEXT,
             captured_at TEXT,
             doy INTEGER,
             daypart TEXT
@@ -193,6 +196,9 @@ def test_backfill_wave_metrics_dry_run(tmp_path):
             vision_wave_score REAL,
             vision_wave_conf REAL,
             vision_sky_bucket TEXT,
+            wave_score_0_10 REAL,
+            wave_conf REAL,
+            sky_code TEXT,
             captured_at TEXT,
             doy INTEGER,
             daypart TEXT
@@ -292,6 +298,9 @@ def test_backfill_wave_metrics_partial_update(tmp_path):
             vision_wave_score REAL,
             vision_wave_conf REAL,
             vision_sky_bucket TEXT,
+            wave_score_0_10 REAL,
+            wave_conf REAL,
+            sky_code TEXT,
             captured_at TEXT,
             doy INTEGER,
             daypart TEXT

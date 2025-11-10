@@ -1134,6 +1134,8 @@ class DataAccess:
         photo_doy: int | None = None,
         photo_wave: float | None = None,
         sky_visible: str | bool | None = None,
+        wave_score_0_10: float | None = None,
+        wave_conf: float | None = None,
     ) -> str:
         """Insert or update asset metadata."""
 
@@ -1163,6 +1165,18 @@ class DataAccess:
             photo_wave_value = existing.photo_wave
         else:
             photo_wave_value = None
+        if wave_score_0_10 is not None:
+            wave_score_0_10_value = Asset._to_float(wave_score_0_10)
+        elif existing:
+            wave_score_0_10_value = existing.wave_score_0_10
+        else:
+            wave_score_0_10_value = None
+        if wave_conf is not None:
+            wave_conf_value = Asset._to_float(wave_conf)
+        elif existing:
+            wave_conf_value = existing.wave_conf
+        else:
+            wave_conf_value = None
         sky_visible_value = self._normalize_sky_visible(sky_visible)
         if sky_visible_value is None and existing:
             sky_visible_value = existing.sky_visible_hint
@@ -1275,6 +1289,8 @@ class DataAccess:
                        photo_doy=?,
                        photo_wave=?,
                        sky_visible=?,
+                       wave_score_0_10=?,
+                       wave_conf=?,
                        captured_at=?,
                        doy=?,
                        daypart=?,
@@ -1295,6 +1311,8 @@ class DataAccess:
                     photo_doy_value,
                     photo_wave_value,
                     sky_visible_value,
+                    wave_score_0_10_value,
+                    wave_conf_value,
                     captured_at_value,
                     doy_value,
                     daypart_value,
@@ -1329,10 +1347,12 @@ class DataAccess:
                 photo_doy,
                 photo_wave,
                 sky_visible,
+                wave_score_0_10,
+                wave_conf,
                 captured_at,
                 doy,
                 daypart
-            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -1352,6 +1372,8 @@ class DataAccess:
                 photo_doy_value,
                 photo_wave_value,
                 sky_visible_value,
+                wave_score_0_10_value,
+                wave_conf_value,
                 captured_at_value,
                 doy_value,
                 daypart_value,

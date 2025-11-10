@@ -20,6 +20,7 @@ from PIL import ExifTags, Image, ImageOps
 
 from metadata.extractor import PhotoMeta, extract_metadata_from_file
 from observability import context as telemetry_context
+from utils_wave import parse_wave_score_from_vision
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from api.uploads import UploadsConfig
@@ -1212,14 +1213,15 @@ async def _ingest_photo_internal(
             wave_score_value: float | None = None
             sky_visible_value: str | bool | None = None
             if isinstance(vision_payload, dict):
-                raw_wave = vision_payload.get("sea_wave_score")
-                if isinstance(raw_wave, dict):
-                    raw_wave = raw_wave.get("value")
-                if raw_wave is not None:
-                    try:
-                        wave_score_value = float(raw_wave)
-                    except (TypeError, ValueError):
-                        wave_score_value = None
+                # Parse wave score from vision results using centralized parser
+                # Vision results may contain wave score in caption as "Волнение моря: X/10 (conf=Y)"
+                # or in structured format (sea_wave_score, sea_state, weather.sea)
+                vision_for_parsing = dict(vision_payload)
+                if "caption" in vision_payload and vision_payload["caption"]:
+                    # Add result_text for text-based parsing fallback
+                    vision_for_parsing["result_text"] = str(vision_payload["caption"])
+                wave_score_value, _ = parse_wave_score_from_vision(vision_for_parsing)
+
                 raw_sky_visible = vision_payload.get("sky_visible")
                 if raw_sky_visible is not None:
                     sky_visible_value = raw_sky_visible

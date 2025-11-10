@@ -95,7 +95,7 @@ def parse_wave_score_from_vision(
         text_to_parse = str(vision_json["result_text"])
     elif wave_score is None and "caption" in vision_json:
         text_to_parse = str(vision_json["caption"])
-    
+
     if text_to_parse:
         # Try pattern with confidence: «Волнение моря: X/10 (conf=Y)»
         match = re.search(

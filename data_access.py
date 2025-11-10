@@ -47,6 +47,9 @@ class Asset:
     vision_wave_score: float | None = None
     vision_wave_conf: float | None = None
     vision_sky_bucket: str | None = None
+    wave_score_0_10: float | None = None
+    wave_conf: float | None = None
+    sky_code: str | None = None
     source: str | None = None
     captured_at: str | None = None
     doy: int | None = None
@@ -1417,6 +1420,9 @@ class DataAccess:
         vision_wave_score: float | None = None,
         vision_wave_conf: float | None = None,
         vision_sky_bucket: str | None = None,
+        wave_score_0_10: float | None = None,
+        wave_conf: float | None = None,
+        sky_code: str | None = None,
     ) -> None:
         """Update selected asset fields while preserving unset values."""
 
@@ -1531,6 +1537,15 @@ class DataAccess:
             column_dirty = True
         if vision_sky_bucket is not None:
             columns["vision_sky_bucket"] = str(vision_sky_bucket)
+            column_dirty = True
+        if wave_score_0_10 is not None:
+            columns["wave_score_0_10"] = Asset._to_float(wave_score_0_10)
+            column_dirty = True
+        if wave_conf is not None:
+            columns["wave_conf"] = Asset._to_float(wave_conf)
+            column_dirty = True
+        if sky_code is not None:
+            columns["sky_code"] = str(sky_code)
             column_dirty = True
         computed_shot_at = columns.get("shot_at_utc", row.shot_at_utc)
         computed_shot_doy = columns.get("shot_doy", row.shot_doy)
@@ -1830,6 +1845,14 @@ class DataAccess:
             if vision_sky_bucket_raw is not None and str(vision_sky_bucket_raw).strip()
             else None
         )
+        wave_score_0_10_val = Asset._to_float(row_dict.get("wave_score_0_10"))
+        wave_conf_val = Asset._to_float(row_dict.get("wave_conf"))
+        sky_code_raw = row_dict.get("sky_code")
+        sky_code_val = (
+            str(sky_code_raw).strip()
+            if sky_code_raw is not None and str(sky_code_raw).strip()
+            else None
+        )
 
         return Asset(
             id=str(row_dict.get("id")),
@@ -1852,6 +1875,9 @@ class DataAccess:
             vision_wave_score=vision_wave_score_val,
             vision_wave_conf=vision_wave_conf_val,
             vision_sky_bucket=vision_sky_bucket_val,
+            wave_score_0_10=wave_score_0_10_val,
+            wave_conf=wave_conf_val,
+            sky_code=sky_code_val,
             source=(str(row_dict.get("source")) if row_dict.get("source") is not None else None),
             captured_at=captured_at_val,
             doy=doy_val,
@@ -1921,6 +1947,9 @@ class DataAccess:
                 a.daypart,
                 a.vision_wave_score,
                 a.vision_wave_conf,
+                a.wave_score_0_10,
+                a.wave_conf,
+                a.sky_code,
                 a.photo_wave,
                 a.sky_visible AS sky_visible_hint,
                 a.exif_json,
@@ -1980,11 +2009,15 @@ class DataAccess:
             )
             vision_photo_weather = row["vision_photo_weather"] or ""
 
-            vision_sky_bucket = row["vision_sky_bucket"] or ""
             daypart = row["daypart"] or ""
 
+            # Prefer normalized fields, fall back to vision_* fields, then parse from JSON
+            wave_score_0_10 = row["wave_score_0_10"]
+            wave_conf = row["wave_conf"]
+            sky_code = row["sky_code"]
             vision_wave_score = row["vision_wave_score"]
             vision_wave_conf = row["vision_wave_conf"]
+            vision_sky_bucket = row["vision_sky_bucket"]
             photo_wave = row["photo_wave"]
 
             vision_json_raw = row["vision_json"]
@@ -1995,21 +2028,30 @@ class DataAccess:
                 except json.JSONDecodeError:
                     vision_json = None
 
-            if vision_wave_score is None and vision_json:
+            # Fallback chain for wave score: wave_score_0_10 -> vision_wave_score -> parsed from JSON -> photo_wave
+            if wave_score_0_10 is None:
+                wave_score_0_10 = vision_wave_score
+            if wave_score_0_10 is None and vision_json:
                 parsed_wave, parsed_conf = self._parse_wave_score_from_vision(vision_json)
                 if parsed_wave is not None:
-                    vision_wave_score = parsed_wave
-                if vision_wave_conf is None and parsed_conf is not None:
-                    vision_wave_conf = parsed_conf
+                    wave_score_0_10 = parsed_wave
+                if wave_conf is None and parsed_conf is not None:
+                    wave_conf = parsed_conf
+            if wave_score_0_10 is None and photo_wave is not None:
+                wave_score_0_10 = photo_wave
 
-            if not vision_sky_bucket and vision_json:
-                vision_sky_bucket = self._parse_sky_bucket_from_vision(vision_json) or ""
+            # Fallback chain for wave confidence: wave_conf -> vision_wave_conf -> parsed from JSON
+            if wave_conf is None:
+                wave_conf = vision_wave_conf
 
-            if vision_wave_score is None and photo_wave is not None:
-                vision_wave_score = photo_wave
+            # Fallback chain for sky code: sky_code -> vision_sky_bucket -> parsed from JSON
+            if not sky_code:
+                sky_code = vision_sky_bucket or ""
+            if not sky_code and vision_json:
+                sky_code = self._parse_sky_bucket_from_vision(vision_json) or ""
 
-            wave_score_str = str(vision_wave_score) if vision_wave_score is not None else ""
-            wave_conf_str = str(vision_wave_conf) if vision_wave_conf is not None else ""
+            wave_score_str = str(wave_score_0_10) if wave_score_0_10 is not None else ""
+            wave_conf_str = str(wave_conf) if wave_conf is not None else ""
 
             exif_json_raw = row["exif_json"]
             exif_present = "1" if exif_json_raw else "0"
@@ -2029,7 +2071,7 @@ class DataAccess:
                     lon,
                     vision_confidence,
                     vision_photo_weather,
-                    vision_sky_bucket,
+                    sky_code,
                     daypart,
                     wave_score_str,
                     wave_conf_str,
@@ -2310,8 +2352,10 @@ class DataAccess:
 
         for asset in assets:
             vision = asset.vision_results or {}
-            # Prefer parsed vision_wave_score column before legacy data
-            raw_wave: Any = asset.vision_wave_score
+            # Prefer normalized wave_score_0_10 column, fall back to vision_wave_score, then legacy data
+            raw_wave: Any = asset.wave_score_0_10
+            if raw_wave is None:
+                raw_wave = asset.vision_wave_score
             if raw_wave is None:
                 raw_wave = asset.photo_wave
             if raw_wave is None:

@@ -44,6 +44,9 @@ def test_dump_sea_assets_csv_basic(tmp_path):
             vision_wave_score REAL,
             vision_wave_conf REAL,
             vision_sky_bucket TEXT,
+            wave_score_0_10 REAL,
+            wave_conf REAL,
+            sky_code TEXT,
             captured_at TEXT,
             doy INTEGER,
             daypart TEXT
@@ -254,6 +257,9 @@ def test_dump_sea_assets_csv_fallback_to_legacy(tmp_path):
             vision_wave_score REAL,
             vision_wave_conf REAL,
             vision_sky_bucket TEXT,
+            wave_score_0_10 REAL,
+            wave_conf REAL,
+            sky_code TEXT,
             captured_at TEXT,
             doy INTEGER,
             daypart TEXT
@@ -365,6 +371,9 @@ def test_dump_sea_assets_csv_empty_db(tmp_path):
             vision_wave_score REAL,
             vision_wave_conf REAL,
             vision_sky_bucket TEXT,
+            wave_score_0_10 REAL,
+            wave_conf REAL,
+            sky_code TEXT,
             captured_at TEXT,
             doy INTEGER,
             daypart TEXT
@@ -397,5 +406,110 @@ def test_dump_sea_assets_csv_empty_db(tmp_path):
     assert len(lines) == 1
     assert "asset_id" in lines[0]
     assert "wave_score_0_10" in lines[0]
+
+    conn.close()
+
+
+@pytest.mark.integration
+def test_dump_sea_assets_csv_normalized_fields_precedence(tmp_path):
+    """Test that normalized wave_score_0_10/wave_conf/sky_code take precedence over vision_* fields."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+
+    conn.executescript(
+        """
+        CREATE TABLE assets (
+            id TEXT PRIMARY KEY,
+            upload_id TEXT,
+            file_ref TEXT,
+            content_type TEXT,
+            sha256 TEXT,
+            width INTEGER,
+            height INTEGER,
+            exif_json TEXT,
+            labels_json TEXT,
+            tg_message_id TEXT,
+            payload_json TEXT,
+            created_at TEXT NOT NULL,
+            source TEXT,
+            shot_at_utc INTEGER,
+            shot_doy INTEGER,
+            photo_doy INTEGER,
+            photo_wave REAL,
+            sky_visible TEXT,
+            vision_wave_score REAL,
+            vision_wave_conf REAL,
+            vision_sky_bucket TEXT,
+            wave_score_0_10 REAL,
+            wave_conf REAL,
+            sky_code TEXT,
+            captured_at TEXT,
+            doy INTEGER,
+            daypart TEXT
+        );
+        
+        CREATE TABLE vision_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id TEXT NOT NULL,
+            provider TEXT,
+            status TEXT,
+            category TEXT,
+            arch_view TEXT,
+            photo_weather TEXT,
+            flower_varieties TEXT,
+            confidence REAL,
+            result_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE CASCADE
+        );
+    """
+    )
+
+    # Asset with both normalized and vision_* fields - normalized should take precedence
+    asset_payload = {"city": "Test City"}
+    conn.execute(
+        """
+        INSERT INTO assets (
+            id, upload_id, file_ref, content_type, created_at, source,
+            payload_json, vision_wave_score, vision_wave_conf, vision_sky_bucket,
+            wave_score_0_10, wave_conf, sky_code, doy
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "asset_normalized",
+            None,
+            "file123",
+            "image/jpeg",
+            "2024-01-18T12:00:00",
+            "telegram",
+            json.dumps(asset_payload),
+            3.0,  # vision_wave_score (should be ignored)
+            0.75,  # vision_wave_conf (should be ignored)
+            "overcast",  # vision_sky_bucket (should be ignored)
+            8.5,  # wave_score_0_10 (should be used)
+            0.95,  # wave_conf (should be used)
+            "clear",  # sky_code (should be used)
+            18,
+        ),
+    )
+
+    conn.commit()
+
+    data = DataAccess(conn)
+    csv_content = data.dump_sea_assets_csv()
+
+    reader = csv.DictReader(StringIO(csv_content))
+    rows = list(reader)
+
+    assert len(rows) == 1
+    row = rows[0]
+
+    # Verify that normalized fields are used, not vision_* fields
+    assert row["asset_id"] == "asset_normalized"
+    assert row["wave_score_0_10"] == "8.5"
+    assert row["wave_conf"] == "0.95"
+    assert row["sky_bucket"] == "clear"
 
     conn.close()

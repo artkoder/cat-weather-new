@@ -180,7 +180,7 @@ async def test_sea_logging_prefixes(
     assert any(msg.startswith("SEA_RUBRIC weather") for msg in messages)
     assert any(msg.startswith("SEA_RUBRIC season") for msg in messages)
     assert any(msg.startswith("SEA_RUBRIC pool after") for msg in messages)
-    assert any(msg.startswith("SEA_RUBRIC top5 #") for msg in messages)
+    assert any(msg.startswith("SEA_RUBRIC top5:") for msg in messages)
     assert any(msg.startswith("SEA_RUBRIC facts choose") for msg in messages)
     assert any(msg.startswith("SEA_RUBRIC selected") for msg in messages)
 

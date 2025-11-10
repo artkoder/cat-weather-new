@@ -13601,6 +13601,48 @@ class Bot:
 
         target_wave_value = float(target_wave_score)
 
+        # Apply calm seas guard rules
+        calm_guard_active = False
+        calm_guard_filtered: list[str] = []
+        if target_wave_score <= 1:
+            # Check if there's at least one candidate with wave_score ≤ 2
+            has_calm_candidate = False
+            for candidate in working_candidates:
+                photo_wave = candidate.get("photo_wave") or candidate.get("wave_score")
+                if photo_wave is not None:
+                    try:
+                        wave_val = float(photo_wave)
+                        if wave_val <= 2:
+                            has_calm_candidate = True
+                            break
+                    except (TypeError, ValueError):
+                        pass
+
+            if has_calm_candidate:
+                calm_guard_active = True
+                # Hard filter: remove candidates with wave_score ≥ 5
+                filtered_candidates = []
+                for candidate in working_candidates:
+                    photo_wave = candidate.get("photo_wave") or candidate.get("wave_score")
+                    if photo_wave is not None:
+                        try:
+                            wave_val = float(photo_wave)
+                            if wave_val >= 5:
+                                calm_guard_filtered.append(str(candidate["asset"].id))
+                                continue
+                        except (TypeError, ValueError):
+                            pass
+                    filtered_candidates.append(candidate)
+                working_candidates = filtered_candidates
+
+                sea_log(
+                    "calm_guard",
+                    active=True,
+                    target_wave=target_wave_score,
+                    filtered_ids=calm_guard_filtered,
+                    pool_after_calm_guard=len(working_candidates),
+                )
+
         allowed_hard = set(allowed_photo_skies)
 
         stage_sequence: list[StageConfig] = [
@@ -13661,6 +13703,7 @@ class Bot:
                 "WaveCorridorPenalty": 0.0,
                 "CalmWavePenalty": 0.0,
                 "CalmWaveBonus": 0.0,
+                "CalmGuardNullWavePenalty": 0.0,
                 "SeasonMismatchPenalty": 0.0,
                 "NoDoyPenalty": 0.0,
                 "AgeBonus": 0.0,
@@ -13681,6 +13724,16 @@ class Bot:
             wave_penalty = calc_wave_penalty(photo_wave_val, target_wave_value, stage_cfg)
             components["WaveDeltaPenalty"] = wave_penalty
             score -= wave_penalty
+
+            # Apply calm guard null wave penalty for B0/B1 stages
+            if (
+                calm_guard_active
+                and photo_wave_val is None
+                and stage_cfg.name in {"B0", "B1"}
+            ):
+                calm_guard_null_penalty = 0.8
+                components["CalmGuardNullWavePenalty"] = calm_guard_null_penalty
+                score -= calm_guard_null_penalty
 
             if wave_delta is not None and wave_delta > stage_cfg.wave_tolerance:
                 overshoot = wave_delta - stage_cfg.wave_tolerance

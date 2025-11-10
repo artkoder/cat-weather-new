@@ -266,6 +266,8 @@ class SaveAssetPayload(TypedDict, total=False):
     photo_doy: int | None
     photo_wave: float | None
     sky_visible: str | bool | None
+    wave_score_0_10: float | None
+    wave_conf: float | None
 
 
 @dataclass(slots=True)
@@ -1211,6 +1213,7 @@ async def _ingest_photo_internal(
                     seen_categories.add(text)
 
             wave_score_value: float | None = None
+            wave_conf_value: float | None = None
             sky_visible_value: str | bool | None = None
             if isinstance(vision_payload, dict):
                 # Parse wave score from vision results using centralized parser
@@ -1220,7 +1223,14 @@ async def _ingest_photo_internal(
                 if "caption" in vision_payload and vision_payload["caption"]:
                     # Add result_text for text-based parsing fallback
                     vision_for_parsing["result_text"] = str(vision_payload["caption"])
-                wave_score_value, _ = parse_wave_score_from_vision(vision_for_parsing)
+                wave_score_value, wave_conf_value = parse_wave_score_from_vision(vision_for_parsing)
+
+                if wave_score_value is not None:
+                    logging.info(
+                        "Extracted wave score from vision: score=%s conf=%s",
+                        wave_score_value,
+                        wave_conf_value,
+                    )
 
                 raw_sky_visible = vision_payload.get("sky_visible")
                 if raw_sky_visible is not None:
@@ -1254,6 +1264,8 @@ async def _ingest_photo_internal(
                 "photo_doy": shot_doy_value,
                 "photo_wave": wave_score_value,
                 "sky_visible": sky_visible_value,
+                "wave_score_0_10": wave_score_value,
+                "wave_conf": wave_conf_value,
             }
             asset_id = callbacks.save_asset(save_payload)
 
@@ -1263,10 +1275,12 @@ async def _ingest_photo_internal(
 
         if asset_id:
             logging.info(
-                "SEA_RUBRIC assets ingest asset_id=%s shot_at=%s shot_doy=%s",
+                "SEA_RUBRIC assets ingest asset_id=%s shot_at=%s shot_doy=%s wave_score=%s wave_conf=%s",
                 asset_id,
                 shot_at_utc_value,
                 shot_doy_value,
+                wave_score_value,
+                wave_conf_value,
             )
 
     if processed_cleanup and processed_path.exists():

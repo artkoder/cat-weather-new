@@ -290,7 +290,7 @@ async def test_soft_penalties_logged_for_strict_stage(
         sea_id=1,
         sea_lat=54.95,
         sea_lon=20.2,
-        wave=0.2,
+        wave=0.4,
         water_temp=12.0,
         city_id=101,
         city_name="Калининград",

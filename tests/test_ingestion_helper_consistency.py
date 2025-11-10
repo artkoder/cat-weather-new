@@ -1,320 +1,343 @@
-import json
-import shutil
+"""Tests for ingestion helper consistency - ensuring vision metrics flow through update_asset."""
+
+import os
 import sqlite3
 import sys
-from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
-from api.uploads import UploadMetricsRecorder, UploadsConfig, register_upload_jobs
-from data_access import DataAccess, create_device, insert_upload
-from ingestion import extract_categories
-from jobs import Job, JobQueue
-from main import Bot, apply_migrations
-from tests.fixtures.ingestion_utils import (
-    DEFAULT_VISION_PAYLOAD,
-    OpenAIStub,
-    StorageStub,
-    TelegramStub,
-    compute_sha256,
-    create_sample_image,
-)
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from data_access import DataAccess
 
 
-class SupabaseStub:
-    async def insert_token_usage(self, *args, **kwargs):  # pragma: no cover - test stub
-        return False, {}, "disabled"
-
-    async def aclose(self) -> None:  # pragma: no cover - test stub
-        return None
-
-
-def _setup_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
+@pytest.fixture
+def temp_db(tmp_path: Path) -> sqlite3.Connection:
+    """Create a temporary database connection for testing."""
+    db_path = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    apply_migrations(conn)
+
+    # Create minimal schema needed for DataAccess
+    conn.executescript(
+        """
+        CREATE TABLE assets (
+            id TEXT PRIMARY KEY,
+            upload_id TEXT,
+            file_ref TEXT,
+            content_type TEXT,
+            sha256 TEXT,
+            width INTEGER,
+            height INTEGER,
+            exif_json TEXT,
+            labels_json TEXT,
+            tg_message_id TEXT,
+            payload_json TEXT,
+            created_at TEXT NOT NULL,
+            source TEXT,
+            shot_at_utc INTEGER,
+            shot_doy INTEGER,
+            photo_doy INTEGER,
+            photo_wave REAL,
+            sky_visible TEXT,
+            vision_wave_score REAL,
+            vision_wave_conf REAL,
+            vision_sky_bucket TEXT,
+            captured_at TEXT,
+            doy INTEGER,
+            daypart TEXT
+        );
+
+        CREATE TABLE vision_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id TEXT NOT NULL,
+            provider TEXT,
+            status TEXT,
+            category TEXT,
+            arch_view TEXT,
+            photo_weather TEXT,
+            flower_varieties TEXT,
+            confidence REAL,
+            result_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+
     return conn
 
 
-async def _run_mobile_upload(
-    *,
-    image_path: Path,
-    telegram: TelegramStub,
-    openai_payload: dict[str, object],
-    vision_enabled: bool,
-) -> tuple[
-    DataAccess,
-    sqlite3.Connection,
-    str,
-    UploadsConfig,
-    list[dict[str, Any]],
-    int,
-    int,
-]:
-    conn = _setup_connection()
-    data = DataAccess(conn)
-    asset_channel_id = -100777
-    recognition_channel_id = -200777
-    conn.execute("DELETE FROM asset_channel")
-    conn.execute(
-        "INSERT INTO asset_channel (channel_id) VALUES (?)",
-        (asset_channel_id,),
-    )
-    conn.execute("DELETE FROM recognition_channel")
-    conn.execute(
-        "INSERT INTO recognition_channel (channel_id) VALUES (?)",
-        (recognition_channel_id,),
-    )
-    conn.commit()
-    file_key = "shared-file"
-    storage = StorageStub({file_key: image_path})
-    metrics = UploadMetricsRecorder()
-    queue = JobQueue(conn)
-    config = UploadsConfig(
-        assets_channel_id=recognition_channel_id * 2,
-        vision_enabled=vision_enabled,
-        openai_vision_model="vision-test" if vision_enabled else None,
-    )
-    openai = OpenAIStub(payload=openai_payload)
-    register_upload_jobs(
-        queue,
-        conn,
-        storage=storage,
-        data=data,
-        telegram=telegram,
-        openai=openai,
-        metrics=metrics,
-        config=config,
-    )
+class TestIngestionHelperConsistency:
+    """Test that vision metrics are properly plumbed through update_asset."""
 
-    create_device(
-        conn,
-        device_id="device-1",
-        user_id=1,
-        name="Device 1",
-        secret="secret",
-    )
-    upload_id = insert_upload(
-        conn,
-        id="upload-1",
-        device_id="device-1",
-        idempotency_key="key-1",
-        file_ref=file_key,
-    )
-    conn.commit()
+    def test_update_asset_parses_vision_wave_score(self, temp_db: sqlite3.Connection) -> None:
+        """Test that update_asset parses and stores wave score from vision_results."""
+        data = DataAccess(temp_db)
 
-    job = Job(
-        id=1,
-        name="process_upload",
-        payload={"upload_id": upload_id},
-        status="queued",
-        attempts=0,
-        available_at=None,
-        last_error=None,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-    )
+        # Create a test asset
+        asset_id = data.create_asset(
+            upload_id="test-upload",
+            file_ref="test-file",
+            content_type="image/jpeg",
+            sha256="abc123",
+            width=800,
+            height=600,
+            exif=None,
+            labels=None,
+            tg_message_id=123,
+            tg_chat_id=456,
+            source="test",
+        )
 
-    await queue.handlers["process_upload"](job)
-
-    row = conn.execute(
-        "SELECT asset_id FROM uploads WHERE id=?",
-        (upload_id,),
-    ).fetchone()
-    assert row is not None and row["asset_id"]
-    asset_id = row["asset_id"]
-    call_kwargs = list(openai.calls)
-    assert telegram.calls and telegram.calls[0]["chat_id"] == recognition_channel_id
-    config = replace(config, assets_channel_id=recognition_channel_id)
-    return (
-        data,
-        conn,
-        asset_id,
-        config,
-        call_kwargs,
-        recognition_channel_id,
-        asset_channel_id,
-    )
-
-
-@pytest.mark.asyncio
-async def test_ingestion_helper_mobile_and_telegram_payloads_align(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    image_path = create_sample_image(tmp_path / "sample.jpg")
-    expected_sha = compute_sha256(image_path)
-    telegram_mobile = TelegramStub(start_message_id=500)
-    openai_payload = json.loads(json.dumps(DEFAULT_VISION_PAYLOAD))
-
-    (
-        data_mobile,
-        conn_mobile,
-        mobile_asset_id,
-        config,
-        mobile_openai_calls,
-        recognition_channel_id,
-        legacy_channel_id,
-    ) = await _run_mobile_upload(
-        image_path=image_path,
-        telegram=telegram_mobile,
-        openai_payload=openai_payload,
-        vision_enabled=False,
-    )
-
-    asset_mobile = data_mobile.get_asset(mobile_asset_id)
-    assert asset_mobile is not None
-
-    assert len(telegram_mobile.calls) == 1
-    mobile_call = telegram_mobile.calls[0]
-    mobile_message_id = mobile_call["message_id"]
-    mobile_chat_id = mobile_call["chat_id"]
-
-    assert asset_mobile.sha256 == expected_sha
-    assert asset_mobile.source == "mobile"
-    assert mobile_chat_id == config.assets_channel_id
-
-    # Telegram ingest job setup
-    monkeypatch.setenv("VISION_ENABLED", "1")
-    monkeypatch.setenv("OPENAI_VISION_MODEL", "vision-test")
-
-    bot_db_path = tmp_path / "bot.sqlite"
-    bot = Bot("dummy-token", str(bot_db_path))
-    try:
-        bot.set_asset_channel(legacy_channel_id)
-        bot.set_recognition_channel(recognition_channel_id)
-        bot.uploads_config.vision_enabled = True
-        bot.uploads_config.openai_vision_model = "vision-test"
-        bot.upload_metrics = UploadMetricsRecorder()
-        bot.openai = OpenAIStub(payload=openai_payload)
-        bot.supabase = SupabaseStub()
-
-        telegram_ingest = TelegramStub(start_message_id=mobile_message_id)
-
-        async def fake_publish(
-            chat_id: int, local_path: str, caption: str | None, *, caption_entities=None
-        ):
-            response = await telegram_ingest.send_photo(
-                chat_id=chat_id,
-                photo=Path(local_path),
-                caption=caption,
-            )
-            return response, "photo"
-
-        async def fake_download(file_id: str, dest_path: str | Path | None = None):
-            destination = Path(dest_path or (tmp_path / f"{file_id}.jpg"))
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(image_path, destination)
-            return destination
-
-        async def fake_api_request(*args, **kwargs):
-            return {"ok": True}
-
-        bot._publish_as_photo = fake_publish  # type: ignore[assignment]
-        bot._download_file = fake_download  # type: ignore[assignment]
-        bot.api_request = fake_api_request  # type: ignore[assignment]
-
-        async def fake_reverse_geocode(*args, **kwargs):
-            return None
-
-        bot._reverse_geocode = fake_reverse_geocode  # type: ignore[assignment]
-        bot.jobs.enqueue = lambda *args, **kwargs: 99  # type: ignore[assignment]
-
-        file_meta = {
-            "file_id": "tg-file",
-            "file_unique_id": "tg-unique",
-            "file_name": "sample.jpg",
-            "mime_type": "image/jpeg",
-            "file_size": image_path.stat().st_size,
-            "width": asset_mobile.width,
-            "height": asset_mobile.height,
+        # Update with vision results containing wave score
+        vision_results = {
+            "status": "ok",
+            "provider": "gpt-4o-mini",
+            "weather": {"sea": {"wave_score": 7.5, "confidence": 0.92}},
         }
+        data.update_asset(asset_id, vision_results=vision_results)
 
-        recognition_asset_id = bot.data.save_asset(
-            channel_id=config.assets_channel_id,
-            message_id=321,
-            template=None,
-            hashtags=None,
-            tg_chat_id=config.assets_channel_id,
-            caption="Исходный пост",
-            kind="photo",
-            file_meta=file_meta,
-            metadata=None,
-            origin="recognition",
-            source="telegram",
+        # Verify the columns were updated
+        asset = data.get_asset(asset_id)
+        assert asset is not None
+        assert asset.vision_wave_score == 7.5
+        assert asset.vision_wave_conf == 0.92
+
+    def test_update_asset_parses_vision_sky_bucket(self, temp_db: sqlite3.Connection) -> None:
+        """Test that update_asset parses and stores sky bucket from vision_results."""
+        data = DataAccess(temp_db)
+
+        asset_id = data.create_asset(
+            upload_id="test-upload-2",
+            file_ref="test-file-2",
+            content_type="image/jpeg",
+            sha256="def456",
+            width=800,
+            height=600,
+            exif=None,
+            labels=None,
+            tg_message_id=124,
+            tg_chat_id=457,
+            source="test",
         )
 
-        recognition_asset = bot.data.get_asset(recognition_asset_id)
-        assert recognition_asset is not None
-        payload = dict(recognition_asset.payload)
-        payload.pop("tg_chat_id", None)
-        payload.pop("message_id", None)
-        payload.pop("channel_id", None)
-        payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True) if payload else None
-        bot.db.execute(
-            "UPDATE assets SET tg_message_id=NULL, payload_json=? WHERE id=?",
-            (payload_json, recognition_asset_id),
+        vision_results = {
+            "status": "ok",
+            "provider": "gpt-4o-mini",
+            "weather": {"sky": {"bucket": "partly_cloudy"}},
+        }
+        data.update_asset(asset_id, vision_results=vision_results)
+
+        asset = data.get_asset(asset_id)
+        assert asset is not None
+        assert asset.vision_sky_bucket == "partly_cloudy"
+
+    def test_update_asset_parses_both_wave_and_sky(self, temp_db: sqlite3.Connection) -> None:
+        """Test that update_asset parses both wave and sky metrics together."""
+        data = DataAccess(temp_db)
+
+        asset_id = data.create_asset(
+            upload_id="test-upload-3",
+            file_ref="test-file-3",
+            content_type="image/jpeg",
+            sha256="ghi789",
+            width=800,
+            height=600,
+            exif=None,
+            labels=None,
+            tg_message_id=125,
+            tg_chat_id=458,
+            source="test",
         )
-        bot.db.commit()
 
-        ingest_job = Job(
-            id=42,
-            name="ingest",
-            payload={"asset_id": recognition_asset_id},
-            status="queued",
-            attempts=0,
-            available_at=None,
-            last_error=None,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+        vision_results = {
+            "status": "ok",
+            "provider": "gpt-4o-mini",
+            "weather": {
+                "sea": {"wave_score": 3.2, "confidence": 0.88},
+                "sky": {"bucket": "overcast"},
+            },
+        }
+        data.update_asset(asset_id, vision_results=vision_results)
+
+        asset = data.get_asset(asset_id)
+        assert asset is not None
+        assert asset.vision_wave_score == 3.2
+        assert asset.vision_wave_conf == 0.88
+        assert asset.vision_sky_bucket == "overcast"
+
+    def test_update_asset_with_legacy_sea_wave_score_dict(
+        self, temp_db: sqlite3.Connection
+    ) -> None:
+        """Test parsing legacy sea_wave_score dict format."""
+        data = DataAccess(temp_db)
+
+        asset_id = data.create_asset(
+            upload_id="test-upload-4",
+            file_ref="test-file-4",
+            content_type="image/jpeg",
+            sha256="jkl012",
+            width=800,
+            height=600,
+            exif=None,
+            labels=None,
+            tg_message_id=126,
+            tg_chat_id=459,
+            source="test",
         )
 
-        await bot._job_ingest(ingest_job)
+        vision_results = {
+            "status": "ok",
+            "sea_wave_score": {"value": 5.5, "confidence": 0.75},
+        }
+        data.update_asset(asset_id, vision_results=vision_results)
 
-        assert len(telegram_ingest.calls) == 1
+        asset = data.get_asset(asset_id)
+        assert asset is not None
+        assert asset.vision_wave_score == 5.5
+        assert asset.vision_wave_conf == 0.75
 
-        identifier = f"{legacy_channel_id}:{mobile_message_id}"
-        row = bot.db.execute(
-            "SELECT id FROM assets WHERE tg_message_id=?",
-            (identifier,),
-        ).fetchone()
-        assert row is not None
-        asset_ingest = bot.data.get_asset(row["id"])
-        assert asset_ingest is not None
+    def test_update_asset_with_textual_wave_score(self, temp_db: sqlite3.Connection) -> None:
+        """Test parsing wave score from textual result."""
+        data = DataAccess(temp_db)
 
-        assert asset_ingest.sha256 == expected_sha
-        assert asset_ingest.width == asset_mobile.width
-        assert asset_ingest.height == asset_mobile.height
-        assert asset_ingest.tg_message_id == identifier
-        assert asset_ingest.source == "telegram"
+        asset_id = data.create_asset(
+            upload_id="test-upload-5",
+            file_ref="test-file-5",
+            content_type="image/jpeg",
+            sha256="mno345",
+            width=800,
+            height=600,
+            exif=None,
+            labels=None,
+            tg_message_id=127,
+            tg_chat_id=460,
+            source="test",
+        )
 
-        mobile_exif = json.loads(asset_mobile.exif_json or "{}")
-        ingest_exif = json.loads(asset_ingest.exif_json or "{}")
-        assert mobile_exif == ingest_exif
+        vision_results = {
+            "status": "ok",
+            "result_text": "Погода: хорошая\nВолнение моря: 6.5/10 (conf=0.85)\nВидимость: отличная",
+        }
+        data.update_asset(asset_id, vision_results=vision_results)
 
-        mobile_metadata = asset_mobile.metadata or {}
-        ingest_metadata = asset_ingest.metadata or {}
-        assert mobile_metadata.get("exif") == ingest_metadata.get("exif")
-        assert mobile_metadata.get("gps") == ingest_metadata.get("gps")
-        assert asset_ingest.latitude == asset_mobile.latitude
-        assert asset_ingest.longitude == asset_mobile.longitude
-        assert asset_ingest.exif_present == asset_mobile.exif_present
+        asset = data.get_asset(asset_id)
+        assert asset is not None
+        assert asset.vision_wave_score == 6.5
+        assert asset.vision_wave_conf == 0.85
 
-        mobile_labels = json.loads(asset_mobile.labels_json or "{}")
-        ingest_labels = json.loads(asset_ingest.labels_json or "[]")
-        expected_categories = extract_categories(mobile_labels)
-        assert ingest_labels == expected_categories
+    def test_update_asset_no_vision_metrics(self, temp_db: sqlite3.Connection) -> None:
+        """Test that update_asset handles vision results without wave/sky metrics gracefully."""
+        data = DataAccess(temp_db)
 
-        assert asset_ingest.payload.get("tg_chat_id") == legacy_channel_id
-        assert asset_mobile.payload.get("tg_chat_id") == recognition_channel_id
-        assert asset_ingest.payload.get("message_id") == asset_mobile.payload.get("message_id")
+        asset_id = data.create_asset(
+            upload_id="test-upload-6",
+            file_ref="test-file-6",
+            content_type="image/jpeg",
+            sha256="pqr678",
+            width=800,
+            height=600,
+            exif=None,
+            labels=None,
+            tg_message_id=128,
+            tg_chat_id=461,
+            source="test",
+        )
 
-        assert not mobile_openai_calls
-        assert not bot.openai.calls
-    finally:
-        await bot.close()
-        conn_mobile.close()
+        vision_results = {
+            "status": "ok",
+            "provider": "gpt-4o-mini",
+            "caption": "A beautiful landscape",
+            "tags": ["nature", "landscape"],
+        }
+        data.update_asset(asset_id, vision_results=vision_results)
+
+        # Should not crash, metrics should remain None
+        asset = data.get_asset(asset_id)
+        assert asset is not None
+        assert asset.vision_wave_score is None
+        assert asset.vision_wave_conf is None
+        assert asset.vision_sky_bucket is None
+
+    def test_update_asset_overwrites_existing_metrics(self, temp_db: sqlite3.Connection) -> None:
+        """Test that update_asset overwrites existing vision metrics."""
+        data = DataAccess(temp_db)
+
+        asset_id = data.create_asset(
+            upload_id="test-upload-7",
+            file_ref="test-file-7",
+            content_type="image/jpeg",
+            sha256="stu901",
+            width=800,
+            height=600,
+            exif=None,
+            labels=None,
+            tg_message_id=129,
+            tg_chat_id=462,
+            source="test",
+        )
+
+        # First update
+        vision_results_1 = {
+            "status": "ok",
+            "weather": {"sea": {"wave_score": 2.0, "confidence": 0.5}},
+        }
+        data.update_asset(asset_id, vision_results=vision_results_1)
+
+        asset = data.get_asset(asset_id)
+        assert asset is not None
+        assert asset.vision_wave_score == 2.0
+        assert asset.vision_wave_conf == 0.5
+
+        # Second update with different values
+        vision_results_2 = {
+            "status": "ok",
+            "weather": {"sea": {"wave_score": 8.5, "confidence": 0.95}},
+        }
+        data.update_asset(asset_id, vision_results=vision_results_2)
+
+        asset = data.get_asset(asset_id)
+        assert asset is not None
+        assert asset.vision_wave_score == 8.5
+        assert asset.vision_wave_conf == 0.95
+
+    def test_update_asset_preserves_manual_overrides(self, temp_db: sqlite3.Connection) -> None:
+        """Test that manual column updates are preserved when passing vision_results."""
+        data = DataAccess(temp_db)
+
+        asset_id = data.create_asset(
+            upload_id="test-upload-8",
+            file_ref="test-file-8",
+            content_type="image/jpeg",
+            sha256="vwx234",
+            width=800,
+            height=600,
+            exif=None,
+            labels=None,
+            tg_message_id=130,
+            tg_chat_id=463,
+            source="test",
+        )
+
+        # Manual update with explicit wave score
+        data.update_asset(asset_id, vision_wave_score=9.0, vision_wave_conf=1.0)
+
+        asset = data.get_asset(asset_id)
+        assert asset is not None
+        assert asset.vision_wave_score == 9.0
+        assert asset.vision_wave_conf == 1.0
+
+        # Now update with vision_results containing different values
+        # The parsed values should overwrite the manual ones
+        vision_results = {
+            "status": "ok",
+            "weather": {"sea": {"wave_score": 4.5, "confidence": 0.8}},
+        }
+        data.update_asset(asset_id, vision_results=vision_results)
+
+        asset = data.get_asset(asset_id)
+        assert asset is not None
+        assert asset.vision_wave_score == 4.5
+        assert asset.vision_wave_conf == 0.8

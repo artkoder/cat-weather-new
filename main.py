@@ -1078,6 +1078,7 @@ class Bot:
         self._twogis_backoff_seconds = 1.0
         self._shoreline_cache: dict[tuple[float, float], tuple[bool, datetime]] = {}
         self._shoreline_fail_cache: dict[tuple[float, float], datetime] = {}
+        self._sea_publish_guard: dict[str, float] = {}
         # ensure new columns exist when upgrading
         for table, column in (
             ("users", "username"),

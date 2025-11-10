@@ -7,6 +7,7 @@ import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from data_access import DataAccess
+from utils_wave import parse_sky_bucket_from_vision, parse_wave_score_from_vision
 
 
 class TestVisionParsers:
@@ -86,3 +87,140 @@ class TestVisionParsers:
         """Test parsing sky bucket with None input."""
         sky_bucket = DataAccess._parse_sky_bucket_from_vision(None)
         assert sky_bucket is None
+
+
+class TestUtilsWaveParsers:
+    """Test centralized parsing functions in utils_wave module."""
+
+    def test_parse_wave_score_with_confidence_from_text(self):
+        """Test parsing wave score with confidence from Russian text."""
+        vision_json = {
+            "result_text": "Погода: хорошая\nВолнение моря: 7.5/10 (conf=0.92)\nВидимость: отличная"
+        }
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score == 7.5
+        assert wave_conf == 0.92
+
+    def test_parse_wave_score_with_confidence_from_text_spaces(self):
+        """Test parsing with various spacing patterns."""
+        vision_json = {"result_text": "Волнение моря:  3.2  /  10  ( conf = 0.88 )"}
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score == 3.2
+        assert wave_conf == 0.88
+
+    def test_parse_wave_score_integer_values(self):
+        """Test parsing integer wave scores."""
+        vision_json = {"sea_wave_score": {"value": 8, "confidence": 1}}
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score == 8.0
+        assert wave_conf == 1.0
+
+    def test_parse_wave_score_mixed_types(self):
+        """Test parsing with mixed int/float types."""
+        vision_json = {"weather": {"sea": {"wave_score": 4, "confidence": 0.75}}}
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score == 4.0
+        assert wave_conf == 0.75
+
+    def test_parse_wave_score_string_numbers(self):
+        """Test parsing wave score from string representations."""
+        vision_json = {"sea_state": {"score": "6.5", "confidence": "0.88"}}
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score == 6.5
+        assert wave_conf == 0.88
+
+    def test_parse_wave_score_invalid_string(self):
+        """Test parsing with invalid string values."""
+        vision_json = {"sea_wave_score": {"value": "invalid", "confidence": "bad"}}
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score is None
+        assert wave_conf is None
+
+    def test_parse_wave_score_empty_dict(self):
+        """Test parsing from empty dict."""
+        vision_json = {}
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score is None
+        assert wave_conf is None
+
+    def test_parse_wave_score_partial_confidence(self):
+        """Test parsing when only score is present."""
+        vision_json = {"sea_wave_score": {"value": 5.0}}
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score == 5.0
+        assert wave_conf is None
+
+    def test_parse_wave_score_fallback_priority(self):
+        """Test that structured formats take priority over text."""
+        vision_json = {
+            "weather": {"sea": {"wave_score": 3.0, "confidence": 0.9}},
+            "result_text": "Волнение моря: 8.0/10 (conf=0.5)",
+        }
+        wave_score, wave_conf = parse_wave_score_from_vision(vision_json)
+        assert wave_score == 3.0
+        assert wave_conf == 0.9
+
+    def test_parse_sky_bucket_weather_sky_layout(self):
+        """Test parsing sky bucket from weather.sky.bucket."""
+        vision_json = {"weather": {"sky": {"bucket": "clear"}}}
+        sky_bucket = parse_sky_bucket_from_vision(vision_json)
+        assert sky_bucket == "clear"
+
+    def test_parse_sky_bucket_sky_layout(self):
+        """Test parsing sky bucket from sky.bucket."""
+        vision_json = {"sky": {"bucket": "partly_cloudy"}}
+        sky_bucket = parse_sky_bucket_from_vision(vision_json)
+        assert sky_bucket == "partly_cloudy"
+
+    def test_parse_sky_bucket_direct(self):
+        """Test parsing sky bucket from direct field."""
+        vision_json = {"sky_bucket": "overcast"}
+        sky_bucket = parse_sky_bucket_from_vision(vision_json)
+        assert sky_bucket == "overcast"
+
+    def test_parse_sky_bucket_priority(self):
+        """Test that weather.sky.bucket takes priority."""
+        vision_json = {
+            "weather": {"sky": {"bucket": "clear"}},
+            "sky_bucket": "overcast",
+            "sky": {"bucket": "partly_cloudy"},
+        }
+        sky_bucket = parse_sky_bucket_from_vision(vision_json)
+        assert sky_bucket == "clear"
+
+    def test_parse_sky_bucket_empty(self):
+        """Test parsing when sky bucket is empty string."""
+        vision_json = {"sky_bucket": ""}
+        sky_bucket = parse_sky_bucket_from_vision(vision_json)
+        assert sky_bucket is None
+
+    def test_parse_sky_bucket_none_value(self):
+        """Test parsing when sky bucket is None."""
+        vision_json = {"sky_bucket": None}
+        sky_bucket = parse_sky_bucket_from_vision(vision_json)
+        assert sky_bucket is None
+
+    def test_consistency_between_utils_and_dataaccess(self):
+        """Test that DataAccess methods delegate to utils_wave correctly."""
+        test_cases = [
+            {"weather": {"sea": {"wave_score": 5.5, "confidence": 0.85}}},
+            {"sea_state": {"score": 3.2, "confidence": 0.75}},
+            {"sea_wave_score": {"value": 7, "confidence": 0.9}},
+            {"sea_wave_score": 4.5},
+            {"result_text": "Волнение моря: 6.0/10 (conf=0.88)"},
+            {"result_text": "Волнение моря: 2.5/10"},
+        ]
+        for test_case in test_cases:
+            utils_result = parse_wave_score_from_vision(test_case)
+            data_access_result = DataAccess._parse_wave_score_from_vision(test_case)
+            assert utils_result == data_access_result
+
+        sky_test_cases = [
+            {"weather": {"sky": {"bucket": "clear"}}},
+            {"sky": {"bucket": "partly_cloudy"}},
+            {"sky_bucket": "overcast"},
+        ]
+        for test_case in sky_test_cases:
+            utils_result = parse_sky_bucket_from_vision(test_case)
+            data_access_result = DataAccess._parse_sky_bucket_from_vision(test_case)
+            assert utils_result == data_access_result

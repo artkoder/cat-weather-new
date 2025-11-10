@@ -17,6 +17,7 @@ _UNSET = object()
 import sqlite3
 
 from sea_selection import NormalizedSky, infer_sky_visible
+from utils_wave import parse_sky_bucket_from_vision, parse_wave_score_from_vision
 from zoneinfo import ZoneInfo
 
 PAIRING_TOKEN_TTL_SECONDS = 600
@@ -1077,72 +1078,21 @@ class DataAccess:
     ) -> tuple[float | None, float | None]:
         """Extract wave score and confidence from various vision JSON layouts.
 
+        Delegates to utils_wave.parse_wave_score_from_vision for centralized parsing.
+
         Returns: (wave_score, confidence) tuple, both can be None
         """
-        if not vision_json:
-            return None, None
-
-        wave_score: float | None = None
-        wave_conf: float | None = None
-
-        if "weather" in vision_json and isinstance(vision_json["weather"], dict):
-            weather = vision_json["weather"]
-            if "sea" in weather and isinstance(weather["sea"], dict):
-                sea_data = weather["sea"]
-                wave_score = Asset._to_float(sea_data.get("wave_score"))
-                wave_conf = Asset._to_float(sea_data.get("confidence"))
-
-        if wave_score is None and "sea_state" in vision_json:
-            sea_state = vision_json["sea_state"]
-            if isinstance(sea_state, dict):
-                wave_score = Asset._to_float(sea_state.get("score"))
-                wave_conf = Asset._to_float(sea_state.get("confidence"))
-
-        if wave_score is None and "sea_wave_score" in vision_json:
-            raw_wave = vision_json["sea_wave_score"]
-            if isinstance(raw_wave, dict):
-                wave_score = Asset._to_float(raw_wave.get("value"))
-                wave_conf = Asset._to_float(raw_wave.get("confidence"))
-            else:
-                wave_score = Asset._to_float(raw_wave)
-
-        if wave_score is None and "result_text" in vision_json:
-            result_text = str(vision_json["result_text"])
-            import re
-
-            match = re.search(r"Волнение моря:\s*(\d+(?:\.\d+)?)\s*/\s*10", result_text)
-            if match:
-                wave_score = Asset._to_float(match.group(1))
-
-        return wave_score, wave_conf
+        return parse_wave_score_from_vision(vision_json)
 
     @staticmethod
     def _parse_sky_bucket_from_vision(vision_json: dict[str, Any] | None) -> str | None:
         """Extract sky bucket from vision JSON.
 
+        Delegates to utils_wave.parse_sky_bucket_from_vision for centralized parsing.
+
         Returns: sky bucket string (e.g., "clear", "partly_cloudy", "overcast")
         """
-        if not vision_json:
-            return None
-
-        if "weather" in vision_json and isinstance(vision_json["weather"], dict):
-            weather = vision_json["weather"]
-            if "sky" in weather and isinstance(weather["sky"], dict):
-                bucket = weather["sky"].get("bucket")
-                if bucket:
-                    return str(bucket)
-
-        if "sky_bucket" in vision_json:
-            bucket = vision_json["sky_bucket"]
-            if bucket:
-                return str(bucket)
-
-        if "sky" in vision_json and isinstance(vision_json["sky"], dict):
-            bucket = vision_json["sky"].get("bucket")
-            if bucket:
-                return str(bucket)
-
-        return None
+        return parse_sky_bucket_from_vision(vision_json)
 
     @classmethod
     def _vision_category_variants(cls, category: str) -> set[str]:
@@ -1657,6 +1607,27 @@ class DataAccess:
             performed_write = True
         if vision_results is not None:
             self._store_vision_result(row.id, vision_results)
+            # Parse and update wave/sky columns from vision results
+            if isinstance(vision_results, dict):
+                parsed_wave_score, parsed_wave_conf = self._parse_wave_score_from_vision(
+                    vision_results
+                )
+                parsed_sky_bucket = self._parse_sky_bucket_from_vision(vision_results)
+                column_updates: dict[str, Any] = {}
+                if parsed_wave_score is not None:
+                    column_updates["vision_wave_score"] = Asset._to_float(parsed_wave_score)
+                if parsed_wave_conf is not None:
+                    column_updates["vision_wave_conf"] = Asset._to_float(parsed_wave_conf)
+                if parsed_sky_bucket is not None:
+                    column_updates["vision_sky_bucket"] = str(parsed_sky_bucket)
+                if column_updates:
+                    assignments_list = [f"{k} = ?" for k in column_updates]
+                    params_list: list[Any] = list(column_updates.values())
+                    params_list.append(row.id)
+                    self.conn.execute(
+                        f"UPDATE assets SET {', '.join(assignments_list)} WHERE id=?",
+                        params_list,
+                    )
             performed_write = True
         if performed_write:
             self.conn.commit()
@@ -2339,7 +2310,10 @@ class DataAccess:
 
         for asset in assets:
             vision = asset.vision_results or {}
-            raw_wave: Any = asset.photo_wave
+            # Prefer parsed vision_wave_score column before legacy data
+            raw_wave: Any = asset.vision_wave_score
+            if raw_wave is None:
+                raw_wave = asset.photo_wave
             if raw_wave is None:
                 raw_wave = vision.get("sea_wave_score")
                 if isinstance(raw_wave, dict):

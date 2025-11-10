@@ -35,7 +35,10 @@ def _setup_connection() -> sqlite3.Connection:
             sky_visible TEXT,
             captured_at TEXT,
             doy INTEGER,
-            daypart TEXT
+            daypart TEXT,
+            vision_wave_score REAL,
+            vision_wave_conf REAL,
+            vision_sky_bucket TEXT
         )
         """
     )

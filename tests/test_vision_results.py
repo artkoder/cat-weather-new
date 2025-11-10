@@ -109,6 +109,10 @@ def _load_schema(conn: sqlite3.Connection) -> None:
         spec_sea_assets.loader.exec_module(module_sea_assets)
         if hasattr(module_sea_assets, "run"):
             module_sea_assets.run(conn)
+    enrich_sea_metadata_path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "0026_enrich_sea_metadata.sql"
+    )
+    conn.executescript(enrich_sea_metadata_path.read_text(encoding="utf-8"))
     photo_metadata_path = (
         Path(__file__).resolve().parents[1] / "migrations" / "0027_assets_photo_metadata.py"
     )

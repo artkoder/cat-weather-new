@@ -13283,13 +13283,13 @@ class Bot:
     ) -> bool:
         publish_start_time = time.perf_counter()
         timeline: dict[str, float] = {}
-        
+
         config = rubric.config or {}
         enable_facts = bool(config.get("enable_facts", True))
         sea_id = int(config.get("sea_id") or 1)
-        
+
         timeline["start"] = 0.0
-        
+
         step_start = time.perf_counter()
         conditions = self._get_sea_conditions(sea_id) or {}
         cache_row = self._get_sea_cache(sea_id)
@@ -13306,7 +13306,7 @@ class Bot:
         else:
             storm_state = "strong_storm"
         target_wave_score = wave_score
-        
+
         publish_key = f"sea_{sea_id}_{storm_state}"
         if hasattr(self, "_sea_publish_guard"):
             guard = getattr(self, "_sea_publish_guard")
@@ -13989,23 +13989,25 @@ class Bot:
                         place_hashtag = f"#{sanitized_city}"
 
         step_start = time.perf_counter()
-        caption_text, model_hashtags, openai_metadata = await self._generate_sea_caption_with_timeout(
-            storm_state=storm_state,
-            storm_persisting=storm_persisting,
-            wave_height_m=wave_height_value,
-            wave_score=wave_score,
-            wind_class=wind_class,
-            wind_ms=wind_ms,
-            wind_kmh=wind_kmh,
-            clouds_label=clouds_label,
-            sunset_selected=sunset_selected,
-            want_sunset=want_sunset,
-            place_hashtag=place_hashtag,
-            fact_sentence=fact_sentence,
-            now_local_iso=now_local_iso,
-            day_part=day_part,
-            tz_name=tz_name,
-            job=job,
+        caption_text, model_hashtags, openai_metadata = (
+            await self._generate_sea_caption_with_timeout(
+                storm_state=storm_state,
+                storm_persisting=storm_persisting,
+                wave_height_m=wave_height_value,
+                wave_score=wave_score,
+                wind_class=wind_class,
+                wind_ms=wind_ms,
+                wind_kmh=wind_kmh,
+                clouds_label=clouds_label,
+                sunset_selected=sunset_selected,
+                want_sunset=want_sunset,
+                place_hashtag=place_hashtag,
+                fact_sentence=fact_sentence,
+                now_local_iso=now_local_iso,
+                day_part=day_part,
+                tz_name=tz_name,
+                job=job,
+            )
         )
         stripped_caption = self.strip_header(caption_text)
         raw_caption_text = (stripped_caption or caption_text or "").strip()
@@ -14080,7 +14082,7 @@ class Bot:
             caption_text = fallback_caption_plain
         full_caption = compose_caption(caption_text)
         logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
-        
+
         timeline["openai_generate_caption"] = round((time.perf_counter() - step_start) * 1000, 2)
 
         step_start = time.perf_counter()
@@ -14127,10 +14129,10 @@ class Bot:
                 },
                 files={"photo": ("photo.jpg", file_data)},
             )
-        
+
         tg_elapsed = round((time.perf_counter() - step_start) * 1000, 2)
         timeline["sendPhoto"] = tg_elapsed
-        
+
         tg_rate_limited = 0
         if not response.get("ok"):
             error_code = response.get("error_code")
@@ -14144,7 +14146,7 @@ class Bot:
                 response,
             )
             return False
-        
+
         logging.info(
             "SEA_RUBRIC tg_api_success status=200 time_ms=%.1f tg_rate_limited=0",
             tg_elapsed,
@@ -14163,7 +14165,7 @@ class Bot:
 
         total_elapsed = round((time.perf_counter() - publish_start_time) * 1000, 2)
         timeline["done"] = total_elapsed
-        
+
         logging.info(
             "SEA_RUBRIC PUBLISH_TIMELINE sea_id=%s total_ms=%.1f start=%.1f read_sea_cache=%.1f "
             "select_candidates=%.1f build_context=%.1f openai_generate_caption=%.1f sendPhoto=%.1f",
@@ -14595,14 +14597,14 @@ class Bot:
             "timeout_hit": 0,
             "fallback": 0,
         }
-        
+
         OPENAI_DEADLINE = 20.0
         PER_ATTEMPT_TIMEOUT = 12.0
         MAX_RETRIES = 2
         BACKOFF_DELAYS = [1.0, 2.0]
-        
+
         global_start = time.perf_counter()
-        
+
         for retry_idx in range(MAX_RETRIES + 1):
             elapsed_global = time.perf_counter() - global_start
             if elapsed_global >= OPENAI_DEADLINE:
@@ -14613,10 +14615,10 @@ class Bot:
                     elapsed_global * 1000,
                 )
                 break
-            
+
             remaining_time = min(PER_ATTEMPT_TIMEOUT, OPENAI_DEADLINE - elapsed_global)
             attempt_start = time.perf_counter()
-            
+
             try:
                 caption_task = asyncio.create_task(
                     self._generate_sea_caption(
@@ -14639,33 +14641,33 @@ class Bot:
                     )
                 )
                 caption, hashtags = await asyncio.wait_for(caption_task, timeout=remaining_time)
-                
+
                 attempt_duration = (time.perf_counter() - attempt_start) * 1000
                 openai_metadata["openai_calls_per_publish"] += 1
                 openai_metadata["duration_ms"] = round(attempt_duration, 2)
                 openai_metadata["retries"] = retry_idx
-                
+
                 logging.info(
                     "SEA_RUBRIC OPENAI_CALL success attempt=%d duration_ms=%.1f retries=%d",
                     openai_metadata["openai_calls_per_publish"],
                     openai_metadata["duration_ms"],
                     openai_metadata["retries"],
                 )
-                
+
                 return caption, hashtags, openai_metadata
-                
+
             except asyncio.TimeoutError:
                 attempt_duration = (time.perf_counter() - attempt_start) * 1000
                 openai_metadata["openai_calls_per_publish"] += 1
                 openai_metadata["timeout_hit"] = 1
-                
+
                 logging.warning(
                     "SEA_RUBRIC OPENAI_CALL timeout attempt=%d duration_ms=%.1f timeout_sec=%.1f",
                     openai_metadata["openai_calls_per_publish"],
                     attempt_duration,
                     remaining_time,
                 )
-                
+
                 if retry_idx < MAX_RETRIES:
                     openai_metadata["retries"] = retry_idx + 1
                     backoff_delay = BACKOFF_DELAYS[min(retry_idx, len(BACKOFF_DELAYS) - 1)]
@@ -14674,17 +14676,17 @@ class Bot:
                 else:
                     openai_metadata["fallback"] = 1
                     break
-                    
+
             except Exception as exc:
                 attempt_duration = (time.perf_counter() - attempt_start) * 1000
                 openai_metadata["openai_calls_per_publish"] += 1
-                
+
                 logging.exception(
                     "SEA_RUBRIC OPENAI_CALL error attempt=%d duration_ms=%.1f",
                     openai_metadata["openai_calls_per_publish"],
                     attempt_duration,
                 )
-                
+
                 if retry_idx < MAX_RETRIES:
                     openai_metadata["retries"] = retry_idx + 1
                     backoff_delay = BACKOFF_DELAYS[min(retry_idx, len(BACKOFF_DELAYS) - 1)]
@@ -14693,11 +14695,11 @@ class Bot:
                 else:
                     openai_metadata["fallback"] = 1
                     break
-        
+
         openai_metadata["fallback"] = 1
         total_duration = (time.perf_counter() - global_start) * 1000
         openai_metadata["duration_ms"] = round(total_duration, 2)
-        
+
         logging.info(
             "SEA_RUBRIC OPENAI_FALLBACK total_duration_ms=%.1f calls=%d retries=%d timeout_hit=%d",
             openai_metadata["duration_ms"],
@@ -14705,7 +14707,7 @@ class Bot:
             openai_metadata["retries"],
             openai_metadata["timeout_hit"],
         )
-        
+
         fallback_seed = ""
         if storm_state == "strong_storm":
             fallback_seed = "Сегодня сильный шторм на море — волны гремят у самого берега."
@@ -14720,23 +14722,25 @@ class Bot:
                 if sunset_selected
                 else "Порадую вас морем — побережье зовёт вдохнуть глубже."
             )
-        
+
         if wind_class == "very_strong":
             fallback_seed += " Ветер срывает шапки на набережной."
         elif wind_class == "strong":
             fallback_seed += " Ветер ощутимо тянет к морю."
         elif storm_state == "calm":
             fallback_seed += " На побережье спокойно и хочется задержаться."
-        
+
         if fact_sentence:
             fallback_seed += f" {fact_sentence.strip()}"
-        
+
         fallback_sentences = [
-            segment.strip() for segment in re.split(r"(?<=[.!?…])\s+", fallback_seed.strip()) if segment.strip()
+            segment.strip()
+            for segment in re.split(r"(?<=[.!?…])\s+", fallback_seed.strip())
+            if segment.strip()
         ]
         fallback_caption = " ".join(fallback_sentences[:3])
         default_hashtags = self._default_hashtags("sea")
-        
+
         return fallback_caption, default_hashtags, openai_metadata
 
     async def _generate_guess_arch_copy(

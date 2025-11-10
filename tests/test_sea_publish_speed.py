@@ -140,33 +140,35 @@ async def test_sea_publish_uses_file_id(monkeypatch, tmp_path):
 
         asset = bot.data.get_asset(sunset_id)
         assert asset is not None
-        
+
         bot.data.conn.execute(
             "UPDATE assets SET payload_json = json_set(COALESCE(payload_json, '{}'), '$.file_id', ?) WHERE id = ?",
             ("AgACAgIAAxkBAAIC123456789", sunset_id),
         )
         bot.data.conn.commit()
-        
+
         asset = bot.data.get_asset(sunset_id)
         assert asset is not None
         assert asset.file_id == "AgACAgIAAxkBAAIC123456789"
 
         assert await bot.publish_rubric("sea") is True
-        
+
         send_calls = [entry for entry in requests_log if entry["method"] == "sendPhoto"]
         assert len(send_calls) == 1
-        
+
         send_call = send_calls[0]
         assert send_call["data"]["photo"] == "AgACAgIAAxkBAAIC123456789"
         assert send_call["files"] is None
-        
-        rows = bot.db.execute("SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1").fetchall()
+
+        rows = bot.db.execute(
+            "SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1"
+        ).fetchall()
         assert len(rows) == 1
         metadata = json.loads(rows[0]["metadata"])
         assert "timeline_ms" in metadata
         assert "openai_metadata" in metadata
         assert metadata["openai_metadata"]["openai_calls_per_publish"] >= 1
-        
+
     if db_path.exists():
         db_path.unlink()
 
@@ -274,7 +276,7 @@ async def test_sea_publish_fallback_to_file_download(monkeypatch, tmp_path):
 
         asset = bot.data.get_asset(sunset_id)
         assert asset is not None
-        
+
         bot.data.conn.execute(
             "UPDATE assets SET payload_json = json_remove(COALESCE(payload_json, '{}'), '$.file_id') WHERE id = ?",
             (sunset_id,),
@@ -284,20 +286,20 @@ async def test_sea_publish_fallback_to_file_download(monkeypatch, tmp_path):
             (sunset_id,),
         )
         bot.data.conn.commit()
-        
+
         asset = bot.data.get_asset(sunset_id)
         assert asset is not None
         assert asset.file_id is None or asset.file_id == ""
 
         assert await bot.publish_rubric("sea") is True
-        
+
         send_calls = [entry for entry in requests_log if entry["method"] == "sendPhoto"]
         assert len(send_calls) == 1
-        
+
         send_call = send_calls[0]
         assert send_call["files"] is not None
         assert "photo" in send_call["files"]
-        
+
     if db_path.exists():
         db_path.unlink()
 
@@ -395,7 +397,7 @@ async def test_sea_publish_timeline_logging(monkeypatch, tmp_path, caplog):
             photo_sky="sunny",
             is_sunset=True,
         )
-        
+
         bot.data.conn.execute(
             "UPDATE assets SET payload_json = json_set(COALESCE(payload_json, '{}'), '$.file_id', ?) WHERE id = ?",
             ("AgACAgIAAxkBAAIC123456789", sunset_id),
@@ -407,7 +409,7 @@ async def test_sea_publish_timeline_logging(monkeypatch, tmp_path, caplog):
 
         timeline_logs = [r.message for r in caplog.records if "PUBLISH_TIMELINE" in r.message]
         assert len(timeline_logs) >= 1
-        
+
         timeline_log = timeline_logs[0]
         assert "total_ms=" in timeline_log
         assert "read_sea_cache=" in timeline_log
@@ -415,6 +417,6 @@ async def test_sea_publish_timeline_logging(monkeypatch, tmp_path, caplog):
         assert "build_context=" in timeline_log
         assert "openai_generate_caption=" in timeline_log
         assert "sendPhoto=" in timeline_log
-        
+
     if db_path.exists():
         db_path.unlink()

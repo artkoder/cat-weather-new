@@ -1653,8 +1653,10 @@ class DataAccess:
                 column_updates: dict[str, Any] = {}
                 if parsed_wave_score is not None:
                     column_updates["vision_wave_score"] = Asset._to_float(parsed_wave_score)
+                    column_updates["wave_score_0_10"] = Asset._to_float(parsed_wave_score)
                 if parsed_wave_conf is not None:
                     column_updates["vision_wave_conf"] = Asset._to_float(parsed_wave_conf)
+                    column_updates["wave_conf"] = Asset._to_float(parsed_wave_conf)
                 if parsed_sky_bucket is not None:
                     column_updates["vision_sky_bucket"] = str(parsed_sky_bucket)
                 if column_updates:

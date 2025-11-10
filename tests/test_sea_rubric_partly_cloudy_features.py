@@ -265,12 +265,12 @@ async def test_logs_steps_present(
     ]
     combined = "\n".join(log_lines)
 
-    assert "SEA_RUBRIC stage B0" in combined
+    assert "SEA_RUBRIC attempt:B0" in combined
     assert "pool_after_B1=" in combined
     assert "pool_after_B2=" in combined
     assert "pool_after_AN=" in combined
     assert "pool_after_B0=" in combined
-    assert any("SEA_RUBRIC top5 #" in line and "sky_visible=" in line for line in log_lines)
+    assert any("SEA_RUBRIC top5:" in line and "sky_visible=" in line for line in log_lines)
     assert "SEA_RUBRIC selected" in combined
 
     await bot.close()
@@ -683,9 +683,8 @@ async def test_logs_not_truncated_and_prefixed(
     # Should have separate weather, season, pool, top5, and selected logs
     weather_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC weather ")]
     season_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC season ")]
-    pool_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC pool after ")]
     pool_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC pool_counts ")]
-    top5_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC top5 #")]
+    top5_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC top5:")]
     selected_logs = [msg for msg in messages if msg.startswith("SEA_RUBRIC selected ")]
 
     assert len(weather_logs) >= 1, f"Expected weather logs, got: {weather_logs}"
@@ -703,14 +702,14 @@ async def test_logs_not_truncated_and_prefixed(
 
     # Top5 logs should be individual lines
     for top5_log in top5_logs:
-        assert "SEA_RUBRIC top5 #" in top5_log
+        assert "SEA_RUBRIC top5:" in top5_log
         assert "asset_id=" in top5_log
         assert "sky_visible=" in top5_log
         assert "photo_sky=" in top5_log
-        assert "photo_wave=" in top5_log
-        assert "target_wave=" in top5_log
-        assert "score=" in top5_log
-        assert "score_components=" in top5_log
+        assert "wave_photo=" in top5_log
+        assert "wave_target=" in top5_log
+        assert "total_score=" in top5_log
+        assert "penalties=" in top5_log
 
     await bot.close()
 

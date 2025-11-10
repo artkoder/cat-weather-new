@@ -13841,6 +13841,7 @@ class Bot:
         }
 
         for stage_cfg in stage_sequence:
+            pool_before = len(working_candidates)
             corridor = build_corridor(stage_cfg)
             stage_results: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
             for candidate in working_candidates:
@@ -13874,11 +13875,11 @@ class Bot:
             if stage_cfg.allow_false_sky:
                 sky_policy_desc = "permissive"
             sea_log(
-                "stage",
-                name=stage_cfg.name,
-                sky=sky_policy_desc,
+                f"attempt:{stage_cfg.name}",
+                sky_policy=sky_policy_desc,
                 corridor=corridor,
-                pool_size=len(sorted_results),
+                pool_before=pool_before,
+                pool_after=len(sorted_results),
             )
 
             sea_log(
@@ -13903,34 +13904,62 @@ class Bot:
                 )
                 age_bonus_log = candidate_payload.get("age_bonus")
                 sea_log(
-                    "top5",
-                    index=idx,
-                    stage=stage_cfg.name,
+                    f"top5:{stage_cfg.name}",
+                    rank=idx,
                     asset_id=getattr(asset_obj, "id", None),
-                    photo_wave=photo_wave_log,
-                    target_wave=target_wave_score,
-                    wave_delta=wave_delta_log,
-                    sky_bucket=sky_bucket_str,
-                    freshness=age_bonus_log,
-                    score=score_value,
+                    wave_target=target_wave_score,
+                    wave_photo=photo_wave_log,
+                    delta=wave_delta_log,
+                    sky_photo=sky_bucket_str,
+                    penalties=component_payload,
+                    total_score=score_value,
+                    freshness_bonus=age_bonus_log,
                     sky_visible=candidate_payload.get("sky_visible"),
                     photo_sky=_sky_token(candidate_payload.get("photo_sky_struct")),
                     photo_sky_daypart=candidate_payload.get("photo_sky_daypart"),
                     season_match=candidate_payload.get("season_match"),
                     photo_doy=candidate_payload.get("photo_doy")
                     or candidate_payload.get("shot_doy"),
-                    score_components=reason_payload.get("score_components"),
                 )
 
             if sorted_results:
                 best_score, best_reasons, best_candidate = sorted_results[0]
                 best_reasons["stage"] = stage_cfg.name
+
+                # Determine selection reason
+                selection_reason = "highest_score"
+                if len(sorted_results) > 1:
+                    second_score = sorted_results[1][0]
+                    if abs(best_score - second_score) < 0.01:
+                        # Tie-breaker scenarios
+                        best_age_bonus = float(best_candidate.get("age_bonus") or 0.0)
+                        second_age_bonus = float(sorted_results[1][2].get("age_bonus") or 0.0)
+                        if abs(best_age_bonus - second_age_bonus) > 0.01:
+                            selection_reason = "freshest"
+                        else:
+                            selection_reason = "random_tiebreak"
+                    else:
+                        # Check what made the difference
+                        best_wave = best_candidate.get("photo_wave")
+                        if best_wave is not None:
+                            wave_delta = abs(float(best_wave) - target_wave_value)
+                            if wave_delta < 0.5:
+                                selection_reason = "lowest_wave_delta"
+                        components = best_reasons.get("score_components", {})
+                        sky_match_bonus = components.get("SkyMatchBonus", 0.0)
+                        if sky_match_bonus > 1.0:
+                            selection_reason = "sky_match"
+                        age_bonus = components.get("AgeBonus", 0.0)
+                        if age_bonus > 1.0:
+                            selection_reason = "freshest"
+
                 selected_candidate = best_candidate
                 selected_details = {
                     "score": best_score,
                     "reasons": best_reasons,
                     "stage": stage_cfg.name,
                     "corridor": corridor,
+                    "selection_reason": selection_reason,
                 }
 
                 if stage_cfg.name == "AN" and clear_guard_hard:
@@ -13963,6 +13992,7 @@ class Bot:
                 "reasons": {"fallback": "age_priority"},
                 "stage": "fallback_age",
                 "corridor": build_corridor(STAGE_CONFIGS["AN"]),
+                "selection_reason": "age_priority_fallback",
             }
 
         asset = selected_candidate["asset"]
@@ -14005,15 +14035,29 @@ class Bot:
             }
         else:
             fact_log_info = None
+        photo_wave_selected = selected_candidate.get("photo_wave") or selected_candidate.get("wave_score")
+        wave_delta_selected = None
+        if photo_wave_selected is not None:
+            wave_delta_selected = abs(float(photo_wave_selected) - target_wave_value)
+
+        chosen_sky_struct = selected_candidate.get("photo_sky_struct")
+        sky_photo_selected = (
+            chosen_sky_struct.weather_tag if hasattr(chosen_sky_struct, "weather_tag") else None
+        )
+
         sea_log(
             "selected",
             stage=selected_details.get("stage"),
             asset_id=asset.id,
+            wave_target=target_wave_score,
+            wave_photo=photo_wave_selected,
+            delta=wave_delta_selected,
+            sky_photo=sky_photo_selected,
+            penalties=selected_details.get("reasons", {}).get("score_components"),
+            total_score=selected_details.get("score"),
+            reason=selected_details.get("selection_reason"),
             shot_doy=selected_candidate.get("shot_doy"),
             photo_doy=selected_candidate.get("photo_doy"),
-            score=selected_details.get("score"),
-            wave_photo=selected_candidate.get("photo_wave") or selected_candidate.get("wave_score"),
-            wave_target_score=target_wave_score,
             photo_sky=_sky_token(selected_candidate.get("photo_sky_struct")),
             photo_sky_daypart=selected_candidate.get("photo_sky_daypart"),
             season_match=selected_candidate.get("season_match"),
@@ -14023,8 +14067,6 @@ class Bot:
             wave_corridor=selected_details.get("corridor"),
             sky_visible=sky_visible,
             sky_critical_mismatch=sky_critical_mismatch,
-            reasons=selected_details.get("reasons"),
-            score_components=selected_details.get("reasons", {}).get("score_components"),
             fact_id=fact_id,
             fact_info=fact_log_info,
         )

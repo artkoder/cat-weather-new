@@ -1153,11 +1153,27 @@ async def _ingest_photo_internal(
         tg_chat_id = inputs.tg_chat_id or inputs.channel_id
         message_identifier = f"{tg_chat_id}:{message_id}"
         asset_id: str | None = inputs.asset_id
+        wave_score_value: float | None = None
+        wave_conf_value: float | None = None
 
         if inputs.source in {"upload", "mobile"} and callbacks.create_asset:
             if not inputs.upload_id or not inputs.file_ref:
                 raise RuntimeError("upload ingestion requires upload_id and file_ref")
             source_value = inputs.source if inputs.source in {"mobile", "telegram"} else "mobile"
+
+            # Parse wave scores from vision payload if available
+            if isinstance(vision_payload, dict):
+                vision_for_parsing = dict(vision_payload)
+                if "caption" in vision_payload and vision_payload["caption"]:
+                    vision_for_parsing["result_text"] = str(vision_payload["caption"])
+                wave_score_value, wave_conf_value = parse_wave_score_from_vision(vision_for_parsing)
+                if wave_score_value is not None:
+                    logging.info(
+                        "Extracted wave score from vision: score=%s conf=%s",
+                        wave_score_value,
+                        wave_conf_value,
+                    )
+
             asset_id = callbacks.create_asset(
                 {
                     "upload_id": inputs.upload_id,
@@ -1212,8 +1228,6 @@ async def _ingest_photo_internal(
                     combined_categories.append(text)
                     seen_categories.add(text)
 
-            wave_score_value: float | None = None
-            wave_conf_value: float | None = None
             sky_visible_value: str | bool | None = None
             if isinstance(vision_payload, dict):
                 # Parse wave score from vision results using centralized parser

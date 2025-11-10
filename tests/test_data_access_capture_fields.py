@@ -38,7 +38,10 @@ def _setup_connection() -> sqlite3.Connection:
             daypart TEXT,
             vision_wave_score REAL,
             vision_wave_conf REAL,
-            vision_sky_bucket TEXT
+            vision_sky_bucket TEXT,
+            wave_score_0_10 REAL,
+            wave_conf REAL,
+            sky_code TEXT
         )
         """
     )
@@ -159,3 +162,45 @@ def test_fetch_sea_candidates_uses_capture_metadata() -> None:
         cand["asset"].id: cand["asset"].daypart for cand in candidates
     }.items():
         assert daypart in {"morning", "day", "evening", "night"}
+
+
+def test_wave_sky_metrics_columns() -> None:
+    """Test that new wave_score_0_10, wave_conf, sky_code columns are persisted."""
+    conn = _setup_connection()
+    data = DataAccess(conn)
+
+    asset_id = data.create_asset(
+        upload_id="u1",
+        file_ref="file-1",
+        content_type="image/jpeg",
+        sha256="sha-1",
+        width=800,
+        height=600,
+        exif=None,
+        labels=None,
+        tg_message_id=None,
+        tg_chat_id=None,
+        source="mobile",
+    )
+
+    data.update_asset(
+        asset_id,
+        wave_score_0_10=7.5,
+        wave_conf=0.92,
+        sky_code="partly_cloudy",
+    )
+
+    row = conn.execute(
+        "SELECT wave_score_0_10, wave_conf, sky_code FROM assets WHERE id=?",
+        (asset_id,),
+    ).fetchone()
+    assert row is not None
+    assert row["wave_score_0_10"] == 7.5
+    assert row["wave_conf"] == 0.92
+    assert row["sky_code"] == "partly_cloudy"
+
+    asset = data.get_asset(asset_id)
+    assert asset is not None
+    assert asset.wave_score_0_10 == 7.5
+    assert asset.wave_conf == 0.92
+    assert asset.sky_code == "partly_cloudy"

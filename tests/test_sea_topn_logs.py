@@ -204,12 +204,22 @@ async def test_sea_topn_logs_structure(monkeypatch: Any, tmp_path: Path, caplog:
 
         selected_log = selected_logs[0].message
         # Check required fields in selected log
-        assert "wave_target=" in selected_log, f"selected log should contain wave_target: {selected_log}"
-        assert "wave_photo=" in selected_log, f"selected log should contain wave_photo: {selected_log}"
+        assert (
+            "wave_target=" in selected_log
+        ), f"selected log should contain wave_target: {selected_log}"
+        assert (
+            "wave_photo=" in selected_log
+        ), f"selected log should contain wave_photo: {selected_log}"
         assert "delta=" in selected_log, f"selected log should contain delta: {selected_log}"
-        assert "sky_photo=" in selected_log, f"selected log should contain sky_photo: {selected_log}"
-        assert "penalties=" in selected_log, f"selected log should contain penalties: {selected_log}"
-        assert "total_score=" in selected_log, f"selected log should contain total_score: {selected_log}"
+        assert (
+            "sky_photo=" in selected_log
+        ), f"selected log should contain sky_photo: {selected_log}"
+        assert (
+            "penalties=" in selected_log
+        ), f"selected log should contain penalties: {selected_log}"
+        assert (
+            "total_score=" in selected_log
+        ), f"selected log should contain total_score: {selected_log}"
         assert "reason=" in selected_log, f"selected log should contain reason: {selected_log}"
 
         # Verify reason is meaningful (not None or empty)
@@ -365,7 +375,9 @@ async def test_sea_topn_logs_all_stages(monkeypatch: Any, tmp_path: Path, caplog
                 stages_found.add("AN")
 
         # At least one stage should be present
-        assert len(stages_found) > 0, f"Should have at least one stage logged, found: {stages_found}"
+        assert (
+            len(stages_found) > 0
+        ), f"Should have at least one stage logged, found: {stages_found}"
 
     if db_path.exists():
         db_path.unlink()

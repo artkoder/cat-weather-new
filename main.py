@@ -13738,44 +13738,74 @@ class Bot:
         # Apply calm seas guard rules
         calm_guard_active = False
         calm_guard_filtered: list[str] = []
-        if target_wave_score <= 1:
-            # Check if there's at least one candidate with wave_score ≤ 2
-            has_calm_candidate = False
+        calm_guard_threshold_wave = 2.0
+        calm_guard_threshold_conf = 0.85
+        known_wave_count = 0
+        unknown_wave_count = 0
+
+        # Count wave score distribution
+        for candidate in working_candidates:
+            asset_obj = candidate["asset"]
+            wave_val_candidate = getattr(asset_obj, "wave_score_0_10", None)
+            if wave_val_candidate is None:
+                wave_val_candidate = candidate.get("photo_wave") or candidate.get("wave_score")
+            if wave_val_candidate is not None:
+                known_wave_count += 1
+            else:
+                unknown_wave_count += 1
+
+        if target_wave_score == 0:
+            calm_guard_active = True
+            # Filter out assets where wave_score_0_10 >= 2 AND wave_conf >= 0.85
+            filtered_candidates = []
             for candidate in working_candidates:
-                photo_wave = candidate.get("photo_wave") or candidate.get("wave_score")
-                if photo_wave is not None:
+                asset_obj = candidate["asset"]
+                wave_score_val = getattr(asset_obj, "wave_score_0_10", None)
+                wave_conf_val = getattr(asset_obj, "wave_conf", None)
+
+                # Fallback to candidate dict if asset fields are None
+                if wave_score_val is None:
+                    wave_score_val = candidate.get("photo_wave") or candidate.get("wave_score")
+
+                should_filter = False
+                if wave_score_val is not None and wave_conf_val is not None:
                     try:
-                        wave_val = float(photo_wave)
-                        if wave_val <= 2:
-                            has_calm_candidate = True
-                            break
+                        wave_float = float(wave_score_val)
+                        conf_float = float(wave_conf_val)
+                        if (
+                            wave_float >= calm_guard_threshold_wave
+                            and conf_float >= calm_guard_threshold_conf
+                        ):
+                            should_filter = True
+                            calm_guard_filtered.append(str(asset_obj.id))
                     except (TypeError, ValueError):
                         pass
 
-            if has_calm_candidate:
-                calm_guard_active = True
-                # Hard filter: remove candidates with wave_score ≥ 5
-                filtered_candidates = []
-                for candidate in working_candidates:
-                    photo_wave = candidate.get("photo_wave") or candidate.get("wave_score")
-                    if photo_wave is not None:
-                        try:
-                            wave_val = float(photo_wave)
-                            if wave_val >= 5:
-                                calm_guard_filtered.append(str(candidate["asset"].id))
-                                continue
-                        except (TypeError, ValueError):
-                            pass
+                if not should_filter:
                     filtered_candidates.append(candidate)
-                working_candidates = filtered_candidates
 
-                sea_log(
-                    "calm_guard",
-                    active=True,
-                    target_wave=target_wave_score,
-                    filtered_ids=calm_guard_filtered,
-                    pool_after_calm_guard=len(working_candidates),
-                )
+            working_candidates = filtered_candidates
+
+            sea_log(
+                "calm_guard",
+                active=True,
+                target_wave=target_wave_score,
+                threshold_wave=calm_guard_threshold_wave,
+                threshold_conf=calm_guard_threshold_conf,
+                known_wave=known_wave_count,
+                unknown_wave=unknown_wave_count,
+                filtered_ids_count=len(calm_guard_filtered),
+                filtered_ids=calm_guard_filtered,
+                pool_before=known_wave_count + unknown_wave_count,
+                pool_after_calm_guard=len(working_candidates),
+            )
+        else:
+            sea_log(
+                "wave_source",
+                known_wave=known_wave_count,
+                unknown_wave=unknown_wave_count,
+                using_col="wave_score_0_10",
+            )
 
         allowed_hard = set(allowed_photo_skies)
 
@@ -13798,16 +13828,19 @@ class Bot:
             corridor: tuple[float, float],
         ) -> tuple[float, dict[str, Any]] | None:
             asset_obj = candidate["asset"]
-            vision_wave = getattr(asset_obj, "vision_wave_score", None)
-            vision_wave_conf = getattr(asset_obj, "vision_wave_conf", None)
+            # Use wave_score_0_10 as primary source (not obsolete vision_wave_score)
+            wave_score_0_10 = getattr(asset_obj, "wave_score_0_10", None)
+            wave_conf = getattr(asset_obj, "wave_conf", None)
             vision_sky_bucket_val = getattr(asset_obj, "vision_sky_bucket", None)
 
+            # Prefer wave_score_0_10 from asset object, then candidate dict values
             photo_wave = candidate.get("photo_wave")
-            if photo_wave is None and vision_wave is not None:
-                photo_wave = vision_wave
+            if photo_wave is None and wave_score_0_10 is not None:
+                photo_wave = wave_score_0_10
             if photo_wave is None:
                 photo_wave = candidate.get("wave_score")
             photo_wave_val = None
+            photo_wave_conf = wave_conf
             if photo_wave is not None:
                 try:
                     photo_wave_val = float(photo_wave)
@@ -13849,8 +13882,9 @@ class Bot:
             components["AgeBonus"] = age_bonus_val
             score += age_bonus_val
 
+            # CalmWaveBonus: only grant when wave_score_0_10=0 AND wave_conf >= 0.85
             if target_wave_score <= 2 and photo_wave_val is not None:
-                if photo_wave_val <= 1.0:
+                if photo_wave_val == 0.0 and (photo_wave_conf is None or photo_wave_conf >= 0.85):
                     calm_bonus = 5.0
                     components["CalmWaveBonus"] = calm_bonus
                     score += calm_bonus
@@ -13980,6 +14014,48 @@ class Bot:
                     continue
                 score, reasons = evaluation
                 stage_results.append((score, reasons, candidate))
+
+            # B0 corridor enforcement: only allow wave_score_0_10 in [0, 1]
+            if stage_cfg.name == "B0" and target_wave_score <= 1:
+                b0_passed_known = 0
+                b0_passed_unknown = 0
+                b0_excluded_known = 0
+                filtered_b0_results = []
+                for score_val, reason_val, candidate_val in stage_results:
+                    asset_obj = candidate_val["asset"]
+                    wave_score_val = getattr(asset_obj, "wave_score_0_10", None)
+                    if wave_score_val is None:
+                        wave_score_val = candidate_val.get("photo_wave") or candidate_val.get(
+                            "wave_score"
+                        )
+
+                    if wave_score_val is not None:
+                        try:
+                            wave_float = float(wave_score_val)
+                            if wave_float <= 1.0:
+                                filtered_b0_results.append((score_val, reason_val, candidate_val))
+                                b0_passed_known += 1
+                            else:
+                                b0_excluded_known += 1
+                        except (TypeError, ValueError):
+                            filtered_b0_results.append((score_val, reason_val, candidate_val))
+                            b0_passed_unknown += 1
+                    else:
+                        # Unknown wave: pass corridor but will receive penalty later
+                        filtered_b0_results.append((score_val, reason_val, candidate_val))
+                        b0_passed_unknown += 1
+
+                stage_results = filtered_b0_results
+                sea_log(
+                    "attempt:B0 corridor_check",
+                    corridor_range="0-1",
+                    in_range=b0_passed_known,
+                    unknown=b0_passed_unknown,
+                    excluded=b0_excluded_known,
+                    pool_before=pool_before,
+                    pool_after=len(stage_results),
+                    wave_col="wave_score_0_10",
+                )
 
             pool_counts[f"pool_after_{stage_cfg.name}"] = len(stage_results)
 

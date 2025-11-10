@@ -1942,6 +1942,9 @@ class Bot:
                 batch_count = 0
                 error_details_count = 0
                 max_error_details = 10
+                skip_reasons: dict[str, int] = {}
+                skipped_samples: list[dict[str, Any]] = []
+                max_samples = 10
 
                 assets_to_process = []
                 for asset in self.data.iter_assets():
@@ -1951,6 +1954,10 @@ class Bot:
 
                     if has_wave and has_conf and has_sky:
                         stats["skipped"] += 1
+                        skip_reason = "already_complete"
+                        skip_reasons[skip_reason] = skip_reasons.get(skip_reason, 0) + 1
+                        if len(skipped_samples) < max_samples:
+                            skipped_samples.append({"asset_id": asset.id, "reason": skip_reason})
                         continue
 
                     assets_to_process.append(asset)
@@ -1969,15 +1976,33 @@ class Bot:
                         try:
                             vision = asset.vision_results
 
+                            # Log asset discovery with current state
+                            logging.debug(
+                                "Backfill discovered asset_id=%s vision_results_exists=%s "
+                                "current_wave_score=%s current_sky_code=%s",
+                                asset.id,
+                                vision is not None,
+                                asset.vision_wave_score,
+                                asset.vision_sky_bucket,
+                            )
+
                             if vision is None:
+                                skip_reason = "no_vision_results"
                                 logging.debug(
-                                    "Backfill skip asset_id=%s reason=no_vision_results",
+                                    "Backfill skip asset_id=%s skip_reason=%s",
                                     asset.id,
+                                    skip_reason,
                                 )
                                 stats["skipped"] += 1
+                                skip_reasons[skip_reason] = skip_reasons.get(skip_reason, 0) + 1
+                                if len(skipped_samples) < max_samples:
+                                    skipped_samples.append(
+                                        {"asset_id": asset.id, "reason": skip_reason}
+                                    )
                                 continue
 
                             if not isinstance(vision, dict):
+                                skip_reason = "invalid_vision_type"
                                 logging.error(
                                     "Backfill error asset_id=%s error_type=InvalidVisionType "
                                     "error_msg='vision_results is not a dict: %s'",
@@ -1985,17 +2010,29 @@ class Bot:
                                     type(vision).__name__,
                                 )
                                 stats["errors"] += 1
+                                skip_reasons[skip_reason] = skip_reasons.get(skip_reason, 0) + 1
+                                if len(skipped_samples) < max_samples:
+                                    skipped_samples.append(
+                                        {"asset_id": asset.id, "reason": skip_reason}
+                                    )
                                 continue
 
                             wave_score, wave_conf = self.data._parse_wave_score_from_vision(vision)
                             sky_bucket = self.data._parse_sky_bucket_from_vision(vision)
 
                             if wave_score is None and wave_conf is None and sky_bucket is None:
+                                skip_reason = "no_extractable_data"
                                 logging.debug(
-                                    "Backfill skip asset_id=%s reason=no_parseable_data",
+                                    "Backfill skip asset_id=%s skip_reason=%s",
                                     asset.id,
+                                    skip_reason,
                                 )
                                 stats["skipped"] += 1
+                                skip_reasons[skip_reason] = skip_reasons.get(skip_reason, 0) + 1
+                                if len(skipped_samples) < max_samples:
+                                    skipped_samples.append(
+                                        {"asset_id": asset.id, "reason": skip_reason}
+                                    )
                                 continue
 
                             updates: list[str] = []
@@ -2014,17 +2051,48 @@ class Bot:
                                 params.append(str(sky_bucket))
 
                             if not updates:
+                                skip_reason = "fields_already_populated"
                                 logging.debug(
-                                    "Backfill skip asset_id=%s reason=fields_already_populated",
+                                    "Backfill skip asset_id=%s skip_reason=%s",
                                     asset.id,
+                                    skip_reason,
                                 )
                                 stats["skipped"] += 1
+                                skip_reasons[skip_reason] = skip_reasons.get(skip_reason, 0) + 1
+                                if len(skipped_samples) < max_samples:
+                                    skipped_samples.append(
+                                        {"asset_id": asset.id, "reason": skip_reason}
+                                    )
                                 continue
 
                             if not dry_run:
                                 sql = f"UPDATE assets SET {', '.join(updates)} WHERE id=?"
                                 params.append(str(asset.id))
                                 self.db.execute(sql, params)
+
+                            # Log successful update with details
+                            final_wave = (
+                                wave_score
+                                if asset.vision_wave_score is None
+                                else asset.vision_wave_score
+                            )
+                            final_conf = (
+                                wave_conf
+                                if asset.vision_wave_conf is None
+                                else asset.vision_wave_conf
+                            )
+                            final_sky = (
+                                sky_bucket
+                                if asset.vision_sky_bucket is None
+                                else asset.vision_sky_bucket
+                            )
+                            logging.info(
+                                "Backfill updated asset_id=%s wave_score_0_10=%s sky_code=%s confidence=%s",
+                                asset.id,
+                                final_wave,
+                                final_sky,
+                                final_conf,
+                            )
 
                             stats["updated"] += 1
 
@@ -2045,6 +2113,8 @@ class Bot:
                                 )
                                 error_details_count += 1
                             stats["errors"] += 1
+                            skip_reason = "exception"
+                            skip_reasons[skip_reason] = skip_reasons.get(skip_reason, 0) + 1
 
                     if not dry_run:
                         self.db.commit()
@@ -2057,12 +2127,28 @@ class Bot:
                     )
                     await asyncio.sleep(0)
 
+                # Log sample of skipped assets for quick diagnostics
+                if skipped_samples:
+                    logging.info(
+                        "Backfill sample (first %d skipped): %s",
+                        len(skipped_samples),
+                        skipped_samples,
+                    )
+
+                # Build reason breakdown string
+                reason_parts = []
+                for reason, count in sorted(skip_reasons.items(), key=lambda x: x[1], reverse=True):
+                    reason_parts.append(f"{reason}={count}")
+                reason_breakdown = ", ".join(reason_parts) if reason_parts else "none"
+
                 logging.info(
-                    "Backfill waves completed: processed=%d updated=%d skipped=%d errors=%d",
+                    "Backfill waves completed: processed=%d updated=%d skipped=%d errors=%d "
+                    "(skip reasons: %s)",
                     len(assets_to_process),
                     stats["updated"],
                     stats["skipped"],
                     stats["errors"],
+                    reason_breakdown,
                 )
 
                 return stats

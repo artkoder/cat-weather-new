@@ -6599,6 +6599,8 @@ class Bot:
                     "- `/seas` — показать все морские точки и удалить ненужные.\n"
                     "- `/dump_sea` — экспортировать CSV со всеми морскими ассетами, метаданными волн/неба и vision_json (только для супер-админов).\n"
                     "- `/backfill_waves [dry-run]` — заполнить волны/небо из vision_results (используйте dry-run для проверки без изменений).\n"
+                    "- `/inv_sea` — остатки фото «Море» по небу и волне.\n"
+                    "- `/sea_audit` — проверка и очистка «мёртвых душ» в базе.\n"
                 ),
                 (
                     "*Погодные рассылки*\n"
@@ -6862,6 +6864,156 @@ class Bot:
                     "sendMessage",
                     {"chat_id": user_id, "text": f"❌ Backfill error: {e}"},
                 )
+            return
+
+        if text.startswith("/inv_sea"):
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
+                return
+
+            await self._send_sea_inventory_report(is_prod=False, initiator_id=user_id)
+            await self.api_request(
+                "sendMessage", {"chat_id": user_id, "text": "✓ Отчёт отправлен"}
+            )
+            return
+
+        if text.startswith("/sea_audit"):
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
+                return
+
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": "🔍 Начинаю аудит..."},
+            )
+
+            BATCH_SIZE = 50
+            checked = 0
+            deleted = 0
+            kept = 0
+
+            logging.info("SEA_AUDIT_STARTED")
+
+            # Fetch all sea asset records in batches
+            sea_assets = self.db.execute(
+                """
+                SELECT a.id, a.payload_json, a.tg_message_id
+                FROM assets a
+                LEFT JOIN vision_results vr ON vr.asset_id = a.id
+                WHERE json_extract(vr.result_json, '$.vision_category') = 'sea'
+                """
+            ).fetchall()
+
+            for i in range(0, len(sea_assets), BATCH_SIZE):
+                batch = sea_assets[i : i + BATCH_SIZE]
+
+                for row in batch:
+                    asset_id = row["id"]
+                    payload_json = row["payload_json"]
+                    tg_message_id = row["tg_message_id"]
+
+                    # Parse tg_chat_id and message_id
+                    chat_id = None
+                    msg_id = None
+
+                    if payload_json:
+                        try:
+                            payload = json.loads(payload_json)
+                            chat_id = payload.get("tg_chat_id")
+                            msg_id = payload.get("message_id")
+                        except json.JSONDecodeError:
+                            pass
+
+                    if (chat_id is None or msg_id is None) and tg_message_id:
+                        if ":" in str(tg_message_id):
+                            parts = str(tg_message_id).split(":", 1)
+                            try:
+                                chat_id = int(parts[0])
+                                msg_id = int(parts[1])
+                            except ValueError:
+                                pass
+                        else:
+                            try:
+                                msg_id = int(tg_message_id)
+                            except ValueError:
+                                pass
+
+                    if not chat_id or not msg_id:
+                        # Skip assets without valid TG message info
+                        kept += 1
+                        checked += 1
+                        continue
+
+                    checked += 1
+
+                    # Check if message exists via copyMessage (safe check)
+                    try:
+                        # Copy message to operator chat (non-destructive)
+                        copy_result = await self.api_request(
+                            "copyMessage",
+                            {
+                                "from_chat_id": chat_id,
+                                "message_id": msg_id,
+                                "chat_id": user_id,
+                                "disable_notification": True,
+                            },
+                        )
+                        # If successful, delete the copy immediately (was only for verification)
+                        if copy_result.get("ok") and copy_result.get("result"):
+                            copy_msg_id = copy_result["result"].get("message_id")
+                            if copy_msg_id:
+                                await self.api_request(
+                                    "deleteMessage",
+                                    {
+                                        "chat_id": user_id,
+                                        "message_id": copy_msg_id,
+                                    },
+                                )
+                        kept += 1
+
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        # If message not found (400), mark as dead soul and remove from DB
+                        if (
+                            "message to copy not found" in error_str
+                            or "message not found" in error_str
+                            or "message can't be copied" in error_str
+                        ):
+                            logging.warning(
+                                "SEA_AUDIT_DEAD_SOUL asset_id=%s chat_id=%s msg_id=%s",
+                                asset_id,
+                                chat_id,
+                                msg_id,
+                            )
+                            self.db.execute("DELETE FROM assets WHERE id=?", (asset_id,))
+                            self.db.commit()
+                            deleted += 1
+                        else:
+                            # If other error, keep record (err on side of caution)
+                            logging.warning("SEA_AUDIT_CHECK_ERROR asset_id=%s err=%s", asset_id, str(e)[:200])
+                            kept += 1
+
+            logging.info(
+                "SEA_AUDIT_FINISHED checked=%d deleted=%d kept=%d",
+                checked,
+                deleted,
+                kept,
+            )
+
+            report = (
+                f"✓ Аудит завершён\n\n"
+                f"Проверено: {checked}\n"
+                f"Удалено (мёртвые): {deleted}\n"
+                f"Оставлено: {kept}"
+            )
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": report},
+            )
             return
 
         if text.startswith("/add_user") and self.is_superadmin(user_id):
@@ -14620,7 +14772,197 @@ class Bot:
                     notify_response,
                 )
 
+        # After successful publish, handle prod deletion and inventory report
+        is_prod = not test
+        await self._on_sea_publish_success([asset.id], is_prod=is_prod)
+        await self._send_sea_inventory_report(is_prod=is_prod, initiator_id=initiator_id)
+
         return True
+
+    async def _on_sea_publish_success(
+        self,
+        asset_ids: list[str],
+        is_prod: bool,
+    ) -> None:
+        """Delete sea assets from TG + DB after successful prod publish."""
+        if not is_prod:
+            return
+
+        # Fetch asset metadata
+        placeholders = ",".join("?" * len(asset_ids))
+        query = f"SELECT id, payload_json, tg_message_id FROM assets WHERE id IN ({placeholders})"
+        rows = self.db.execute(query, asset_ids).fetchall()
+
+        deleted_count = 0
+        for row in rows:
+            asset_id = row["id"]
+            payload_json = row["payload_json"]
+            tg_message_id = row["tg_message_id"]
+
+            # Parse tg_chat_id and message_id from payload or tg_message_id
+            chat_id = None
+            msg_id = None
+
+            if payload_json:
+                try:
+                    payload = json.loads(payload_json)
+                    chat_id = payload.get("tg_chat_id")
+                    msg_id = payload.get("message_id")
+                except json.JSONDecodeError:
+                    pass
+
+            if (chat_id is None or msg_id is None) and tg_message_id:
+                if ":" in str(tg_message_id):
+                    parts = str(tg_message_id).split(":", 1)
+                    try:
+                        chat_id = int(parts[0])
+                        msg_id = int(parts[1])
+                    except ValueError:
+                        pass
+                else:
+                    try:
+                        msg_id = int(tg_message_id)
+                    except ValueError:
+                        pass
+
+            # 1. Delete message from TG assets channel (hard delete, no trash)
+            if chat_id and msg_id:
+                try:
+                    await self.api_request(
+                        "deleteMessage",
+                        {
+                            "chat_id": chat_id,
+                            "message_id": msg_id,
+                        },
+                    )
+                except Exception as e:
+                    error_str = str(e).lower()
+                    # If message not found, log but continue to DB delete
+                    if "message to delete not found" in error_str or "message not found" in error_str:
+                        logging.warning(
+                            "SEA_TG_DELETE_SKIP_NOT_FOUND asset_id=%s",
+                            asset_id,
+                        )
+                    else:
+                        logging.warning(
+                            "SEA_TG_DELETE_FAILED asset_id=%s err=%s",
+                            asset_id,
+                            str(e)[:200],
+                        )
+
+            # 2. Delete record from DB (cascades handle tags/relations)
+            try:
+                self.db.execute("DELETE FROM assets WHERE id=?", (asset_id,))
+                self.db.commit()
+                deleted_count += 1
+            except Exception as e:
+                logging.error("SEA_DB_DELETE_FAILED asset_id=%s err=%s", asset_id, str(e)[:200])
+
+        logging.info(
+            "SEA_ASSET_DELETED prod=1 count=%d ids=%s",
+            deleted_count,
+            [str(row["id"]) for row in rows],
+        )
+
+    async def _send_sea_inventory_report(
+        self, is_prod: bool, initiator_id: int | None = None
+    ) -> None:
+        """Send sea assets inventory breakdown to operator chat."""
+        # Count total sea assets
+        total_row = self.db.execute(
+            """
+            SELECT COUNT(*) as cnt 
+            FROM assets a
+            LEFT JOIN vision_results vr ON vr.asset_id = a.id 
+            WHERE json_extract(vr.result_json, '$.vision_category') = 'sea'
+            """
+        ).fetchone()
+        total_count = total_row["cnt"] if total_row else 0
+
+        # Count by sky bucket (using vision_sky_bucket column)
+        sky_rows = self.db.execute(
+            """
+            SELECT a.vision_sky_bucket as sky_bucket, COUNT(*) as cnt
+            FROM assets a
+            LEFT JOIN vision_results vr ON vr.asset_id = a.id
+            WHERE json_extract(vr.result_json, '$.vision_category') = 'sea'
+              AND a.vision_sky_bucket IS NOT NULL
+            GROUP BY a.vision_sky_bucket
+            """
+        ).fetchall()
+
+        sky_counts = {row["sky_bucket"]: row["cnt"] for row in sky_rows}
+
+        # Count by wave score (0..10) - using wave_score_0_10 column
+        wave_rows = self.db.execute(
+            """
+            SELECT a.wave_score_0_10 as wave, COUNT(*) as cnt
+            FROM assets a
+            LEFT JOIN vision_results vr ON vr.asset_id = a.id
+            WHERE json_extract(vr.result_json, '$.vision_category') = 'sea'
+              AND a.wave_score_0_10 IS NOT NULL
+            GROUP BY a.wave_score_0_10
+            ORDER BY a.wave_score_0_10
+            """
+        ).fetchall()
+
+        wave_counts = {int(row["wave"]): row["cnt"] for row in wave_rows}
+
+        # Build report text
+        SKY_LABELS = {
+            "clear": "Солнечно",
+            "mostly_clear": "Преимущественно ясно",
+            "partly_cloudy": "Переменная облачность",
+            "mostly_cloudy": "Преимущественно облачно",
+            "overcast": "Пасмурно",
+        }
+
+        report_lines = [
+            f"🗂 Остатки фото «Море»: {total_count}\n",
+            "Небо",
+        ]
+
+        for sky, label in SKY_LABELS.items():
+            count = sky_counts.get(sky, 0)
+            warning = " ⚠️ мало" if count < 10 else ""
+            report_lines.append(f"• {label}: {count}{warning}")
+
+        report_lines.append("\nВолнение (0–10)")
+
+        for wave_score in range(11):
+            count = wave_counts.get(wave_score, 0)
+            if count == 0:
+                continue  # Skip unreported wave scores
+            warning = " ⚠️ мало" if count < 10 else ""
+            if wave_score == 0:
+                report_lines.append(f"• {wave_score}/10 (штиль): {count}{warning}")
+            else:
+                report_lines.append(f"• {wave_score}/10: {count}{warning}")
+
+        report_text = "\n".join(report_lines)
+
+        # Send to operator chat (send to initiator if provided, otherwise send to all superadmins)
+        target_ids = [initiator_id] if initiator_id else self.get_superadmin_ids()
+
+        for target_id in target_ids:
+            try:
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": target_id,
+                        "text": report_text,
+                    },
+                )
+                logging.info(
+                    "SEA_INVENTORY_SENT prod=%d total=%d sky_buckets=%d wave_scores=%d target_id=%d",
+                    int(is_prod),
+                    total_count,
+                    len(sky_counts),
+                    len(wave_counts),
+                    target_id,
+                )
+            except Exception as e:
+                logging.error("SEA_INVENTORY_SEND_FAILED target_id=%d err=%s", target_id, str(e)[:200])
 
     async def _handle_sea_no_candidates(
         self,

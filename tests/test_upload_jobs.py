@@ -402,7 +402,7 @@ async def test_ingest_photo_populates_result_gps_from_offset_ifd(
     stored_gps = stored_metadata.get("gps") or {}
     assert stored_gps.get("latitude") == pytest.approx(expected_lat, rel=1e-6)
     assert stored_gps.get("longitude") == pytest.approx(expected_lon, rel=1e-6)
-    assert telegram.calls[0]["method"] == "sendDocument"
+    assert telegram.calls[0]["method"] == "sendPhoto"
 
 
 @pytest.mark.asyncio
@@ -477,7 +477,7 @@ async def test_process_upload_job_success_records_asset(
     assert payload_map.get("file_id") == telegram.calls[0]["file_id"]
 
     assert len(telegram.calls) == 1
-    assert telegram.calls[0]["method"] == "sendDocument"
+    assert telegram.calls[0]["method"] == "sendPhoto"
     assert telegram.calls[0]["chat_id"] == config.assets_channel_id
     assert storage.get_calls == [file_key]
 

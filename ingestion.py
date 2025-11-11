@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import logging
+import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Mapping as MappingABC
@@ -165,6 +166,30 @@ VISION_SCHEMA: dict[str, Any] = {
         },
     },
 }
+
+
+def _get_assets_upload_mode() -> str:
+    """Get the upload mode for assets from environment (photo or document)."""
+    mode = os.getenv("ASSETS_UPLOAD_MODE", "photo").lower().strip()
+    if mode not in {"photo", "document"}:
+        logging.warning("Invalid ASSETS_UPLOAD_MODE=%s, defaulting to photo", mode)
+        return "photo"
+    return mode
+
+
+def _truncate_caption(caption: str | None, max_length: int = 1024) -> str | None:
+    """Truncate caption to max_length with soft word boundary preservation."""
+    if not caption:
+        return caption
+    if len(caption) <= max_length:
+        return caption
+    # Account for ellipsis character when truncating
+    ellipsis = "…"
+    truncated = caption[: max_length - len(ellipsis)]
+    last_space = truncated.rfind(" ")
+    if last_space > (max_length - len(ellipsis)) * 0.8:  # Use soft boundary if reasonably close
+        return truncated[:last_space].rstrip() + ellipsis
+    return truncated.rstrip() + ellipsis
 
 
 @dataclass(slots=True)
@@ -1102,9 +1127,52 @@ async def _ingest_photo_internal(
         caption = build_caption(
             gps=gps_payload, categories=categories, capture_iso=gps_payload.get("captured_at")
         )
+        truncated_caption = _truncate_caption(caption, max_length=1024)
+
+        file_size = inputs.file.path.stat().st_size if inputs.file.path.exists() else 0
+        upload_mode = _get_assets_upload_mode() if inputs.source == "mobile" else "photo"
+        fallback_reason: str | None = None
+        response: dict[str, Any] | None = None
 
         with metrics.measure_telegram():
-            if inputs.source == "mobile":
+            if inputs.source == "mobile" and upload_mode == "photo":
+                # Try sendPhoto first for mobile uploads when mode is "photo"
+                try:
+                    logging.info(
+                        "Publishing mobile upload for chat %s via sendPhoto (mime=%s size=%s)",
+                        inputs.channel_id,
+                        mime_type or "?",
+                        file_size,
+                    )
+                    metrics.increment("assets_publish_attempt", 1.0)
+                    response = await context.telegram.send_photo(
+                        chat_id=inputs.channel_id,
+                        photo=processed_path,
+                        caption=truncated_caption,
+                    )
+                    logging.info(
+                        "Published mobile upload as photo (message_id=%s mime=%s size=%s)",
+                        extract_message_id(response),
+                        mime_type or "?",
+                        file_size,
+                    )
+                    metrics.increment("assets_publish_ok", 1.0)
+                except Exception as photo_error:
+                    # Fallback to sendDocument on any error
+                    fallback_reason = type(photo_error).__name__
+                    logging.warning(
+                        "sendPhoto failed for mobile upload (mime=%s size=%s error=%s), "
+                        "falling back to sendDocument",
+                        mime_type or "?",
+                        file_size,
+                        photo_error,
+                        exc_info=True,
+                    )
+                    metrics.increment("assets_publish_fallback", 1.0)
+                    response = None
+
+            if inputs.source == "mobile" and response is None:
+                # Use sendDocument for mobile: either as primary mode or fallback
                 original_name = inputs.file.path.name or "photo"
                 if not Path(original_name).suffix and mime_type:
                     normalized_ext = {
@@ -1117,23 +1185,42 @@ async def _ingest_photo_internal(
                     if suffix:
                         original_name = f"{original_name}{suffix}"
                 logging.info(
-                    "Publishing mobile upload for chat %s via sendDocument (filename=%s)",
+                    "Publishing mobile upload for chat %s via sendDocument "
+                    "(filename=%s mime=%s size=%s fallback=%s)",
                     inputs.channel_id,
                     original_name,
+                    mime_type or "?",
+                    file_size,
+                    fallback_reason is not None,
                 )
                 with inputs.file.path.open("rb") as document_stream:
                     response = await context.telegram.send_document(
                         chat_id=inputs.channel_id,
                         document=document_stream,
                         file_name=original_name,
-                        caption=caption,
+                        caption=truncated_caption,
                         content_type=mime_type,
                     )
-            else:
+                if fallback_reason:
+                    logging.info(
+                        "Published mobile upload as document after fallback "
+                        "(message_id=%s reason=%s)",
+                        extract_message_id(response),
+                        fallback_reason,
+                    )
+                else:
+                    logging.info(
+                        "Published mobile upload as document (message_id=%s mode=%s)",
+                        extract_message_id(response),
+                        upload_mode,
+                    )
+                    metrics.increment("assets_publish_ok", 1.0)
+            elif inputs.source != "mobile":
+                # Non-mobile sources use sendPhoto
                 response = await context.telegram.send_photo(
                     chat_id=inputs.channel_id,
                     photo=processed_path,
-                    caption=caption,
+                    caption=truncated_caption,
                 )
         message_id = extract_message_id(response)
         if message_id is None:

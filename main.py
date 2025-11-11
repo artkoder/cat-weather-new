@@ -10542,7 +10542,18 @@ class Bot:
         config = rubric.config or {}
         target = channel_id
         if target is None:
-            target = config.get("test_channel_id") if test else config.get("channel_id")
+            prod_channel = config.get("channel_id")
+            test_channel = config.get("test_channel_id")
+            target = test_channel if test else prod_channel
+            logging.info(
+                "Channel resolved: rubric=%s, test=%s, prod_channel=%s, "
+                "test_channel=%s, resolved=%s",
+                code,
+                test,
+                prod_channel,
+                test_channel,
+                target,
+            )
         if target is None:
             raise ValueError("Channel id is required for rubric publication")
         payload = {
@@ -10596,6 +10607,15 @@ class Bot:
                     )
         else:
             resolved_channel = old_payload_channel
+            logging.info(
+                "_job_publish_rubric (manual): rubric=%s, test_mode=%s, "
+                "schedule_key=%s, payload_channel=%s, resolved=%s",
+                code,
+                test_mode,
+                schedule_key,
+                old_payload_channel,
+                resolved_channel,
+            )
         success = await self.publish_rubric(
             code,
             channel_id=resolved_channel,
@@ -10629,8 +10649,21 @@ class Bot:
             return False
         config = rubric.config or {}
         target = channel_id
+        channel_source = "provided" if channel_id is not None else "config"
         if target is None:
-            target = config.get("test_channel_id") if test else config.get("channel_id")
+            prod_channel = config.get("channel_id")
+            test_channel = config.get("test_channel_id")
+            target = test_channel if test else prod_channel
+        logging.info(
+            "publish_rubric: rubric=%s, test=%s, prod_channel=%s, "
+            "test_channel=%s, channel_source=%s, resolved=%s",
+            code,
+            test,
+            config.get("channel_id"),
+            config.get("test_channel_id"),
+            channel_source,
+            target,
+        )
         if target is None:
             logging.warning("Rubric %s missing channel configuration", code)
             return False

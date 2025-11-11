@@ -1,7 +1,9 @@
+import json
 import os
 import sys
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -29,27 +31,31 @@ def _create_asset(
     tg_chat_id: int,
     message_id: int,
     rubric_id: int | None = None,
-) -> int:
+) -> str:
     """Create an asset and return its ID."""
-    cursor = bot.db.execute(
+    asset_id = str(uuid4())
+    tg_message_id = f"{tg_chat_id}:{message_id}"
+    payload = {}
+    if rubric_id is not None:
+        payload["rubric_id"] = rubric_id
+    payload_json = json.dumps(payload)
+
+    bot.db.execute(
         """
         INSERT INTO assets (
-            channel_id, tg_chat_id, message_id, rubric_id,
-            created_at, updated_at
+            id, tg_message_id, payload_json, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?)
         """,
         (
-            tg_chat_id,
-            tg_chat_id,
-            message_id,
-            rubric_id,
-            datetime.utcnow().isoformat(),
+            asset_id,
+            tg_message_id,
+            payload_json,
             datetime.utcnow().isoformat(),
         ),
     )
     bot.db.commit()
-    return cursor.lastrowid
+    return asset_id
 
 
 @pytest.mark.asyncio
@@ -101,9 +107,15 @@ async def test_audit_assets_removes_missing(tmp_path: Any) -> None:
     await bot.handle_message(message)
 
     # Verify that missing assets (102, 104) were deleted
-    remaining = bot.db.execute("SELECT id, message_id FROM assets ORDER BY id").fetchall()
+    remaining = bot.db.execute("SELECT id, tg_message_id FROM assets ORDER BY id").fetchall()
     remaining_ids = [row["id"] for row in remaining]
-    remaining_msg_ids = [row["message_id"] for row in remaining]
+    remaining_msg_ids = []
+    for row in remaining:
+        if row["tg_message_id"]:
+            # Extract message_id from "chat_id:message_id" format
+            parts = row["tg_message_id"].split(":")
+            if len(parts) == 2:
+                remaining_msg_ids.append(int(parts[1]))
 
     assert asset_1 in remaining_ids, "Asset 1 should remain (message exists)"
     assert asset_2 not in remaining_ids, "Asset 2 should be deleted (message missing)"
@@ -213,8 +225,13 @@ async def test_audit_assets_continues_on_error(tmp_path: Any) -> None:
     await bot.handle_message(message)
 
     # Check remaining assets
-    remaining = bot.db.execute("SELECT message_id FROM assets ORDER BY message_id").fetchall()
-    remaining_msg_ids = [row["message_id"] for row in remaining]
+    remaining = bot.db.execute("SELECT tg_message_id FROM assets ORDER BY tg_message_id").fetchall()
+    remaining_msg_ids = []
+    for row in remaining:
+        if row["tg_message_id"]:
+            parts = row["tg_message_id"].split(":")
+            if len(parts) == 2:
+                remaining_msg_ids.append(int(parts[1]))
 
     # Only 102 should be deleted (404 error)
     # 104 should remain (rate limit error, not 404)

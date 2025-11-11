@@ -6902,8 +6902,7 @@ class Bot:
                 """
                 SELECT a.id, a.payload_json, a.tg_message_id
                 FROM assets a
-                LEFT JOIN vision_results vr ON vr.asset_id = a.id
-                WHERE json_extract(vr.result_json, '$.vision_category') = 'sea'
+                WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
                 """
             ).fetchall()
 
@@ -7351,6 +7350,7 @@ class Bot:
 
         if text.startswith("/rubrics") and self.is_superadmin(user_id):
             self.rubric_dashboards.pop(user_id, None)
+            self.rubric_overview_messages.pop(user_id, None)
             await self._send_rubric_dashboard(user_id)
             return
 
@@ -8799,6 +8799,7 @@ class Bot:
                 },
             )
         elif data == "rubric_dashboard" and self.is_superadmin(user_id):
+            self.rubric_overview_messages.pop(user_id, None)
             await self._send_rubric_dashboard(user_id, message=query.get("message"))
         elif data.startswith("rubric_overview:") and self.is_superadmin(user_id):
             code = data.split(":", 1)[1]
@@ -15273,8 +15274,7 @@ class Bot:
             """
             SELECT COUNT(*) as cnt 
             FROM assets a
-            LEFT JOIN vision_results vr ON vr.asset_id = a.id 
-            WHERE json_extract(vr.result_json, '$.vision_category') = 'sea'
+            WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
             """
         ).fetchone()
         total_count = total_row["cnt"] if total_row else 0
@@ -15284,8 +15284,7 @@ class Bot:
             """
             SELECT a.vision_sky_bucket as sky_bucket, COUNT(*) as cnt
             FROM assets a
-            LEFT JOIN vision_results vr ON vr.asset_id = a.id
-            WHERE json_extract(vr.result_json, '$.vision_category') = 'sea'
+            WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
               AND a.vision_sky_bucket IS NOT NULL
             GROUP BY a.vision_sky_bucket
             """
@@ -15298,8 +15297,7 @@ class Bot:
             """
             SELECT a.wave_score_0_10 as wave, COUNT(*) as cnt
             FROM assets a
-            LEFT JOIN vision_results vr ON vr.asset_id = a.id
-            WHERE json_extract(vr.result_json, '$.vision_category') = 'sea'
+            WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
               AND a.wave_score_0_10 IS NOT NULL
             GROUP BY a.wave_score_0_10
             ORDER BY a.wave_score_0_10
@@ -15307,6 +15305,14 @@ class Bot:
         ).fetchall()
 
         wave_counts = {int(row["wave"]): row["cnt"] for row in wave_rows}
+
+        logging.info(
+            "SEA_INVENTORY_REPORT prod=%d total=%d sky_buckets=%s wave_scores=%s",
+            int(is_prod),
+            total_count,
+            dict(sky_counts),
+            dict(wave_counts),
+        )
 
         # Build report text
         SKY_LABELS = {

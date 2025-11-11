@@ -4263,7 +4263,6 @@ async def test_rubrics_dashboard_callback_fallback_on_edit_failure(tmp_path):
     dashboard_msg_id = None
     for method, data in calls:
         if method == "sendMessage" and data and "Карточки рубрик" in data.get("text", ""):
-            result = {"message_id": message_counter, "chat": {"id": 1}}
             dashboard_msg_id = message_counter
             break
     assert dashboard_msg_id is not None

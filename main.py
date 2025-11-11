@@ -7055,7 +7055,7 @@ class Bot:
             try:
                 all_assets = self.db.execute(
                     """
-                    SELECT id, tg_chat_id, message_id, rubric_id
+                    SELECT id, tg_message_id, payload_json
                     FROM assets
                     """
                 ).fetchall()
@@ -7063,7 +7063,10 @@ class Bot:
                 logging.error("ASSETS_AUDIT_FETCH_ERROR err=%s", str(e)[:200])
                 await self.api_request(
                     "sendMessage",
-                    {"chat_id": user_id, "text": f"❌ Ошибка при получении ассетов: {str(e)[:100]}"},
+                    {
+                        "chat_id": user_id,
+                        "text": f"❌ Ошибка при получении ассетов: {str(e)[:100]}",
+                    },
                 )
                 return
 
@@ -7073,12 +7076,34 @@ class Bot:
 
                 for row in batch:
                     asset_id = row["id"]
-                    chat_id = row["tg_chat_id"]
-                    msg_id = row["message_id"]
-                    rubric_id = row["rubric_id"] if "rubric_id" in row.keys() else None
+                    tg_message_id = row["tg_message_id"] if "tg_message_id" in row.keys() else None
+                    payload_json = row["payload_json"] if "payload_json" in row.keys() else None
+
+                    # Parse tg_message_id to extract chat_id and message_id
+                    chat_id = None
+                    msg_id = None
+                    if tg_message_id:
+                        parts = str(tg_message_id).split(":", 1)
+                        if len(parts) == 2:
+                            try:
+                                chat_id = int(parts[0])
+                                msg_id = int(parts[1])
+                            except (ValueError, TypeError):
+                                pass
+
+                    # Parse rubric_id from payload_json
+                    rubric_id = None
+                    if payload_json:
+                        try:
+                            payload = json.loads(payload_json)
+                            rubric_id = payload.get("rubric_id")
+                        except (json.JSONDecodeError, TypeError):
+                            pass
 
                     # Determine rubric name for reporting
-                    rubric_name = rubric_map.get(rubric_id, "unassigned") if rubric_id else "unassigned"
+                    rubric_name = (
+                        rubric_map.get(rubric_id, "unassigned") if rubric_id else "unassigned"
+                    )
 
                     if not chat_id or not msg_id:
                         # Skip assets without valid TG message info

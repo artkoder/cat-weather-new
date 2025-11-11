@@ -82,7 +82,7 @@ async def test_sea_caption_prompt_fact_numbers_and_limit_instruction(
     system_prompt = first_call["system_prompt"]
     user_prompt = first_call["user_prompt"]
     assert "350" in system_prompt
-    assert "сохрани все цифры" in system_prompt
+    assert "числа/названия/термины" in system_prompt
     assert '"fact_sentence":' in user_prompt
     assert fact_text in user_prompt
     assert '"place_hashtag": "#Балтийск"' in user_prompt

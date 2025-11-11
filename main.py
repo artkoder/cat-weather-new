@@ -6874,9 +6874,7 @@ class Bot:
                 return
 
             await self._send_sea_inventory_report(is_prod=False, initiator_id=user_id)
-            await self.api_request(
-                "sendMessage", {"chat_id": user_id, "text": "✓ Отчёт отправлен"}
-            )
+            await self.api_request("sendMessage", {"chat_id": user_id, "text": "✓ Отчёт отправлен"})
             return
 
         if text.startswith("/sea_audit"):
@@ -6994,7 +6992,9 @@ class Bot:
                             deleted += 1
                         else:
                             # If other error, keep record (err on side of caution)
-                            logging.warning("SEA_AUDIT_CHECK_ERROR asset_id=%s err=%s", asset_id, str(e)[:200])
+                            logging.warning(
+                                "SEA_AUDIT_CHECK_ERROR asset_id=%s err=%s", asset_id, str(e)[:200]
+                            )
                             kept += 1
 
             logging.info(
@@ -14838,7 +14838,10 @@ class Bot:
                 except Exception as e:
                     error_str = str(e).lower()
                     # If message not found, log but continue to DB delete
-                    if "message to delete not found" in error_str or "message not found" in error_str:
+                    if (
+                        "message to delete not found" in error_str
+                        or "message not found" in error_str
+                    ):
                         logging.warning(
                             "SEA_TG_DELETE_SKIP_NOT_FOUND asset_id=%s",
                             asset_id,
@@ -14962,7 +14965,9 @@ class Bot:
                     target_id,
                 )
             except Exception as e:
-                logging.error("SEA_INVENTORY_SEND_FAILED target_id=%d err=%s", target_id, str(e)[:200])
+                logging.error(
+                    "SEA_INVENTORY_SEND_FAILED target_id=%d err=%s", target_id, str(e)[:200]
+                )
 
     async def _handle_sea_no_candidates(
         self,

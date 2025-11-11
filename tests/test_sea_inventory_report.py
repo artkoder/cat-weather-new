@@ -44,18 +44,10 @@ async def test_sea_inventory_report_counts_correctly(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
 
-    bot = main_module.Bot(token="dummy", webhook_url="https://example.com")
+    bot = main_module.Bot(token="dummy", db_path=str(db_path))
 
-    # Create a sea rubric
-    bot.data.db.execute(
-        """
-        INSERT INTO rubrics (code, name, channel_id, config_json) 
-        VALUES (?, ?, ?, ?)
-        """,
-        ("sea", "Море", -1001234567890, "{}"),
-    )
-    bot.data.db.commit()
-    rubric_id = bot.data.db.execute("SELECT id FROM rubrics WHERE code='sea'").fetchone()["id"]
+    # Get the sea rubric (created by default in Bot.__init__)
+    rubric_id = bot.db.execute("SELECT id FROM rubrics WHERE code='sea'").fetchone()["id"]
 
     # Create test sea assets with different sky buckets and wave scores
     assets_data = [
@@ -68,28 +60,42 @@ async def test_sea_inventory_report_counts_correctly(monkeypatch, tmp_path):
         {"sky": "overcast", "wave": 7},
     ]
 
+    channel_id = -1001234567890
     for idx, asset_data in enumerate(assets_data, 1):
-        bot.data.db.execute(
-            """
-            INSERT INTO assets (
-                id, rubric_id, file_id, file_unique_id, asset_type, 
-                payload_json, vision_sky_bucket, wave_score_0_10
-            ) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                f"asset_{idx}",
-                rubric_id,
-                f"file_{idx}",
-                f"unique_{idx}",
-                "photo",
-                json.dumps({"vision_category": "sea"}),
-                asset_data["sky"],
-                asset_data["wave"],
-            ),
+        file_meta = {
+            "file_id": f"file_{idx}",
+            "file_unique_id": f"unique_{idx}",
+            "file_name": f"test_{idx}.jpg",
+            "mime_type": "image/jpeg",
+            "width": 1920,
+            "height": 1080,
+        }
+        asset_id = bot.data.save_asset(
+            channel_id,
+            1000 + idx,
+            template=None,
+            hashtags=None,
+            tg_chat_id=channel_id,
+            caption=None,
+            kind="photo",
+            file_meta=file_meta,
+            rubric_id=rubric_id,
+            wave_score_0_10=asset_data["wave"],
+        )
+        # Update with vision category and sky bucket
+        vision_payload = {
+            "is_sea": True,
+            "sea_wave_score": asset_data["wave"],
+            "photo_sky": asset_data["sky"],
+        }
+        bot.data.update_asset(
+            asset_id,
+            vision_category="sea",
+            vision_results=vision_payload,
+            vision_sky_bucket=asset_data["sky"],
         )
 
-    bot.data.db.commit()
+    bot.db.commit()
 
     # Call the inventory report function
     await bot._send_sea_inventory_report(is_prod=True, initiator_id=12345)
@@ -149,7 +155,7 @@ async def test_sea_inventory_report_zero_when_no_assets(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
 
-    bot = main_module.Bot(token="dummy", webhook_url="https://example.com")
+    bot = main_module.Bot(token="dummy", db_path=str(db_path))
 
     # Call the inventory report function without any assets
     await bot._send_sea_inventory_report(is_prod=True, initiator_id=12345)
@@ -196,64 +202,76 @@ async def test_sea_inventory_report_ignores_non_sea_assets(monkeypatch, tmp_path
 
     monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
 
-    bot = main_module.Bot(token="dummy", webhook_url="https://example.com")
+    bot = main_module.Bot(token="dummy", db_path=str(db_path))
 
-    # Create a rubric
-    bot.data.db.execute(
-        """
-        INSERT INTO rubrics (code, name, channel_id, config_json) 
-        VALUES (?, ?, ?, ?)
-        """,
-        ("flowers", "Цветы", -1001234567890, "{}"),
-    )
-    bot.data.db.commit()
-    rubric_id = bot.data.db.execute("SELECT id FROM rubrics WHERE code='flowers'").fetchone()[
-        "id"
-    ]
+    # Get the flowers rubric (created by default in Bot.__init__)
+    rubric_id = bot.db.execute("SELECT id FROM rubrics WHERE code='flowers'").fetchone()["id"]
+
+    channel_id = -1001234567890
 
     # Create sea asset
-    bot.data.db.execute(
-        """
-        INSERT INTO assets (
-            id, rubric_id, file_id, file_unique_id, asset_type, 
-            payload_json, vision_sky_bucket, wave_score_0_10
-        ) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "sea_asset_1",
-            rubric_id,
-            "file_1",
-            "unique_1",
-            "photo",
-            json.dumps({"vision_category": "sea"}),
-            "clear",
-            0,
-        ),
+    file_meta = {
+        "file_id": "file_1",
+        "file_unique_id": "unique_1",
+        "file_name": "sea_test.jpg",
+        "mime_type": "image/jpeg",
+        "width": 1920,
+        "height": 1080,
+    }
+    asset_id = bot.data.save_asset(
+        channel_id,
+        1001,
+        template=None,
+        hashtags=None,
+        tg_chat_id=channel_id,
+        caption=None,
+        kind="photo",
+        file_meta=file_meta,
+        rubric_id=rubric_id,
+        wave_score_0_10=0,
+    )
+    vision_payload = {
+        "is_sea": True,
+        "sea_wave_score": 0,
+        "photo_sky": "clear",
+    }
+    bot.data.update_asset(
+        asset_id,
+        vision_category="sea",
+        vision_results=vision_payload,
+        vision_sky_bucket="clear",
     )
 
     # Create flowers asset (should be ignored)
-    bot.data.db.execute(
-        """
-        INSERT INTO assets (
-            id, rubric_id, file_id, file_unique_id, asset_type, 
-            payload_json, vision_sky_bucket, wave_score_0_10
-        ) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "flowers_asset_1",
-            rubric_id,
-            "file_2",
-            "unique_2",
-            "photo",
-            json.dumps({"vision_category": "flowers"}),
-            None,
-            None,
-        ),
+    file_meta = {
+        "file_id": "file_2",
+        "file_unique_id": "unique_2",
+        "file_name": "flowers_test.jpg",
+        "mime_type": "image/jpeg",
+        "width": 1920,
+        "height": 1080,
+    }
+    asset_id = bot.data.save_asset(
+        channel_id,
+        1002,
+        template=None,
+        hashtags=None,
+        tg_chat_id=channel_id,
+        caption=None,
+        kind="photo",
+        file_meta=file_meta,
+        rubric_id=rubric_id,
+    )
+    vision_payload = {
+        "is_flower": True,
+    }
+    bot.data.update_asset(
+        asset_id,
+        vision_category="flowers",
+        vision_results=vision_payload,
     )
 
-    bot.data.db.commit()
+    bot.db.commit()
 
     # Call the inventory report function
     await bot._send_sea_inventory_report(is_prod=True, initiator_id=12345)

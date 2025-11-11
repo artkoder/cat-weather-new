@@ -6601,6 +6601,7 @@ class Bot:
                     "- `/backfill_waves [dry-run]` — заполнить волны/небо из vision_results (используйте dry-run для проверки без изменений).\n"
                     "- `/inv_sea` — остатки фото «Море» по небу и волне.\n"
                     "- `/sea_audit` — проверка и очистка «мёртвых душ» в базе.\n"
+                    "- `/audit_assets` — проверить ВСЕ ассеты в базе и удалить те, которых уже нет в ассетс-канале (даёт сводку).\n"
                 ),
                 (
                     "*Погодные рассылки*\n"
@@ -7010,6 +7011,182 @@ class Bot:
                 f"Удалено (мёртвые): {deleted}\n"
                 f"Оставлено: {kept}"
             )
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": report},
+            )
+            return
+
+        if text.startswith("/audit_assets"):
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "sendMessage", {"chat_id": user_id, "text": "Not authorized"}
+                )
+                return
+
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": "🔍 Начинаю аудит всех ассетов..."},
+            )
+
+            BATCH_SIZE = 50
+            BATCH_DELAY_MS = 100
+            total_checked = 0
+            total_removed = 0
+
+            logging.info("ASSETS_AUDIT_STARTED")
+
+            # Get rubric mapping for better reporting
+            rubric_map: dict[int, str] = {}
+            rubric_checked: dict[str, int] = {}
+            rubric_removed: dict[str, int] = {}
+            try:
+                rubrics_rows = self.db.execute("SELECT id, code FROM rubrics").fetchall()
+                for row in rubrics_rows:
+                    rubric_map[row["id"]] = row["code"]
+                    rubric_checked[row["code"]] = 0
+                    rubric_removed[row["code"]] = 0
+                rubric_checked["unassigned"] = 0
+                rubric_removed["unassigned"] = 0
+            except Exception as e:
+                logging.warning("ASSETS_AUDIT_RUBRIC_MAP_ERROR err=%s", str(e)[:200])
+
+            # Fetch all assets
+            try:
+                all_assets = self.db.execute(
+                    """
+                    SELECT id, tg_chat_id, message_id, rubric_id
+                    FROM assets
+                    """
+                ).fetchall()
+            except Exception as e:
+                logging.error("ASSETS_AUDIT_FETCH_ERROR err=%s", str(e)[:200])
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": f"❌ Ошибка при получении ассетов: {str(e)[:100]}"},
+                )
+                return
+
+            # Process in batches
+            for batch_idx in range(0, len(all_assets), BATCH_SIZE):
+                batch = all_assets[batch_idx : batch_idx + BATCH_SIZE]
+
+                for row in batch:
+                    asset_id = row["id"]
+                    chat_id = row["tg_chat_id"]
+                    msg_id = row["message_id"]
+                    rubric_id = row["rubric_id"] if "rubric_id" in row.keys() else None
+
+                    # Determine rubric name for reporting
+                    rubric_name = rubric_map.get(rubric_id, "unassigned") if rubric_id else "unassigned"
+
+                    if not chat_id or not msg_id:
+                        # Skip assets without valid TG message info
+                        total_checked += 1
+                        if rubric_name in rubric_checked:
+                            rubric_checked[rubric_name] += 1
+                        continue
+
+                    total_checked += 1
+                    if rubric_name in rubric_checked:
+                        rubric_checked[rubric_name] += 1
+
+                    # Check if message exists via copyMessage (safe, non-destructive)
+                    try:
+                        copy_result = await self.api_request(
+                            "copyMessage",
+                            {
+                                "from_chat_id": chat_id,
+                                "message_id": msg_id,
+                                "chat_id": user_id,
+                                "disable_notification": True,
+                            },
+                        )
+                        # If successful, delete the copy (was only for verification)
+                        if copy_result.get("ok") and copy_result.get("result"):
+                            copy_msg_id = copy_result["result"].get("message_id")
+                            if copy_msg_id:
+                                try:
+                                    await self.api_request(
+                                        "deleteMessage",
+                                        {
+                                            "chat_id": user_id,
+                                            "message_id": copy_msg_id,
+                                        },
+                                    )
+                                except Exception as e:
+                                    logging.warning(
+                                        "ASSETS_AUDIT_COPY_DELETE_FAILED asset_id=%s err=%s",
+                                        asset_id,
+                                        str(e)[:100],
+                                    )
+
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        # If message not found (400), treat as dead soul
+                        if (
+                            "message to copy not found" in error_str
+                            or "message not found" in error_str
+                            or "message can't be copied" in error_str
+                        ):
+                            logging.warning(
+                                "ASSETS_AUDIT_DEAD_SOUL asset_id=%s chat_id=%s msg_id=%s rubric=%s",
+                                asset_id,
+                                chat_id,
+                                msg_id,
+                                rubric_name,
+                            )
+
+                            # Delete record from DB
+                            try:
+                                self.db.execute("DELETE FROM assets WHERE id=?", (asset_id,))
+                                self.db.commit()
+                                total_removed += 1
+                                if rubric_name in rubric_removed:
+                                    rubric_removed[rubric_name] += 1
+                            except Exception as delete_error:
+                                logging.error(
+                                    "ASSETS_AUDIT_DB_DELETE_FAILED asset_id=%s err=%s",
+                                    asset_id,
+                                    str(delete_error)[:200],
+                                )
+                        else:
+                            # Other TG errors: log and continue (don't fail audit)
+                            logging.warning(
+                                "ASSETS_AUDIT_TG_ERROR asset_id=%s err=%s",
+                                asset_id,
+                                str(e)[:200],
+                            )
+
+                # Delay between batches to avoid rate limits
+                if batch_idx + BATCH_SIZE < len(all_assets):
+                    await asyncio.sleep(BATCH_DELAY_MS / 1000.0)
+
+            logging.info(
+                "ASSETS_AUDIT_FINISHED checked=%d removed=%d",
+                total_checked,
+                total_removed,
+            )
+
+            # Build detailed report
+            report_lines = [
+                "🔎 Аудит ассетов завершён\n",
+                f"Проверено: {total_checked}",
+                f"Удалено «мёртвых душ»: {total_removed}\n",
+            ]
+
+            # Add per-rubric breakdown if we have data
+            if rubric_checked:
+                report_lines.append("По рубрикам:")
+                for rubric_name in sorted(rubric_checked.keys()):
+                    checked_count = rubric_checked.get(rubric_name, 0)
+                    removed_count = rubric_removed.get(rubric_name, 0)
+                    if checked_count > 0:
+                        report_lines.append(
+                            f"  • {rubric_name}: проверено {checked_count}, удалено {removed_count}"
+                        )
+
+            report = "\n".join(report_lines)
             await self.api_request(
                 "sendMessage",
                 {"chat_id": user_id, "text": report},

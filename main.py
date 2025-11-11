@@ -7350,6 +7350,7 @@ class Bot:
 
         if text.startswith("/rubrics") and self.is_superadmin(user_id):
             self.rubric_dashboards.pop(user_id, None)
+            self.rubric_overview_messages.pop(user_id, None)
             await self._send_rubric_dashboard(user_id)
             return
 
@@ -8798,6 +8799,7 @@ class Bot:
                 },
             )
         elif data == "rubric_dashboard" and self.is_superadmin(user_id):
+            self.rubric_overview_messages.pop(user_id, None)
             await self._send_rubric_dashboard(user_id, message=query.get("message"))
         elif data.startswith("rubric_overview:") and self.is_superadmin(user_id):
             code = data.split(":", 1)[1]

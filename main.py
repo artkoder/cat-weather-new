@@ -7350,6 +7350,7 @@ class Bot:
             return
 
         if text.startswith("/rubrics") and self.is_superadmin(user_id):
+            self.rubric_dashboards.pop(user_id, None)
             await self._send_rubric_dashboard(user_id)
             return
 
@@ -10180,7 +10181,38 @@ class Bot:
                     "text": text,
                     "reply_markup": keyboard,
                 }
-                await self.api_request("editMessageText", payload)
+                response = await self.api_request("editMessageText", payload)
+                if response and response.get("ok"):
+                    logging.info(
+                        "Rubric dashboard: reply_mode=edit, user_id=%s, msg_id=%s",
+                        user_id,
+                        message_id,
+                    )
+                    chat_id = chat.get("id")
+                    message_id = message_id
+                else:
+                    error_desc = response.get("description", "") if response else ""
+                    error_code = response.get("error_code") if response else None
+                    if error_code in {400, 404}:
+                        logging.info(
+                            "Rubric dashboard: edit failed (code=%s, desc=%s), falling back to send. user_id=%s, old_msg_id=%s",
+                            error_code,
+                            error_desc,
+                            user_id,
+                            message_id,
+                        )
+                        chat_id = None
+                        message_id = None
+                    else:
+                        logging.warning(
+                            "Rubric dashboard: edit failed unexpectedly (code=%s, desc=%s). user_id=%s, msg_id=%s",
+                            error_code,
+                            error_desc,
+                            user_id,
+                            message_id,
+                        )
+                        chat_id = None
+                        message_id = None
         if chat_id is None or message_id is None:
             response = await self.api_request(
                 "sendMessage",
@@ -10192,6 +10224,13 @@ class Bot:
                     chat = result.get("chat") or {}
                     chat_id = chat.get("id")
                     message_id = result.get("message_id")
+                    reply_mode = "fallback_send" if target else "send"
+                    logging.info(
+                        "Rubric dashboard: reply_mode=%s, user_id=%s, new_msg_id=%s",
+                        reply_mode,
+                        user_id,
+                        message_id,
+                    )
         if chat_id is not None and message_id is not None:
             self.rubric_dashboards[user_id] = {
                 "chat_id": chat_id,
@@ -10367,17 +10406,50 @@ class Bot:
         pending_mode = self._get_rubric_pending_run(user_id, code)
         text, _, keyboard = self._build_rubric_overview(rubric, pending_mode=pending_mode)
         payload = {"text": text, "reply_markup": keyboard}
+        sent_new_message = False
         if message:
             chat_id = message.get("chat", {}).get("id", user_id)
             message_id = message.get("message_id")
             payload.update({"chat_id": chat_id, "message_id": message_id})
-            await self.api_request("editMessageText", payload)
-            if chat_id is not None and message_id is not None:
-                self._remember_rubric_overview(
-                    user_id, code, chat_id=chat_id, message_id=message_id
+            response = await self.api_request("editMessageText", payload)
+            if response and response.get("ok"):
+                logging.info(
+                    "Rubric overview %s: reply_mode=edit, user_id=%s, msg_id=%s",
+                    code,
+                    user_id,
+                    message_id,
                 )
+                if chat_id is not None and message_id is not None:
+                    self._remember_rubric_overview(
+                        user_id, code, chat_id=chat_id, message_id=message_id
+                    )
+            else:
+                error_desc = response.get("description", "") if response else ""
+                error_code = response.get("error_code") if response else None
+                if error_code in {400, 404}:
+                    logging.info(
+                        "Rubric overview %s: edit failed (code=%s, desc=%s), falling back to send. user_id=%s, old_msg_id=%s",
+                        code,
+                        error_code,
+                        error_desc,
+                        user_id,
+                        message_id,
+                    )
+                    sent_new_message = True
+                else:
+                    logging.warning(
+                        "Rubric overview %s: edit failed unexpectedly (code=%s, desc=%s). user_id=%s, msg_id=%s",
+                        code,
+                        error_code,
+                        error_desc,
+                        user_id,
+                        message_id,
+                    )
+                    sent_new_message = True
         else:
-            payload["chat_id"] = user_id
+            sent_new_message = True
+        if sent_new_message:
+            payload = {"text": text, "reply_markup": keyboard, "chat_id": user_id}
             response = await self.api_request("sendMessage", payload)
             if response and response.get("ok"):
                 result = response.get("result")
@@ -10385,6 +10457,14 @@ class Bot:
                     chat = result.get("chat") or {}
                     chat_id = chat.get("id", user_id)
                     message_id = result.get("message_id")
+                    reply_mode = "fallback_send" if message else "send"
+                    logging.info(
+                        "Rubric overview %s: reply_mode=%s, user_id=%s, new_msg_id=%s",
+                        code,
+                        reply_mode,
+                        user_id,
+                        message_id,
+                    )
                     if chat_id is not None and message_id is not None:
                         self._remember_rubric_overview(
                             user_id,

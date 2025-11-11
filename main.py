@@ -7117,6 +7117,13 @@ class Bot:
                         rubric_checked[rubric_name] += 1
 
                     # Check if message exists via copyMessage (safe, non-destructive)
+                    logging.info(
+                        "ASSETS_AUDIT_CHECKING asset_id=%s chat_id=%s msg_id=%s rubric=%s",
+                        asset_id,
+                        chat_id,
+                        msg_id,
+                        rubric_name,
+                    )
                     try:
                         copy_result = await self.api_request(
                             "copyMessage",
@@ -7128,6 +7135,13 @@ class Bot:
                             },
                         )
                         # If successful, delete the copy (was only for verification)
+                        logging.info(
+                            "ASSETS_AUDIT_EXISTS asset_id=%s chat_id=%s msg_id=%s rubric=%s",
+                            asset_id,
+                            chat_id,
+                            msg_id,
+                            rubric_name,
+                        )
                         if copy_result.get("ok") and copy_result.get("result"):
                             copy_msg_id = copy_result["result"].get("message_id")
                             if copy_msg_id:
@@ -7148,12 +7162,27 @@ class Bot:
 
                     except Exception as e:
                         error_str = str(e).lower()
+                        logging.info(
+                            "ASSETS_AUDIT_COPY_FAILED asset_id=%s chat_id=%s msg_id=%s rubric=%s error=%s",
+                            asset_id,
+                            chat_id,
+                            msg_id,
+                            rubric_name,
+                            str(e)[:200],
+                        )
                         # If message not found (400), treat as dead soul
-                        if (
+                        # Check for various message deletion/not found errors
+                        is_dead_soul = (
                             "message to copy not found" in error_str
                             or "message not found" in error_str
                             or "message can't be copied" in error_str
-                        ):
+                            or "message_id_invalid" in error_str
+                            or "message to get not found" in error_str
+                            or "message to forward not found" in error_str
+                            or "message identifier is not specified" in error_str
+                            or "chat not found" in error_str
+                        )
+                        if is_dead_soul:
                             logging.warning(
                                 "ASSETS_AUDIT_DEAD_SOUL asset_id=%s chat_id=%s msg_id=%s rubric=%s",
                                 asset_id,
@@ -7169,6 +7198,12 @@ class Bot:
                                 total_removed += 1
                                 if rubric_name in rubric_removed:
                                     rubric_removed[rubric_name] += 1
+                                logging.info(
+                                    "ASSETS_AUDIT_DELETED asset_id=%s rubric=%s total_removed=%d",
+                                    asset_id,
+                                    rubric_name,
+                                    total_removed,
+                                )
                             except Exception as delete_error:
                                 logging.error(
                                     "ASSETS_AUDIT_DB_DELETE_FAILED asset_id=%s err=%s",

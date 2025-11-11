@@ -14714,41 +14714,6 @@ class Bot:
     ) -> tuple[str, list[str]]:
         default_hashtags = self._default_hashtags("sea")
 
-        def fallback_caption() -> str:
-            if storm_state == "strong_storm":
-                opening = "Сегодня сильный шторм на море — волны гремят у самого берега."
-            elif storm_state == "storm":
-                if storm_persisting:
-                    opening = "Продолжает штормить на море — волны всё ещё бьют о берег."
-                else:
-                    opening = "Сегодня шторм на море — волны упрямо разбиваются о кромку."
-            else:
-                opening = (
-                    "Порадую закатом над морем — побережье дышит теплом."
-                    if sunset_selected
-                    else "Порадую вас морем — побережье зовёт вдохнуть глубже."
-                )
-            lines: list[str] = [opening]
-            if wind_class == "very_strong":
-                lines.append("Ветер срывает шапки на набережной.")
-            elif wind_class == "strong":
-                lines.append("Ветер ощутимо тянет к морю.")
-            elif storm_state == "calm":
-                lines.append("На побережье спокойно и хочется задержаться.")
-            if fact_sentence:
-                lines.append(fact_sentence.strip())
-            text = " ".join(lines).strip()
-            sentences = [
-                segment.strip() for segment in re.split(r"(?<=[.!?…])\s+", text) if segment.strip()
-            ]
-            return " ".join(sentences[:3])
-
-        if not self.openai or not self.openai.api_key:
-            raw_fallback = fallback_caption()
-            cleaned = self.strip_header(raw_fallback)
-            fallback_text = cleaned.strip() if cleaned else raw_fallback.strip()
-            return fallback_text, default_hashtags
-
         # LEADS list for soft fact introductions
         LEADS = [
             "А вы знали",
@@ -14762,6 +14727,54 @@ class Bot:
             "Поделюсь фактом:",
             "К слову",
         ]
+
+        def fallback_caption() -> str:
+            if storm_state == "strong_storm":
+                opening = "Сегодня сильный шторм на море — волны гремят у самого берега."
+            elif storm_state == "storm":
+                if storm_persisting:
+                    opening = "Продолжает штормить на море — волны всё ещё бьют о берег."
+                else:
+                    opening = "Сегодня шторм на море — волны упрямо разбиваются о кромку."
+            else:
+                opening = (
+                    "Порадую закатом над морем — побережье дышит теплом."
+                    if sunset_selected
+                    else "Порадую вас морем — тихий берег и ровный плеск."
+                )
+            
+            # Build second paragraph with LEADS + fact
+            second_para = ""
+            if fact_sentence:
+                lead = random.choice(LEADS)
+                fact_text = fact_sentence.strip()
+                # Ensure proper punctuation
+                if lead.endswith(":"):
+                    second_para = f"{lead} {fact_text}"
+                elif lead.endswith(","):
+                    second_para = f"{lead} {fact_text}"
+                else:
+                    # Add comma after lead if it doesn't have punctuation
+                    second_para = f"{lead}, {fact_text}"
+            
+            if second_para:
+                return f"{opening}\n\n{second_para}"
+            else:
+                # No fact available - add wind/storm info
+                if wind_class == "very_strong":
+                    return f"{opening} Ветер срывает шапки на набережной."
+                elif wind_class == "strong":
+                    return f"{opening} Ветер ощутимо тянет к морю."
+                elif storm_state == "calm":
+                    return f"{opening} На побережье спокойно и хочется задержаться."
+                else:
+                    return opening
+
+        if not self.openai or not self.openai.api_key:
+            raw_fallback = fallback_caption()
+            cleaned = self.strip_header(raw_fallback)
+            fallback_text = cleaned.strip() if cleaned else raw_fallback.strip()
+            return fallback_text, default_hashtags
 
         day_part_instruction = ""
         if day_part:
@@ -14846,6 +14859,7 @@ class Bot:
         attempts = 3
         for attempt in range(1, attempts + 1):
             temperature = self._creative_temperature()
+            attempt_start = time.perf_counter()
             try:
                 logging.info(
                     "Запрос генерации текста для sea: модель=%s temperature=%.2f top_p=0.9 попытка %s/%s",
@@ -14863,11 +14877,23 @@ class Bot:
                     temperature=temperature,
                     top_p=0.9,
                 )
+                attempt_latency = (time.perf_counter() - attempt_start) * 1000
             except Exception:
-                logging.exception("Failed to generate sea caption (attempt %s)", attempt)
+                attempt_latency = (time.perf_counter() - attempt_start) * 1000
+                logging.exception("Failed to generate sea caption (attempt %s) latency_ms=%.1f", attempt, attempt_latency)
                 response = None
             if response:
                 await self._record_openai_usage("gpt-4o", response, job=job)
+                # Extract finish_reason from response metadata if available
+                finish_reason = "completed"
+                if hasattr(response, "meta") and response.meta and isinstance(response.meta, dict):
+                    finish_reason = response.meta.get("finish_reason", "completed")
+                logging.info(
+                    "SEA_RUBRIC openai_response attempt=%d latency_ms=%.1f finish_reason=%s source=llm",
+                    attempt,
+                    attempt_latency,
+                    finish_reason
+                )
             if not response or not isinstance(response.content, dict):
                 continue
             caption_raw = str(response.content.get("caption") or "")
@@ -14875,8 +14901,43 @@ class Bot:
             caption = cleaned_caption.strip() if cleaned_caption else caption_raw.strip()
             raw_hashtags = response.content.get("hashtags") or []
             hashtags = self._deduplicate_hashtags(raw_hashtags)
+            
+            # Fatal check: caption must be non-empty
             if not caption:
+                logging.warning("SEA_RUBRIC caption_empty rejecting (fatal)")
                 continue
+            
+            # Style validation checks (warn-only, do NOT block publish)
+            # Check paragraph count
+            paragraphs = [p.strip() for p in caption.split("\n\n") if p.strip()]
+            paragraph_count = len(paragraphs)
+            if paragraph_count != 2:
+                logging.warning(
+                    "SEA_RUBRIC caption_structure expected 2 paragraphs, got %d",
+                    paragraph_count
+                )
+            
+            # Check for LEADS in second paragraph (if we have 2 paragraphs)
+            if paragraph_count >= 2:
+                second_para = paragraphs[1]
+                has_lead = any(lead in second_para for lead in LEADS)
+                if not has_lead:
+                    logging.warning("SEA_RUBRIC caption_leads no standard lead found in paragraph 2")
+            
+            # Check caption length
+            caption_length = len(caption)
+            if caption_length > 400:
+                logging.warning(
+                    "SEA_RUBRIC caption_length %d exceeds soft limit 400",
+                    caption_length
+                )
+            
+            # Check emoji placement (emojis should only be in paragraph 1)
+            if paragraph_count >= 2:
+                # Simple emoji detection pattern
+                emoji_pattern = r'[\U0001F300-\U0001F9FF]|[\U0001F600-\U0001F64F]|[\U0001F680-\U0001F6FF]|[\U00002600-\U000027BF]'
+                if re.search(emoji_pattern, paragraphs[1]):
+                    logging.warning("SEA_RUBRIC caption_emoji found in paragraph 2 (expected only in para 1)")
             if self._is_duplicate_rubric_copy("sea", "caption", caption, hashtags):
                 logging.info(
                     "Получен повторяющийся текст для рубрики sea, пробуем снова (%s/%s)",
@@ -14884,8 +14945,11 @@ class Bot:
                     attempts,
                 )
                 continue
+            logging.info("SEA_RUBRIC caption_accepted attempt=%d source=llm", attempt)
             return caption, hashtags
 
+        # All attempts failed, using fallback
+        logging.warning("SEA_RUBRIC caption_generation_failed using fallback source=fallback")
         raw_fallback = fallback_caption()
         cleaned = self.strip_header(raw_fallback)
         fallback_text = cleaned.strip() if cleaned else raw_fallback.strip()
@@ -14920,10 +14984,10 @@ class Bot:
             "fallback": 0,
         }
 
-        OPENAI_DEADLINE = 20.0
-        PER_ATTEMPT_TIMEOUT = 12.0
-        MAX_RETRIES = 2
-        BACKOFF_DELAYS = [1.0, 2.0]
+        OPENAI_DEADLINE = 90.0
+        PER_ATTEMPT_TIMEOUT = 60.0
+        MAX_RETRIES = 1
+        BACKOFF_DELAYS = [1.5, 2.0]
 
         global_start = time.perf_counter()
 
@@ -15023,44 +15087,68 @@ class Bot:
         openai_metadata["duration_ms"] = round(total_duration, 2)
 
         logging.info(
-            "SEA_RUBRIC OPENAI_FALLBACK total_duration_ms=%.1f calls=%d retries=%d timeout_hit=%d",
+            "SEA_RUBRIC OPENAI_FALLBACK total_duration_ms=%.1f calls=%d retries=%d timeout_hit=%d source=fallback",
             openai_metadata["duration_ms"],
             openai_metadata["openai_calls_per_publish"],
             openai_metadata["retries"],
             openai_metadata["timeout_hit"],
         )
 
-        fallback_seed = ""
+        # LEADS list for fallback
+        LEADS_FALLBACK = [
+            "А вы знали",
+            "Знаете ли вы",
+            "Интересный факт:",
+            "Это интересно:",
+            "Кстати:",
+            "К слову о Балтике,",
+            "Теперь вы будете знать:",
+            "Небольшой факт:",
+            "Поделюсь фактом:",
+            "К слову",
+        ]
+
+        fallback_opening = ""
         if storm_state == "strong_storm":
-            fallback_seed = "Сегодня сильный шторм на море — волны гремят у самого берега."
+            fallback_opening = "Сегодня сильный шторм на море — волны гремят у самого берега."
         elif storm_state == "storm":
             if storm_persisting:
-                fallback_seed = "Продолжает штормить на море — волны всё ещё бьют о берег."
+                fallback_opening = "Продолжает штормить на море — волны всё ещё бьют о берег."
             else:
-                fallback_seed = "Сегодня шторм на море — волны упрямо разбиваются о кромку."
+                fallback_opening = "Сегодня шторм на море — волны упрямо разбиваются о кромку."
         else:
-            fallback_seed = (
+            fallback_opening = (
                 "Порадую закатом над морем — побережье дышит теплом."
                 if sunset_selected
-                else "Порадую вас морем — побережье зовёт вдохнуть глубже."
+                else "Порадую вас морем — тихий берег и ровный плеск."
             )
 
-        if wind_class == "very_strong":
-            fallback_seed += " Ветер срывает шапки на набережной."
-        elif wind_class == "strong":
-            fallback_seed += " Ветер ощутимо тянет к морю."
-        elif storm_state == "calm":
-            fallback_seed += " На побережье спокойно и хочется задержаться."
-
+        # Build second paragraph with LEADS + fact
+        second_para_fallback = ""
         if fact_sentence:
-            fallback_seed += f" {fact_sentence.strip()}"
+            lead_fallback = random.choice(LEADS_FALLBACK)
+            fact_text_fallback = fact_sentence.strip()
+            # Ensure proper punctuation
+            if lead_fallback.endswith(":"):
+                second_para_fallback = f"{lead_fallback} {fact_text_fallback}"
+            elif lead_fallback.endswith(","):
+                second_para_fallback = f"{lead_fallback} {fact_text_fallback}"
+            else:
+                # Add comma after lead if it doesn't have punctuation
+                second_para_fallback = f"{lead_fallback}, {fact_text_fallback}"
 
-        fallback_sentences = [
-            segment.strip()
-            for segment in re.split(r"(?<=[.!?…])\s+", fallback_seed.strip())
-            if segment.strip()
-        ]
-        fallback_caption = " ".join(fallback_sentences[:3])
+        if second_para_fallback:
+            fallback_caption = f"{fallback_opening}\n\n{second_para_fallback}"
+        else:
+            # No fact available - add wind/storm info
+            if wind_class == "very_strong":
+                fallback_caption = f"{fallback_opening} Ветер срывает шапки на набережной."
+            elif wind_class == "strong":
+                fallback_caption = f"{fallback_opening} Ветер ощутимо тянет к морю."
+            elif storm_state == "calm":
+                fallback_caption = f"{fallback_opening} На побережье спокойно и хочется задержаться."
+            else:
+                fallback_caption = fallback_opening
         default_hashtags = self._default_hashtags("sea")
 
         return fallback_caption, default_hashtags, openai_metadata

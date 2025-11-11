@@ -1157,8 +1157,11 @@ async def _ingest_photo_internal(
                         file_size,
                     )
                     metrics.increment("assets_publish_ok", 1.0)
+                except RuntimeError:
+                    # Re-raise RuntimeError for job retry logic
+                    raise
                 except Exception as photo_error:
-                    # Fallback to sendDocument on any error
+                    # Fallback to sendDocument on specific errors (format/size issues)
                     fallback_reason = type(photo_error).__name__
                     logging.warning(
                         "sendPhoto failed for mobile upload (mime=%s size=%s error=%s), "

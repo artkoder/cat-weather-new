@@ -3086,8 +3086,8 @@ async def test_rubrics_overview_lists_configs(tmp_path):
 
     calls.clear()
     await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
-    edit_calls = [item for item in calls if item[0] == "editMessageText"]
-    assert len(edit_calls) == 4
+    send_calls = [item for item in calls if item[0] == "sendMessage"]
+    assert len(send_calls) == 4
     await bot.close()
 
 
@@ -4173,4 +4173,124 @@ async def test_generate_sea_copy_fallback():
     )
     assert "шторм" in caption_storm.lower() or "море" in caption_storm.lower()
     assert "#море" in [h.lower() for h in hashtags_storm]
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_rubrics_command_always_sends_new_message(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    message_counter = 0
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def fake_api(method, data=None, *, files=None):
+        nonlocal message_counter
+        calls.append((method, data))
+        if method == "sendMessage":
+            message_counter += 1
+            chat_id = data.get("chat_id") if isinstance(data, dict) else None
+            return {
+                "ok": True,
+                "result": {"message_id": message_counter, "chat": {"id": chat_id}},
+            }
+        if method == "editMessageText":
+            return {
+                "ok": True,
+                "result": {
+                    "message_id": data.get("message_id") if isinstance(data, dict) else None,
+                    "chat": {"id": data.get("chat_id") if isinstance(data, dict) else None},
+                },
+            }
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore
+    await bot.start()
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+
+    calls.clear()
+    await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
+    first_calls = [item for item in calls if item[0] == "sendMessage"]
+    assert len(first_calls) >= 1
+
+    calls.clear()
+    await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
+    second_calls = [item for item in calls if item[0] == "sendMessage"]
+    assert len(second_calls) >= 1
+    edit_attempts = [item for item in calls if item[0] == "editMessageText"]
+    assert len(edit_attempts) == 0
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_rubrics_dashboard_callback_fallback_on_edit_failure(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    message_counter = 0
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+    edit_should_fail = False
+
+    async def fake_api(method, data=None, *, files=None):
+        nonlocal message_counter
+        calls.append((method, data))
+        if method == "sendMessage":
+            message_counter += 1
+            chat_id = data.get("chat_id") if isinstance(data, dict) else None
+            return {
+                "ok": True,
+                "result": {"message_id": message_counter, "chat": {"id": chat_id}},
+            }
+        if method == "editMessageText":
+            if edit_should_fail:
+                return {
+                    "ok": False,
+                    "error_code": 400,
+                    "description": "Bad Request: message is not modified",
+                }
+            return {
+                "ok": True,
+                "result": {
+                    "message_id": data.get("message_id") if isinstance(data, dict) else None,
+                    "chat": {"id": data.get("chat_id") if isinstance(data, dict) else None},
+                },
+            }
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore
+    await bot.start()
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+
+    calls.clear()
+    await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
+    dashboard_msg_id = None
+    for method, data in calls:
+        if method == "sendMessage" and data and "Карточки рубрик" in data.get("text", ""):
+            result = {"message_id": message_counter, "chat": {"id": 1}}
+            dashboard_msg_id = message_counter
+            break
+    assert dashboard_msg_id is not None
+
+    calls.clear()
+    edit_should_fail = True
+    callback = {
+        "callback_query": {
+            "id": "cq1",
+            "from": {"id": 1},
+            "message": {
+                "message_id": dashboard_msg_id,
+                "chat": {"id": 1},
+                "text": "old text",
+            },
+            "data": "rubric_dashboard",
+        }
+    }
+    await bot.handle_update(callback)
+
+    edit_attempts = [item for item in calls if item[0] == "editMessageText"]
+    assert len(edit_attempts) == 1
+    fallback_sends = [
+        item
+        for item in calls
+        if item[0] == "sendMessage" and item[1] and "Карточки рубрик" in item[1].get("text", "")
+    ]
+    assert len(fallback_sends) == 1
+
     await bot.close()

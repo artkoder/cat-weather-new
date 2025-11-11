@@ -461,7 +461,7 @@ async def test_rubric_scheduler_enqueues_jobs(tmp_path):
     assert row is not None
     payload = json.loads(row["payload"])
     assert payload["rubric_code"] == "flowers"
-    assert payload["channel_id"] == -100
+    assert payload.get("slot_channel_id") == -100
     assert payload["tz_offset"] == "+00:00"
     await bot.close()
 
@@ -483,7 +483,7 @@ async def test_rubric_scheduler_respects_timezone(tmp_path):
     assert row is not None
     payload = json.loads(row["payload"])
     assert payload["rubric_code"] == "guess_arch"
-    assert payload["channel_id"] == -900
+    assert payload.get("slot_channel_id") == -900
     assert payload["scheduled_at"] == expected.isoformat()
     assert payload["tz_offset"] == "+03:00"
     await bot.close()

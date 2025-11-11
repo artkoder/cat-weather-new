@@ -14742,7 +14742,7 @@ class Bot:
                     if sunset_selected
                     else "Порадую вас морем — тихий берег и ровный плеск."
                 )
-            
+
             # Build second paragraph with LEADS + fact
             second_para = ""
             if fact_sentence:
@@ -14756,7 +14756,7 @@ class Bot:
                 else:
                     # Add comma after lead if it doesn't have punctuation
                     second_para = f"{lead}, {fact_text}"
-            
+
             if second_para:
                 return f"{opening}\n\n{second_para}"
             else:
@@ -14880,7 +14880,11 @@ class Bot:
                 attempt_latency = (time.perf_counter() - attempt_start) * 1000
             except Exception:
                 attempt_latency = (time.perf_counter() - attempt_start) * 1000
-                logging.exception("Failed to generate sea caption (attempt %s) latency_ms=%.1f", attempt, attempt_latency)
+                logging.exception(
+                    "Failed to generate sea caption (attempt %s) latency_ms=%.1f",
+                    attempt,
+                    attempt_latency,
+                )
                 response = None
             if response:
                 await self._record_openai_usage("gpt-4o", response, job=job)
@@ -14892,7 +14896,7 @@ class Bot:
                     "SEA_RUBRIC openai_response attempt=%d latency_ms=%.1f finish_reason=%s source=llm",
                     attempt,
                     attempt_latency,
-                    finish_reason
+                    finish_reason,
                 )
             if not response or not isinstance(response.content, dict):
                 continue
@@ -14901,43 +14905,45 @@ class Bot:
             caption = cleaned_caption.strip() if cleaned_caption else caption_raw.strip()
             raw_hashtags = response.content.get("hashtags") or []
             hashtags = self._deduplicate_hashtags(raw_hashtags)
-            
+
             # Fatal check: caption must be non-empty
             if not caption:
                 logging.warning("SEA_RUBRIC caption_empty rejecting (fatal)")
                 continue
-            
+
             # Style validation checks (warn-only, do NOT block publish)
             # Check paragraph count
             paragraphs = [p.strip() for p in caption.split("\n\n") if p.strip()]
             paragraph_count = len(paragraphs)
             if paragraph_count != 2:
                 logging.warning(
-                    "SEA_RUBRIC caption_structure expected 2 paragraphs, got %d",
-                    paragraph_count
+                    "SEA_RUBRIC caption_structure expected 2 paragraphs, got %d", paragraph_count
                 )
-            
+
             # Check for LEADS in second paragraph (if we have 2 paragraphs)
             if paragraph_count >= 2:
                 second_para = paragraphs[1]
                 has_lead = any(lead in second_para for lead in LEADS)
                 if not has_lead:
-                    logging.warning("SEA_RUBRIC caption_leads no standard lead found in paragraph 2")
-            
+                    logging.warning(
+                        "SEA_RUBRIC caption_leads no standard lead found in paragraph 2"
+                    )
+
             # Check caption length
             caption_length = len(caption)
             if caption_length > 400:
                 logging.warning(
-                    "SEA_RUBRIC caption_length %d exceeds soft limit 400",
-                    caption_length
+                    "SEA_RUBRIC caption_length %d exceeds soft limit 400", caption_length
                 )
-            
+
             # Check emoji placement (emojis should only be in paragraph 1)
             if paragraph_count >= 2:
                 # Simple emoji detection pattern
-                emoji_pattern = r'[\U0001F300-\U0001F9FF]|[\U0001F600-\U0001F64F]|[\U0001F680-\U0001F6FF]|[\U00002600-\U000027BF]'
+                emoji_pattern = r"[\U0001F300-\U0001F9FF]|[\U0001F600-\U0001F64F]|[\U0001F680-\U0001F6FF]|[\U00002600-\U000027BF]"
                 if re.search(emoji_pattern, paragraphs[1]):
-                    logging.warning("SEA_RUBRIC caption_emoji found in paragraph 2 (expected only in para 1)")
+                    logging.warning(
+                        "SEA_RUBRIC caption_emoji found in paragraph 2 (expected only in para 1)"
+                    )
             if self._is_duplicate_rubric_copy("sea", "caption", caption, hashtags):
                 logging.info(
                     "Получен повторяющийся текст для рубрики sea, пробуем снова (%s/%s)",
@@ -15146,7 +15152,9 @@ class Bot:
             elif wind_class == "strong":
                 fallback_caption = f"{fallback_opening} Ветер ощутимо тянет к морю."
             elif storm_state == "calm":
-                fallback_caption = f"{fallback_opening} На побережье спокойно и хочется задержаться."
+                fallback_caption = (
+                    f"{fallback_opening} На побережье спокойно и хочется задержаться."
+                )
             else:
                 fallback_caption = fallback_opening
         default_hashtags = self._default_hashtags("sea")

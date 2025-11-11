@@ -8916,8 +8916,11 @@ class Bot:
             rubric = self.data.get_rubric_by_code(code)
             if rubric:
                 config = self._normalize_rubric_config(rubric.config)
-                config["enabled"] = not config.get("enabled", True)
+                was_enabled = config.get("enabled", True)
+                config["enabled"] = not was_enabled
                 self.data.save_rubric_config(code, config)
+                if was_enabled:
+                    self._delete_future_rubric_jobs(code, "rubric_disabled")
                 await self._send_rubric_overview(user_id, code, message=query.get("message"))
         elif data.startswith("rubric_channel:") and self.is_superadmin(user_id):
             parts = data.split(":")
@@ -9089,11 +9092,18 @@ class Bot:
                         config = self._normalize_rubric_config(
                             self.data.get_rubric_config(code) or {}
                         )
+                        old_value = config.get(field)
                         if channel_id is None:
                             config.pop(field, None)
                         else:
                             config[field] = channel_id
                         self.data.save_rubric_config(code, config)
+                        if old_value != channel_id:
+                            if field == "channel_id":
+                                reason = "prod_channel_changed"
+                            else:
+                                reason = "test_channel_changed"
+                            self._delete_future_rubric_jobs(code, reason)
                     message_obj = state.get("message")
                     del self.pending[user_id]
                     if code:
@@ -9154,8 +9164,15 @@ class Bot:
                         config = self._normalize_rubric_config(
                             self.data.get_rubric_config(code) or {}
                         )
+                        old_value = config.get(field)
                         config.pop(field, None)
                         self.data.save_rubric_config(code, config)
+                        if old_value is not None:
+                            if field == "channel_id":
+                                reason = "prod_channel_changed"
+                            else:
+                                reason = "test_channel_changed"
+                            self._delete_future_rubric_jobs(code, reason)
                     message_obj = state.get("message")
                     del self.pending[user_id]
                     if code:
@@ -9526,15 +9543,19 @@ class Bot:
                     continue
                 if not schedule.get("enabled", True):
                     continue
-                channel_id = schedule.get("channel_id") or config.get("channel_id")
-                if not channel_id:
+                slot_channel_id = schedule.get("channel_id")
+                default_channel_id = config.get("channel_id")
+                if not slot_channel_id and not default_channel_id:
                     continue
                 time_str = schedule.get("time")
                 if not time_str:
                     continue
                 tz_value = schedule.get("tz") or config.get("tz") or TZ_OFFSET
                 days = schedule.get("days") or config.get("days")
-                key = schedule.get("key") or f"{channel_id}:{idx}:{time_str}"
+                if slot_channel_id:
+                    key = schedule.get("key") or f"{slot_channel_id}:{idx}:{time_str}"
+                else:
+                    key = schedule.get("key") or f"{rubric.code}:{idx}:{time_str}"
                 state = self.data.get_rubric_schedule_state(rubric.code, key)
                 next_run = state.next_run_at if state else None
                 if next_run is None or next_run <= now:
@@ -9554,13 +9575,15 @@ class Bot:
                     continue
                 if self._rubric_job_exists(rubric.code, key):
                     continue
-                payload = {
+                payload: dict[str, Any] = {
                     "rubric_code": rubric.code,
-                    "channel_id": channel_id,
                     "schedule_key": key,
                     "scheduled_at": next_run.isoformat(),
                     "tz_offset": tz_value,
+                    "slot_index": idx,
                 }
+                if slot_channel_id:
+                    payload["slot_channel_id"] = slot_channel_id
                 self.jobs.enqueue("publish_rubric", payload, run_at=next_run)
 
     def _rubric_job_exists(self, rubric_code: str, schedule_key: str) -> bool:
@@ -9576,6 +9599,36 @@ class Bot:
             (rubric_code, schedule_key),
         ).fetchone()
         return bool(row)
+
+    def _delete_future_rubric_jobs(self, rubric_code: str, reason: str) -> int:
+        """Delete all future scheduled jobs for a rubric (excluding manual runs)."""
+        now = datetime.utcnow().isoformat()
+        rows = self.db.execute(
+            """
+            SELECT id, payload FROM jobs_queue
+            WHERE name='publish_rubric'
+              AND status IN ('queued', 'delayed')
+              AND json_extract(payload, '$.rubric_code') = ?
+              AND available_at >= ?
+            """,
+            (rubric_code, now),
+        ).fetchall()
+        deleted = 0
+        for row in rows:
+            payload = json.loads(row["payload"]) if row["payload"] else {}
+            schedule_key = payload.get("schedule_key", "")
+            if schedule_key and not schedule_key.startswith("manual"):
+                self.db.execute("DELETE FROM jobs_queue WHERE id=?", (row["id"],))
+                deleted += 1
+        if deleted > 0:
+            self.db.commit()
+            logging.info(
+                "Deleted future rubric jobs: rubric=%s, jobs_cleared=%d, reason=%s",
+                rubric_code,
+                deleted,
+                reason,
+            )
+        return deleted
 
     @staticmethod
     def _normalize_rubric_config(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -10511,13 +10564,40 @@ class Bot:
         if not code:
             logging.warning("Rubric job %s missing code", job.id)
             return
-        channel_id = payload.get("channel_id")
         test_mode = bool(payload.get("test"))
         schedule_key = payload.get("schedule_key")
         scheduled_at = payload.get("scheduled_at")
+        old_payload_channel = payload.get("channel_id")
+        resolved_channel: int | None = None
+        if schedule_key and not schedule_key.startswith("manual"):
+            rubric = self.data.get_rubric_by_code(code)
+            if rubric:
+                config = rubric.config or {}
+                slot_channel_id = payload.get("slot_channel_id")
+                if slot_channel_id:
+                    resolved_channel = slot_channel_id
+                elif test_mode:
+                    resolved_channel = config.get("test_channel_id")
+                else:
+                    resolved_channel = config.get("channel_id")
+                if old_payload_channel and old_payload_channel != resolved_channel:
+                    logging.info(
+                        "Channel resolved at execution: rubric=%s, old_payload_channel=%s, resolved=%s",
+                        code,
+                        old_payload_channel,
+                        resolved_channel,
+                    )
+                elif not old_payload_channel and resolved_channel:
+                    logging.debug(
+                        "Channel resolved at execution: rubric=%s, resolved=%s",
+                        code,
+                        resolved_channel,
+                    )
+        else:
+            resolved_channel = old_payload_channel
         success = await self.publish_rubric(
             code,
-            channel_id=channel_id,
+            channel_id=resolved_channel,
             test=test_mode,
             job=job,
             initiator_id=payload.get("initiator_id"),

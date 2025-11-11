@@ -1,4 +1,5 @@
 """Tests for rubric channel stickiness fix."""
+
 import json
 import os
 import sys

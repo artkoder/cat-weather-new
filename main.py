@@ -14716,9 +14716,7 @@ class Bot:
                 response,
             )
 
-    def _build_final_sea_caption(
-        self, caption: str, hashtags: list[str]
-    ) -> tuple[str, list[str]]:
+    def _build_final_sea_caption(self, caption: str, hashtags: list[str]) -> tuple[str, list[str]]:
         """Assemble final caption from parsed JSON only (caption + hashtags)."""
         # Deduplicate and normalize hashtags
         cleaned_hashtags = self._deduplicate_hashtags(hashtags)
@@ -14978,7 +14976,10 @@ class Bot:
 
             # Fatal check: caption must be non-empty after processing
             if not caption:
-                logging.warning("SEA_RUBRIC empty_caption_error attempt=%d (caption empty after processing)", attempt)
+                logging.warning(
+                    "SEA_RUBRIC empty_caption_error attempt=%d (caption empty after processing)",
+                    attempt,
+                )
                 continue
 
             # Style validation checks (warn-only, do NOT block publish)

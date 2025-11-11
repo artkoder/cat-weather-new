@@ -112,6 +112,30 @@ if TYPE_CHECKING:
 setup_logging()
 
 
+# Prompt leak sanitization pattern (defense-in-depth)
+PROMPT_LEAK_PATTERN = re.compile(
+    r"(?:^|\n)\s*(?:#{2,}|\*{2,}|[-=]{3,}|>+)\s*"
+    r"(?:Верните JSON|JSON-ответ|построить результат|post text v1|"
+    r"json_schema|schema|формат|шаблон|инструкция|промпт)\b",
+    re.IGNORECASE,
+)
+
+
+def sanitize_prompt_leaks(text: str) -> str:
+    """Remove prompt/schema leaks if detected (defense-in-depth)."""
+    m = PROMPT_LEAK_PATTERN.search(text)
+    if m:
+        trimmed = text[: m.start()].rstrip()
+        logging.warning(
+            "SEA_RUBRIC caption_prompt_leak_detected trimmed_at_pos=%d original_len=%d trimmed_len=%d",
+            m.start(),
+            len(text),
+            len(trimmed),
+        )
+        return trimmed
+    return text
+
+
 class LoggingMetricsEmitter:
     """Lightweight metrics sink that logs counter and timer updates."""
 
@@ -14692,6 +14716,18 @@ class Bot:
                 response,
             )
 
+    def _build_final_sea_caption(
+        self, caption: str, hashtags: list[str]
+    ) -> tuple[str, list[str]]:
+        """Assemble final caption from parsed JSON only (caption + hashtags)."""
+        # Deduplicate and normalize hashtags
+        cleaned_hashtags = self._deduplicate_hashtags(hashtags)
+
+        # Sanitize caption for any prompt leaks (defense-in-depth)
+        sanitized_caption = sanitize_prompt_leaks(caption.strip())
+
+        return sanitized_caption, cleaned_hashtags
+
     async def _generate_sea_caption(
         self,
         *,
@@ -14898,17 +14934,51 @@ class Bot:
                     attempt_latency,
                     finish_reason,
                 )
+
+            # Check for valid response with parsed JSON (not raw text fallback)
             if not response or not isinstance(response.content, dict):
+                logging.warning(
+                    "SEA_RUBRIC json_parse_error attempt=%d (response missing or not dict)",
+                    attempt,
+                )
                 continue
-            caption_raw = str(response.content.get("caption") or "")
+
+            # Check if OpenAI client returned raw text fallback ({"raw": ...})
+            if "raw" in response.content and "caption" not in response.content:
+                logging.warning(
+                    "SEA_RUBRIC json_parse_error attempt=%d (OpenAI returned raw text, not JSON)",
+                    attempt,
+                )
+                continue
+
+            # Extract caption and hashtags from parsed JSON
+            caption_raw = response.content.get("caption")
+            raw_hashtags = response.content.get("hashtags")
+
+            if not caption_raw or not isinstance(caption_raw, str):
+                logging.warning(
+                    "SEA_RUBRIC caption_missing_or_invalid attempt=%d (caption not in response or not string)",
+                    attempt,
+                )
+                continue
+
+            if not raw_hashtags or not isinstance(raw_hashtags, list):
+                logging.warning(
+                    "SEA_RUBRIC hashtags_missing_or_invalid attempt=%d (using default hashtags)",
+                    attempt,
+                )
+                raw_hashtags = []
+
+            # Clean and process caption
             cleaned_caption = self.strip_header(caption_raw)
             caption = cleaned_caption.strip() if cleaned_caption else caption_raw.strip()
-            raw_hashtags = response.content.get("hashtags") or []
-            hashtags = self._deduplicate_hashtags(raw_hashtags)
 
-            # Fatal check: caption must be non-empty
+            # Build final caption with sanitization
+            caption, hashtags = self._build_final_sea_caption(caption, raw_hashtags)
+
+            # Fatal check: caption must be non-empty after processing
             if not caption:
-                logging.warning("SEA_RUBRIC caption_empty rejecting (fatal)")
+                logging.warning("SEA_RUBRIC empty_caption_error attempt=%d (caption empty after processing)", attempt)
                 continue
 
             # Style validation checks (warn-only, do NOT block publish)
@@ -14955,10 +15025,15 @@ class Bot:
             return caption, hashtags
 
         # All attempts failed, using fallback
-        logging.warning("SEA_RUBRIC caption_generation_failed using fallback source=fallback")
+        logging.warning(
+            "SEA_RUBRIC openai_fallback reason=caption_generation_failed source=fallback attempts=%d",
+            attempts,
+        )
         raw_fallback = fallback_caption()
         cleaned = self.strip_header(raw_fallback)
         fallback_text = cleaned.strip() if cleaned else raw_fallback.strip()
+        # Apply sanitization to fallback as well (defense-in-depth)
+        fallback_text = sanitize_prompt_leaks(fallback_text)
         return fallback_text, default_hashtags
 
     async def _generate_sea_caption_with_timeout(
@@ -15158,6 +15233,9 @@ class Bot:
             else:
                 fallback_caption = fallback_opening
         default_hashtags = self._default_hashtags("sea")
+
+        # Apply sanitization to fallback (defense-in-depth)
+        fallback_caption = sanitize_prompt_leaks(fallback_caption)
 
         return fallback_caption, default_hashtags, openai_metadata
 

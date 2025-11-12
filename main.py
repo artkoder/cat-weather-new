@@ -24,7 +24,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as dtime
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -14028,6 +14028,50 @@ class Bot:
         config = rubric.config or {}
         enable_facts = bool(config.get("enable_facts", True))
         sea_id = int(config.get("sea_id") or 1)
+        is_prod = not test
+        original_channel_id = channel_id
+
+        def _coerce_channel(value: Any) -> int | None:
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return None
+                try:
+                    return int(text)
+                except ValueError:
+                    logging.warning("SEA_RUBRIC invalid_channel value=%s", value)
+                    return None
+            return None
+
+        prod_channel_cfg = config.get("channel_id")
+        test_channel_cfg = config.get("test_channel_id")
+        prod_channel = _coerce_channel(prod_channel_cfg)
+        test_channel = _coerce_channel(test_channel_cfg)
+        selected_channel = prod_channel if is_prod else test_channel
+        if selected_channel is None:
+            fallback_channel = _coerce_channel(original_channel_id)
+            if fallback_channel is not None:
+                selected_channel = fallback_channel
+        if selected_channel is None:
+            logging.error(
+                "SEA_RUBRIC channel_unresolved prod=%d prod_channel=%s test_channel=%s fallback=%s",
+                int(is_prod),
+                prod_channel_cfg,
+                test_channel_cfg,
+                original_channel_id,
+            )
+            return False
+        channel_id = int(selected_channel)
+        logging.info(
+            "SEA_RUBRIC channel_resolved prod=%d channel_id=%s prod_channel=%s test_channel=%s fallback=%s",
+            int(is_prod),
+            channel_id,
+            prod_channel_cfg,
+            test_channel_cfg,
+            original_channel_id,
+        )
 
         timeline["start"] = 0.0
 
@@ -14951,14 +14995,21 @@ class Bot:
         main_plain = raw_caption_text or fallback_caption_plain
         main_plain = main_plain.strip()
 
+        exclusions = self._hashtag_exclusions(rubric.code)
         deduped_model_tags = self._deduplicate_hashtags(model_hashtags or [])
         seen_tags: set[str] = set()
         final_hashtags: list[str] = []
 
         def append_tag(tag: str) -> None:
-            normalized = tag if tag.startswith("#") else f"#{tag.lstrip('#')}"
-            key = normalized.lower()
-            if not key or key in seen_tags:
+            text = str(tag or "").strip()
+            if not text:
+                return
+            normalized = text if text.startswith("#") else f"#{text.lstrip('#')}"
+            stripped = normalized.lstrip("#").strip()
+            if not stripped:
+                return
+            key = stripped.lower()
+            if key in exclusions or key in seen_tags:
                 return
             seen_tags.add(key)
             final_hashtags.append(normalized)
@@ -14996,6 +15047,11 @@ class Bot:
         timeline["openai_generate_caption"] = round((time.perf_counter() - step_start) * 1000, 2)
 
         step_start = time.perf_counter()
+        logging.info(
+            "SEA_RUBRIC SEND channel_id=%s prod=%d message_type=photo",
+            channel_id,
+            int(is_prod),
+        )
         file_id = asset.file_id
         if file_id:
             response = await self.api_request(
@@ -15204,7 +15260,6 @@ class Bot:
                 )
 
         # After successful publish, handle prod deletion and inventory report
-        is_prod = not test
         await self._on_sea_publish_success([asset.id], is_prod=is_prod)
         await self._send_sea_inventory_report(is_prod=is_prod, initiator_id=initiator_id)
 
@@ -15302,42 +15357,77 @@ class Bot:
         self, is_prod: bool, initiator_id: int | None = None
     ) -> None:
         """Send sea assets inventory breakdown to operator chat."""
-        # Count total sea assets
-        total_row = self.db.execute(
-            """
-            SELECT COUNT(*) as cnt 
-            FROM assets a
-            WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
-            """
-        ).fetchone()
-        total_count = total_row["cnt"] if total_row else 0
+        use_sea_assets = self._database_has_table_or_view("sea_assets")
+        if use_sea_assets:
+            total_row = self.db.execute("SELECT COUNT(*) AS cnt FROM sea_assets").fetchone()
+            sky_rows = self.db.execute(
+                """
+                SELECT sky_bucket, COUNT(*) AS cnt
+                FROM sea_assets
+                WHERE sky_bucket IS NOT NULL
+                GROUP BY sky_bucket
+                """
+            ).fetchall()
+            wave_rows = self.db.execute(
+                """
+                SELECT wave_score_0_10 AS wave_score, COUNT(*) AS cnt
+                FROM sea_assets
+                WHERE wave_score_0_10 IS NOT NULL
+                GROUP BY wave_score_0_10
+                ORDER BY wave_score_0_10
+                """
+            ).fetchall()
+        else:
+            total_row = self.db.execute(
+                """
+                SELECT COUNT(*) AS cnt
+                FROM assets a
+                WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
+                """
+            ).fetchone()
+            sky_rows = self.db.execute(
+                """
+                SELECT a.vision_sky_bucket AS sky_bucket, COUNT(*) AS cnt
+                FROM assets a
+                WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
+                  AND a.vision_sky_bucket IS NOT NULL
+                GROUP BY a.vision_sky_bucket
+                """
+            ).fetchall()
+            wave_rows = self.db.execute(
+                """
+                SELECT a.wave_score_0_10 AS wave_score, COUNT(*) AS cnt
+                FROM assets a
+                WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
+                  AND a.wave_score_0_10 IS NOT NULL
+                GROUP BY a.wave_score_0_10
+                ORDER BY a.wave_score_0_10
+                """
+            ).fetchall()
 
-        # Count by sky bucket (using vision_sky_bucket column)
-        sky_rows = self.db.execute(
-            """
-            SELECT a.vision_sky_bucket as sky_bucket, COUNT(*) as cnt
-            FROM assets a
-            WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
-              AND a.vision_sky_bucket IS NOT NULL
-            GROUP BY a.vision_sky_bucket
-            """
-        ).fetchall()
+        total_count = self._safe_int(total_row["cnt"]) if total_row else 0
 
-        sky_counts = {row["sky_bucket"]: row["cnt"] for row in sky_rows}
+        sky_counts: dict[str, int] = {}
+        for row in sky_rows:
+            sky_value = row["sky_bucket"]
+            if sky_value is None:
+                continue
+            sky_counts[str(sky_value)] = self._safe_int(row["cnt"])
 
-        # Count by wave score (0..10) - using wave_score_0_10 column
-        wave_rows = self.db.execute(
-            """
-            SELECT a.wave_score_0_10 as wave, COUNT(*) as cnt
-            FROM assets a
-            WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
-              AND a.wave_score_0_10 IS NOT NULL
-            GROUP BY a.wave_score_0_10
-            ORDER BY a.wave_score_0_10
-            """
-        ).fetchall()
+        wave_counts: dict[int, int] = {}
+        for row in wave_rows:
+            raw_wave = row["wave_score"]
+            if raw_wave is None:
+                continue
+            try:
+                wave_key = int(float(raw_wave))
+            except (TypeError, ValueError):
+                logging.debug("SEA_INVENTORY skip_wave_value value=%s", raw_wave)
+                continue
+            wave_counts[wave_key] = self._safe_int(row["cnt"])
 
-        wave_counts = {int(row["wave"]): row["cnt"] for row in wave_rows}
+        logging.info("SEA_INVENTORY_SKY_COUNTS raw=%s", dict(sky_counts))
+        logging.info("SEA_INVENTORY_WAVE_COUNTS raw=%s", dict(wave_counts))
 
         logging.info(
             "SEA_INVENTORY_REPORT prod=%d total=%d sky_buckets=%s wave_scores=%s",
@@ -16243,6 +16333,21 @@ class Bot:
             prepared.append(text)
         return prepared
 
+    HASHTAG_EXCLUDE: ClassVar[dict[str, set[str]]] = {
+        "sea": {"котопогода"},
+    }
+
+    def _hashtag_exclusions(self, code: str) -> set[str]:
+        raw = self.HASHTAG_EXCLUDE.get(code)
+        if not raw:
+            return set()
+        normalized: set[str] = set()
+        for item in raw:
+            text = str(item or "").strip().lstrip("#").lower()
+            if text:
+                normalized.add(text)
+        return normalized
+
     def _default_hashtags(self, code: str) -> list[str]:
         mapping = {
             "flowers": ["#котопогода", "#цветы"],
@@ -16299,6 +16404,13 @@ class Bot:
             default,
         )
         return default
+
+    def _database_has_table_or_view(self, name: str) -> bool:
+        query = (
+            "SELECT 1 FROM sqlite_master WHERE (type='table' OR type='view') AND name=? LIMIT 1"
+        )
+        row = self.db.execute(query, (name,)).fetchone()
+        return row is not None
 
     def _parse_datetime_iso(self, value: str | None) -> datetime:
         """Parse ISO8601 datetime string, return datetime.min on failure."""

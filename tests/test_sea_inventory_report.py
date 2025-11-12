@@ -281,3 +281,79 @@ async def test_sea_inventory_report_ignores_non_sea_assets(monkeypatch, tmp_path
     report_text = messages_sent[0]["text"]
     assert "🗂 Остатки фото «Море»: 1" in report_text
     assert "Солнечно: 1" in report_text
+
+
+@pytest.mark.asyncio
+async def test_inventory_sky_counts_nonzero_when_records_exist(monkeypatch, tmp_path):
+    """Ensure inventory pulls sky counts from sea_assets when available."""
+    db_path = tmp_path / "sea_assets_inventory.db"
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy")
+    monkeypatch.setenv("WEBHOOK_URL", "https://example.com")
+    monkeypatch.setattr(main_module, "DB_PATH", str(db_path))
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def bot_noop(self, *_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(main_module, "ensure_webhook", noop)
+    monkeypatch.setattr(main_module.Bot, "run_openai_health_check", bot_noop)
+    monkeypatch.setattr(main_module.Bot, "collect_weather", bot_noop)
+    monkeypatch.setattr(main_module.Bot, "collect_sea", bot_noop)
+    monkeypatch.setattr(main_module.Bot, "process_weather_channels", bot_noop)
+    monkeypatch.setattr(main_module.Bot, "process_rubric_schedule", bot_noop)
+
+    messages_sent: list[dict[str, Any]] = []
+
+    async def capture_api_request(
+        self, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:
+        if method == "sendMessage":
+            messages_sent.append(data)
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
+
+    bot = main_module.Bot(token="dummy", db_path=str(db_path))
+
+    bot.db.execute("DROP TABLE IF EXISTS sea_assets")
+    bot.db.execute(
+        """
+        CREATE TABLE sea_assets (
+            asset_id TEXT PRIMARY KEY,
+            sky_bucket TEXT,
+            wave_score_0_10 REAL
+        )
+        """
+    )
+    records = [
+        ("asset_clear", "clear", 0),
+        ("asset_mclear", "mostly_clear", 2),
+        ("asset_partly", "partly_cloudy", 3),
+        ("asset_mcloud", "mostly_cloudy", 5),
+        ("asset_overcast", "overcast", 7),
+    ]
+    bot.db.executemany(
+        "INSERT INTO sea_assets (asset_id, sky_bucket, wave_score_0_10) VALUES (?, ?, ?)",
+        records,
+    )
+    bot.db.commit()
+
+    await bot._send_sea_inventory_report(is_prod=True, initiator_id=98765)
+
+    assert len(messages_sent) == 1
+    message = messages_sent[0]
+    assert message["chat_id"] == 98765
+    text = message["text"]
+    assert "🗂 Остатки фото «Море»: 5" in text
+    assert "Солнечно: 1" in text
+    assert "Преимущественно ясно: 1" in text
+    assert "Переменная облачность: 1" in text
+    assert "Преимущественно облачно: 1" in text
+    assert "Пасмурно: 1" in text
+    assert "0/10 (штиль): 1" in text
+    assert "2/10: 1" in text
+    assert "3/10: 1" in text
+    assert "5/10: 1" in text
+    assert "7/10: 1" in text

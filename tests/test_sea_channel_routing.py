@@ -51,7 +51,9 @@ async def async_noop(*_args: Any, **_kwargs: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sea_hashtags_excludes_kotopogoda(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_sea_hashtags_excludes_kotopogoda(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_noop, raising=False)
 
     bot = main_module.Bot("dummy", str(tmp_path / "sea-routing-hashtag.db"))
@@ -115,9 +117,7 @@ async def test_sea_hashtags_excludes_kotopogoda(monkeypatch: pytest.MonkeyPatch,
     caption = send_calls[0]["data"]["caption"]
     assert "#котопогода" not in caption
 
-    row = bot.db.execute(
-        "SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1"
-    ).fetchone()
+    row = bot.db.execute("SELECT metadata FROM posts_history ORDER BY id DESC LIMIT 1").fetchone()
     assert row is not None
     metadata = json.loads(row["metadata"])
     hashtags = metadata.get("hashtags", [])

@@ -16406,9 +16406,7 @@ class Bot:
         return default
 
     def _database_has_table_or_view(self, name: str) -> bool:
-        query = (
-            "SELECT 1 FROM sqlite_master WHERE (type='table' OR type='view') AND name=? LIMIT 1"
-        )
+        query = "SELECT 1 FROM sqlite_master WHERE (type='table' OR type='view') AND name=? LIMIT 1"
         row = self.db.execute(query, (name,)).fetchone()
         return row is not None
 

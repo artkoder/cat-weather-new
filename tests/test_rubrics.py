@@ -4036,12 +4036,22 @@ async def test_caption_blocks(tmp_path):
         success = await bot._publish_sea(rubric, channel_id=-100502)
         assert success
         caption = captured["caption"]
-        segments = caption.split("\n\n")
-        assert len(segments) >= 3
+        segments = [segment for segment in caption.split("\n\n") if segment]
+        assert len(segments) >= 2
         assert segments[-1] == LOVE_COLLECTION_LINK
-        main_block = html.unescape(segments[0])
-        assert main_block == raw_caption
-        hashtags_block = html.unescape(segments[-2])
+
+        text_segments: list[str] = []
+        hashtags_block: str | None = None
+        for segment in segments[:-1]:
+            unescaped = html.unescape(segment)
+            if unescaped.startswith("#"):
+                hashtags_block = unescaped
+                break
+            text_segments.append(unescaped)
+
+        assert hashtags_block is not None
+        combined_main = "\n\n".join(text_segments)
+        assert combined_main.replace("\n\n", " ") == raw_caption
         assert hashtags_block.startswith("#море #БалтийскоеМоре")
         assert "#СветлыйПляж" in hashtags_block
         assert "#Балтика" in hashtags_block

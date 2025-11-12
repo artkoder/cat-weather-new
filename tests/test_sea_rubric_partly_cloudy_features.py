@@ -716,7 +716,7 @@ async def test_logs_not_truncated_and_prefixed(
 
 @pytest.mark.asyncio
 async def test_prompt_soft_intro_and_constraints(tmp_path: Path) -> None:
-    """Test that prompt includes anti-jargon rule, soft-intro options, and 350-char instruction."""
+    """Test that prompt includes anti-jargon rule, soft-intro options, and hard length guard."""
     bot = main_module.Bot("dummy", str(tmp_path / "prompt.db"))
 
     from openai_client import OpenAIResponse
@@ -775,8 +775,11 @@ async def test_prompt_soft_intro_and_constraints(tmp_path: Path) -> None:
     assert "К слову о Балтике" in system_prompt
     assert "Поделюсь фактом" in system_prompt
 
-    # Check 350-char limit
-    assert "350 символов" in system_prompt
+    # Check hard limit wording
+    assert "ЖЁСТКОЕ ОГРАНИЧЕНИЕ" in system_prompt
+    assert "700 символов" in system_prompt
+    assert "900 символов" in system_prompt
+    assert "350 символов" not in system_prompt
     assert "450" not in system_prompt  # Should not have old 450 limit
 
     # Check that fact is included for storm (not strong_storm)

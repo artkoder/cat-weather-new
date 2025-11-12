@@ -1,0 +1,113 @@
+name: Prepare models
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'models/**'
+      - 'tools/gen_models_lock.py'
+      - '.github/workflows/prepare_models.yml'
+
+jobs:
+  build-and-lock:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build models (placeholder)
+        run: |
+          mkdir -p dist/models
+          echo "# This is a placeholder step for model building"
+          echo "# In production, this would convert models to NCNN and ONNX formats"
+          echo "# For now, creating dummy files for testing the workflow"
+          
+          # Create dummy NCNN model files (these would be built by actual model conversion tools)
+          echo "7767517" > dist/models/zerodcepp_fp16.param
+          echo "binary_data_placeholder" > dist/models/zerodcepp_fp16.bin
+          echo "7767517" > dist/models/restormer_fp16.param
+          echo "binary_data_placeholder" > dist/models/restormer_fp16.bin
+          
+          # Create dummy ONNX files (optional, but part of dist)
+          echo "onnx_model_data" > dist/models/zerodcepp_fp16.onnx
+          echo "onnx_model_data" > dist/models/restormer_fp16.onnx
+
+      - name: Ensure SHA256SUMS.txt (deterministic)
+        run: |
+          cd dist
+          if [ ! -f SHA256SUMS.txt ]; then
+            find models -type f -print0 | sort -z | xargs -0 -I{} sh -c 'sha256sum "{}"' > SHA256SUMS.txt
+          fi
+
+      - name: Generate models.lock.json
+        env:
+          MODELS_DIST: dist
+          MODELS_CONTRACT_VERSION: v1.4.1
+        run: python tools/gen_models_lock.py
+
+      - name: Validate models.lock.json
+        run: |
+          python - <<'PY'
+          import json, pathlib, hashlib, sys
+          d = pathlib.Path("dist")
+          lock = json.loads((d/"models.lock.json").read_text())
+          ok = True
+          assert isinstance(lock.get("entries"), list), "entries must be list"
+          assert lock.get("api_contract_version") == "v1.4.1", "api_contract_version must be v1.4.1"
+          for e in lock["entries"]:
+            if e["backend"] == "METADATA":
+              v = e.get("jq_sha256sum", "")
+              if not (isinstance(v, str) and (len(v) == 64 or len(v) == 0)):
+                print("Bad METADATA.jq_sha256sum")
+                ok = False
+              continue
+            if e["backend"] not in ("ncnn", "tflite"):
+              print("Unsupported backend:", e["backend"])
+              ok = False
+            for f in e.get("files", []):
+              p = d / f["path"]
+              if not p.exists():
+                print("Missing file:", p)
+                ok = False
+                continue
+              h = hashlib.sha256(p.read_bytes()).hexdigest()
+              if h != f["sha256"]:
+                print("SHA mismatch:", p, h, "!=", f["sha256"])
+                ok = False
+          sys.exit(1 if not ok else 0)
+          PY
+
+      - name: Sync lock to repo root (single source of truth)
+        run: |
+          cp -f dist/models.lock.json models.lock.json
+          git diff --quiet models.lock.json || echo "models.lock.json updated"
+
+      - name: Create PR with updated models.lock.json
+        uses: peter-evans/create-pull-request@v6
+        with:
+          add-paths: models.lock.json
+          commit-message: "chore(models): update models.lock.json from Prepare models"
+          title: "chore(models): update models.lock.json"
+          branch: chore/update-models-lock
+          delete-branch: true
+
+      - name: Upload artifact (models-v1)
+        uses: actions/upload-artifact@v4
+        with:
+          name: models-v1
+          path: |
+            dist/models/**
+            dist/SHA256SUMS.txt
+            dist/models.lock.json
+          if-no-files-found: error
+          retention-days: 14

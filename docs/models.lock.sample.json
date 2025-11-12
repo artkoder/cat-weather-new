@@ -1,0 +1,38 @@
+{
+  "api_contract_version": "v1.4.1",
+  "entries": [
+    {
+      "id": "zerodcepp_fp16",
+      "backend": "ncnn",
+      "files": [
+        {
+          "path": "models/zerodcepp_fp16.param",
+          "sha256": "abc123def456789..."
+        },
+        {
+          "path": "models/zerodcepp_fp16.bin",
+          "sha256": "def456789abc123..."
+        }
+      ]
+    },
+    {
+      "id": "restormer_fp16",
+      "backend": "ncnn",
+      "files": [
+        {
+          "path": "models/restormer_fp16.param",
+          "sha256": "123abc456def789..."
+        },
+        {
+          "path": "models/restormer_fp16.bin",
+          "sha256": "456def789abc123..."
+        }
+      ]
+    },
+    {
+      "id": "metadata",
+      "backend": "METADATA",
+      "jq_sha256sum": "789abc123def456..."
+    }
+  ]
+}

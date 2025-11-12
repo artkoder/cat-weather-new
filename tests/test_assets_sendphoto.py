@@ -205,7 +205,7 @@ class FailingSendPhoto(TelegramStub):
     async def send_photo(
         self, *, chat_id: int, photo: Path, caption: str | None = None
     ) -> dict[str, Any]:
-        raise RuntimeError("sendPhoto failed")
+        raise ValueError("sendPhoto failed")
 
 
 @pytest.mark.asyncio

@@ -51,7 +51,7 @@ async def async_record_usage_noop(self, *args: Any, **kwargs: Any) -> None:  # t
 
 
 @pytest.mark.asyncio
-async def test_sea_caption_prompt_fact_numbers_and_limit_instruction(
+async def test_sea_prompt_contains_hard_limit_phrase(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
@@ -81,7 +81,9 @@ async def test_sea_caption_prompt_fact_numbers_and_limit_instruction(
     first_call = bot.openai.calls[-1]
     system_prompt = first_call["system_prompt"]
     user_prompt = first_call["user_prompt"]
-    assert "350" in system_prompt
+    assert "ЖЁСТКОЕ ОГРАНИЧЕНИЕ" in system_prompt
+    assert "700 символов" in system_prompt
+    assert "900 символов" in system_prompt
     assert "числа/названия/термины" in system_prompt
     assert '"fact_sentence":' in user_prompt
     assert fact_text in user_prompt
@@ -183,5 +185,110 @@ async def test_sea_logging_prefixes(
     assert any(msg.startswith("SEA_RUBRIC top5:") for msg in messages)
     assert any(msg.startswith("SEA_RUBRIC facts choose") for msg in messages)
     assert any(msg.startswith("SEA_RUBRIC selected") for msg in messages)
+
+    bot.db.close()
+
+
+@pytest.mark.asyncio
+async def test_sea_caption_trim_applies_at_990(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(
+        main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False
+    )
+
+    long_text = "A" * 1200
+    captured_request: dict[str, Any] = {}
+
+    async def fake_generate(
+        self, *args: Any, **kwargs: Any
+    ) -> tuple[str, list[str], dict[str, Any]]:
+        return long_text, ["#БалтийскоеМоре"], {"request_id": "trim-req"}
+
+    async def fake_api_request(
+        self,
+        method: str,
+        data: Any = None,
+        *,
+        files: Any = None,
+    ) -> dict[str, Any]:
+        captured_request["method"] = method
+        captured_request["data"] = data
+        captured_request["files"] = files
+        return {"ok": True, "result": {"message_id": 777}}
+
+    monkeypatch.setattr(
+        main_module.Bot,
+        "_generate_sea_caption_with_timeout",
+        fake_generate,
+        raising=False,
+    )
+    monkeypatch.setattr(main_module.Bot, "api_request", fake_api_request, raising=False)
+
+    bot = main_module.Bot("dummy", str(tmp_path / "trim.db"))
+    bot.supabase = DummySupabase()
+
+    rubric = bot.data.get_rubric_by_code("sea")
+    assert rubric is not None
+    updated_config = dict(rubric.config or {})
+    updated_config.update(
+        {
+            "enabled": True,
+            "channel_id": -999321,
+            "test_channel_id": -999321,
+            "sea_id": 1,
+        }
+    )
+    bot.data.save_rubric_config("sea", updated_config)
+    rubric = bot.data.get_rubric_by_code("sea")
+    assert rubric is not None
+
+    seed_sea_environment(
+        bot,
+        sea_id=1,
+        sea_lat=54.95,
+        sea_lon=20.2,
+        wave=0.4,
+        water_temp=9.5,
+        city_id=101,
+        city_name="Зеленоградск",
+        wind_speed=5.0,
+    )
+
+    image_path = create_stub_image(tmp_path, "sea-trim.jpg")
+    create_sea_asset(
+        bot,
+        rubric_id=rubric.id,
+        message_id=402,
+        file_name="sea-trim.jpg",
+        local_path=image_path,
+        tags=["sea"],
+        sea_wave_score=2,
+        photo_sky="sunny",
+        is_sunset=True,
+    )
+
+    with caplog.at_level(logging.INFO):
+        result = await bot.publish_rubric("sea")
+    assert result is True
+
+    assert captured_request.get("method") == "sendPhoto"
+    send_payload = captured_request.get("data")
+    assert isinstance(send_payload, dict)
+    caption = send_payload.get("caption")
+    assert isinstance(caption, str)
+
+    trim_records = [
+        record
+        for record in caplog.records
+        if "SEA_RUBRIC caption_trim applied" in record.getMessage()
+    ]
+    assert trim_records
+    trim_record = trim_records[0]
+    assert isinstance(trim_record.args, tuple)
+    original_len, final_len = trim_record.args
+    assert original_len > final_len
+    assert final_len <= 990
+    assert len(caption) == final_len
 
     bot.db.close()

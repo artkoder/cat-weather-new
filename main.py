@@ -15042,6 +15042,15 @@ class Bot:
         if not caption_text:
             caption_text = fallback_caption_plain
         full_caption = compose_caption(caption_text)
+        CAP_LIMIT = 990
+        if len(full_caption) > CAP_LIMIT:
+            original_len = len(full_caption)
+            full_caption = full_caption[:CAP_LIMIT].rstrip()
+            logging.warning(
+                "SEA_RUBRIC caption_trim applied original=%d final=%d",
+                original_len,
+                len(full_caption),
+            )
         logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
 
         timeline["openai_generate_caption"] = round((time.perf_counter() - step_start) * 1000, 2)
@@ -15706,7 +15715,7 @@ class Bot:
             "«фронтальная зона», «инфильтрация», «морфодинамика», и канцеляризмы.\n"
             f"• {day_part_instruction}"
             "• Проверь орфографию и пунктуацию по правилам русского языка. Абзацы разделяй одной пустой строкой.\n"
-            "• Длина — до 350 символов (можно до ~400, если исходный факт длинный).\n"
+            "• ЖЁСТКОЕ ОГРАНИЧЕНИЕ: основной текст (без хэштегов и ссылки) — не более 700 символов; НИКОГДА не превышай 900 символов.\n"
         )
         wind_label = wind_class if wind_class in {"strong", "very_strong"} else "none"
         prompt_payload: dict[str, Any] = {

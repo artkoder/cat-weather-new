@@ -198,7 +198,8 @@ async def test_sea_caption_trim_applies_at_990(
     )
 
     long_text = "A" * 1200
-    captured_request: dict[str, Any] = {}
+    captured_requests: list[dict[str, Any]] = []
+    send_calls: list[dict[str, Any]] = []
 
     async def fake_generate(
         self, *args: Any, **kwargs: Any
@@ -212,10 +213,12 @@ async def test_sea_caption_trim_applies_at_990(
         *,
         files: Any = None,
     ) -> dict[str, Any]:
-        captured_request["method"] = method
-        captured_request["data"] = data
-        captured_request["files"] = files
-        return {"ok": True, "result": {"message_id": 777}}
+        record = {"method": method, "data": data, "files": files}
+        captured_requests.append(record)
+        if method == "sendPhoto":
+            send_calls.append(record)
+            return {"ok": True, "result": {"message_id": 777}}
+        return {"ok": True}
 
     monkeypatch.setattr(
         main_module.Bot,
@@ -272,8 +275,11 @@ async def test_sea_caption_trim_applies_at_990(
         result = await bot.publish_rubric("sea")
     assert result is True
 
-    assert captured_request.get("method") == "sendPhoto"
-    send_payload = captured_request.get("data")
+    methods = [entry["method"] for entry in captured_requests]
+    assert "sendPhoto" in methods
+    assert send_calls
+    assert len(send_calls) == 1
+    send_payload = send_calls[0]["data"]
     assert isinstance(send_payload, dict)
     caption = send_payload.get("caption")
     assert isinstance(caption, str)

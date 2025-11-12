@@ -14995,6 +14995,21 @@ class Bot:
         main_plain = raw_caption_text or fallback_caption_plain
         main_plain = main_plain.strip()
 
+        def _ensure_paragraph_break(value: str) -> str:
+            if not value or "\n\n" in value:
+                return value
+            match = re.search(r"([.!?…])\s+", value)
+            if match and match.end() < len(value):
+                head_end = match.end(1)
+                tail_start = match.end()
+                head = value[:head_end]
+                tail = value[tail_start:]
+                return f"{head}\n\n{tail.lstrip()}"
+            return value
+
+        main_plain = _ensure_paragraph_break(main_plain)
+        fallback_caption_plain = _ensure_paragraph_break(fallback_caption_plain)
+
         exclusions = self._hashtag_exclusions(rubric.code)
         deduped_model_tags = self._deduplicate_hashtags(model_hashtags or [])
         seen_tags: set[str] = set()

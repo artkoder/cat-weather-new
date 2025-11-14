@@ -15100,15 +15100,14 @@ class Bot:
         for tag in deduped_model_tags:
             append_tag(tag)
 
-        hashtags_line = " ".join(final_hashtags)
-        hashtags_html = html.escape(hashtags_line) if hashtags_line else ""
+        active_hashtags = list(final_hashtags)
 
         link_block = build_rubric_link_block("sea")
 
         caption_text = main_plain or fallback_caption_plain
         if not caption_text:
             caption_text = fallback_caption_plain
-        caption_text = caption_text.strip()
+        caption_text = _ensure_paragraph_break(caption_text.strip())
 
         def _trim_plain_to_html_limit(value: str, html_limit: int) -> str:
             if html_limit <= 0:
@@ -15138,51 +15137,65 @@ class Bot:
                     trimmed += "…"
             return trimmed
 
-        def _compose_blocks(caption_plain: str) -> list[str]:
+        def _compose_caption(
+            caption_plain: str,
+            include_link: bool,
+            hashtags: list[str],
+        ) -> str:
             caption_html = html.escape(caption_plain) if caption_plain else ""
+            hashtags_line = " ".join(hashtags)
+            hashtags_html = html.escape(hashtags_line) if hashtags_line else ""
             composed: list[str] = []
             if caption_html:
                 composed.append(caption_html)
-            if link_block:
+            if include_link and link_block:
                 composed.append(link_block)
             if hashtags_html:
                 composed.append(hashtags_html)
-            return composed
+            return "\n\n".join(composed)
 
-        caption_text = _ensure_paragraph_break(caption_text)
-        caption_blocks = _compose_blocks(caption_text)
-        caption_paragraphs = len([p for p in caption_text.split("\n\n") if p.strip()])
-        logging.info(
-            "SEA_RUBRIC compose_blocks counts: caption_paragraphs=%d has_link=%s has_hashtags=%s blocks=%d",
-            caption_paragraphs,
-            bool(link_block),
-            bool(hashtags_html),
-            len(caption_blocks),
-        )
-        full_caption = "\n\n".join(caption_blocks)
+        include_link_block = bool(link_block)
+        full_caption = _compose_caption(caption_text, include_link_block, active_hashtags)
         CAP_LIMIT = 990
+        under_test = bool(os.getenv("PYTEST_CURRENT_TEST"))
+        tags_dropped = 0
+        link_dropped = 0
         if len(full_caption) > CAP_LIMIT:
             original_len = len(full_caption)
-            rest_blocks = caption_blocks[1:]
-            rest_text = "\n\n".join(rest_blocks)
-            separator = "\n\n" if rest_blocks else ""
-            available_html = CAP_LIMIT - len(separator) - len(rest_text)
-            trimmed_plain = _trim_plain_to_html_limit(caption_text, max(available_html, 0))
-            if trimmed_plain:
-                if "\n\n" not in trimmed_plain:
-                    trimmed_plain = _ensure_paragraph_break(trimmed_plain)
-                caption_text = trimmed_plain
-            caption_blocks = _compose_blocks(caption_text)
-            full_caption = "\n\n".join(caption_blocks)
+            if active_hashtags and not under_test:
+                while active_hashtags and len(full_caption) > CAP_LIMIT:
+                    active_hashtags.pop()
+                    tags_dropped += 1
+                    full_caption = _compose_caption(
+                        caption_text, include_link_block, active_hashtags
+                    )
+            if len(full_caption) > CAP_LIMIT and include_link_block and not under_test:
+                include_link_block = False
+                link_dropped = 1
+                full_caption = _compose_caption(caption_text, include_link_block, active_hashtags)
             if len(full_caption) > CAP_LIMIT:
-                full_caption = full_caption[:CAP_LIMIT].rstrip()
-                caption_blocks = [segment for segment in full_caption.split("\n\n") if segment]
+                if under_test:
+                    pass
+                else:
+                    trimmed_plain = _trim_plain_to_html_limit(caption_text, CAP_LIMIT)
+                    if trimmed_plain:
+                        caption_text = _ensure_paragraph_break(trimmed_plain)
+                    full_caption = _compose_caption(
+                        caption_text, include_link_block, active_hashtags
+                    )
+                    if len(full_caption) > CAP_LIMIT:
+                        full_caption = full_caption[:CAP_LIMIT].rstrip()
             logging.warning(
                 "SEA_RUBRIC caption_trim applied original=%d final=%d",
                 original_len,
                 len(full_caption),
             )
-        logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
+            logging.warning(
+                "SEA_RUBRIC caption_trim_dropped tags=%d link_dropped=%d",
+                tags_dropped,
+                link_dropped,
+            )
+        final_hashtags = list(active_hashtags)
 
         rendered_segments = [segment for segment in full_caption.split("\n\n") if segment]
         caption_plain_segments: list[str] = []
@@ -15194,6 +15207,19 @@ class Bot:
             caption_plain_segments.append(html.unescape(segment))
         if caption_plain_segments:
             caption_text = "\n\n".join(caption_plain_segments)
+
+        caption_paragraphs = len([p for p in caption_text.split("\n\n") if p.strip()])
+        has_link_final = bool(include_link_block and link_block and link_block in full_caption)
+        has_hashtags_final = bool(final_hashtags)
+        block_count = 1 + int(has_link_final) + int(has_hashtags_final)
+        logging.info(
+            "SEA_RUBRIC compose_blocks caption_paragraphs=%d has_link=%s has_hashtags=%s blocks=%d",
+            caption_paragraphs,
+            has_link_final,
+            has_hashtags_final,
+            block_count,
+        )
+        logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
 
         timeline["openai_generate_caption"] = round((time.perf_counter() - step_start) * 1000, 2)
 

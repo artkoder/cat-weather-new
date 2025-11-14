@@ -83,7 +83,11 @@ async def test_purge_sea_jobs_deletes_sea_jobs(tmp_path):
 
     bot.api_request = mock_api_request
 
-    message = type("Message", (), {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": superadmin_id})()})()
+    message = type(
+        "Message",
+        (),
+        {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": superadmin_id})()},
+    )()
     await bot.on_message(message)
 
     assert len(messages_sent) == 3
@@ -135,7 +139,11 @@ async def test_purge_sea_jobs_no_jobs_found(tmp_path):
 
     bot.api_request = mock_api_request
 
-    message = type("Message", (), {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": superadmin_id})()})()
+    message = type(
+        "Message",
+        (),
+        {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": superadmin_id})()},
+    )()
     await bot.on_message(message)
 
     assert len(messages_sent) == 2
@@ -170,7 +178,11 @@ async def test_purge_sea_jobs_requires_superadmin(tmp_path):
 
     bot.api_request = mock_api_request
 
-    message = type("Message", (), {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": regular_user_id})()})()
+    message = type(
+        "Message",
+        (),
+        {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": regular_user_id})()},
+    )()
     await bot.on_message(message)
 
     assert len(messages_sent) == 0

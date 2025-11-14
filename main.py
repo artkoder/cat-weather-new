@@ -120,6 +120,11 @@ PROMPT_LEAK_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+try:  # pragma: no cover - fallback for limited tz database environments
+    RUBRIC_JOBS_TZ = ZoneInfo("Europe/Kaliningrad")
+except Exception:  # pragma: no cover - fallback to UTC+02:00 when tz database missing
+    RUBRIC_JOBS_TZ = timezone(timedelta(hours=2))
+
 
 def sanitize_prompt_leaks(text: str) -> str:
     """Remove prompt/schema leaks if detected (defense-in-depth)."""
@@ -904,6 +909,26 @@ DEFAULT_RUBRIC_PRESETS: dict[str, dict[str, Any]] = {
         },
     },
 }
+
+
+@dataclass
+class _RubricJobView:
+    id: int
+    name: str
+    rubric: str
+    status: str
+    available_at: datetime | None
+    scheduled_at: datetime | None
+    created_at: datetime
+    schedule_key: str | None
+    payload: dict[str, Any]
+
+    def target_time(self) -> datetime:
+        if self.available_at is not None:
+            return self.available_at
+        if self.scheduled_at is not None:
+            return self.scheduled_at
+        return self.created_at
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
@@ -6613,6 +6638,11 @@ class Bot:
                     "  • `Канал` и `Тест-канал` открывают кнопочный список каналов.\n"
                     "  • `Добавить расписание` запускает пошаговый мастер (время → дни → канал → сохранение).\n"
                     "  • `▶️ Запустить` и `🧪 Тест` просят подтверждение перед постановкой задачи в очередь.\n"
+                    "  • `/rubric_jobs [rubric=<имя>|all] [window=24h|48h]`\n"
+                    "    — показывает задачи публикации (Europe/Kaliningrad).\n"
+                    "  • `/cancel_rubric_jobs rubric=<имя> [window=48h|all] [confirm=true]`\n"
+                    "    — удаляет задачи рубрики (нужен confirm=true).\n"
+                    "  • `/purge_sea_jobs [keep=false]` — чистит море, сохраняя актуальную задачу по умолчанию.\n"
                 ),
                 (
                     "*Мобильные устройства*\n"
@@ -6931,54 +6961,229 @@ class Bot:
             await self.api_request("sendMessage", {"chat_id": user_id, "text": "✓ Отчёт отправлен"})
             return
 
+        if text.startswith("/rubric_jobs"):
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "Not authorized"},
+                )
+                return
+            parts = text.split()
+            options = self._parse_command_options(parts[1:])
+            now = datetime.utcnow()
+            window_label, window_end = self._resolve_window_option(
+                options.get("window"),
+                default_hours=48,
+                allow_all=False,
+                reference=now,
+            )
+            rubric_param = options.get("rubric", "all")
+            if rubric_param and rubric_param.lower() not in {"all", ""}:
+                resolved_rubric = self._resolve_rubric_alias(rubric_param)
+                rubric_filter = resolved_rubric if resolved_rubric else None
+                rubric_label = resolved_rubric or rubric_param.strip()
+            else:
+                rubric_filter = None
+                rubric_label = "all"
+            jobs = self._find_rubric_jobs(rubric_filter, window_end=window_end, reference=now)
+            header = (
+                f"📋 Задачи рубрик (rubric={rubric_label}, window={window_label}, "
+                "tz=Europe/Kaliningrad)"
+            )
+            lines = [header]
+            max_rows = 40
+            if not jobs:
+                lines.append("Нет подходящих задач в очереди.")
+            else:
+                display_jobs = jobs[:max_rows]
+                lines.extend(self._format_rubric_job_lines(display_jobs, reference=now))
+                if len(jobs) > max_rows:
+                    lines.append(f"… ещё {len(jobs) - max_rows} скрыто")
+                counts: dict[str, int] = {}
+                for job in jobs:
+                    counts[job.rubric] = counts.get(job.rubric, 0) + 1
+                if counts:
+                    totals = ", ".join(
+                        f"{code}={count}" for code, count in sorted(counts.items())
+                    )
+                    lines.append(f"Итого: {totals}")
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": "\n".join(lines)},
+            )
+            logging.info(
+                "RUBRIC_JOBS_LIST rubric=%s window=%s count=%d job_ids=%s",
+                rubric_label,
+                window_label,
+                len(jobs),
+                [job.id for job in jobs],
+            )
+            return
+
+        if text.startswith("/cancel_rubric_jobs"):
+            if not self.is_superadmin(user_id):
+                return
+            parts = text.split()
+            options = self._parse_command_options(parts[1:])
+            rubric_param = options.get("rubric")
+            if not rubric_param:
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": "Укажите rubric=<код> для удаления задач.",
+                    },
+                )
+                return
+            resolved_rubric = self._resolve_rubric_alias(rubric_param)
+            if not resolved_rubric:
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": f"Не удалось распознать rubric={rubric_param}.",
+                    },
+                )
+                return
+            now = datetime.utcnow()
+            window_label, window_end = self._resolve_window_option(
+                options.get("window"),
+                default_hours=48,
+                allow_all=True,
+                reference=now,
+            )
+            jobs = self._find_rubric_jobs(resolved_rubric, window_end=window_end, reference=now)
+            header = (
+                f"🧹 Cancel rubric jobs (rubric={resolved_rubric}, window={window_label}, "
+                "tz=Europe/Kaliningrad)"
+            )
+            lines = [header]
+            max_rows = 40
+            if not jobs:
+                lines.append("Нет подходящих задач в очереди.")
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "\n".join(lines)},
+                )
+                logging.info(
+                    "RUBRIC_JOBS_CANCEL rubric=%s window=%s confirm=%s count=%d job_ids=%s",
+                    resolved_rubric,
+                    window_label,
+                    False,
+                    0,
+                    [],
+                )
+                return
+            display_jobs = jobs[:max_rows]
+            lines.extend(self._format_rubric_job_lines(display_jobs, reference=now))
+            if len(jobs) > max_rows:
+                lines.append(f"… ещё {len(jobs) - max_rows} скрыто")
+            job_ids = [job.id for job in jobs]
+            confirm_flag = (options.get("confirm") or "").strip().lower()
+            confirm = confirm_flag in {"true", "1", "yes", "y"}
+            if not confirm:
+                lines.append("Режим предварительного просмотра — задачи не удалены.")
+                lines.append("Добавьте confirm=true чтобы выполнить удаление.")
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "\n".join(lines)},
+                )
+                logging.info(
+                    "RUBRIC_JOBS_CANCEL rubric=%s window=%s confirm=%s count=%d job_ids=%s",
+                    resolved_rubric,
+                    window_label,
+                    False,
+                    len(jobs),
+                    job_ids,
+                )
+                return
+            deleted = 0
+            for job in jobs:
+                self.data.delete_job(job.id)
+                deleted += 1
+            lines.append(f"Удалено {deleted} задач(и).")
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": "\n".join(lines)},
+            )
+            logging.info(
+                "RUBRIC_JOBS_CANCEL rubric=%s window=%s confirm=%s count=%d job_ids=%s",
+                resolved_rubric,
+                window_label,
+                True,
+                deleted,
+                job_ids,
+            )
+            return
+
         if text.startswith("/purge_sea_jobs") and self.is_superadmin(user_id):
             await self.api_request(
                 "sendMessage",
-                {"chat_id": user_id, "text": "🔍 Searching for legacy sea jobs..."},
+                {"chat_id": user_id, "text": "🔍 Ищу задачи моря..."},
             )
-            rows = self.db.execute(
-                """
-                SELECT id, name, payload, status, available_at, created_at
-                FROM jobs_queue
-                WHERE name='publish_rubric'
-                  AND status IN ('queued', 'delayed')
-                  AND json_extract(payload, '$.rubric_code') = 'sea'
-                """
-            ).fetchall()
-            if not rows:
+            parts = text.split()
+            options = self._parse_command_options(parts[1:])
+            keep_param = (options.get("keep") or "canonical").strip().lower()
+            keep_canonical = keep_param not in {"0", "false", "no", "none", "all"}
+            now = datetime.utcnow()
+            jobs = self._find_rubric_jobs("sea", window_end=None, reference=now)
+            if not jobs:
                 await self.api_request(
                     "sendMessage",
-                    {"chat_id": user_id, "text": "✓ No legacy sea jobs found."},
+                    {"chat_id": user_id, "text": "✓ Задачи моря не найдены."},
+                )
+                logging.info(
+                    "PURGE_SEA_JOBS keep_canonical=%s total=%d deleted=%d kept_ids=%s deleted_ids=%s",
+                    keep_canonical,
+                    0,
+                    0,
+                    [],
+                    [],
                 )
                 return
-            report_lines = [f"Found {len(rows)} sea job(s):\n"]
-            for row in rows:
-                job_id = row["id"]
-                payload = json.loads(row["payload"]) if row["payload"] else {}
-                schedule_key = payload.get("schedule_key", "unknown")
-                available = row["available_at"] or "now"
-                status = row["status"]
-                report_lines.append(
-                    f"• Job {job_id}: key={schedule_key}, status={status}, available={available}"
+            kept_ids: set[int] = set()
+            if keep_canonical:
+                kept_ids = self._identify_canonical_rubric_jobs("sea", jobs, reference=now)
+            kept_jobs = [job for job in jobs if job.id in kept_ids]
+            to_delete = [job for job in jobs if job.id not in kept_ids]
+            lines = [f"Всего задач моря: {len(jobs)}."]
+            max_rows = 40
+            if kept_jobs:
+                lines.append(f"Сохраняем {len(kept_jobs)} актуальную задачу.")
+                kept_display = kept_jobs[:max_rows]
+                lines.extend(self._format_rubric_job_lines(kept_display, reference=now))
+                if len(kept_jobs) > max_rows:
+                    lines.append(f"… ещё {len(kept_jobs) - max_rows} сохранено без вывода.")
+            elif keep_canonical:
+                lines.append(
+                    "Актуальная задача не найдена — будут удалены все отложенные публикации."
                 )
-            report = "\n".join(report_lines)
+            if to_delete:
+                lines.append(f"К удалению: {len(to_delete)}.")
+                delete_display = to_delete[:max_rows]
+                lines.extend(self._format_rubric_job_lines(delete_display, reference=now))
+                if len(to_delete) > max_rows:
+                    lines.append(f"… ещё {len(to_delete) - max_rows} удаляется без вывода.")
+            else:
+                lines.append("Дополнительных задач для удаления не найдено.")
+                if keep_canonical:
+                    lines.append("Добавьте keep=false чтобы удалить и актуальную задачу.")
+            deleted_ids: list[int] = []
+            for job in to_delete:
+                self.data.delete_job(job.id)
+                deleted_ids.append(job.id)
+            lines.append(f"Удалено {len(deleted_ids)} задач(и).")
             await self.api_request(
                 "sendMessage",
-                {"chat_id": user_id, "text": report, "parse_mode": "Markdown"},
+                {"chat_id": user_id, "text": "\n".join(lines)},
             )
-            deleted = 0
-            for row in rows:
-                self.db.execute("DELETE FROM jobs_queue WHERE id=?", (row["id"],))
-                deleted += 1
-            self.db.commit()
             logging.info(
-                "PURGE_SEA_JOBS: deleted=%d jobs by admin user_id=%s",
-                deleted,
-                user_id,
-            )
-            await self.api_request(
-                "sendMessage",
-                {"chat_id": user_id, "text": f"✓ Deleted {deleted} sea job(s)."},
+                "PURGE_SEA_JOBS keep_canonical=%s total=%d deleted=%d kept_ids=%s deleted_ids=%s",
+                keep_canonical,
+                len(jobs),
+                len(deleted_ids),
+                [job.id for job in kept_jobs],
+                deleted_ids,
             )
             return
 
@@ -9681,6 +9886,7 @@ class Bot:
                 if self._rubric_job_exists(rubric.code, key):
                     continue
                 payload: dict[str, Any] = {
+                    "rubric": rubric.code,
                     "rubric_code": rubric.code,
                     "schedule_key": key,
                     "scheduled_at": next_run.isoformat(),
@@ -9734,6 +9940,357 @@ class Bot:
                 reason,
             )
         return deleted
+
+    @staticmethod
+    def _normalize_rubric_code_token(value: str | None) -> str:
+        if not value:
+            return ""
+        normalized = re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower())
+        return normalized.strip("_")
+
+    def _build_rubric_lookups(self) -> tuple[dict[str, str], dict[int, str]]:
+        name_lookup: dict[str, str] = {}
+        id_lookup: dict[int, str] = {}
+        try:
+            rubrics = self.data.list_rubrics()
+        except Exception:
+            rubrics = []
+        for rubric in rubrics:
+            normalized = self._normalize_rubric_code_token(rubric.code)
+            if normalized and normalized not in name_lookup:
+                name_lookup[normalized] = rubric.code
+            id_lookup[rubric.id] = rubric.code
+        return name_lookup, id_lookup
+
+    @staticmethod
+    def _parse_iso_datetime(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            value = str(value)
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(UTC).replace(tzinfo=None)
+        return parsed
+
+    def _format_local_time(self, timestamp: datetime | None) -> str:
+        if timestamp is None:
+            return "—"
+        if timestamp.tzinfo is None:
+            utc_dt = timestamp.replace(tzinfo=UTC)
+        else:
+            utc_dt = timestamp.astimezone(UTC)
+        local_dt = utc_dt.astimezone(RUBRIC_JOBS_TZ)
+        return local_dt.isoformat(timespec="minutes")
+
+    @staticmethod
+    def _parse_command_options(parts: Sequence[str]) -> dict[str, str]:
+        options: dict[str, str] = {}
+        for part in parts:
+            normalized = part.strip()
+            if not normalized:
+                continue
+            if "=" in normalized:
+                key, value = normalized.split("=", 1)
+                options[key.strip().lower()] = value.strip()
+            else:
+                options.setdefault("rubric", normalized)
+        return options
+
+    def _resolve_window_option(
+        self,
+        raw: str | None,
+        *,
+        default_hours: int,
+        allow_all: bool,
+        reference: datetime,
+    ) -> tuple[str, datetime | None]:
+        if not raw:
+            return f"{default_hours}h", reference + timedelta(hours=default_hours)
+        value = raw.strip().lower()
+        if allow_all and value in {"all", "any", "∞", "infinity"}:
+            return "all", None
+        if value.endswith("h"):
+            value = value[:-1]
+        try:
+            hours = int(value)
+        except ValueError:
+            hours = default_hours
+        hours = max(1, min(hours, 24 * 14))
+        return f"{hours}h", reference + timedelta(hours=hours)
+
+    def _resolve_rubric_alias(self, raw: str) -> str | None:
+        normalized = self._normalize_rubric_code_token(raw)
+        if not normalized:
+            return None
+        name_lookup, _ = self._build_rubric_lookups()
+        return name_lookup.get(normalized, normalized)
+
+    def classify_rubric_job(
+        self,
+        job: Any,
+        *,
+        name_lookup: Mapping[str, str] | None = None,
+        id_lookup: Mapping[int, str] | None = None,
+    ) -> str | None:
+        lookup_by_name: Mapping[str, str]
+        lookup_by_id: Mapping[int, str]
+        if name_lookup is None or id_lookup is None:
+            lookup_by_name, lookup_by_id = self._build_rubric_lookups()
+        else:
+            lookup_by_name = name_lookup
+            lookup_by_id = id_lookup
+        job_name = getattr(job, "name", None)
+        if job_name is None and isinstance(job, Mapping):
+            job_name = job.get("name")
+        if not isinstance(job_name, str):
+            return None
+        if job_name != "publish_rubric":
+            return None
+        raw_payload = getattr(job, "payload", None)
+        if raw_payload is None and isinstance(job, Mapping):
+            raw_payload = job.get("payload")
+        payload: dict[str, Any] = {}
+        if isinstance(raw_payload, Mapping):
+            payload = dict(raw_payload)
+        elif isinstance(raw_payload, str):
+            try:
+                decoded = json.loads(raw_payload)
+            except json.JSONDecodeError:
+                decoded = {}
+            if isinstance(decoded, dict):
+                payload = decoded
+        elif raw_payload is None:
+            payload = {}
+        else:
+            payload = {}
+
+        def resolve_candidate(value: Any, *, require_known: bool = False) -> str | None:
+            if isinstance(value, str):
+                stripped = value.strip()
+                if not stripped:
+                    return None
+                if stripped.isdigit():
+                    idx = int(stripped)
+                    if lookup_by_id and idx in lookup_by_id:
+                        return lookup_by_id[idx]
+                normalized = self._normalize_rubric_code_token(stripped)
+                if lookup_by_name and normalized in lookup_by_name:
+                    return lookup_by_name[normalized]
+                if require_known:
+                    return None
+                if normalized:
+                    return normalized
+                return None
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                idx = int(value)
+                if lookup_by_id and idx in lookup_by_id:
+                    return lookup_by_id[idx]
+                if require_known:
+                    return None
+                return None
+            return None
+
+        direct_keys = (
+            "rubric",
+            "rubric_code",
+            "code",
+            "rubricCode",
+            "rubric_name",
+            "rubricName",
+        )
+        for key in direct_keys:
+            if key in payload:
+                result = resolve_candidate(payload.get(key))
+                if result:
+                    return result
+        if "rubric_id" in payload:
+            result = resolve_candidate(payload.get("rubric_id"))
+            if result:
+                return result
+
+        nested_sections: list[Mapping[str, Any]] = []
+        rubric_section = payload.get("rubric")
+        if isinstance(rubric_section, Mapping):
+            nested_sections.append(rubric_section)
+        for nested_key in ("meta", "metadata", "job_meta", "context", "details"):
+            nested_value = payload.get(nested_key)
+            if isinstance(nested_value, Mapping):
+                nested_sections.append(nested_value)
+        for section in nested_sections:
+            for key in direct_keys:
+                if key in section:
+                    result = resolve_candidate(section.get(key))
+                    if result:
+                        return result
+            if "rubric_id" in section:
+                result = resolve_candidate(section.get("rubric_id"))
+                if result:
+                    return result
+
+        schedule_key = payload.get("schedule_key") or payload.get("key")
+        if isinstance(schedule_key, str):
+            for token in re.split(r"[^\w]+", schedule_key):
+                if not token or token.isdigit():
+                    continue
+                normalized = self._normalize_rubric_code_token(token)
+                if not normalized or normalized in {"manual", "manual_test", "test", "prod"}:
+                    continue
+                result = resolve_candidate(token, require_known=True)
+                if result:
+                    return result
+
+        return None
+
+    def _find_rubric_jobs(
+        self,
+        rubric_filter: str | None,
+        *,
+        window_end: datetime | None,
+        reference: datetime,
+        statuses: Sequence[str] | None = None,
+    ) -> list[_RubricJobView]:
+        name_lookup, id_lookup = self._build_rubric_lookups()
+        normalized_filter = (
+            self._normalize_rubric_code_token(rubric_filter) if rubric_filter else None
+        )
+        records = self.data.list_jobs(
+            name="publish_rubric",
+            statuses=statuses or ("queued", "delayed", "running"),
+        )
+        jobs: list[_RubricJobView] = []
+        for record in records:
+            rubric_code = self.classify_rubric_job(
+                record,
+                name_lookup=name_lookup,
+                id_lookup=id_lookup,
+            )
+            if rubric_code is None:
+                continue
+            normalized_code = self._normalize_rubric_code_token(rubric_code)
+            if normalized_filter is not None and normalized_code != normalized_filter:
+                continue
+            scheduled_at = self._parse_iso_datetime(record.payload.get("scheduled_at"))
+            schedule_key_raw = record.payload.get("schedule_key") or record.payload.get("key")
+            schedule_key = str(schedule_key_raw) if schedule_key_raw is not None else None
+            job_view = _RubricJobView(
+                id=record.id,
+                name=record.name,
+                rubric=rubric_code,
+                status=record.status,
+                available_at=record.available_at,
+                scheduled_at=scheduled_at,
+                created_at=record.created_at,
+                schedule_key=schedule_key,
+                payload=record.payload,
+            )
+            target_time = job_view.target_time()
+            if window_end is not None and target_time > window_end:
+                continue
+            jobs.append(job_view)
+        jobs.sort(key=lambda job: (job.target_time(), job.id))
+        return jobs
+
+    def _format_rubric_job_lines(
+        self,
+        jobs: Sequence[_RubricJobView],
+        *,
+        reference: datetime,
+    ) -> list[str]:
+        lines: list[str] = []
+        for job in jobs:
+            run_time = job.target_time()
+            local_label = self._format_local_time(run_time)
+            overdue = " (overdue)" if run_time < reference else ""
+            schedule_key = job.schedule_key or "—"
+            if len(schedule_key) > 48:
+                schedule_key = f"{schedule_key[:45]}…"
+            test_marker = " [test]" if job.payload.get("test") else ""
+            lines.append(
+                f"• #{job.id} {job.rubric}{test_marker} {job.status} → "
+                f"{local_label}{overdue} (key={schedule_key})"
+            )
+        return lines
+
+    def _identify_canonical_rubric_jobs(
+        self,
+        rubric_code: str,
+        jobs: Sequence[_RubricJobView],
+        *,
+        reference: datetime,
+    ) -> set[int]:
+        rubric = self.data.get_rubric_by_code(rubric_code)
+        if not rubric:
+            return self._select_default_canonical(jobs, reference)
+        config = rubric.config or {}
+        schedules = config.get("schedules") or config.get("schedule") or []
+        if isinstance(schedules, Mapping):
+            schedules = [schedules]
+        canonical_targets: dict[str, datetime] = {}
+        for idx, schedule in enumerate(schedules):
+            if not isinstance(schedule, Mapping):
+                continue
+            if not schedule.get("enabled", True):
+                continue
+            time_str = schedule.get("time")
+            if not isinstance(time_str, str) or not time_str.strip():
+                continue
+            tz_value = schedule.get("tz") or config.get("tz") or TZ_OFFSET
+            days = schedule.get("days") or config.get("days")
+            slot_channel_id = schedule.get("channel_id")
+            if slot_channel_id:
+                key = schedule.get("key") or f"{slot_channel_id}:{idx}:{time_str}"
+            else:
+                key = schedule.get("key") or f"{rubric.code}:{idx}:{time_str}"
+            try:
+                expected = self._compute_next_rubric_run(
+                    time_str=time_str,
+                    tz_offset=str(tz_value),
+                    days=days,
+                    reference=reference,
+                )
+            except Exception:
+                continue
+            canonical_targets[str(key)] = expected
+        if not canonical_targets:
+            return self._select_default_canonical(jobs, reference)
+        matched: set[int] = set()
+        for key, expected in canonical_targets.items():
+            best_job: _RubricJobView | None = None
+            best_delta: float | None = None
+            for job in jobs:
+                if job.schedule_key != key:
+                    continue
+                run_time = job.target_time()
+                delta = abs((run_time - expected).total_seconds())
+                if best_delta is None or delta < best_delta:
+                    best_job = job
+                    best_delta = delta
+            if best_job:
+                matched.add(best_job.id)
+        if matched:
+            return matched
+        return self._select_default_canonical(jobs, reference)
+
+    @staticmethod
+    def _select_default_canonical(
+        jobs: Sequence[_RubricJobView],
+        reference: datetime,
+    ) -> set[int]:
+        if not jobs:
+            return set()
+        future_jobs = [job for job in jobs if job.target_time() >= reference]
+        if future_jobs:
+            future_jobs.sort(key=lambda job: (job.target_time(), job.id))
+            return {future_jobs[0].id}
+        fallback = max(jobs, key=lambda job: (job.target_time(), job.id))
+        return {fallback.id}
 
     @staticmethod
     def _normalize_rubric_config(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -10661,6 +11218,7 @@ class Bot:
         if target is None:
             raise ValueError("Channel id is required for rubric publication")
         payload = {
+            "rubric": code,
             "rubric_code": code,
             "channel_id": target,
             "schedule_key": "manual-test" if test else "manual",

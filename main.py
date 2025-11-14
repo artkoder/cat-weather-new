@@ -15180,7 +15180,9 @@ class Bot:
                 full_caption = "\n\n".join(caption_segments)
                 if len(full_caption) > CAP_LIMIT:
                     full_caption = full_caption[:CAP_LIMIT].rstrip()
-                    caption_segments = [segment for segment in full_caption.split("\n\n") if segment]
+                    caption_segments = [
+                        segment for segment in full_caption.split("\n\n") if segment
+                    ]
                 logging.warning(
                     "SEA_RUBRIC caption_trim applied original=%d final=%d",
                     original_len,

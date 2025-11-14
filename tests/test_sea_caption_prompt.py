@@ -51,9 +51,7 @@ async def async_record_usage_noop(self, *args: Any, **kwargs: Any) -> None:  # t
 
 
 @pytest.mark.asyncio
-async def test_sea_prompt_contains_hard_limit_phrase(
-    monkeypatch, tmp_path: Path
-) -> None:
+async def test_sea_prompt_contains_hard_limit_phrase(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         main_module.Bot, "_record_openai_usage", async_record_usage_noop, raising=False
     )
@@ -285,8 +283,7 @@ async def test_sea_caption_trim_applies_at_990(
     assert "sendPhoto" in methods
     assert send_calls
     assert any(
-        "SEA_RUBRIC SEND" in record.getMessage()
-        and "message_type=photo" in record.getMessage()
+        "SEA_RUBRIC SEND" in record.getMessage() and "message_type=photo" in record.getMessage()
         for record in caplog.records
     )
     assert len(send_calls) == 1

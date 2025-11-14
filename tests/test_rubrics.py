@@ -3984,9 +3984,7 @@ async def test_sea_caption_no_numbers_and_no_cloud_words(tmp_path):
         assert "Сегодня шторм" in main_text
         assert "18 м/с" not in main_text
         assert "65 км/ч" not in main_text
-        assert (
-            re.search(r"\d+(?:[.,]\d+)?\s?(?:км/ч|м/с|%)", main_text, re.IGNORECASE) is None
-        )
+        assert re.search(r"\d+(?:[.,]\d+)?\s?(?:км/ч|м/с|%)", main_text, re.IGNORECASE) is None
         for stem in ("облачн", "пасмурн", "ясн", "солнечн", "дожд", "гроза"):
             assert re.search(stem, main_text, re.IGNORECASE) is None
         hashtags_html = segments[link_index + 1]

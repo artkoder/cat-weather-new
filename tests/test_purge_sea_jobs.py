@@ -1,23 +1,52 @@
-"""Integration tests for /purge_sea_jobs command."""
+"""Integration tests for rubric purge command behaviour."""
 
 import json
 import os
 import sys
-from pathlib import Path
+from datetime import datetime, timedelta
+from typing import Any
 
 import pytest
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+from main import Bot
+
+
+def _insert_rubric_job(
+    bot: Bot,
+    *,
+    available_at: datetime | None,
+    status: str,
+    payload: dict[str, Any],
+) -> int:
+    """Insert a publish_rubric job with the provided payload."""
+
+    now_iso = datetime.utcnow().isoformat()
+    cursor = bot.db.execute(
+        """
+        INSERT INTO jobs_queue (name, payload, status, attempts, available_at, last_error, created_at, updated_at)
+        VALUES (?, ?, ?, 0, ?, NULL, ?, ?)
+        """,
+        (
+            "publish_rubric",
+            json.dumps(payload),
+            status,
+            available_at.isoformat() if available_at else None,
+            now_iso,
+            now_iso,
+        ),
+    )
+    bot.db.commit()
+    return int(cursor.lastrowid)
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_purge_sea_jobs_deletes_sea_jobs(tmp_path):
-    """Test /purge_sea_jobs finds and deletes sea rubric jobs."""
-    from main import Bot
+async def test_purge_sea_jobs_keeps_canonical_by_default(tmp_path):
+    """By default the purge keeps the canonical sea job and removes stale ones."""
 
-    db_path = tmp_path / "test_bot.db"
-    bot = Bot(token="dummy", db_path=str(db_path))
+    bot = Bot("dummy", str(tmp_path / "test_bot.db"))
 
     superadmin_id = 12345
     bot.db.execute(
@@ -26,59 +55,41 @@ async def test_purge_sea_jobs_deletes_sea_jobs(tmp_path):
     )
     bot.db.commit()
 
-    job1_payload = json.dumps(
-        {
-            "rubric_code": "sea",
-            "channel_id": -123456,
-            "schedule_key": "schedule-0",
-            "scheduled_at": "2025-01-15T10:00:00",
-        }
+    now = datetime.utcnow()
+    canonical_time = now + timedelta(hours=3)
+    stale_time = now - timedelta(hours=2)
+
+    canonical_payload = {
+        "rubric": "sea",
+        "rubric_code": "sea",
+        "schedule_key": "sea:primary",
+        "scheduled_at": canonical_time.isoformat(),
+    }
+    stale_payload = {
+        "rubric": "sea",
+        "rubric_code": "sea",
+        "schedule_key": "legacy",
+        "scheduled_at": (stale_time + timedelta(minutes=15)).isoformat(),
+    }
+
+    canonical_id = _insert_rubric_job(
+        bot,
+        available_at=canonical_time,
+        status="delayed",
+        payload=canonical_payload,
     )
-    job2_payload = json.dumps(
-        {
-            "rubric_code": "sea",
-            "channel_id": -123456,
-            "schedule_key": "schedule-1",
-            "scheduled_at": "2025-01-15T14:00:00",
-        }
-    )
-    job3_payload = json.dumps(
-        {
-            "rubric_code": "flowers",
-            "channel_id": -123456,
-            "schedule_key": "schedule-0",
-            "scheduled_at": "2025-01-15T12:00:00",
-        }
+    stale_id = _insert_rubric_job(
+        bot,
+        available_at=stale_time,
+        status="delayed",
+        payload=stale_payload,
     )
 
-    bot.db.execute(
-        """
-        INSERT INTO jobs_queue (name, payload, status, attempts, created_at, updated_at)
-        VALUES (?, ?, 'queued', 0, datetime('now'), datetime('now'))
-        """,
-        ("publish_rubric", job1_payload),
-    )
-    bot.db.execute(
-        """
-        INSERT INTO jobs_queue (name, payload, status, attempts, created_at, updated_at)
-        VALUES (?, ?, 'delayed', 0, datetime('now'), datetime('now'))
-        """,
-        ("publish_rubric", job2_payload),
-    )
-    bot.db.execute(
-        """
-        INSERT INTO jobs_queue (name, payload, status, attempts, created_at, updated_at)
-        VALUES (?, ?, 'queued', 0, datetime('now'), datetime('now'))
-        """,
-        ("publish_rubric", job3_payload),
-    )
-    bot.db.commit()
+    messages: list[str] = []
 
-    messages_sent = []
-
-    async def mock_api_request(method, params):
+    async def mock_api_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "sendMessage":
-            messages_sent.append(params.get("text", ""))
+            messages.append(params.get("text", ""))
         return {"ok": True, "result": {}}
 
     bot.api_request = mock_api_request
@@ -90,26 +101,77 @@ async def test_purge_sea_jobs_deletes_sea_jobs(tmp_path):
     )()
     await bot.on_message(message)
 
-    assert len(messages_sent) == 3
-    assert "Searching for legacy sea jobs" in messages_sent[0]
-    assert "Found 2 sea job(s)" in messages_sent[1]
-    assert "Deleted 2 sea job(s)" in messages_sent[2]
-
-    remaining_jobs = bot.db.execute(
-        """
-        SELECT COUNT(*) as count FROM jobs_queue
-        WHERE name='publish_rubric' AND json_extract(payload, '$.rubric_code') = 'sea'
-        """
+    assert len(messages) == 2
+    assert "Сохраняем 1 актуальную задачу" in messages[1]
+    assert f"#{canonical_id}" in messages[1]
+    assert f"Удалено 1 задач(и)." in messages[1]
+    remaining = bot.db.execute(
+        "SELECT id FROM jobs_queue WHERE name='publish_rubric' ORDER BY id"
+    ).fetchall()
+    assert [row["id"] for row in remaining] == [canonical_id]
+    removed = bot.db.execute(
+        "SELECT COUNT(*) AS cnt FROM jobs_queue WHERE id=?", (stale_id,)
     ).fetchone()
-    assert remaining_jobs["count"] == 0
+    assert removed["cnt"] == 0
 
-    flowers_jobs = bot.db.execute(
-        """
-        SELECT COUNT(*) as count FROM jobs_queue
-        WHERE name='publish_rubric' AND json_extract(payload, '$.rubric_code') = 'flowers'
-        """
+    await bot.close()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_purge_sea_jobs_keep_false_removes_all(tmp_path):
+    """When keep=false is passed all sea jobs are removed."""
+
+    bot = Bot("dummy", str(tmp_path / "test_bot.db"))
+
+    superadmin_id = 12345
+    bot.db.execute(
+        "INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)",
+        (superadmin_id, "superadmin", "+00:00"),
+    )
+    bot.db.commit()
+
+    now = datetime.utcnow()
+    future_time = now + timedelta(hours=1)
+
+    for offset in (0, 2):
+        _insert_rubric_job(
+            bot,
+            available_at=future_time + timedelta(minutes=offset * 5),
+            status="delayed",
+            payload={
+                "rubric": "sea",
+                "rubric_code": "sea",
+                "schedule_key": f"sea:{offset}",
+                "scheduled_at": (future_time + timedelta(minutes=offset * 5)).isoformat(),
+            },
+        )
+
+    messages: list[str] = []
+
+    async def mock_api_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        if method == "sendMessage":
+            messages.append(params.get("text", ""))
+        return {"ok": True, "result": {}}
+
+    bot.api_request = mock_api_request
+
+    message = type(
+        "Message",
+        (),
+        {
+            "text": "/purge_sea_jobs keep=false",
+            "chat": type("Chat", (), {"id": superadmin_id})(),
+        },
+    )()
+    await bot.on_message(message)
+
+    assert len(messages) == 2
+    assert "Удалено 2 задач(и)." in messages[1]
+    remaining = bot.db.execute(
+        "SELECT COUNT(*) AS cnt FROM jobs_queue WHERE name='publish_rubric'"
     ).fetchone()
-    assert flowers_jobs["count"] == 1
+    assert remaining["cnt"] == 0
 
     await bot.close()
 
@@ -117,11 +179,9 @@ async def test_purge_sea_jobs_deletes_sea_jobs(tmp_path):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_purge_sea_jobs_no_jobs_found(tmp_path):
-    """Test /purge_sea_jobs when no sea jobs exist."""
-    from main import Bot
+    """If no sea jobs exist the command reports success."""
 
-    db_path = tmp_path / "test_bot.db"
-    bot = Bot(token="dummy", db_path=str(db_path))
+    bot = Bot("dummy", str(tmp_path / "test_bot.db"))
 
     superadmin_id = 12345
     bot.db.execute(
@@ -130,11 +190,11 @@ async def test_purge_sea_jobs_no_jobs_found(tmp_path):
     )
     bot.db.commit()
 
-    messages_sent = []
+    messages: list[str] = []
 
-    async def mock_api_request(method, params):
+    async def mock_api_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "sendMessage":
-            messages_sent.append(params.get("text", ""))
+            messages.append(params.get("text", ""))
         return {"ok": True, "result": {}}
 
     bot.api_request = mock_api_request
@@ -146,9 +206,7 @@ async def test_purge_sea_jobs_no_jobs_found(tmp_path):
     )()
     await bot.on_message(message)
 
-    assert len(messages_sent) == 2
-    assert "Searching for legacy sea jobs" in messages_sent[0]
-    assert "No legacy sea jobs found" in messages_sent[1]
+    assert messages == ["🔍 Ищу задачи моря...", "✓ Задачи моря не найдены."]
 
     await bot.close()
 
@@ -156,24 +214,22 @@ async def test_purge_sea_jobs_no_jobs_found(tmp_path):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_purge_sea_jobs_requires_superadmin(tmp_path):
-    """Test /purge_sea_jobs requires superadmin access."""
-    from main import Bot
+    """Superadmin privileges are required to purge sea jobs."""
 
-    db_path = tmp_path / "test_bot.db"
-    bot = Bot(token="dummy", db_path=str(db_path))
+    bot = Bot("dummy", str(tmp_path / "test_bot.db"))
 
     regular_user_id = 67890
     bot.db.execute(
         "INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 0, ?)",
-        (regular_user_id, "regular_user", "+00:00"),
+        (regular_user_id, "regular", "+00:00"),
     )
     bot.db.commit()
 
-    messages_sent = []
+    messages: list[str] = []
 
-    async def mock_api_request(method, params):
+    async def mock_api_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "sendMessage":
-            messages_sent.append(params.get("text", ""))
+            messages.append(params.get("text", ""))
         return {"ok": True, "result": {}}
 
     bot.api_request = mock_api_request
@@ -185,37 +241,6 @@ async def test_purge_sea_jobs_requires_superadmin(tmp_path):
     )()
     await bot.on_message(message)
 
-    assert len(messages_sent) == 0
+    assert messages == []
 
     await bot.close()
-
-
-@pytest.mark.integration
-def test_help_text_includes_purge_sea_jobs(tmp_path):
-    """Test /help output lists /purge_sea_jobs command."""
-    from main import Bot
-
-    db_path = tmp_path / "test_bot.db"
-    bot = Bot(token="dummy", db_path=str(db_path))
-
-    user_id = 12345
-    bot.db.execute(
-        "INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)",
-        (user_id, "test_user", "+00:00"),
-    )
-    bot.db.commit()
-
-    help_text_parts = [
-        "/purge_sea_jobs",
-        "супер-админов",
-    ]
-
-    for part in help_text_parts:
-        found = False
-        if part == "/purge_sea_jobs":
-            found = True
-        elif part == "супер-админов":
-            found = True
-        assert found, f"Expected '{part}' to be documented in help text"
-
-    bot.db.close()

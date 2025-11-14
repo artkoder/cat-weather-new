@@ -460,6 +460,7 @@ async def test_rubric_scheduler_enqueues_jobs(tmp_path):
     ).fetchone()
     assert row is not None
     payload = json.loads(row["payload"])
+    assert payload["rubric"] == "flowers"
     assert payload["rubric_code"] == "flowers"
     assert payload.get("slot_channel_id") == -100
     assert payload["tz_offset"] == "+00:00"
@@ -482,6 +483,7 @@ async def test_rubric_scheduler_respects_timezone(tmp_path):
     row = bot.db.execute("SELECT payload FROM jobs_queue WHERE name='publish_rubric'").fetchone()
     assert row is not None
     payload = json.loads(row["payload"])
+    assert payload["rubric"] == "guess_arch"
     assert payload["rubric_code"] == "guess_arch"
     assert payload.get("slot_channel_id") == -900
     assert payload["scheduled_at"] == expected.isoformat()
@@ -503,6 +505,7 @@ async def test_enqueue_rubric_manual_and_test_channels(tmp_path):
     row = bot.db.execute("SELECT status, payload FROM jobs_queue WHERE id=?", (job_id,)).fetchone()
     assert row is not None
     payload = json.loads(row["payload"])
+    assert payload["rubric"] == "flowers"
     assert payload["schedule_key"] == "manual"
     assert payload["channel_id"] == -111
     assert not payload.get("test")
@@ -515,6 +518,7 @@ async def test_enqueue_rubric_manual_and_test_channels(tmp_path):
     ).fetchone()
     assert test_row is not None
     test_payload = json.loads(test_row["payload"])
+    assert test_payload["rubric"] == "flowers"
     assert test_payload["schedule_key"] == "manual-test"
     assert test_payload["channel_id"] == -222
     assert test_payload["test"] is True

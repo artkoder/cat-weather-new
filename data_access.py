@@ -3303,6 +3303,30 @@ class DataAccess:
         self.conn.commit()
         return int(cur.lastrowid)
 
+    def list_jobs(
+        self,
+        *,
+        name: str | None = None,
+        statuses: Sequence[str] | None = None,
+    ) -> list[JobRecord]:
+        """Return queued jobs optionally filtered by handler name and status."""
+
+        sql = "SELECT * FROM jobs_queue"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if name:
+            clauses.append("name=?")
+            params.append(name)
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            clauses.append(f"status IN ({placeholders})")
+            params.extend(statuses)
+        if clauses:
+            sql = f"{sql} WHERE {' AND '.join(clauses)}"
+        sql = f"{sql} ORDER BY available_at IS NULL, available_at, id"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [self._job_from_row(row) for row in rows]
+
     def fetch_due_jobs(self, *, limit: int = 50) -> list[JobRecord]:
         """Return queued jobs that are ready for execution."""
 

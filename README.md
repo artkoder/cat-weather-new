@@ -281,6 +281,23 @@ Replace `/data/bot.db` with the desired SQLite path (for local development you c
 - The job queue deduplicates identical pending payloads, so repeated runs from the same button are safe.
 - For ad-hoc publication bypassing the queue entirely, call `publish_rubric` inside the same context; it returns `True` on success and records the run in `posts_history` for later review.
 
+### Rubric job introspection
+- Rubric publications live in the `jobs_queue` table alongside ingestion (`ingest`) and
+  vision (`vision`) jobs. Each row contains the handler name, status, retry counter,
+  timestamps (`created_at`, `updated_at`, optional `available_at`) and a JSON payload.
+  Rubric tasks now store both `rubric_code` and the normalized `rubric` tag together
+  with scheduling fields such as `schedule_key`, `scheduled_at`, channel overrides and
+  the `test` flag, so legacy jobs can still be classified reliably.
+- `/rubric_jobs [rubric=<name>|all] [window=24h|48h]` shows pending rubric jobs in the
+  next window (default 48 hours) with timestamps converted to `Europe/Kaliningrad`.
+- `/cancel_rubric_jobs rubric=<name> [window=48h|all] [confirm=true]` removes queued jobs
+  for a rubric. Without `confirm=true` the command performs a dry run and prints the
+  affected job ids.
+- `/purge_sea_jobs [keep=false]` cleans up sea rubric jobs using the same classifier.
+  By default the canonical job from the current schedule is preserved; pass
+  `keep=false` to remove everything. All commands emit structured logs with job ids for
+  auditing.
+
 ## Deployment
 The bot targets Fly.io and exposes a single aiohttp application on port `8080`. Ensure your Fly.io service terminates TLS on port `443` and forwards traffic to the container port so Telegram can reach the webhook. The provided `fly.toml` already contains the required configuration.
 

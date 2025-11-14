@@ -226,6 +226,13 @@ WMO_EMOJI = {
 
 LOVE_COLLECTION_LINK = '<a href="https://t.me/addlist/sW-rkrslxqo1NTVi">📂 Полюбить 39</a>'
 
+
+def build_rubric_link_block(rubric_code: str) -> str:
+    if rubric_code == "sea":
+        return LOVE_COLLECTION_LINK
+    return ""
+
+
 CLOUD_WORDS = {"облачн", "пасмурн", "ясн", "солнечн", "дожд", "гроза"}
 NUM_PAT = re.compile(r"(\d+(?:[.,]\d+)?\s?(?:км/ч|м/с|%))", re.IGNORECASE)
 
@@ -245,7 +252,7 @@ def sanitize_sea_intro(text: str) -> tuple[str, list[str]]:
         intro = paragraphs[0]
 
         def _drop_stem(stem: str, value: str) -> str:
-            pattern = re.compile(fr"\b\w*{stem}\w*\b", re.IGNORECASE)
+            pattern = re.compile(rf"\b\w*{stem}\w*\b", re.IGNORECASE)
 
             def _collect(match: re.Match[str]) -> str:
                 token = match.group(0)
@@ -15096,30 +15103,97 @@ class Bot:
         hashtags_line = " ".join(final_hashtags)
         hashtags_html = html.escape(hashtags_line) if hashtags_line else ""
 
-        def compose_caption(main_plain: str) -> str:
-            main_html = html.escape(main_plain) if main_plain else ""
-            blocks: list[str] = []
-            if main_html:
-                blocks.append(main_html)
-            blocks.append(LOVE_COLLECTION_LINK)
-            if hashtags_html:
-                blocks.append(hashtags_html)
-            return "\n\n".join(blocks)
+        link_block = build_rubric_link_block("sea")
 
         caption_text = main_plain or fallback_caption_plain
         if not caption_text:
             caption_text = fallback_caption_plain
-        full_caption = compose_caption(caption_text)
+        caption_text = caption_text.strip()
+
+        def _trim_plain_to_html_limit(value: str, html_limit: int) -> str:
+            if html_limit <= 0:
+                return ""
+            if len(html.escape(value)) <= html_limit:
+                return value
+            low, high = 1, len(value)
+            best = ""
+            while low <= high:
+                mid = (low + high) // 2
+                candidate = value[:mid]
+                escaped_candidate = html.escape(candidate)
+                if len(escaped_candidate) <= html_limit:
+                    best = candidate
+                    low = mid + 1
+                else:
+                    high = mid - 1
+            trimmed = best.rstrip()
+            if len(trimmed) < len(value):
+                last_break = max(trimmed.rfind("\n"), trimmed.rfind(" "))
+                if last_break > 0:
+                    candidate = trimmed[:last_break].rstrip()
+                    if candidate:
+                        trimmed = candidate
+                trimmed = trimmed.rstrip(",.;:-")
+                if trimmed and trimmed[-1] not in ".!?…":
+                    trimmed += "…"
+            return trimmed
+
+        def _compose_blocks(caption_plain: str) -> list[str]:
+            caption_html = html.escape(caption_plain) if caption_plain else ""
+            composed: list[str] = []
+            if caption_html:
+                composed.append(caption_html)
+            if link_block:
+                composed.append(link_block)
+            if hashtags_html:
+                composed.append(hashtags_html)
+            return composed
+
+        caption_text = _ensure_paragraph_break(caption_text)
+        caption_blocks = _compose_blocks(caption_text)
+        caption_paragraphs = len([p for p in caption_text.split("\n\n") if p.strip()])
+        logging.info(
+            "SEA_RUBRIC compose_blocks counts: caption_paragraphs=%d has_link=%s has_hashtags=%s blocks=%d",
+            caption_paragraphs,
+            bool(link_block),
+            bool(hashtags_html),
+            len(caption_blocks),
+        )
+        full_caption = "\n\n".join(caption_blocks)
         CAP_LIMIT = 990
         if len(full_caption) > CAP_LIMIT:
             original_len = len(full_caption)
-            full_caption = full_caption[:CAP_LIMIT].rstrip()
+            rest_blocks = caption_blocks[1:]
+            rest_text = "\n\n".join(rest_blocks)
+            separator = "\n\n" if rest_blocks else ""
+            available_html = CAP_LIMIT - len(separator) - len(rest_text)
+            trimmed_plain = _trim_plain_to_html_limit(caption_text, max(available_html, 0))
+            if trimmed_plain:
+                if "\n\n" not in trimmed_plain:
+                    trimmed_plain = _ensure_paragraph_break(trimmed_plain)
+                caption_text = trimmed_plain
+            caption_blocks = _compose_blocks(caption_text)
+            full_caption = "\n\n".join(caption_blocks)
+            if len(full_caption) > CAP_LIMIT:
+                full_caption = full_caption[:CAP_LIMIT].rstrip()
+                caption_blocks = [segment for segment in full_caption.split("\n\n") if segment]
             logging.warning(
                 "SEA_RUBRIC caption_trim applied original=%d final=%d",
                 original_len,
                 len(full_caption),
             )
         logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
+
+        rendered_segments = [segment for segment in full_caption.split("\n\n") if segment]
+        caption_plain_segments: list[str] = []
+        for segment in rendered_segments:
+            if segment == link_block or segment.startswith("<a "):
+                break
+            if segment.startswith("#"):
+                break
+            caption_plain_segments.append(html.unescape(segment))
+        if caption_plain_segments:
+            caption_text = "\n\n".join(caption_plain_segments)
 
         timeline["openai_generate_caption"] = round((time.perf_counter() - step_start) * 1000, 2)
 

@@ -15221,6 +15221,16 @@ class Bot:
         )
         logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
 
+        CAP_LIMIT = 990
+        if len(full_caption) > CAP_LIMIT:
+            original_len = len(full_caption)
+            full_caption = full_caption[:CAP_LIMIT].rstrip()
+            logging.warning(
+                "SEA_RUBRIC caption_trim applied original=%d final=%d",
+                original_len,
+                len(full_caption),
+            )
+
         timeline["openai_generate_caption"] = round((time.perf_counter() - step_start) * 1000, 2)
 
         step_start = time.perf_counter()

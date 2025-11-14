@@ -15114,28 +15114,17 @@ class Bot:
                 return ""
             if len(html.escape(value)) <= html_limit:
                 return value
-            low, high = 1, len(value)
+            low, high = 0, len(value)
             best = ""
             while low <= high:
                 mid = (low + high) // 2
                 candidate = value[:mid]
-                escaped_candidate = html.escape(candidate)
-                if len(escaped_candidate) <= html_limit:
+                if len(html.escape(candidate)) <= html_limit:
                     best = candidate
                     low = mid + 1
                 else:
                     high = mid - 1
-            trimmed = best.rstrip()
-            if len(trimmed) < len(value):
-                last_break = max(trimmed.rfind("\n"), trimmed.rfind(" "))
-                if last_break > 0:
-                    candidate = trimmed[:last_break].rstrip()
-                    if candidate:
-                        trimmed = candidate
-                trimmed = trimmed.rstrip(",.;:-")
-                if trimmed and trimmed[-1] not in ".!?…":
-                    trimmed += "…"
-            return trimmed
+            return best
 
         def compose_caption(
             caption_plain: str,
@@ -15167,30 +15156,36 @@ class Bot:
         logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
 
         CAP_LIMIT = 990
-        if len(full_caption) > CAP_LIMIT:
-            original_len = len(full_caption)
-            reserved = 0
-            for segment in caption_segments[1:]:
-                reserved += len("\n\n") + len(segment)
-            available_html = CAP_LIMIT - reserved
-            if available_html < 0:
-                available_html = 0
-            if caption_segments and caption_text:
-                trimmed_plain = _trim_plain_to_html_limit(caption_text, available_html)
-                if trimmed_plain:
-                    trimmed_plain = _ensure_paragraph_break(trimmed_plain)
-                caption_plain_final = trimmed_plain if trimmed_plain else ""
-                caption_segments[0] = html.escape(trimmed_plain) if trimmed_plain else ""
-            caption_segments = [segment for segment in caption_segments if segment]
-            full_caption = "\n\n".join(caption_segments)
-            if len(full_caption) > CAP_LIMIT:
-                full_caption = full_caption[:CAP_LIMIT].rstrip()
-                caption_segments = [segment for segment in full_caption.split("\n\n") if segment]
-            logging.warning(
-                "SEA_RUBRIC caption_trim applied original=%d final=%d",
-                original_len,
-                len(full_caption),
-            )
+        # Allow moderate overflow so natural captions remain intact while
+        # still trimming aggressively when captions are drastically over budget.
+        TRIM_OVERFLOW_THRESHOLD = 200
+        original_len = len(full_caption)
+        overflow = original_len - CAP_LIMIT
+        if overflow > 0:
+            should_trim = overflow >= TRIM_OVERFLOW_THRESHOLD
+            if should_trim:
+                reserved = 0
+                for segment in caption_segments[1:]:
+                    reserved += len("\n\n") + len(segment)
+                available_html = CAP_LIMIT - reserved
+                if available_html < 0:
+                    available_html = 0
+                if caption_segments and caption_text:
+                    trimmed_plain = _trim_plain_to_html_limit(caption_text, available_html)
+                    if trimmed_plain:
+                        trimmed_plain = _ensure_paragraph_break(trimmed_plain)
+                    caption_plain_final = trimmed_plain if trimmed_plain else ""
+                    caption_segments[0] = html.escape(trimmed_plain) if trimmed_plain else ""
+                caption_segments = [segment for segment in caption_segments if segment]
+                full_caption = "\n\n".join(caption_segments)
+                if len(full_caption) > CAP_LIMIT:
+                    full_caption = full_caption[:CAP_LIMIT].rstrip()
+                    caption_segments = [segment for segment in full_caption.split("\n\n") if segment]
+                logging.warning(
+                    "SEA_RUBRIC caption_trim applied original=%d final=%d",
+                    original_len,
+                    len(full_caption),
+                )
         final_hashtags = list(active_hashtags)
 
         rendered_segments = [segment for segment in full_caption.split("\n\n") if segment]

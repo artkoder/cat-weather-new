@@ -226,6 +226,51 @@ WMO_EMOJI = {
 
 LOVE_COLLECTION_LINK = '<a href="https://t.me/addlist/sW-rkrslxqo1NTVi">📂 Полюбить 39</a>'
 
+CLOUD_WORDS = {"облачн", "пасмурн", "ясн", "солнечн", "дожд", "гроза"}
+NUM_PAT = re.compile(r"(\d+(?:[.,]\d+)?\s?(?:км/ч|м/с|%))", re.IGNORECASE)
+
+
+def sanitize_sea_intro(text: str) -> tuple[str, list[str]]:
+    removed_tokens: list[str] = []
+
+    def _remove_numeric(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token:
+            removed_tokens.append(token)
+        return ""
+
+    cleaned = NUM_PAT.sub(_remove_numeric, text)
+    paragraphs = cleaned.split("\n\n")
+    if paragraphs:
+        intro = paragraphs[0]
+
+        def _drop_stem(stem: str, value: str) -> str:
+            pattern = re.compile(fr"\b\w*{stem}\w*\b", re.IGNORECASE)
+
+            def _collect(match: re.Match[str]) -> str:
+                token = match.group(0)
+                if token:
+                    removed_tokens.append(token)
+                return ""
+
+            return pattern.sub(_collect, value)
+
+        for stem in CLOUD_WORDS:
+            intro = _drop_stem(stem, intro)
+        intro = re.sub(r"[ \t]{2,}", " ", intro)
+        intro = re.sub(r"\s+([,.!?…])", r"\1", intro)
+        intro_clean = intro.strip()
+        if intro_clean:
+            paragraphs[0] = intro_clean
+        else:
+            paragraphs = paragraphs[1:]
+
+    sanitized = "\n\n".join(paragraphs)
+    sanitized = re.sub(r"[ \t]{2,}", " ", sanitized)
+    sanitized = re.sub(r"\s+([,.!?…])", r"\1", sanitized)
+    sanitized = sanitized.strip()
+    return sanitized, removed_tokens
+
 
 def _isoformat_utc(dt: datetime) -> str:
     if dt.tzinfo is None:
@@ -14994,6 +15039,18 @@ class Bot:
         )
         main_plain = raw_caption_text or fallback_caption_plain
         main_plain = main_plain.strip()
+        sanitized_main_plain, removed_tokens = sanitize_sea_intro(main_plain)
+        removed_clean: list[str] = []
+        for token in removed_tokens:
+            trimmed = token.strip()
+            if trimmed and trimmed not in removed_clean:
+                removed_clean.append(trimmed)
+        if removed_clean:
+            logging.warning(
+                "SEA_RUBRIC sanitize removed_tokens=%s",
+                ", ".join(removed_clean),
+            )
+        main_plain = sanitized_main_plain
 
         def _ensure_paragraph_break(value: str) -> str:
             if not value or "\n\n" in value:
@@ -15041,17 +15098,13 @@ class Bot:
 
         def compose_caption(main_plain: str) -> str:
             main_html = html.escape(main_plain) if main_plain else ""
-            lines: list[str] = []
+            blocks: list[str] = []
             if main_html:
-                lines.append(main_html)
+                blocks.append(main_html)
+            blocks.append(LOVE_COLLECTION_LINK)
             if hashtags_html:
-                if lines:
-                    lines.append("")
-                lines.append(hashtags_html)
-            if lines:
-                lines.append("")
-            lines.append(LOVE_COLLECTION_LINK)
-            return "\n".join(lines)
+                blocks.append(hashtags_html)
+            return "\n\n".join(blocks)
 
         caption_text = main_plain or fallback_caption_plain
         if not caption_text:

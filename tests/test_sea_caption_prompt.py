@@ -122,7 +122,13 @@ async def test_sea_logging_prefixes(
     async def fake_reverse_geocode(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"city": "Зеленоградск"}
 
-    async def fake_api_request(self, method: str, data: Any = None, *, files: Any = None) -> dict[str, Any]:  # type: ignore[override]
+    async def fake_api_request(
+        self,
+        method: str,
+        data: Any = None,
+        *,
+        files: Any = None,
+    ) -> dict[str, Any]:  # type: ignore[override]
         if method == "sendPhoto":
             return {"ok": True, "result": {"message_id": 501}}
         return {"ok": True}
@@ -278,6 +284,11 @@ async def test_sea_caption_trim_applies_at_990(
     methods = [entry["method"] for entry in captured_requests]
     assert "sendPhoto" in methods
     assert send_calls
+    assert any(
+        "SEA_RUBRIC SEND" in record.getMessage()
+        and "message_type=photo" in record.getMessage()
+        for record in caplog.records
+    )
     assert len(send_calls) == 1
     send_payload = send_calls[0]["data"]
     assert isinstance(send_payload, dict)

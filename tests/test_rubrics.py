@@ -3973,10 +3973,27 @@ async def test_sea_caption_no_numbers_and_no_cloud_words(tmp_path):
         success = await bot._publish_sea(rubric, channel_id=-100501)
         assert success
         caption = captured["caption"]
-        main_html = caption.split("\n\n")[0]
+        segments = [segment for segment in caption.split("\n\n") if segment]
+        assert LOVE_COLLECTION_LINK in segments
+        link_index = segments.index(LOVE_COLLECTION_LINK)
+        assert link_index >= 1
+        assert link_index + 1 < len(segments)
+        main_html = "\n\n".join(segments[:link_index])
         main_text = html.unescape(main_html)
-        assert main_text == raw_caption
-        assert "18 м/с" in main_text and "65 км/ч" in main_text
+        assert main_text
+        assert "Сегодня шторм" in main_text
+        assert "18 м/с" not in main_text
+        assert "65 км/ч" not in main_text
+        assert (
+            re.search(r"\d+(?:[.,]\d+)?\s?(?:км/ч|м/с|%)", main_text, re.IGNORECASE) is None
+        )
+        for stem in ("облачн", "пасмурн", "ясн", "солнечн", "дожд", "гроза"):
+            assert re.search(stem, main_text, re.IGNORECASE) is None
+        hashtags_html = segments[link_index + 1]
+        hashtags_text = html.unescape(hashtags_html)
+        assert "#БалтийскоеМоре" in hashtags_text
+        assert "#шторм" in hashtags_text
+        assert link_index == len(segments) - 2
     finally:
         await bot.close()
 
@@ -4037,24 +4054,19 @@ async def test_caption_blocks(tmp_path):
         assert success
         caption = captured["caption"]
         segments = [segment for segment in caption.split("\n\n") if segment]
-        assert len(segments) >= 2
-        assert segments[-1] == LOVE_COLLECTION_LINK
-
-        text_segments: list[str] = []
-        hashtags_block: str | None = None
-        for segment in segments[:-1]:
-            unescaped = html.unescape(segment)
-            if unescaped.startswith("#"):
-                hashtags_block = unescaped
-                break
-            text_segments.append(unescaped)
-
-        assert hashtags_block is not None
-        combined_main = "\n\n".join(text_segments)
-        assert combined_main.replace("\n\n", " ") == raw_caption
-        assert hashtags_block.startswith("#море #БалтийскоеМоре")
-        assert "#СветлыйПляж" in hashtags_block
-        assert "#Балтика" in hashtags_block
+        assert len(segments) >= 3
+        assert LOVE_COLLECTION_LINK in segments
+        link_index = segments.index(LOVE_COLLECTION_LINK)
+        assert link_index >= 1
+        assert link_index == len(segments) - 2
+        main_html = "\n\n".join(segments[:link_index])
+        main_text = html.unescape(main_html)
+        assert main_text.replace("\n\n", " ") == raw_caption
+        hashtags_html = segments[link_index + 1]
+        hashtags_text = html.unescape(hashtags_html)
+        assert hashtags_text.startswith("#море #БалтийскоеМоре")
+        assert "#СветлыйПляж" in hashtags_text
+        assert "#Балтика" in hashtags_text
     finally:
         await bot.close()
 

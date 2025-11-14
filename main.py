@@ -6653,6 +6653,7 @@ class Bot:
                     "- `/backfill_waves [dry-run]` — заполнить волны/небо из vision_results (используйте dry-run для проверки без изменений).\n"
                     "- `/inv_sea` — остатки фото «Море» по небу и волне.\n"
                     "- `/sea_audit` — проверка и очистка «мёртвых душ» в базе.\n"
+                    "- `/purge_sea_jobs` — очистить все запланированные задачи моря в очереди (только для супер-админов).\n"
                     "- `/audit_assets` — запустить аудит всех таблиц ассетов, проверить наличие файлов в Telegram и удалить несуществующие записи; вывести отчёт с количеством удалённых записей по рубрикам.\n"
                 ),
                 (
@@ -6928,6 +6929,57 @@ class Bot:
 
             await self._send_sea_inventory_report(is_prod=False, initiator_id=user_id)
             await self.api_request("sendMessage", {"chat_id": user_id, "text": "✓ Отчёт отправлен"})
+            return
+
+        if text.startswith("/purge_sea_jobs") and self.is_superadmin(user_id):
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": "🔍 Searching for legacy sea jobs..."},
+            )
+            rows = self.db.execute(
+                """
+                SELECT id, name, payload, status, available_at, created_at
+                FROM jobs_queue
+                WHERE name='publish_rubric'
+                  AND status IN ('queued', 'delayed')
+                  AND json_extract(payload, '$.rubric_code') = 'sea'
+                """
+            ).fetchall()
+            if not rows:
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": "✓ No legacy sea jobs found."},
+                )
+                return
+            report_lines = [f"Found {len(rows)} sea job(s):\n"]
+            for row in rows:
+                job_id = row["id"]
+                payload = json.loads(row["payload"]) if row["payload"] else {}
+                schedule_key = payload.get("schedule_key", "unknown")
+                available = row["available_at"] or "now"
+                status = row["status"]
+                report_lines.append(
+                    f"• Job {job_id}: key={schedule_key}, status={status}, available={available}"
+                )
+            report = "\n".join(report_lines)
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": report, "parse_mode": "Markdown"},
+            )
+            deleted = 0
+            for row in rows:
+                self.db.execute("DELETE FROM jobs_queue WHERE id=?", (row["id"],))
+                deleted += 1
+            self.db.commit()
+            logging.info(
+                "PURGE_SEA_JOBS: deleted=%d jobs by admin user_id=%s",
+                deleted,
+                user_id,
+            )
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": user_id, "text": f"✓ Deleted {deleted} sea job(s)."},
+            )
             return
 
         if text.startswith("/sea_audit"):

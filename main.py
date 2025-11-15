@@ -5348,7 +5348,43 @@ class Bot:
 
         logging.info("Starting vision job %s for asset %s", job.id, asset_id)
         vision_success = False
+        cleanup_storage = False
         storage_cleanup_key: str | None = None
+
+        def _mark_vision_failure(
+            message: str,
+            *,
+            stage: str,
+            error: Exception | None = None,
+        ) -> None:
+            nonlocal cleanup_storage
+            log_error = f"{type(error).__name__}: {error}" if error else message
+            logging.error(
+                "VISION_PROCESSING_FAILED job=%s asset=%s stage=%s error=%s",
+                job.id,
+                asset_id,
+                stage,
+                log_error,
+            )
+            if asset_id is not None:
+                try:
+                    error_details = {
+                        "status": "error",
+                        "error": message,
+                        "stage": stage,
+                    }
+                    if error is not None:
+                        error_details["error_type"] = type(error).__name__
+                        error_details["error_message"] = str(error)
+                    self.data.update_asset(
+                        asset_id,
+                        vision_results=error_details,
+                        local_path=None,
+                    )
+                except Exception:
+                    logging.exception("Failed to persist vision failure for asset %s", asset_id)
+            cleanup_storage = True
+
         try:
             if not asset_id:
                 logging.warning("Vision job %s missing asset_id", job.id)
@@ -5480,12 +5516,25 @@ class Bot:
                 asset_id,
                 local_path,
             )
-            response = await self.openai.classify_image(
-                model="gpt-4o-mini",
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                image_path=Path(local_path),
-                schema=ASSET_VISION_V1_SCHEMA,
+            try:
+                response = await self.openai.classify_image(
+                    model="gpt-4o-mini",
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    image_path=Path(local_path),
+                    schema=ASSET_VISION_V1_SCHEMA,
+                )
+            except Exception as exc:
+                _mark_vision_failure(
+                    "Vision model request failed",
+                    stage="request",
+                    error=exc,
+                )
+                return
+            logging.info(
+                "Vision job %s received response from model for asset %s",
+                job.id,
+                asset_id,
             )
             log_rss("after_openai")
             gc.collect()
@@ -5496,11 +5545,16 @@ class Bot:
                     asset_id,
                 )
                 self.data.update_asset(asset_id, vision_results={"status": "skipped"})
+                cleanup_storage = True
                 gc.collect()
                 return
             result = response.content
             if not isinstance(result, dict):
-                raise RuntimeError("Invalid response from vision model")
+                _mark_vision_failure(
+                    "Invalid response from vision model",
+                    stage="parse_result",
+                )
+                return
             framing_raw = result.get("framing")
             framing: str | None = None
             if isinstance(framing_raw, str):
@@ -5515,13 +5569,21 @@ class Bot:
                     or None
                 )
             if not framing:
-                raise RuntimeError("Invalid response from vision model: missing framing")
+                _mark_vision_failure(
+                    "Invalid response from vision model: missing framing",
+                    stage="parse_result",
+                )
+                return
             if framing not in FRAMING_ALLOWED_VALUES:
                 alias = FRAMING_ALIAS_MAP.get(framing)
                 if alias in FRAMING_ALLOWED_VALUES:
                     framing = alias
                 else:
-                    raise RuntimeError("Invalid response from vision model: unknown framing")
+                    _mark_vision_failure(
+                        "Invalid response from vision model: unknown framing",
+                        stage="parse_result",
+                    )
+                    return
             architecture_close_up_raw = result.get("architecture_close_up")
             architecture_close_up = (
                 bool(architecture_close_up_raw)
@@ -5555,10 +5617,18 @@ class Bot:
                     or None
                 )
             if not weather_image:
-                raise RuntimeError("Invalid response from vision model: missing weather_image")
+                _mark_vision_failure(
+                    "Invalid response from vision model: missing weather_image",
+                    stage="parse_result",
+                )
+                return
             normalized_weather = self._normalize_weather_enum(weather_image)
             if not normalized_weather:
-                raise RuntimeError("Invalid response from vision model: unknown weather_image")
+                _mark_vision_failure(
+                    "Invalid response from vision model: unknown weather_image",
+                    stage="parse_result",
+                )
+                return
             weather_image = normalized_weather
             season_guess_raw = result.get("season_guess")
             if isinstance(season_guess_raw, str):
@@ -5824,7 +5894,11 @@ class Bot:
             if location_confidence is not None:
                 location_confidence = min(max(location_confidence, 0.0), 1.0)
             if not caption:
-                raise RuntimeError("Invalid response from vision model")
+                _mark_vision_failure(
+                    "Invalid response from vision model",
+                    stage="parse_result",
+                )
+                return
             category = self._derive_primary_scene(caption, tags)
             # Force sea category when is_sea=true, regardless of heuristics
             if is_sea:
@@ -6403,14 +6477,21 @@ class Bot:
                         asset_id,
                         delete_resp,
                     )
+            cleanup_storage = True
             vision_success = True
         finally:
             cleanup_targets: set[str] = set()
             cleanup_targets.update(temp_cleanup_paths)
             cleanup_targets.update(final_cleanup_paths)
             for path in cleanup_targets:
+                logging.info(
+                    "Vision job %s cleanup removing %s for asset %s",
+                    job.id,
+                    path,
+                    asset_id,
+                )
                 self._remove_file(path)
-            if vision_success and storage_cleanup_key:
+            if cleanup_storage and storage_cleanup_key:
                 await self._delete_storage_entry(key=storage_cleanup_key)
             duration = (datetime.utcnow() - start_time).total_seconds()
             logging.info(

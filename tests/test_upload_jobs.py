@@ -1778,10 +1778,17 @@ async def test_mobile_upload_file_lifecycle_until_vision_cleanup(tmp_path: Path)
 
     updated_asset = bot.data.get_asset(asset_id)
     assert updated_asset is not None
+    vision_results = updated_asset.vision_results
+    assert isinstance(vision_results, dict)
+    assert vision_results.get("status") == "error"
+    assert vision_results.get("stage") == "parse_result"
+    error_message = vision_results.get("error") or ""
+    assert "missing framing" in error_message
     assert updated_asset.local_path is None
     assert storage.delete_calls == [file_key]
     assert not local_path_path.exists()
     assert storage.get_calls == [file_key]
+    assert len(openai_stub.calls) == 1
 
     bot.db.close()
     conn.close()

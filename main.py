@@ -7003,9 +7003,7 @@ class Bot:
                 for job in jobs:
                     counts[job.rubric] = counts.get(job.rubric, 0) + 1
                 if counts:
-                    totals = ", ".join(
-                        f"{code}={count}" for code, count in sorted(counts.items())
-                    )
+                    totals = ", ".join(f"{code}={count}" for code, count in sorted(counts.items()))
                     lines.append(f"Итого: {totals}")
             await self.api_request(
                 "sendMessage",

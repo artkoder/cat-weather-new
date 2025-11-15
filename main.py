@@ -25,9 +25,11 @@ from datetime import time as dtime
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+import httpx
 import piexif
 import psutil
 from aiohttp import ClientSession, FormData, web
@@ -101,7 +103,7 @@ from sea_selection import (
     calc_wave_penalty,
     sky_similarity,
 )
-from storage import create_storage_from_env
+from storage import Storage, create_storage_from_env
 from supabase_client import SupabaseClient
 from utils_wave import wave_m_to_score
 from weather_migration import migrate_weather_publish_channels
@@ -931,6 +933,12 @@ class _RubricJobView:
         return self.created_at
 
 
+@dataclass(slots=True)
+class StorageDownload:
+    path: Path
+    cleanup: bool = False
+
+
 def apply_migrations(conn: sqlite3.Connection) -> None:
     """Apply SQL migrations stored in the migrations directory."""
 
@@ -1146,6 +1154,7 @@ class Bot:
         )
         self.openai = OpenAIClient(os.getenv("4O_API_KEY"))
         self.supabase = SupabaseClient()
+        self.storage: Storage | None = None
         self.uploads_config: UploadsConfig = load_uploads_config()
         self.upload_metrics: UploadMetricsRecorder | None = None
         self._model_limits = self._load_model_limits()
@@ -3991,6 +4000,54 @@ class Bot:
             "forward_from_chat": forward_from_chat,
         }
 
+    async def _download_from_storage(self, *, key: str) -> StorageDownload | None:
+        if not self.storage:
+            logging.debug("VISION storage unavailable for key=%s", key)
+            return None
+        try:
+            url = await self.storage.get_url(key=key)
+        except Exception:
+            logging.exception("VISION storage get_url failed key=%s", key)
+            return None
+        parsed = urlparse(url)
+        if parsed.scheme in {"", "file"}:
+            path = Path(unquote(parsed.path))
+            if not path.exists():
+                logging.warning("VISION storage path missing key=%s path=%s", key, path)
+                return None
+            logging.info("VISION storage resolved key=%s path=%s", key, path)
+            return StorageDownload(path=path, cleanup=False)
+        suffix = Path(parsed.path).suffix if parsed.path else ""
+        tmp_fd, tmp_name = tempfile.mkstemp(prefix="vision-", suffix=suffix)
+        os.close(tmp_fd)
+        destination = Path(tmp_name)
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                with destination.open("wb") as handle:
+                    async for chunk in response.aiter_bytes():
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+        except Exception:
+            logging.exception("VISION storage download failed key=%s url=%s", key, url)
+            with contextlib.suppress(OSError):
+                destination.unlink()
+            return None
+        logging.info("VISION storage downloaded key=%s path=%s", key, destination)
+        return StorageDownload(path=destination, cleanup=True)
+
+    async def _delete_storage_entry(self, *, key: str) -> None:
+        if not self.storage:
+            return
+        try:
+            await self.storage.delete(key=key)
+        except Exception:
+            logging.exception("VISION storage delete failed key=%s", key)
+        else:
+            logging.info("VISION storage deleted key=%s", key)
+
     async def _download_file(
         self, file_id: str, dest_path: str | Path | None = None
     ) -> Path | bytes | None:
@@ -5277,8 +5334,21 @@ class Bot:
 
         start_time = datetime.utcnow()
         asset_id = job.payload.get("asset_id") if job.payload else None
-        cleanup_paths: list[str] = []
+        temp_cleanup_paths: set[str] = set()
+        final_cleanup_paths: set[str] = set()
+
+        def _register_cleanup(path: str, *, temp: bool = False) -> None:
+            if not path:
+                return
+            if temp:
+                temp_cleanup_paths.add(path)
+                final_cleanup_paths.discard(path)
+            elif path not in temp_cleanup_paths:
+                final_cleanup_paths.add(path)
+
         logging.info("Starting vision job %s for asset %s", job.id, asset_id)
+        vision_success = False
+        storage_cleanup_key: str | None = None
         try:
             if not asset_id:
                 logging.warning("Vision job %s missing asset_id", job.id)
@@ -5302,23 +5372,49 @@ class Bot:
                 "width": asset.width,
                 "height": asset.height,
             }
+            storage_key = str(asset.file_ref) if asset.file_ref else None
+            origin_value = (asset.origin or "").lower()
+            source_value = (asset.source or "").lower() if getattr(asset, "source", None) else ""
+            if storage_key and ("mobile" in {origin_value, source_value}):
+                storage_cleanup_key = storage_key
             local_path = asset.local_path if asset.local_path else None
-            if local_path and os.path.exists(local_path):
-                logging.info(
-                    "Vision job %s using cached file %s for asset %s",
-                    job.id,
-                    local_path,
-                    asset_id,
-                )
-                cleanup_paths.append(local_path)
-            else:
-                local_path = None
+            if local_path:
+                local_path = str(local_path)
+                if os.path.exists(local_path):
+                    logging.info(
+                        "Vision job %s using cached file %s for asset %s",
+                        job.id,
+                        local_path,
+                        asset_id,
+                    )
+                    _register_cleanup(local_path, temp=False)
+                else:
+                    logging.debug(
+                        "Vision job %s cached path missing for asset %s path=%s",
+                        job.id,
+                        asset_id,
+                        local_path,
+                    )
+                    local_path = None
+            if not local_path and storage_key:
+                storage_download = await self._download_from_storage(key=storage_key)
+                if storage_download:
+                    local_path = str(storage_download.path)
+                    _register_cleanup(local_path, temp=storage_download.cleanup)
+                    logging.info(
+                        "Vision job %s fetched asset %s from storage key=%s path=%s cleanup=%s",
+                        job.id,
+                        asset_id,
+                        storage_key,
+                        local_path,
+                        storage_download.cleanup,
+                    )
             if not local_path and not self.dry_run:
                 target_path = self._build_local_file_path(asset_id, file_meta)
                 downloaded_path = await self._download_file(file_id, target_path)
                 if downloaded_path:
                     local_path = str(downloaded_path)
-                    cleanup_paths.append(local_path)
+                    _register_cleanup(local_path, temp=True)
                     logging.info(
                         "Vision job %s downloaded asset %s to %s",
                         job.id,

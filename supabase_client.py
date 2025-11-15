@@ -136,3 +136,23 @@ class SupabaseClient:
             raise RuntimeError("Supabase client is disabled")
         normalized_key = key.lstrip("/")
         return f"{self._api_base}/storage/v1/object/public/{bucket}/{normalized_key}"
+
+    async def delete_object(self, *, bucket: str, key: str) -> None:
+        if not self._client or not self._storage_base:
+            raise RuntimeError("Supabase client is disabled")
+        normalized_key = key.lstrip("/")
+        url = f"{self._storage_base}/object/{bucket}/{normalized_key}"
+        try:
+            response = await self._client.delete(url)
+        except httpx.HTTPError as exc:
+            logging.warning("Supabase delete failed bucket=%s key=%s error=%s", bucket, normalized_key, exc)
+            return
+        if response.status_code not in (200, 204):
+            message = response.text.strip() or response.reason_phrase or "delete_failed"
+            logging.warning(
+                "Supabase delete failed bucket=%s key=%s status=%s message=%s",
+                bucket,
+                normalized_key,
+                response.status_code,
+                message,
+            )

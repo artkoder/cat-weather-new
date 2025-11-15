@@ -1679,6 +1679,115 @@ async def test_process_upload_job_vision_failure_sets_failed_status(
 
 
 @pytest.mark.asyncio
+async def test_mobile_upload_file_lifecycle_until_vision_cleanup(tmp_path: Path) -> None:
+    file_key = "mobile-key"
+    image_path = create_sample_image(tmp_path / "mobile.jpg")
+
+    db_path = tmp_path / "mobile.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    apply_migrations(conn)
+    conn.execute("DELETE FROM asset_channel")
+    conn.execute("INSERT INTO asset_channel (channel_id) VALUES (?)", (-40001,))
+    conn.execute("DELETE FROM recognition_channel")
+    conn.execute("INSERT INTO recognition_channel (channel_id) VALUES (?)", (-50001,))
+    conn.commit()
+
+    data = DataAccess(conn)
+    storage = StorageStub({file_key: image_path})
+    telegram = TelegramStub()
+    metrics = UploadMetricsRecorder()
+    queue = JobQueue(conn)
+    config = UploadsConfig(
+        assets_channel_id=-50001,
+        vision_enabled=False,
+    )
+    register_upload_jobs(
+        queue,
+        conn,
+        storage=storage,
+        data=data,
+        telegram=telegram,
+        metrics=metrics,
+        config=config,
+    )
+
+    upload_id = _prepare_upload(conn, file_key=file_key)
+    process_job = Job(
+        id=200,
+        name="process_upload",
+        payload={"upload_id": upload_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    await queue.handlers["process_upload"](process_job)
+
+    upload_row = conn.execute(
+        "SELECT status, asset_id FROM uploads WHERE id=?",
+        (upload_id,),
+    ).fetchone()
+    assert upload_row is not None
+    assert upload_row["status"] == "done"
+    asset_id = upload_row["asset_id"]
+    assert asset_id
+
+    asset = data.get_asset(asset_id)
+    assert asset is not None
+    local_path = asset.local_path
+    assert local_path
+    local_path_path = Path(local_path)
+    assert local_path_path.exists()
+    assert storage.delete_calls == []
+    assert storage.get_calls == [file_key]
+
+    bot = Bot("vision-test", str(db_path))
+    bot.dry_run = False
+    bot.storage = storage
+    bot.upload_metrics = UploadMetricsRecorder()
+    openai_stub = OpenAIStub()
+    openai_stub.api_key = "stub"
+    bot.openai = openai_stub
+
+    async def _fake_api_request(method: str, payload: dict[str, Any], files: Any | None = None):
+        if method in {"copyMessage", "sendDocument"}:
+            return {"ok": True, "result": {"message_id": 9001}}
+        if method == "deleteMessage":
+            return {"ok": True}
+        return {"ok": True}
+
+    bot.api_request = _fake_api_request  # type: ignore[assignment]
+    bot.api_request_multipart = _fake_api_request  # type: ignore[assignment]
+
+    vision_job = Job(
+        id=201,
+        name="vision",
+        payload={"asset_id": asset_id, "tz_offset": "+00:00"},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_vision_locked(vision_job)
+
+    updated_asset = bot.data.get_asset(asset_id)
+    assert updated_asset is not None
+    assert updated_asset.local_path is None
+    assert storage.delete_calls == [file_key]
+    assert not local_path_path.exists()
+    assert storage.get_calls == [file_key]
+
+    bot.db.close()
+    conn.close()
+
+
+@pytest.mark.asyncio
 async def test_process_upload_job_publish_failure_sets_failed_status(
     tmp_path: Path,
 ) -> None:

@@ -6354,7 +6354,7 @@ class Bot:
                         downloaded_path = await self._download_file(file_id, target_path)
                         if downloaded_path:
                             debug_path = str(downloaded_path)
-                            cleanup_paths.append(debug_path)
+                            _register_cleanup(debug_path, temp=True)
                     if debug_path and os.path.exists(debug_path):
                         exif_payload = self._extract_exif_full(debug_path)
                         exif_json = json.dumps(exif_payload, ensure_ascii=False, indent=2)
@@ -6403,9 +6403,15 @@ class Bot:
                         asset_id,
                         delete_resp,
                     )
+            vision_success = True
         finally:
-            for path in cleanup_paths:
+            cleanup_targets: set[str] = set()
+            cleanup_targets.update(temp_cleanup_paths)
+            cleanup_targets.update(final_cleanup_paths)
+            for path in cleanup_targets:
                 self._remove_file(path)
+            if vision_success and storage_cleanup_key:
+                await self._delete_storage_entry(key=storage_cleanup_key)
             duration = (datetime.utcnow() - start_time).total_seconds()
             logging.info(
                 "Vision job %s for asset %s completed in %.2fs",
@@ -19227,6 +19233,7 @@ def create_app() -> web.Application:
     )
 
     storage = create_storage_from_env(supabase=bot.supabase)
+    bot.storage = storage
     upload_metrics = UploadMetricsRecorder(emitter=LoggingMetricsEmitter())
     bot.upload_metrics = upload_metrics
     app["upload_metrics"] = upload_metrics

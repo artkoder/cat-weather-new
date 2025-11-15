@@ -145,7 +145,12 @@ class SupabaseClient:
         try:
             response = await self._client.delete(url)
         except httpx.HTTPError as exc:
-            logging.warning("Supabase delete failed bucket=%s key=%s error=%s", bucket, normalized_key, exc)
+            logging.warning(
+                "Supabase delete failed bucket=%s key=%s error=%s",
+                bucket,
+                normalized_key,
+                exc,
+            )
             return
         if response.status_code not in (200, 204):
             message = response.text.strip() or response.reason_phrase or "delete_failed"

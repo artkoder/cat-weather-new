@@ -104,7 +104,7 @@ async def test_purge_sea_jobs_keeps_canonical_by_default(tmp_path):
     assert len(messages) == 2
     assert "Сохраняем 1 актуальную задачу" in messages[1]
     assert f"#{canonical_id}" in messages[1]
-    assert f"Удалено 1 задач(и)." in messages[1]
+    assert "Удалено 1 задач(и)." in messages[1]
     remaining = bot.db.execute(
         "SELECT id FROM jobs_queue WHERE name='publish_rubric' ORDER BY id"
     ).fetchall()

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO
+import contextlib
 
 import piexif
 from PIL import Image
@@ -105,6 +106,7 @@ class StorageStub:
     def __init__(self, mapping: dict[str, Path]) -> None:
         self.mapping = mapping
         self.get_calls: list[str] = []
+        self.delete_calls: list[str] = []
 
     async def put_stream(
         self, *, key: str, stream, content_type: str
@@ -117,6 +119,13 @@ class StorageStub:
             return self.mapping[key].as_uri()
         except KeyError as exc:  # pragma: no cover - defensive
             raise FileNotFoundError(key) from exc
+
+    async def delete(self, *, key: str) -> None:
+        self.delete_calls.append(key)
+        path = self.mapping.get(key)
+        if path:
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
 
 
 class TelegramStub:

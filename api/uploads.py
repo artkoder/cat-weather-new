@@ -730,6 +730,19 @@ def register_upload_jobs(
                                     asset_id,
                                     saved_asset_id,
                                 )
+                            local_path_value: str | None = None
+                            if asset_id and download and download.path.exists():
+                                local_path_value = str(download.path)
+                                data.update_asset(asset_id, local_path=local_path_value)
+                                logging.info(
+                                    "UPLOAD asset local-path asset=%s key=%s path=%s source=%s",
+                                    asset_id,
+                                    file_ref,
+                                    local_path_value,
+                                    "remote_cache" if download.cleanup else "local_storage",
+                                )
+                                if download.cleanup:
+                                    download.cleanup = False
                             jobs.enqueue("ingest", {"asset_id": asset_id}, dedupe=True)
                             if (
                                 cleanup_local_after_publish
@@ -747,9 +760,12 @@ def register_upload_jobs(
                         set_upload_status(conn, id=upload_id, status="done")
                         record_upload_status_change()
                         conn.commit()
-                        if should_cleanup_local_download and download and download.path.exists():
-                            with contextlib.suppress(Exception):
-                                download.path.unlink()
+                        if should_cleanup_local_download:
+                            logging.info(
+                                "UPLOAD local cleanup deferred asset=%s path=%s",
+                                asset_id,
+                                local_path_value,
+                            )
                         if upload_source and upload_source.lower() == "mobile":
                             record_mobile_photo_ingested()
                         logging.info("UPLOAD job done upload=%s", upload_id)

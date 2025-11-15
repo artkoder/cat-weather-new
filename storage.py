@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -20,6 +21,8 @@ class Storage(Protocol):
     ) -> str: ...
 
     async def get_url(self, *, key: str) -> str: ...
+
+    async def delete(self, *, key: str) -> None: ...
 
 
 class LocalStorage:
@@ -49,6 +52,12 @@ class LocalStorage:
         path = self._base / normalized_key
         return path.as_uri()
 
+    async def delete(self, *, key: str) -> None:
+        normalized_key = key.lstrip("/")
+        path = self._base / normalized_key
+        with contextlib.suppress(FileNotFoundError, OSError):
+            path.unlink()
+
 
 @dataclass
 class SupabaseStorage:
@@ -74,6 +83,17 @@ class SupabaseStorage:
     async def get_url(self, *, key: str) -> str:
         normalized_key = key.lstrip("/")
         return self.client.public_url(bucket=self.bucket, key=normalized_key)
+
+    async def delete(self, *, key: str) -> None:
+        normalized_key = key.lstrip("/")
+        try:
+            await self.client.delete_object(bucket=self.bucket, key=normalized_key)
+        except Exception:
+            logging.exception(
+                "UPLOAD storage-delete failed bucket=%s key=%s",
+                self.bucket,
+                normalized_key,
+            )
 
 
 def create_storage_from_env(

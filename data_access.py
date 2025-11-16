@@ -3285,9 +3285,10 @@ class DataAccess:
 
     def delete_future_rubric_jobs(self, rubric_code: str, include_manual: bool = False) -> int:
         """
-        Delete future scheduled publish_rubric jobs for the given rubric_code.
+        Delete future scheduled jobs for the given rubric_code.
 
         Future here means jobs that are not running or finished: status IN ('queued', 'delayed').
+        Matching is done via payload.rubric_code so publish/export and similar rubric jobs are purged.
         By default, do NOT delete manual/test publications (payload.schedule_key in ['manual', 'manual-test']).
         Return number of deleted rows.
         """
@@ -3300,8 +3301,7 @@ class DataAccess:
             cur = self.conn.execute(
                 """
                 DELETE FROM jobs_queue
-                WHERE name = 'publish_rubric'
-                  AND status IN ('queued','delayed')
+                WHERE status IN ('queued','delayed')
                   AND json_extract(payload, '$.rubric_code') = :rubric_code
                   AND (
                       :include_manual = 1

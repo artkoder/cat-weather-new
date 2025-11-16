@@ -16314,70 +16314,141 @@ class Bot:
             [str(row["id"]) for row in rows],
         )
 
-    async def _send_sea_inventory_report(
-        self, is_prod: bool, initiator_id: int | None = None
-    ) -> None:
-        """Send sea assets inventory breakdown to operator chat."""
-        use_sea_assets = self._database_has_table_or_view("sea_assets")
-        if use_sea_assets:
-            total_row = self.db.execute("SELECT COUNT(*) AS cnt FROM sea_assets").fetchone()
-            sky_rows = self.db.execute(
-                """
-                SELECT sky_bucket, COUNT(*) AS cnt
-                FROM sea_assets
-                WHERE sky_bucket IS NOT NULL
-                GROUP BY sky_bucket
-                """
-            ).fetchall()
-            wave_rows = self.db.execute(
-                """
-                SELECT wave_score_0_10 AS wave_score, COUNT(*) AS cnt
-                FROM sea_assets
-                WHERE wave_score_0_10 IS NOT NULL
-                GROUP BY wave_score_0_10
-                ORDER BY wave_score_0_10
-                """
-            ).fetchall()
+    def _map_sky_label_to_bucket(self, value: Any) -> str | None:
+        """Normalize various sky descriptors to canonical sea inventory buckets."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        normalized = text.lower().replace(" ", "_").replace("-", "_")
+        if ":" in normalized:
+            normalized = normalized.split(":")[-1]
+        stripped = normalized
+        for marker in ("night", "sunset", "dusk", "evening", "sunrise", "dawn", "morning", "day"):
+            stripped = stripped.replace(f"{marker}_", "").replace(f"_{marker}", "")
+        mapping = {
+            "clear": "clear",
+            "clear_sky": "clear",
+            "sunny": "clear",
+            "day_clear": "clear",
+            "day_sunny": "clear",
+            "evening_clear": "clear",
+            "evening_sunny": "clear",
+            "night_clear": "clear",
+            "mostly_clear": "mostly_clear",
+            "mostly_sunny": "mostly_clear",
+            "partly_clear": "mostly_clear",
+            "partly_cloudy": "partly_cloudy",
+            "partly_sunny": "partly_cloudy",
+            "scattered_clouds": "partly_cloudy",
+            "few_clouds": "partly_cloudy",
+            "twilight": "partly_cloudy",
+            "sunset": "partly_cloudy",
+            "broken_clouds": "mostly_cloudy",
+            "mostly_cloudy": "mostly_cloudy",
+            "cloudy": "mostly_cloudy",
+            "overcast": "overcast",
+            "rain": "overcast",
+            "rainy": "overcast",
+            "snow": "overcast",
+            "fog": "overcast",
+            "mist": "overcast",
+            "storm": "overcast",
+            "stormy": "overcast",
+            "пасмурно": "overcast",
+            "облачно": "mostly_cloudy",
+            "переменная_облачность": "partly_cloudy",
+            "переменнаяоблачность": "partly_cloudy",
+            "солнечно": "clear",
+            "ясно": "clear",
+        }
+        for candidate in (normalized, stripped):
+            bucket = mapping.get(candidate)
+            if bucket:
+                return bucket
+            if candidate.endswith("_sky"):
+                bucket = mapping.get(candidate[:-4])
+                if bucket:
+                    return bucket
+        return None
+
+    def _resolve_inventory_sky_bucket(self, row: sqlite3.Row) -> str:
+        """Resolve the canonical sky bucket for an inventory row."""
+        cloud_pct = self._safe_float(row["cloud_cover_pct"])
+        if cloud_pct is not None:
+            bucket = bucket_clouds(cloud_pct)
+            if bucket:
+                return bucket
+        for key in (
+            "vision_sky_bucket",
+            "sky_code",
+            "weather_sky_bucket",
+            "legacy_sky_bucket",
+            "legacy_sky_bucket_direct",
+            "photo_sky",
+            "weather_image",
+            "photo_weather",
+            "photo_weather_display",
+        ):
+            bucket = self._map_sky_label_to_bucket(row[key])
+            if bucket:
+                return bucket
+        return "partly_cloudy"
+
+    def _compute_sea_inventory_stats(self) -> tuple[int, dict[str, int], dict[int, int]]:
+        """Aggregate sea inventory statistics by sky bucket and wave score."""
+        sea_rubric = self.data.get_rubric_by_code("sea")
+        rubric_id: int | None
+        if sea_rubric and hasattr(sea_rubric, "id") and isinstance(sea_rubric.id, int):
+            rubric_id = sea_rubric.id
         else:
-            total_row = self.db.execute(
-                """
-                SELECT COUNT(*) AS cnt
-                FROM assets a
-                WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
-                """
-            ).fetchone()
-            sky_rows = self.db.execute(
-                """
-                SELECT a.vision_sky_bucket AS sky_bucket, COUNT(*) AS cnt
-                FROM assets a
-                WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
-                  AND a.vision_sky_bucket IS NOT NULL
-                GROUP BY a.vision_sky_bucket
-                """
-            ).fetchall()
-            wave_rows = self.db.execute(
-                """
-                SELECT a.wave_score_0_10 AS wave_score, COUNT(*) AS cnt
-                FROM assets a
-                WHERE LOWER(json_extract(a.payload_json, '$.vision_category')) = 'sea'
-                  AND a.wave_score_0_10 IS NOT NULL
-                GROUP BY a.wave_score_0_10
-                ORDER BY a.wave_score_0_10
-                """
-            ).fetchall()
+            rubric_id = None
 
-        total_count = self._safe_int(total_row["cnt"]) if total_row else 0
+        where_clauses = [
+            "LOWER(COALESCE(json_extract(a.payload_json, '$.vision_category'), '')) = 'sea'"
+        ]
+        params: list[Any] = []
+        if rubric_id is not None:
+            where_clauses.append("json_extract(a.payload_json, '$.rubric_id') = ?")
+            params.append(rubric_id)
 
-        sky_counts: dict[str, int] = {}
-        for row in sky_rows:
-            sky_value = row["sky_bucket"]
-            if sky_value is None:
-                continue
-            sky_counts[str(sky_value)] = self._safe_int(row["cnt"])
-
+        sky_order = ("clear", "mostly_clear", "partly_cloudy", "mostly_cloudy", "overcast")
+        sky_counts: dict[str, int] = {bucket: 0 for bucket in sky_order}
         wave_counts: dict[int, int] = {}
-        for row in wave_rows:
-            raw_wave = row["wave_score"]
+
+        query = f"""
+            SELECT
+                a.wave_score_0_10 AS wave_score_0_10,
+                a.vision_sky_bucket AS vision_sky_bucket,
+                a.sky_code AS sky_code,
+                json_extract(v.result_json, '$.weather.sky.cloud_cover_pct') AS cloud_cover_pct,
+                json_extract(v.result_json, '$.weather.sky.bucket') AS weather_sky_bucket,
+                json_extract(v.result_json, '$.sky.bucket') AS legacy_sky_bucket,
+                json_extract(v.result_json, '$.sky_bucket') AS legacy_sky_bucket_direct,
+                json_extract(v.result_json, '$.photo_sky') AS photo_sky,
+                json_extract(v.result_json, '$.photo_weather') AS photo_weather,
+                json_extract(v.result_json, '$.photo_weather_display') AS photo_weather_display,
+                json_extract(v.result_json, '$.weather_image') AS weather_image
+            FROM assets a
+            LEFT JOIN vision_results v ON v.asset_id = a.id
+             AND v.id = (
+                 SELECT id FROM vision_results
+                 WHERE asset_id = a.id
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1
+             )
+            WHERE {' AND '.join(where_clauses)}
+        """
+        rows = self.db.execute(query, params).fetchall()
+        total_count = len(rows)
+        for row in rows:
+            bucket = self._resolve_inventory_sky_bucket(row)
+            if bucket not in sky_counts:
+                sky_counts[bucket] = 0
+            sky_counts[bucket] += 1
+
+            raw_wave = row["wave_score_0_10"]
             if raw_wave is None:
                 continue
             try:
@@ -16385,10 +16456,28 @@ class Bot:
             except (TypeError, ValueError):
                 logging.debug("SEA_INVENTORY skip_wave_value value=%s", raw_wave)
                 continue
-            wave_counts[wave_key] = self._safe_int(row["cnt"])
+            wave_key = max(0, min(10, wave_key))
+            wave_counts[wave_key] = wave_counts.get(wave_key, 0) + 1
+
+        for bucket in sky_order:
+            sky_counts.setdefault(bucket, 0)
+
+        return total_count, sky_counts, wave_counts
+
+    async def _send_sea_inventory_report(
+        self, is_prod: bool, initiator_id: int | None = None
+    ) -> None:
+        """Send sea assets inventory breakdown to operator chat."""
+        total_count, sky_counts, wave_counts = self._compute_sea_inventory_stats()
 
         logging.info("SEA_INVENTORY_SKY_COUNTS raw=%s", dict(sky_counts))
         logging.info("SEA_INVENTORY_WAVE_COUNTS raw=%s", dict(wave_counts))
+
+        computed_total = sum(sky_counts.values())
+        if computed_total != total_count:
+            logging.warning(
+                "SEA_INVENTORY bucket_total_mismatch expected=%s actual=%s", total_count, computed_total
+            )
 
         logging.info(
             "SEA_INVENTORY_REPORT prod=%d total=%d sky_buckets=%s wave_scores=%s",
@@ -16398,7 +16487,6 @@ class Bot:
             dict(wave_counts),
         )
 
-        # Build report text
         SKY_LABELS = {
             "clear": "Солнечно",
             "mostly_clear": "Преимущественно ясно",
@@ -16406,13 +16494,15 @@ class Bot:
             "mostly_cloudy": "Преимущественно облачно",
             "overcast": "Пасмурно",
         }
+        SKY_ORDER = ("clear", "mostly_clear", "partly_cloudy", "mostly_cloudy", "overcast")
 
         report_lines = [
             f"🗂 Остатки фото «Море»: {total_count}\n",
             "Небо",
         ]
 
-        for sky, label in SKY_LABELS.items():
+        for sky in SKY_ORDER:
+            label = SKY_LABELS[sky]
             count = sky_counts.get(sky, 0)
             warning = " ⚠️ мало" if count < 10 else ""
             report_lines.append(f"• {label}: {count}{warning}")
@@ -16422,7 +16512,7 @@ class Bot:
         for wave_score in range(11):
             count = wave_counts.get(wave_score, 0)
             if count == 0:
-                continue  # Skip unreported wave scores
+                continue
             warning = " ⚠️ мало" if count < 10 else ""
             if wave_score == 0:
                 report_lines.append(f"• {wave_score}/10 (штиль): {count}{warning}")
@@ -16431,7 +16521,6 @@ class Bot:
 
         report_text = "\n".join(report_lines)
 
-        # Send to operator chat (send to initiator if provided, otherwise send to all superadmins)
         target_ids = [initiator_id] if initiator_id else self.get_superadmin_ids()
 
         for target_id in target_ids:
@@ -16447,7 +16536,7 @@ class Bot:
                     "SEA_INVENTORY_SENT prod=%d total=%d sky_buckets=%d wave_scores=%d target_id=%d",
                     int(is_prod),
                     total_count,
-                    len(sky_counts),
+                    sum(1 for value in sky_counts.values() if value > 0),
                     len(wave_counts),
                     target_id,
                 )

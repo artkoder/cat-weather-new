@@ -492,6 +492,59 @@ async def test_rubric_scheduler_respects_timezone(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_update_rubric_schedule_purges_existing_jobs(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    try:
+        config = {
+            "enabled": True,
+            "channel_id": -900,
+            "schedules": [{"time": "06:00", "enabled": True}],
+        }
+        _insert_rubric(bot, "sea", config)
+        reference = datetime(2024, 3, 1, 4, 0, 0)
+        await bot.process_rubric_schedule(reference=reference)
+        initial = bot.db.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM jobs_queue
+            WHERE name='publish_rubric'
+              AND json_extract(payload, '$.rubric_code')='sea'
+            """
+        ).fetchone()
+        assert initial is not None
+        assert initial["cnt"] == 1
+
+        bot.data.update_rubric_schedule("sea", 0, {"time": "09:00", "enabled": True})
+
+        after_update = bot.db.execute(
+            """
+            SELECT COUNT(*) AS cnt
+            FROM jobs_queue
+            WHERE name='publish_rubric'
+              AND json_extract(payload, '$.rubric_code')='sea'
+            """
+        ).fetchone()
+        assert after_update is not None
+        assert after_update["cnt"] == 0
+
+        await bot.process_rubric_schedule(reference=reference)
+
+        rows = bot.db.execute(
+            """
+            SELECT payload
+            FROM jobs_queue
+            WHERE name='publish_rubric'
+              AND json_extract(payload, '$.rubric_code')='sea'
+            """
+        ).fetchall()
+        assert len(rows) == 1
+        payload = json.loads(rows[0]["payload"])
+        assert payload["schedule_key"].endswith("09:00")
+    finally:
+        await bot.close()
+
+
+@pytest.mark.asyncio
 async def test_enqueue_rubric_manual_and_test_channels(tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
     config = {

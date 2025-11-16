@@ -3172,6 +3172,7 @@ class DataAccess:
         schedules = self._normalize_schedules(config)
         schedules.append(self._prepare_schedule_payload(schedule))
         self.save_rubric_config(code, config)
+        self.delete_future_rubric_jobs(code)
         return schedules
 
     def update_rubric_schedule(
@@ -3186,6 +3187,7 @@ class DataAccess:
             raise IndexError("Schedule index out of range")
         schedules[index] = self._prepare_schedule_payload(schedule)
         self.save_rubric_config(code, config)
+        self.delete_future_rubric_jobs(code)
         return schedules
 
     def remove_rubric_schedule(self, code: str, index: int) -> bool:
@@ -3202,6 +3204,7 @@ class DataAccess:
                 (code, key),
             )
             self.conn.commit()
+        self.delete_future_rubric_jobs(code)
         return True
 
     def delete_rubric(self, code: str) -> bool:
@@ -3279,6 +3282,46 @@ class DataAccess:
         self.conn.commit()
 
     # --- Job queue helpers -------------------------------------------------
+
+    def delete_future_rubric_jobs(self, rubric_code: str, include_manual: bool = False) -> int:
+        """
+        Delete future scheduled publish_rubric jobs for the given rubric_code.
+
+        Future here means jobs that are not running or finished: status IN ('queued', 'delayed').
+        By default, do NOT delete manual/test publications (payload.schedule_key in ['manual', 'manual-test']).
+        Return number of deleted rows.
+        """
+
+        params = {
+            "rubric_code": rubric_code,
+            "include_manual": 1 if include_manual else 0,
+        }
+        try:
+            cur = self.conn.execute(
+                """
+                DELETE FROM jobs_queue
+                WHERE name = 'publish_rubric'
+                  AND status IN ('queued','delayed')
+                  AND json_extract(payload, '$.rubric_code') = :rubric_code
+                  AND (
+                      :include_manual = 1
+                      OR COALESCE(
+                          json_extract(payload, '$.schedule_key'),
+                          ''
+                      ) NOT IN (
+                          'manual',
+                          'manual-test'
+                      )
+                  )
+                """,
+                params,
+            )
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return 0
+            raise
+        self.conn.commit()
+        return cur.rowcount
 
     def enqueue_job(
         self,

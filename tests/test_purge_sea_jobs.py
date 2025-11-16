@@ -94,7 +94,10 @@ async def test_purge_sea_jobs_deletes_future_jobs(tmp_path):
         message = type(
             "Message",
             (),
-            {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": superadmin_id})()},
+            {
+                "text": "/purge_sea_jobs",
+                "chat": type("Chat", (), {"id": superadmin_id})(),
+            },
         )()
         await bot.on_message(message)
 
@@ -145,7 +148,10 @@ async def test_purge_sea_jobs_requires_superadmin(tmp_path):
         message = type(
             "Message",
             (),
-            {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": regular_user_id})()},
+            {
+                "text": "/purge_sea_jobs",
+                "chat": type("Chat", (), {"id": regular_user_id})(),
+            },
         )()
         await bot.on_message(message)
 

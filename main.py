@@ -6628,6 +6628,54 @@ class Bot:
 
         return ok
 
+    async def on_message(self, message: Any) -> None:
+        """Compatibility wrapper that delegates to handle_message."""
+
+        def _to_plain(value: Any) -> Any:
+            if isinstance(value, Mapping):
+                return {key: _to_plain(val) for key, val in value.items()}
+            if isinstance(value, (list, tuple, set)):
+                return [_to_plain(item) for item in value]
+            if hasattr(value, "__dict__"):
+                return {
+                    key: _to_plain(val)
+                    for key, val in vars(value).items()
+                    if not key.startswith("_")
+                }
+            return value
+
+        payload_raw = _to_plain(message)
+        if isinstance(payload_raw, Mapping):
+            payload: dict[str, Any] = dict(payload_raw)
+        else:
+            payload = {"text": payload_raw}
+
+        chat_payload = payload.get("chat")
+        if not isinstance(chat_payload, Mapping):
+            chat_payload = _to_plain(chat_payload)
+            if isinstance(chat_payload, Mapping):
+                payload["chat"] = chat_payload
+
+        sender_payload = payload.get("from")
+        if not isinstance(sender_payload, Mapping):
+            sender_payload = _to_plain(sender_payload)
+            if isinstance(sender_payload, Mapping):
+                payload["from"] = sender_payload
+
+        if "from" not in payload:
+            chat_dict = payload.get("chat")
+            user_id = None
+            username = None
+            if isinstance(chat_dict, Mapping):
+                user_id = chat_dict.get("id")
+                username = chat_dict.get("username")
+            if user_id is not None:
+                payload["from"] = {"id": user_id}
+                if username:
+                    payload["from"]["username"] = username
+
+        await self.handle_message(payload)
+
     async def handle_message(self, message: Any) -> None:
         global TZ_OFFSET
 

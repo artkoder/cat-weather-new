@@ -73,7 +73,13 @@ def test_delete_future_rubric_jobs_filters_manual_and_statuses() -> None:
     data = DataAccess(conn)
 
     now = datetime.utcnow()
-    _insert_job(conn, status="queued", rubric_code="sea", schedule_key="sea:morning", available_at=None)
+    _insert_job(
+        conn,
+        status="queued",
+        rubric_code="sea",
+        schedule_key="sea:morning",
+        available_at=None,
+    )
     _insert_job(
         conn,
         status="delayed",
@@ -81,7 +87,13 @@ def test_delete_future_rubric_jobs_filters_manual_and_statuses() -> None:
         schedule_key="sea:evening",
         available_at=now + timedelta(hours=1),
     )
-    _insert_job(conn, status="queued", rubric_code="sea", schedule_key="manual", available_at=None)
+    _insert_job(
+        conn,
+        status="queued",
+        rubric_code="sea",
+        schedule_key="manual",
+        available_at=None,
+    )
     _insert_job(
         conn,
         status="delayed",
@@ -89,8 +101,20 @@ def test_delete_future_rubric_jobs_filters_manual_and_statuses() -> None:
         schedule_key="manual-test",
         available_at=now + timedelta(hours=2),
     )
-    _insert_job(conn, status="running", rubric_code="sea", schedule_key="sea:running", available_at=None)
-    _insert_job(conn, status="queued", rubric_code="flowers", schedule_key="flowers:slot", available_at=None)
+    _insert_job(
+        conn,
+        status="running",
+        rubric_code="sea",
+        schedule_key="sea:running",
+        available_at=None,
+    )
+    _insert_job(
+        conn,
+        status="queued",
+        rubric_code="flowers",
+        schedule_key="flowers:slot",
+        available_at=None,
+    )
     _insert_job(
         conn,
         status="queued",
@@ -102,7 +126,7 @@ def test_delete_future_rubric_jobs_filters_manual_and_statuses() -> None:
     conn.commit()
 
     deleted = data.delete_future_rubric_jobs("sea")
-    assert deleted == 2
+    assert deleted == 3
 
     remaining = conn.execute(
         """

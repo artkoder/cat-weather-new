@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 from pathlib import Path
@@ -9,7 +8,6 @@ import pytest
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import main as main_module
-from tests.fixtures.sea import create_sea_asset
 
 
 @pytest.mark.asyncio
@@ -46,10 +44,8 @@ async def test_sea_inventory_report_counts_correctly(monkeypatch, tmp_path):
 
     bot = main_module.Bot(token="dummy", db_path=str(db_path))
 
-    # Get the sea rubric (created by default in Bot.__init__)
     rubric_id = bot.db.execute("SELECT id FROM rubrics WHERE code='sea'").fetchone()["id"]
 
-    # Create test sea assets with different sky buckets and wave scores
     assets_data = [
         {"sky": "clear", "wave": 0},
         {"sky": "clear", "wave": 1},
@@ -82,7 +78,6 @@ async def test_sea_inventory_report_counts_correctly(monkeypatch, tmp_path):
             rubric_id=rubric_id,
             wave_score_0_10=asset_data["wave"],
         )
-        # Update with vision category and sky bucket
         vision_payload = {
             "is_sea": True,
             "sea_wave_score": asset_data["wave"],
@@ -97,15 +92,21 @@ async def test_sea_inventory_report_counts_correctly(monkeypatch, tmp_path):
 
     bot.db.commit()
 
-    # Call the inventory report function
+    total, sky_counts, _ = bot._compute_sea_inventory_stats()
+    assert total == len(assets_data)
+    assert sum(sky_counts.values()) == total
+    assert sky_counts["clear"] == 2
+    assert sky_counts["mostly_clear"] == 1
+    assert sky_counts["partly_cloudy"] == 2
+    assert sky_counts["mostly_cloudy"] == 1
+    assert sky_counts["overcast"] == 1
+
     await bot._send_sea_inventory_report(is_prod=True, initiator_id=12345)
 
-    # Verify a message was sent
     assert len(messages_sent) == 1
     message = messages_sent[0]
     assert message["chat_id"] == 12345
 
-    # Verify the report contains correct data
     report_text = message["text"]
     assert "🗂 Остатки фото «Море»: 7" in report_text
     assert "Солнечно: 2" in report_text
@@ -114,7 +115,6 @@ async def test_sea_inventory_report_counts_correctly(monkeypatch, tmp_path):
     assert "Преимущественно облачно: 1" in report_text
     assert "Пасмурно: 1" in report_text
 
-    # Verify wave scores
     assert "0/10 (штиль): 1" in report_text
     assert "1/10: 1" in report_text
     assert "2/10: 1" in report_text
@@ -157,14 +157,10 @@ async def test_sea_inventory_report_zero_when_no_assets(monkeypatch, tmp_path):
 
     bot = main_module.Bot(token="dummy", db_path=str(db_path))
 
-    # Call the inventory report function without any assets
     await bot._send_sea_inventory_report(is_prod=True, initiator_id=12345)
 
-    # Verify a message was sent
     assert len(messages_sent) == 1
     message = messages_sent[0]
-
-    # Verify the report shows zero total
     report_text = message["text"]
     assert "🗂 Остатки фото «Море»: 0" in report_text
     assert "Солнечно: 0" in report_text
@@ -204,12 +200,13 @@ async def test_sea_inventory_report_ignores_non_sea_assets(monkeypatch, tmp_path
 
     bot = main_module.Bot(token="dummy", db_path=str(db_path))
 
-    # Get the flowers rubric (created by default in Bot.__init__)
-    rubric_id = bot.db.execute("SELECT id FROM rubrics WHERE code='flowers'").fetchone()["id"]
+    sea_rubric_id = bot.db.execute("SELECT id FROM rubrics WHERE code='sea'").fetchone()["id"]
+    flowers_rubric_id = (
+        bot.db.execute("SELECT id FROM rubrics WHERE code='flowers'").fetchone()["id"]
+    )
 
     channel_id = -1001234567890
 
-    # Create sea asset
     file_meta = {
         "file_id": "file_1",
         "file_unique_id": "unique_1",
@@ -227,7 +224,7 @@ async def test_sea_inventory_report_ignores_non_sea_assets(monkeypatch, tmp_path
         caption=None,
         kind="photo",
         file_meta=file_meta,
-        rubric_id=rubric_id,
+        rubric_id=sea_rubric_id,
         wave_score_0_10=0,
     )
     vision_payload = {
@@ -242,7 +239,6 @@ async def test_sea_inventory_report_ignores_non_sea_assets(monkeypatch, tmp_path
         vision_sky_bucket="clear",
     )
 
-    # Create flowers asset (should be ignored)
     file_meta = {
         "file_id": "file_2",
         "file_unique_id": "unique_2",
@@ -260,7 +256,7 @@ async def test_sea_inventory_report_ignores_non_sea_assets(monkeypatch, tmp_path
         caption=None,
         kind="photo",
         file_meta=file_meta,
-        rubric_id=rubric_id,
+        rubric_id=flowers_rubric_id,
     )
     vision_payload = {
         "is_flower": True,
@@ -273,10 +269,8 @@ async def test_sea_inventory_report_ignores_non_sea_assets(monkeypatch, tmp_path
 
     bot.db.commit()
 
-    # Call the inventory report function
     await bot._send_sea_inventory_report(is_prod=True, initiator_id=12345)
 
-    # Verify only sea asset is counted
     assert len(messages_sent) == 1
     report_text = messages_sent[0]["text"]
     assert "🗂 Остатки фото «Море»: 1" in report_text
@@ -284,9 +278,9 @@ async def test_sea_inventory_report_ignores_non_sea_assets(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_inventory_sky_counts_nonzero_when_records_exist(monkeypatch, tmp_path):
-    """Ensure inventory pulls sky counts from sea_assets when available."""
-    db_path = tmp_path / "sea_assets_inventory.db"
+async def test_sea_inventory_bucket_mapping_from_cloud_cover(monkeypatch, tmp_path):
+    """Ensure cloud cover values bucket correctly and totals align with counts."""
+    db_path = tmp_path / "sea_inventory_clouds.db"
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy")
     monkeypatch.setenv("WEBHOOK_URL", "https://example.com")
     monkeypatch.setattr(main_module, "DB_PATH", str(db_path))
@@ -317,43 +311,70 @@ async def test_inventory_sky_counts_nonzero_when_records_exist(monkeypatch, tmp_
 
     bot = main_module.Bot(token="dummy", db_path=str(db_path))
 
-    bot.db.execute("DROP TABLE IF EXISTS sea_assets")
-    bot.db.execute(
-        """
-        CREATE TABLE sea_assets (
-            asset_id TEXT PRIMARY KEY,
-            sky_bucket TEXT,
-            wave_score_0_10 REAL
+    sea_rubric_id = bot.db.execute("SELECT id FROM rubrics WHERE code='sea'").fetchone()["id"]
+
+    channel_id = -100555666777
+    cloud_samples = [0, 15, 40, 55, 70, 95]
+    expected_counts = {
+        "clear": 2,
+        "mostly_clear": 1,
+        "partly_cloudy": 1,
+        "mostly_cloudy": 1,
+        "overcast": 1,
+    }
+
+    for idx, cloud_pct in enumerate(cloud_samples, 1):
+        file_meta = {
+            "file_id": f"cloud_file_{idx}",
+            "file_unique_id": f"cloud_unique_{idx}",
+            "file_name": f"cloud_{idx}.jpg",
+            "mime_type": "image/jpeg",
+            "width": 1600,
+            "height": 900,
+        }
+        asset_id = bot.data.save_asset(
+            channel_id,
+            2000 + idx,
+            template=None,
+            hashtags=None,
+            tg_chat_id=channel_id,
+            caption=None,
+            kind="photo",
+            file_meta=file_meta,
+            rubric_id=sea_rubric_id,
+            wave_score_0_10=idx % 10,
         )
-        """
-    )
-    records = [
-        ("asset_clear", "clear", 0),
-        ("asset_mclear", "mostly_clear", 2),
-        ("asset_partly", "partly_cloudy", 3),
-        ("asset_mcloud", "mostly_cloudy", 5),
-        ("asset_overcast", "overcast", 7),
-    ]
-    bot.db.executemany(
-        "INSERT INTO sea_assets (asset_id, sky_bucket, wave_score_0_10) VALUES (?, ?, ?)",
-        records,
-    )
+        vision_payload = {
+            "is_sea": True,
+            "weather": {"sky": {"cloud_cover_pct": cloud_pct}},
+        }
+        bot.data.update_asset(
+            asset_id,
+            vision_category="sea",
+            vision_results=vision_payload,
+        )
+
     bot.db.commit()
+
+    total, sky_counts, _ = bot._compute_sea_inventory_stats()
+    assert total == len(cloud_samples)
+    assert sum(sky_counts.values()) == total
+    for bucket, expected in expected_counts.items():
+        assert sky_counts[bucket] == expected
 
     await bot._send_sea_inventory_report(is_prod=True, initiator_id=98765)
 
     assert len(messages_sent) == 1
-    message = messages_sent[0]
-    assert message["chat_id"] == 98765
-    text = message["text"]
-    assert "🗂 Остатки фото «Море»: 5" in text
-    assert "Солнечно: 1" in text
-    assert "Преимущественно ясно: 1" in text
-    assert "Переменная облачность: 1" in text
-    assert "Преимущественно облачно: 1" in text
-    assert "Пасмурно: 1" in text
-    assert "0/10 (штиль): 1" in text
-    assert "2/10: 1" in text
-    assert "3/10: 1" in text
-    assert "5/10: 1" in text
-    assert "7/10: 1" in text
+    text = messages_sent[0]["text"]
+    assert f"🗂 Остатки фото «Море»: {len(cloud_samples)}" in text
+
+    label_map = {
+        "clear": "Солнечно",
+        "mostly_clear": "Преимущественно ясно",
+        "partly_cloudy": "Переменная облачность",
+        "mostly_cloudy": "Преимущественно облачно",
+        "overcast": "Пасмурно",
+    }
+    for bucket, label in label_map.items():
+        expected = expected_counts.get(bucket, 0)
+        assert f"{label}: {expected}" in text

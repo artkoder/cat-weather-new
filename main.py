@@ -16476,7 +16476,9 @@ class Bot:
         computed_total = sum(sky_counts.values())
         if computed_total != total_count:
             logging.warning(
-                "SEA_INVENTORY bucket_total_mismatch expected=%s actual=%s", total_count, computed_total
+                "SEA_INVENTORY bucket_total_mismatch expected=%s actual=%s",
+                total_count,
+                computed_total,
             )
 
         logging.info(

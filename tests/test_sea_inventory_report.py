@@ -201,9 +201,9 @@ async def test_sea_inventory_report_ignores_non_sea_assets(monkeypatch, tmp_path
     bot = main_module.Bot(token="dummy", db_path=str(db_path))
 
     sea_rubric_id = bot.db.execute("SELECT id FROM rubrics WHERE code='sea'").fetchone()["id"]
-    flowers_rubric_id = (
-        bot.db.execute("SELECT id FROM rubrics WHERE code='flowers'").fetchone()["id"]
-    )
+    flowers_rubric_id = bot.db.execute("SELECT id FROM rubrics WHERE code='flowers'").fetchone()[
+        "id"
+    ]
 
     channel_id = -1001234567890
 

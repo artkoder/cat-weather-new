@@ -6825,7 +6825,7 @@ class Bot:
                     "    — показывает задачи публикации (Europe/Kaliningrad).\n"
                     "  • `/cancel_rubric_jobs rubric=<имя> [window=48h|all] [confirm=true]`\n"
                     "    — удаляет задачи рубрики (нужен confirm=true).\n"
-                    "  • `/purge_sea_jobs [keep=false]` — чистит море, сохраняя актуальную задачу по умолчанию.\n"
+                    "  • `/purge_sea_jobs` — удаляет все плановые задачи моря в очереди.\n"
                 ),
                 (
                     "*Мобильные устройства*\n"
@@ -6866,7 +6866,7 @@ class Bot:
                     "- `/backfill_waves [dry-run]` — заполнить волны/небо из vision_results (используйте dry-run для проверки без изменений).\n"
                     "- `/inv_sea` — остатки фото «Море» по небу и волне.\n"
                     "- `/sea_audit` — проверка и очистка «мёртвых душ» в базе.\n"
-                    "- `/purge_sea_jobs` — очистить все запланированные задачи моря в очереди (только для супер-админов).\n"
+                    "- `/purge_sea_jobs` — удалить плановые задачи моря (только для супер-админов).\n"
                     "- `/audit_assets` — запустить аудит всех таблиц ассетов, проверить наличие файлов в Telegram и удалить несуществующие записи; вывести отчёт с количеством удалённых записей по рубрикам.\n"
                 ),
                 (
@@ -7297,75 +7297,16 @@ class Bot:
             )
             return
 
-        if text.startswith("/purge_sea_jobs") and self.is_superadmin(user_id):
-            await self.api_request(
-                "sendMessage",
-                {"chat_id": user_id, "text": "🔍 Ищу задачи моря..."},
-            )
-            parts = text.split()
-            options = self._parse_command_options(parts[1:])
-            keep_param = (options.get("keep") or "canonical").strip().lower()
-            keep_canonical = keep_param not in {"0", "false", "no", "none", "all"}
-            now = datetime.utcnow()
-            jobs = self._find_rubric_jobs("sea", window_end=None, reference=now)
-            if not jobs:
-                await self.api_request(
-                    "sendMessage",
-                    {"chat_id": user_id, "text": "✓ Задачи моря не найдены."},
-                )
-                logging.info(
-                    "PURGE_SEA_JOBS keep_canonical=%s total=%d deleted=%d kept_ids=%s deleted_ids=%s",
-                    keep_canonical,
-                    0,
-                    0,
-                    [],
-                    [],
-                )
+        if text.startswith("/purge_sea_jobs"):
+            if not self.is_superadmin(user_id):
                 return
-            kept_ids: set[int] = set()
-            if keep_canonical:
-                kept_ids = self._identify_canonical_rubric_jobs("sea", jobs, reference=now)
-            kept_jobs = [job for job in jobs if job.id in kept_ids]
-            to_delete = [job for job in jobs if job.id not in kept_ids]
-            lines = [f"Всего задач моря: {len(jobs)}."]
-            max_rows = 40
-            if kept_jobs:
-                lines.append(f"Сохраняем {len(kept_jobs)} актуальную задачу.")
-                kept_display = kept_jobs[:max_rows]
-                lines.extend(self._format_rubric_job_lines(kept_display, reference=now))
-                if len(kept_jobs) > max_rows:
-                    lines.append(f"… ещё {len(kept_jobs) - max_rows} сохранено без вывода.")
-            elif keep_canonical:
-                lines.append(
-                    "Актуальная задача не найдена — будут удалены все отложенные публикации."
-                )
-            if to_delete:
-                lines.append(f"К удалению: {len(to_delete)}.")
-                delete_display = to_delete[:max_rows]
-                lines.extend(self._format_rubric_job_lines(delete_display, reference=now))
-                if len(to_delete) > max_rows:
-                    lines.append(f"… ещё {len(to_delete) - max_rows} удаляется без вывода.")
-            else:
-                lines.append("Дополнительных задач для удаления не найдено.")
-                if keep_canonical:
-                    lines.append("Добавьте keep=false чтобы удалить и актуальную задачу.")
-            deleted_ids: list[int] = []
-            for job in to_delete:
-                self.data.delete_job(job.id)
-                deleted_ids.append(job.id)
-            lines.append(f"Удалено {len(deleted_ids)} задач(и).")
+            deleted = self.data.delete_future_rubric_jobs("sea")
+            message = f"SEA: удалено плановых задач publish_rubric: {deleted}"
             await self.api_request(
                 "sendMessage",
-                {"chat_id": user_id, "text": "\n".join(lines)},
+                {"chat_id": user_id, "text": message},
             )
-            logging.info(
-                "PURGE_SEA_JOBS keep_canonical=%s total=%d deleted=%d kept_ids=%s deleted_ids=%s",
-                keep_canonical,
-                len(jobs),
-                len(deleted_ids),
-                [job.id for job in kept_jobs],
-                deleted_ids,
-            )
+            logging.info("PURGE_SEA_JOBS deleted=%d", deleted)
             return
 
         if text.startswith("/sea_audit"):
@@ -10094,26 +10035,9 @@ class Bot:
 
     def _delete_future_rubric_jobs(self, rubric_code: str, reason: str) -> int:
         """Delete all future scheduled jobs for a rubric (excluding manual runs)."""
-        now = datetime.utcnow().isoformat()
-        rows = self.db.execute(
-            """
-            SELECT id, payload FROM jobs_queue
-            WHERE name='publish_rubric'
-              AND status IN ('queued', 'delayed')
-              AND json_extract(payload, '$.rubric_code') = ?
-              AND available_at >= ?
-            """,
-            (rubric_code, now),
-        ).fetchall()
-        deleted = 0
-        for row in rows:
-            payload = json.loads(row["payload"]) if row["payload"] else {}
-            schedule_key = payload.get("schedule_key", "")
-            if schedule_key and not schedule_key.startswith("manual"):
-                self.db.execute("DELETE FROM jobs_queue WHERE id=?", (row["id"],))
-                deleted += 1
+
+        deleted = self.data.delete_future_rubric_jobs(rubric_code)
         if deleted > 0:
-            self.db.commit()
             logging.info(
                 "Deleted future rubric jobs: rubric=%s, jobs_cleared=%d, reason=%s",
                 rubric_code,

@@ -1,4 +1,4 @@
-"""Integration tests for rubric purge command behaviour."""
+"""Tests for the /purge_sea_jobs admin command."""
 
 import json
 import os
@@ -12,21 +12,36 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from main import Bot
 
+os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
+
 
 def _insert_rubric_job(
     bot: Bot,
     *,
-    available_at: datetime | None,
     status: str,
-    payload: dict[str, Any],
-) -> int:
-    """Insert a publish_rubric job with the provided payload."""
-
+    schedule_key: str | None,
+    rubric_code: str = "sea",
+    available_at: datetime | None = None,
+) -> None:
     now_iso = datetime.utcnow().isoformat()
-    cursor = bot.db.execute(
+    payload: dict[str, Any] = {
+        "rubric": rubric_code,
+        "rubric_code": rubric_code,
+    }
+    if schedule_key is not None:
+        payload["schedule_key"] = schedule_key
+    bot.db.execute(
         """
-        INSERT INTO jobs_queue (name, payload, status, attempts, available_at, last_error, created_at, updated_at)
-        VALUES (?, ?, ?, 0, ?, NULL, ?, ?)
+        INSERT INTO jobs_queue (
+            name,
+            payload,
+            status,
+            attempts,
+            available_at,
+            last_error,
+            created_at,
+            updated_at
+        ) VALUES (?, ?, ?, 0, ?, NULL, ?, ?)
         """,
         (
             "publish_rubric",
@@ -37,210 +52,103 @@ def _insert_rubric_job(
             now_iso,
         ),
     )
-    bot.db.commit()
-    return int(cursor.lastrowid)
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
-async def test_purge_sea_jobs_keeps_canonical_by_default(tmp_path):
-    """By default the purge keeps the canonical sea job and removes stale ones."""
-
+async def test_purge_sea_jobs_deletes_future_jobs(tmp_path):
     bot = Bot("dummy", str(tmp_path / "test_bot.db"))
-
-    superadmin_id = 12345
-    bot.db.execute(
-        "INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)",
-        (superadmin_id, "superadmin", "+00:00"),
-    )
-    bot.db.commit()
-
-    now = datetime.utcnow()
-    canonical_time = now + timedelta(hours=3)
-    stale_time = now - timedelta(hours=2)
-
-    canonical_payload = {
-        "rubric": "sea",
-        "rubric_code": "sea",
-        "schedule_key": "sea:primary",
-        "scheduled_at": canonical_time.isoformat(),
-    }
-    stale_payload = {
-        "rubric": "sea",
-        "rubric_code": "sea",
-        "schedule_key": "legacy",
-        "scheduled_at": (stale_time + timedelta(minutes=15)).isoformat(),
-    }
-
-    canonical_id = _insert_rubric_job(
-        bot,
-        available_at=canonical_time,
-        status="delayed",
-        payload=canonical_payload,
-    )
-    stale_id = _insert_rubric_job(
-        bot,
-        available_at=stale_time,
-        status="delayed",
-        payload=stale_payload,
-    )
-
-    messages: list[str] = []
-
-    async def mock_api_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
-        if method == "sendMessage":
-            messages.append(params.get("text", ""))
-        return {"ok": True, "result": {}}
-
-    bot.api_request = mock_api_request
-
-    message = type(
-        "Message",
-        (),
-        {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": superadmin_id})()},
-    )()
-    await bot.on_message(message)
-
-    assert len(messages) == 2
-    assert "Сохраняем 1 актуальную задачу" in messages[1]
-    assert f"#{canonical_id}" in messages[1]
-    assert "Удалено 1 задач(и)." in messages[1]
-    remaining = bot.db.execute(
-        "SELECT id FROM jobs_queue WHERE name='publish_rubric' ORDER BY id"
-    ).fetchall()
-    assert [row["id"] for row in remaining] == [canonical_id]
-    removed = bot.db.execute(
-        "SELECT COUNT(*) AS cnt FROM jobs_queue WHERE id=?", (stale_id,)
-    ).fetchone()
-    assert removed["cnt"] == 0
-
-    await bot.close()
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_purge_sea_jobs_keep_false_removes_all(tmp_path):
-    """When keep=false is passed all sea jobs are removed."""
-
-    bot = Bot("dummy", str(tmp_path / "test_bot.db"))
-
-    superadmin_id = 12345
-    bot.db.execute(
-        "INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)",
-        (superadmin_id, "superadmin", "+00:00"),
-    )
-    bot.db.commit()
-
-    now = datetime.utcnow()
-    future_time = now + timedelta(hours=1)
-
-    for offset in (0, 2):
-        _insert_rubric_job(
-            bot,
-            available_at=future_time + timedelta(minutes=offset * 5),
-            status="delayed",
-            payload={
-                "rubric": "sea",
-                "rubric_code": "sea",
-                "schedule_key": f"sea:{offset}",
-                "scheduled_at": (future_time + timedelta(minutes=offset * 5)).isoformat(),
-            },
+    try:
+        superadmin_id = 12345
+        bot.db.execute(
+            "INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)",
+            (superadmin_id, "superadmin", "+00:00"),
         )
 
-    messages: list[str] = []
+        now = datetime.utcnow()
+        _insert_rubric_job(bot, status="queued", schedule_key="sea:morning", available_at=None)
+        _insert_rubric_job(
+            bot,
+            status="delayed",
+            schedule_key="sea:evening",
+            available_at=now + timedelta(hours=1),
+        )
+        _insert_rubric_job(bot, status="queued", schedule_key="manual")
+        _insert_rubric_job(bot, status="delayed", schedule_key="manual-test")
+        _insert_rubric_job(
+            bot,
+            status="queued",
+            schedule_key="flowers:slot",
+            rubric_code="flowers",
+        )
+        bot.db.commit()
 
-    async def mock_api_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
-        if method == "sendMessage":
-            messages.append(params.get("text", ""))
-        return {"ok": True, "result": {}}
+        messages: list[str] = []
 
-    bot.api_request = mock_api_request
+        async def mock_api_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "sendMessage":
+                messages.append(params.get("text", ""))
+            return {"ok": True, "result": {}}
 
-    message = type(
-        "Message",
-        (),
-        {
-            "text": "/purge_sea_jobs keep=false",
-            "chat": type("Chat", (), {"id": superadmin_id})(),
-        },
-    )()
-    await bot.on_message(message)
+        bot.api_request = mock_api_request
 
-    assert len(messages) == 2
-    assert "Удалено 2 задач(и)." in messages[1]
-    remaining = bot.db.execute(
-        "SELECT COUNT(*) AS cnt FROM jobs_queue WHERE name='publish_rubric'"
-    ).fetchone()
-    assert remaining["cnt"] == 0
+        message = type(
+            "Message",
+            (),
+            {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": superadmin_id})()},
+        )()
+        await bot.on_message(message)
 
-    await bot.close()
+        assert messages == ["SEA: удалено плановых задач publish_rubric: 2"]
 
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_purge_sea_jobs_no_jobs_found(tmp_path):
-    """If no sea jobs exist the command reports success."""
-
-    bot = Bot("dummy", str(tmp_path / "test_bot.db"))
-
-    superadmin_id = 12345
-    bot.db.execute(
-        "INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 1, ?)",
-        (superadmin_id, "superadmin", "+00:00"),
-    )
-    bot.db.commit()
-
-    messages: list[str] = []
-
-    async def mock_api_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
-        if method == "sendMessage":
-            messages.append(params.get("text", ""))
-        return {"ok": True, "result": {}}
-
-    bot.api_request = mock_api_request
-
-    message = type(
-        "Message",
-        (),
-        {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": superadmin_id})()},
-    )()
-    await bot.on_message(message)
-
-    assert messages == ["🔍 Ищу задачи моря...", "✓ Задачи моря не найдены."]
-
-    await bot.close()
+        remaining = bot.db.execute(
+            """
+            SELECT json_extract(payload, '$.schedule_key') AS schedule_key,
+                   json_extract(payload, '$.rubric_code') AS rubric_code,
+                   status
+            FROM jobs_queue
+            ORDER BY id
+            """
+        ).fetchall()
+        schedule_keys = [row["schedule_key"] for row in remaining]
+        assert schedule_keys.count("manual") == 1
+        assert schedule_keys.count("manual-test") == 1
+        assert any(row["rubric_code"] == "flowers" for row in remaining)
+        assert all(
+            (row["rubric_code"] != "sea")
+            or (row["schedule_key"] in {"manual", "manual-test"})
+            for row in remaining
+        )
+    finally:
+        await bot.close()
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_purge_sea_jobs_requires_superadmin(tmp_path):
-    """Superadmin privileges are required to purge sea jobs."""
-
     bot = Bot("dummy", str(tmp_path / "test_bot.db"))
+    try:
+        regular_user_id = 67890
+        bot.db.execute(
+            "INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 0, ?)",
+            (regular_user_id, "regular", "+00:00"),
+        )
+        bot.db.commit()
 
-    regular_user_id = 67890
-    bot.db.execute(
-        "INSERT INTO users (user_id, username, is_superadmin, tz_offset) VALUES (?, ?, 0, ?)",
-        (regular_user_id, "regular", "+00:00"),
-    )
-    bot.db.commit()
+        messages: list[str] = []
 
-    messages: list[str] = []
+        async def mock_api_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
+            if method == "sendMessage":
+                messages.append(params.get("text", ""))
+            return {"ok": True, "result": {}}
 
-    async def mock_api_request(method: str, params: dict[str, Any]) -> dict[str, Any]:
-        if method == "sendMessage":
-            messages.append(params.get("text", ""))
-        return {"ok": True, "result": {}}
+        bot.api_request = mock_api_request
 
-    bot.api_request = mock_api_request
+        message = type(
+            "Message",
+            (),
+            {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": regular_user_id})()},
+        )()
+        await bot.on_message(message)
 
-    message = type(
-        "Message",
-        (),
-        {"text": "/purge_sea_jobs", "chat": type("Chat", (), {"id": regular_user_id})()},
-    )()
-    await bot.on_message(message)
-
-    assert messages == []
-
-    await bot.close()
+        assert messages == []
+    finally:
+        await bot.close()

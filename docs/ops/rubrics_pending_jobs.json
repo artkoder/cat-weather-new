@@ -1,0 +1,22 @@
+[
+  {
+    "job_id": 1,
+    "status": "queued",
+    "available_at": null,
+    "scheduled_at": "2024-11-16T19:30:00",
+    "created_at": "2025-11-16T06:44:37.147465",
+    "rubric_code": "sea",
+    "schedule_key": "sea:0:21:30",
+    "channel_id": null
+  },
+  {
+    "job_id": 2,
+    "status": "queued",
+    "available_at": null,
+    "scheduled_at": "2024-11-16T17:30:00",
+    "created_at": "2025-11-16T06:44:37.150251",
+    "rubric_code": "sea",
+    "schedule_key": "sea:0:19:30",
+    "channel_id": null
+  }
+]

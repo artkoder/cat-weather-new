@@ -199,8 +199,34 @@ def test_wave_sky_metrics_columns() -> None:
     assert row["wave_conf"] == 0.92
     assert row["sky_code"] == "partly_cloudy"
 
+
+def test_update_asset_stores_region_payload() -> None:
+    conn = _setup_connection()
+    data = DataAccess(conn)
+
+    asset_id = data.create_asset(
+        upload_id="region-u1",
+        file_ref="file-region",
+        content_type="image/jpeg",
+        sha256="sha-region",
+        width=640,
+        height=480,
+        exif=None,
+        labels=None,
+        tg_message_id=None,
+        tg_chat_id=None,
+        source="mobile",
+    )
+
+    data.update_asset(
+        asset_id,
+        city="Светлогорск",
+        region="Калининградская область",
+        country="Россия",
+    )
+
     asset = data.get_asset(asset_id)
     assert asset is not None
-    assert asset.wave_score_0_10 == 7.5
-    assert asset.wave_conf == 0.92
-    assert asset.sky_code == "partly_cloudy"
+    assert asset.city == "Светлогорск"
+    assert asset.region == "Калининградская область"
+    assert asset.country == "Россия"

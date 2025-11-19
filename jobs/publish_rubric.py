@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from main import Bot
 
 
-async def handle_publish_rubric(bot: "Bot", job: Job) -> None:
+async def handle_publish_rubric(bot: Bot, job: Job) -> None:
     payload = job.payload or {}
     code = payload.get("rubric_code")
     if not code:
@@ -75,7 +75,7 @@ async def handle_publish_rubric(bot: "Bot", job: Job) -> None:
 
 
 async def publish_rubric(
-    bot: "Bot",
+    bot: Bot,
     code: str,
     channel_id: int | None = None,
     *,

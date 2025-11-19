@@ -20,12 +20,12 @@ if TYPE_CHECKING:
     from main import Bot
 
 
-async def handle_vision(bot: "Bot", job: Job) -> None:
+async def handle_vision(bot: Bot, job: Job) -> None:
     async with bot._vision_semaphore:
         await run_vision(bot, job)
 
 
-async def run_vision(bot: "Bot", job: Job) -> None:
+async def run_vision(bot: Bot, job: Job) -> None:
     def _utf16_length(text: str) -> int:
         return len(text.encode("utf-16-le")) // 2
 
@@ -50,7 +50,6 @@ async def run_vision(bot: "Bot", job: Job) -> None:
             final_cleanup_paths.add(path)
 
     logging.info("Starting vision job %s for asset %s", job.id, asset_id)
-    vision_success = False
     cleanup_storage = False
     storage_cleanup_key: str | None = None
 
@@ -467,7 +466,6 @@ async def run_vision(bot: "Bot", job: Job) -> None:
                 tags.append("postcard")
         await bot._maybe_append_marine_tag(asset, tags)
         metadata_dict = asset.metadata if isinstance(asset.metadata, dict) else {}
-        capture_datetime: datetime | None = None
         capture_time_display: str | None = None
         timestamp_keys = [
             "exif_datetime_best",
@@ -493,7 +491,6 @@ async def run_vision(bot: "Bot", job: Job) -> None:
             except ValueError:
                 parsed_dt = None
             if parsed_dt:
-                capture_datetime = parsed_dt
                 capture_time_display = parsed_dt.strftime("%Y-%m-%d %H:%M")
             else:
                 capture_time_display = candidate
@@ -966,7 +963,7 @@ async def run_vision(bot: "Bot", job: Job) -> None:
                     downloaded_path = await bot._download_file(file_id, target_path)
                     if downloaded_path:
                         local_path = str(downloaded_path)
-                        cleanup_paths.append(local_path)
+                        _register_cleanup(local_path, temp=True)
             if not local_path or not os.path.exists(local_path):
                 raise RuntimeError("Unable to load asset for conversion")
 
@@ -1192,7 +1189,6 @@ async def run_vision(bot: "Bot", job: Job) -> None:
                     delete_resp,
                 )
         cleanup_storage = True
-        vision_success = True
     finally:
         cleanup_targets: set[str] = set()
         cleanup_targets.update(temp_cleanup_paths)

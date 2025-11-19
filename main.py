@@ -32,7 +32,6 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import piexif
-import psutil
 from aiohttp import ClientSession, FormData, web
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -107,7 +106,7 @@ from sea_selection import (
     calc_wave_penalty,
     sky_similarity,
 )
-from selectors.postcard import select_postcard_asset
+from asset_selectors.postcard import select_postcard_asset
 from storage import Storage, create_storage_from_env
 from supabase_client import SupabaseClient
 from utils_wave import wave_m_to_score

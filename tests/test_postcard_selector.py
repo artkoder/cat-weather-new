@@ -10,7 +10,7 @@ import pytest
 from zoneinfo import ZoneInfo
 
 from data_access import DataAccess
-from selectors.postcard import select_postcard_asset
+from asset_selectors.postcard import select_postcard_asset
 
 
 @pytest.fixture

@@ -293,6 +293,7 @@ class SaveAssetPayload(TypedDict, total=False):
     sky_visible: str | bool | None
     wave_score_0_10: float | None
     wave_conf: float | None
+    postcard_score: int | None
 
 
 @dataclass(slots=True)

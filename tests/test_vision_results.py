@@ -146,6 +146,17 @@ def _load_schema(conn: sqlite3.Connection) -> None:
         spec_wave_sky_metrics.loader.exec_module(module_wave_sky_metrics)
         if hasattr(module_wave_sky_metrics, "run"):
             module_wave_sky_metrics.run(conn)
+    postcard_score_path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "0029_assets_postcard_score.py"
+    )
+    spec_postcard = importlib.util.spec_from_file_location(
+        "_migration_0029_assets_postcard_score", postcard_score_path
+    )
+    if spec_postcard and spec_postcard.loader:
+        module_postcard = importlib.util.module_from_spec(spec_postcard)
+        spec_postcard.loader.exec_module(module_postcard)
+        if hasattr(module_postcard, "run"):
+            module_postcard.run(conn)
 
 
 @pytest.fixture
@@ -434,6 +445,12 @@ def test_asset_vision_schema_definition():
                 },
                 "required": ["label", "confidence"],
             },
+            "postcard_score": {
+                "type": ["integer", "null"],
+                "description": "Оценка 'открыточности' кадра по шкале 1 (обычное фото) – 5 (идеальная открытка).",
+                "minimum": 1,
+                "maximum": 5,
+            },
             "safety": {
                 "type": "object",
                 "description": "Информация о чувствительном контенте: nsfw и краткая причина.",
@@ -469,6 +486,7 @@ def test_asset_vision_schema_definition():
             "sky_visible",
             "is_sunset",
             "season_guess",
+            "postcard_score",
             "safety",
         ],
     }

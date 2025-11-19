@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import random
 import re
 import time
 import unicodedata
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Iterable, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from data_access import Asset
 from openai_client import OpenAIClient
@@ -557,6 +557,8 @@ async def generate_sea_caption_with_timeout(
     tz_name: str | None = None,
     job: Job | None = None,
 ) -> tuple[str, list[str], dict[str, Any]]:
+    import asyncio
+
     openai_metadata: dict[str, Any] = {
         "openai_calls_per_publish": 0,
         "duration_ms": 0,

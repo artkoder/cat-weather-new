@@ -96,6 +96,7 @@ from observability import (
     setup_logging,
 )
 from openai_client import OpenAIClient
+import caption_gen
 from sea_selection import (
     NormalizedSky,
     STAGE_CONFIGS,
@@ -4651,9 +4652,9 @@ class Bot:
         return {
             "street": _pick(["road", "pedestrian", "footway", "residential"]),
             "house_number": _pick(["house_number"]),
-            "district": _pick(["suburb", "district"]),
-            "city": _pick(["city", "town", "village", "hamlet"]),
-            "state": _pick(["state"]),
+            "district": _pick(["suburb", "district", "municipality", "county"]),
+            "city": _pick(["city", "town", "village", "hamlet", "municipality"]),
+            "state": _pick(["state", "region", "state_district"]),
             "country": _pick(["country"]),
             "postcode": _pick(["postcode"]),
         }
@@ -5299,12 +5300,16 @@ class Bot:
             )
             address = await self._reverse_geocode(lat, lon)
             if address:
-                city = address.get("city") or address.get("town") or address.get("village")
-                country = address.get("country")
-                if city:
-                    update_kwargs["city"] = city
-                if country:
-                    update_kwargs["country"] = country
+                city_value = str(address.get("city") or "").strip() or None
+                region_value = str(address.get("state") or "").strip() or None
+                country_value = str(address.get("country") or "").strip() or None
+                location_label = city_value or region_value or country_value
+                if location_label:
+                    update_kwargs["city"] = location_label
+                if region_value:
+                    update_kwargs["region"] = region_value
+                if country_value:
+                    update_kwargs["country"] = country_value
         else:
             stored_has_coords = stored_latitude is not None and stored_longitude is not None
             override_has_coords = override_latitude is not None and override_longitude is not None
@@ -16661,296 +16666,25 @@ class Bot:
         tz_name: str | None = None,
         job: Job | None = None,
     ) -> tuple[str, list[str]]:
-        default_hashtags = self._default_hashtags("sea")
-
-        # LEADS list for soft fact introductions
-        LEADS = [
-            "А вы знали",
-            "Знаете ли вы",
-            "Интересный факт:",
-            "Это интересно:",
-            "Кстати:",
-            "К слову о Балтике,",
-            "Теперь вы будете знать:",
-            "Небольшой факт:",
-            "Поделюсь фактом:",
-            "К слову",
-        ]
-
-        def fallback_caption() -> str:
-            if storm_state == "strong_storm":
-                opening = "Сегодня сильный шторм на море — волны гремят у самого берега."
-            elif storm_state == "storm":
-                if storm_persisting:
-                    opening = "Продолжает штормить на море — волны всё ещё бьют о берег."
-                else:
-                    opening = "Сегодня шторм на море — волны упрямо разбиваются о кромку."
-            else:
-                opening = (
-                    "Порадую закатом над морем — побережье дышит теплом."
-                    if sunset_selected
-                    else "Порадую вас морем — тихий берег и ровный плеск."
-                )
-
-            # Build second paragraph with LEADS + fact
-            second_para = ""
-            if fact_sentence:
-                lead = random.choice(LEADS)
-                fact_text = fact_sentence.strip()
-                # Ensure proper punctuation
-                if lead.endswith(":"):
-                    second_para = f"{lead} {fact_text}"
-                elif lead.endswith(","):
-                    second_para = f"{lead} {fact_text}"
-                else:
-                    # Add comma after lead if it doesn't have punctuation
-                    second_para = f"{lead}, {fact_text}"
-
-            if second_para:
-                return f"{opening}\n\n{second_para}"
-            else:
-                # No fact available - add wind/storm info
-                if wind_class == "very_strong":
-                    return f"{opening} Ветер срывает шапки на набережной."
-                elif wind_class == "strong":
-                    return f"{opening} Ветер ощутимо тянет к морю."
-                elif storm_state == "calm":
-                    return f"{opening} На побережье спокойно и хочется задержаться."
-                else:
-                    return opening
-
-        if not self.openai or not self.openai.api_key:
-            raw_fallback = fallback_caption()
-            cleaned = self.strip_header(raw_fallback)
-            fallback_text = cleaned.strip() if cleaned else raw_fallback.strip()
-            return fallback_text, default_hashtags
-
-        day_part_instruction = ""
-        if day_part:
-            day_part_instruction = (
-                "Учитывай локальное время публикации: now_local_iso, day_part (morning|day|evening|night), tz_name. "
-                "Пиши уместно текущему времени суток, но не упоминай время явно. "
-                "Избегай приветствий и пожеланий, не соответствующих моменту (например, «пусть ваш день будет…», если уже вечер/ночь). "
-                "Сохраняй естественный, дружелюбный тон. "
-            )
-
-        system_prompt = (
-            "Ты редактор телеграм-канала о Балтийском море.\n\n"
-            "# Форма и тон\n"
-            "• Пиши ровно 2 абзаца: короткое вступление + факт.\n"
-            "• Вступление — 1–2 коротких предложения, спокойно и по-дружески, без канцелярита; допустим один уместный эмодзи.\n"
-            "• Факт — на тему Балтики. Начни с подводки (одну из: "
-            + ", ".join(f'"{lead}"' for lead in LEADS)
-            + ") и естественно перефразируй переданный факт без искажения смысла.\n"
-            "• При перефразировании сохраняй числа/названия/термины корректными: не меняй значения, единицы, топонимы и термины.\n"
-            "• Избегай штампов и клише: «дышит», «шепчет», «манит», «ласкает», «величавый», «бурлит», «одаряет», «нежный бриз» и т. п.\n"
-            "• Не используй узкоспециальный жаргон и заумные слова (избегай научных терминов): «термоклин», «галоклин», «денситерм», «бенталь», «синоптическая обстановка», "
-            "«фронтальная зона», «инфильтрация», «морфодинамика», и канцеляризмы.\n"
-            f"• {day_part_instruction}"
-            "• Проверь орфографию и пунктуацию по правилам русского языка. Абзацы разделяй одной пустой строкой.\n"
-            "• ЖЁСТКОЕ ОГРАНИЧЕНИЕ: основной текст (без хэштегов и ссылки) — не более 700 символов; НИКОГДА не превышай 900 символов.\n"
+        return await caption_gen.generate_sea_caption(
+            self,
+            storm_state=storm_state,
+            storm_persisting=storm_persisting,
+            wave_height_m=wave_height_m,
+            wave_score=wave_score,
+            wind_class=wind_class,
+            wind_ms=wind_ms,
+            wind_kmh=wind_kmh,
+            clouds_label=clouds_label,
+            sunset_selected=sunset_selected,
+            want_sunset=want_sunset,
+            place_hashtag=place_hashtag,
+            fact_sentence=fact_sentence,
+            now_local_iso=now_local_iso,
+            day_part=day_part,
+            tz_name=tz_name,
+            job=job,
         )
-        wind_label = wind_class if wind_class in {"strong", "very_strong"} else "none"
-        prompt_payload: dict[str, Any] = {
-            "storm_state": storm_state,
-            "storm_persisting": storm_persisting,
-            "wave_height_m": round(wave_height_m, 2) if wave_height_m is not None else None,
-            "wave_score": round(wave_score, 2),
-            "wind_class": wind_label,
-            "wind_ms": round(wind_ms, 1) if wind_ms is not None else None,
-            "wind_kmh": round(wind_kmh, 1) if wind_kmh is not None else None,
-            "clouds_label": clouds_label,
-            "sunset_selected": sunset_selected,
-            "want_sunset": want_sunset,
-            "blog_tone": True,
-        }
-        if place_hashtag:
-            prompt_payload["place_hashtag"] = place_hashtag
-        if storm_state != "strong_storm" and fact_sentence:
-            prompt_payload["fact_sentence"] = fact_sentence
-        if now_local_iso:
-            prompt_payload["now_local_iso"] = now_local_iso
-        if day_part:
-            prompt_payload["day_part"] = day_part
-        if tz_name:
-            prompt_payload["tz_name"] = tz_name
-        payload_text = json.dumps(prompt_payload, ensure_ascii=False, separators=(",", ": "))
-        user_prompt = (
-            "Параметры сцены (JSON):\n"
-            f"{payload_text}\n\n"
-            "Собери подпись как два абзаца.\n\n"
-            "Вступление: 1–2 коротких предложения, можно очень кратко («Порадую вас морем»). "
-            "Допустим один эмодзи только здесь. Не перечисляй погодные параметры и числа.\n\n"
-            "Интересный факт: начни одной подводкой из списка (или естественной эквивалентной, явно помечающей переход к факту) "
-            "и передай смысл fact_sentence естественно и без искажений, одним предложением.\n\n"
-            "Лимиты: вступление ≤220; общий ≤350 (или ≤400, если fact_sentence длинный). "
-            "Без восклицательных знаков и риторических вопросов.\n\n"
-            "Абзацы разделены одной пустой строкой.\n\n"
-            "Если place_hashtag задан — включи его в массив hashtags.\n"
-            "Не вставляй хэштеги в caption; верни их только в массиве hashtags.\n\n"
-            'Верни JSON: {{"caption":"<два абзаца>","hashtags":[...]}}\n\n'
-            "Перед возвратом проверь логичность и целостность текста: очевидный переход ко второму абзацу, "
-            "связность с Балтикой/сценой, корректная пунктуация."
-        )
-        schema = {
-            "type": "object",
-            "properties": {
-                "caption": {"type": "string"},
-                "hashtags": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 2,
-                },
-            },
-            "required": ["caption", "hashtags"],
-        }
-
-        attempts = 3
-        for attempt in range(1, attempts + 1):
-            temperature = self._creative_temperature()
-            attempt_start = time.perf_counter()
-            try:
-                logging.info(
-                    "Запрос генерации текста для sea: модель=%s temperature=%.2f top_p=0.9 попытка %s/%s",
-                    "gpt-4o",
-                    temperature,
-                    attempt,
-                    attempts,
-                )
-                self._enforce_openai_limit(job, "gpt-4o")
-                response = await self.openai.generate_json(
-                    model="gpt-4o",
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    schema=schema,
-                    temperature=temperature,
-                    top_p=0.9,
-                )
-                attempt_latency = (time.perf_counter() - attempt_start) * 1000
-            except Exception:
-                attempt_latency = (time.perf_counter() - attempt_start) * 1000
-                logging.exception(
-                    "Failed to generate sea caption (attempt %s) latency_ms=%.1f",
-                    attempt,
-                    attempt_latency,
-                )
-                response = None
-            if response:
-                await self._record_openai_usage("gpt-4o", response, job=job)
-                # Extract finish_reason from response metadata if available
-                finish_reason = "completed"
-                if hasattr(response, "meta") and response.meta and isinstance(response.meta, dict):
-                    finish_reason = response.meta.get("finish_reason", "completed")
-                logging.info(
-                    "SEA_RUBRIC openai_response attempt=%d latency_ms=%.1f finish_reason=%s source=llm",
-                    attempt,
-                    attempt_latency,
-                    finish_reason,
-                )
-
-            # Check for valid response with parsed JSON (not raw text fallback)
-            if not response or not isinstance(response.content, dict):
-                logging.warning(
-                    "SEA_RUBRIC json_parse_error attempt=%d (response missing or not dict)",
-                    attempt,
-                )
-                continue
-
-            # Check if OpenAI client returned raw text fallback ({"raw": ...})
-            if "raw" in response.content and "caption" not in response.content:
-                logging.warning(
-                    "SEA_RUBRIC json_parse_error attempt=%d (OpenAI returned raw text, not JSON)",
-                    attempt,
-                )
-                continue
-
-            # Extract caption and hashtags from parsed JSON
-            caption_raw = response.content.get("caption")
-            raw_hashtags = response.content.get("hashtags")
-
-            if not caption_raw or not isinstance(caption_raw, str):
-                logging.warning(
-                    "SEA_RUBRIC caption_missing_or_invalid attempt=%d (caption not in response or not string)",
-                    attempt,
-                )
-                continue
-
-            if not raw_hashtags or not isinstance(raw_hashtags, list):
-                logging.warning(
-                    "SEA_RUBRIC hashtags_missing_or_invalid attempt=%d (using default hashtags)",
-                    attempt,
-                )
-                raw_hashtags = []
-
-            # Clean and process caption
-            cleaned_caption = self.strip_header(caption_raw)
-            caption = cleaned_caption.strip() if cleaned_caption else caption_raw.strip()
-
-            # Build final caption with sanitization
-            caption, hashtags = self._build_final_sea_caption(caption, raw_hashtags)
-
-            # Fatal check: caption must be non-empty after processing
-            if not caption:
-                logging.warning(
-                    "SEA_RUBRIC empty_caption_error attempt=%d (caption empty after processing)",
-                    attempt,
-                )
-                continue
-
-            # Style validation checks (warn-only, do NOT block publish)
-            # Check paragraph count
-            paragraphs = [p.strip() for p in caption.split("\n\n") if p.strip()]
-            paragraph_count = len(paragraphs)
-            if paragraph_count != 2:
-                logging.warning(
-                    "SEA_RUBRIC caption_structure expected 2 paragraphs, got %d", paragraph_count
-                )
-
-            # Check for LEADS in second paragraph (if we have 2 paragraphs)
-            if paragraph_count >= 2:
-                second_para = paragraphs[1]
-                has_lead = any(lead in second_para for lead in LEADS)
-                if not has_lead:
-                    logging.warning(
-                        "SEA_RUBRIC caption_leads no standard lead found in paragraph 2"
-                    )
-
-            # Check caption length
-            caption_length = len(caption)
-            if caption_length > 400:
-                logging.warning(
-                    "SEA_RUBRIC caption_length %d exceeds soft limit 400", caption_length
-                )
-
-            # Check emoji placement (emojis should only be in paragraph 1)
-            if paragraph_count >= 2:
-                # Simple emoji detection pattern
-                emoji_pattern = r"[\U0001F300-\U0001F9FF]|[\U0001F600-\U0001F64F]|[\U0001F680-\U0001F6FF]|[\U00002600-\U000027BF]"
-                if re.search(emoji_pattern, paragraphs[1]):
-                    logging.warning(
-                        "SEA_RUBRIC caption_emoji found in paragraph 2 (expected only in para 1)"
-                    )
-            if self._is_duplicate_rubric_copy("sea", "caption", caption, hashtags):
-                logging.info(
-                    "Получен повторяющийся текст для рубрики sea, пробуем снова (%s/%s)",
-                    attempt,
-                    attempts,
-                )
-                continue
-            logging.info("SEA_RUBRIC caption_accepted attempt=%d source=llm", attempt)
-            return caption, hashtags
-
-        # All attempts failed, using fallback
-        logging.warning(
-            "SEA_RUBRIC openai_fallback reason=caption_generation_failed source=fallback attempts=%d",
-            attempts,
-        )
-        raw_fallback = fallback_caption()
-        cleaned = self.strip_header(raw_fallback)
-        fallback_text = cleaned.strip() if cleaned else raw_fallback.strip()
-        # Apply sanitization to fallback as well (defense-in-depth)
-        fallback_text = sanitize_prompt_leaks(fallback_text)
-        return fallback_text, default_hashtags
 
     async def _generate_sea_caption_with_timeout(
         self,
@@ -16972,188 +16706,25 @@ class Bot:
         tz_name: str | None = None,
         job: Job | None = None,
     ) -> tuple[str, list[str], dict[str, Any]]:
-        openai_metadata: dict[str, Any] = {
-            "openai_calls_per_publish": 0,
-            "duration_ms": 0,
-            "tokens": 0,
-            "retries": 0,
-            "timeout_hit": 0,
-            "fallback": 0,
-        }
-
-        OPENAI_DEADLINE = 90.0
-        PER_ATTEMPT_TIMEOUT = 60.0
-        MAX_RETRIES = 1
-        BACKOFF_DELAYS = [1.5, 2.0]
-
-        global_start = time.perf_counter()
-
-        for retry_idx in range(MAX_RETRIES + 1):
-            elapsed_global = time.perf_counter() - global_start
-            if elapsed_global >= OPENAI_DEADLINE:
-                openai_metadata["timeout_hit"] = 1
-                openai_metadata["fallback"] = 1
-                logging.warning(
-                    "SEA_RUBRIC OPENAI_CALL timeout=global_deadline elapsed_ms=%.1f",
-                    elapsed_global * 1000,
-                )
-                break
-
-            remaining_time = min(PER_ATTEMPT_TIMEOUT, OPENAI_DEADLINE - elapsed_global)
-            attempt_start = time.perf_counter()
-
-            try:
-                caption_task = asyncio.create_task(
-                    self._generate_sea_caption(
-                        storm_state=storm_state,
-                        storm_persisting=storm_persisting,
-                        wave_height_m=wave_height_m,
-                        wave_score=wave_score,
-                        wind_class=wind_class,
-                        wind_ms=wind_ms,
-                        wind_kmh=wind_kmh,
-                        clouds_label=clouds_label,
-                        sunset_selected=sunset_selected,
-                        want_sunset=want_sunset,
-                        place_hashtag=place_hashtag,
-                        fact_sentence=fact_sentence,
-                        now_local_iso=now_local_iso,
-                        day_part=day_part,
-                        tz_name=tz_name,
-                        job=job,
-                    )
-                )
-                caption, hashtags = await asyncio.wait_for(caption_task, timeout=remaining_time)
-
-                attempt_duration = (time.perf_counter() - attempt_start) * 1000
-                openai_metadata["openai_calls_per_publish"] += 1
-                openai_metadata["duration_ms"] = round(attempt_duration, 2)
-                openai_metadata["retries"] = retry_idx
-
-                logging.info(
-                    "SEA_RUBRIC OPENAI_CALL success attempt=%d duration_ms=%.1f retries=%d",
-                    openai_metadata["openai_calls_per_publish"],
-                    openai_metadata["duration_ms"],
-                    openai_metadata["retries"],
-                )
-
-                return caption, hashtags, openai_metadata
-
-            except TimeoutError:
-                attempt_duration = (time.perf_counter() - attempt_start) * 1000
-                openai_metadata["openai_calls_per_publish"] += 1
-                openai_metadata["timeout_hit"] = 1
-
-                logging.warning(
-                    "SEA_RUBRIC OPENAI_CALL timeout attempt=%d duration_ms=%.1f timeout_sec=%.1f",
-                    openai_metadata["openai_calls_per_publish"],
-                    attempt_duration,
-                    remaining_time,
-                )
-
-                if retry_idx < MAX_RETRIES:
-                    openai_metadata["retries"] = retry_idx + 1
-                    backoff_delay = BACKOFF_DELAYS[min(retry_idx, len(BACKOFF_DELAYS) - 1)]
-                    logging.info("SEA_RUBRIC OPENAI_CALL retry backoff_sec=%.1f", backoff_delay)
-                    await asyncio.sleep(backoff_delay)
-                else:
-                    openai_metadata["fallback"] = 1
-                    break
-
-            except Exception as exc:
-                attempt_duration = (time.perf_counter() - attempt_start) * 1000
-                openai_metadata["openai_calls_per_publish"] += 1
-
-                logging.exception(
-                    "SEA_RUBRIC OPENAI_CALL error attempt=%d duration_ms=%.1f",
-                    openai_metadata["openai_calls_per_publish"],
-                    attempt_duration,
-                )
-
-                if retry_idx < MAX_RETRIES:
-                    openai_metadata["retries"] = retry_idx + 1
-                    backoff_delay = BACKOFF_DELAYS[min(retry_idx, len(BACKOFF_DELAYS) - 1)]
-                    logging.info("SEA_RUBRIC OPENAI_CALL retry backoff_sec=%.1f", backoff_delay)
-                    await asyncio.sleep(backoff_delay)
-                else:
-                    openai_metadata["fallback"] = 1
-                    break
-
-        openai_metadata["fallback"] = 1
-        total_duration = (time.perf_counter() - global_start) * 1000
-        openai_metadata["duration_ms"] = round(total_duration, 2)
-
-        logging.info(
-            "SEA_RUBRIC OPENAI_FALLBACK total_duration_ms=%.1f calls=%d retries=%d timeout_hit=%d source=fallback",
-            openai_metadata["duration_ms"],
-            openai_metadata["openai_calls_per_publish"],
-            openai_metadata["retries"],
-            openai_metadata["timeout_hit"],
+        return await caption_gen.generate_sea_caption_with_timeout(
+            self,
+            storm_state=storm_state,
+            storm_persisting=storm_persisting,
+            wave_height_m=wave_height_m,
+            wave_score=wave_score,
+            wind_class=wind_class,
+            wind_ms=wind_ms,
+            wind_kmh=wind_kmh,
+            clouds_label=clouds_label,
+            sunset_selected=sunset_selected,
+            want_sunset=want_sunset,
+            place_hashtag=place_hashtag,
+            fact_sentence=fact_sentence,
+            now_local_iso=now_local_iso,
+            day_part=day_part,
+            tz_name=tz_name,
+            job=job,
         )
-
-        # LEADS list for fallback
-        LEADS_FALLBACK = [
-            "А вы знали",
-            "Знаете ли вы",
-            "Интересный факт:",
-            "Это интересно:",
-            "Кстати:",
-            "К слову о Балтике,",
-            "Теперь вы будете знать:",
-            "Небольшой факт:",
-            "Поделюсь фактом:",
-            "К слову",
-        ]
-
-        fallback_opening = ""
-        if storm_state == "strong_storm":
-            fallback_opening = "Сегодня сильный шторм на море — волны гремят у самого берега."
-        elif storm_state == "storm":
-            if storm_persisting:
-                fallback_opening = "Продолжает штормить на море — волны всё ещё бьют о берег."
-            else:
-                fallback_opening = "Сегодня шторм на море — волны упрямо разбиваются о кромку."
-        else:
-            fallback_opening = (
-                "Порадую закатом над морем — побережье дышит теплом."
-                if sunset_selected
-                else "Порадую вас морем — тихий берег и ровный плеск."
-            )
-
-        # Build second paragraph with LEADS + fact
-        second_para_fallback = ""
-        if fact_sentence:
-            lead_fallback = random.choice(LEADS_FALLBACK)
-            fact_text_fallback = fact_sentence.strip()
-            # Ensure proper punctuation
-            if lead_fallback.endswith(":"):
-                second_para_fallback = f"{lead_fallback} {fact_text_fallback}"
-            elif lead_fallback.endswith(","):
-                second_para_fallback = f"{lead_fallback} {fact_text_fallback}"
-            else:
-                # Add comma after lead if it doesn't have punctuation
-                second_para_fallback = f"{lead_fallback}, {fact_text_fallback}"
-
-        if second_para_fallback:
-            fallback_caption = f"{fallback_opening}\n\n{second_para_fallback}"
-        else:
-            # No fact available - add wind/storm info
-            if wind_class == "very_strong":
-                fallback_caption = f"{fallback_opening} Ветер срывает шапки на набережной."
-            elif wind_class == "strong":
-                fallback_caption = f"{fallback_opening} Ветер ощутимо тянет к морю."
-            elif storm_state == "calm":
-                fallback_caption = (
-                    f"{fallback_opening} На побережье спокойно и хочется задержаться."
-                )
-            else:
-                fallback_caption = fallback_opening
-        default_hashtags = self._default_hashtags("sea")
-
-        # Apply sanitization to fallback (defense-in-depth)
-        fallback_caption = sanitize_prompt_leaks(fallback_caption)
-
-        return fallback_caption, default_hashtags, openai_metadata
 
     async def _generate_guess_arch_copy(
         self,

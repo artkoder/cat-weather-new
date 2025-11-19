@@ -319,6 +319,11 @@ class Asset:
         return str(value) if value is not None else None
 
     @property
+    def region(self) -> str | None:
+        value = self._resolve("region")
+        return str(value) if value is not None else None
+
+    @property
     def country(self) -> str | None:
         value = self._resolve("country")
         return str(value) if value is not None else None
@@ -1444,6 +1449,7 @@ class DataAccess:
         latitude: float | None = None,
         longitude: float | None = None,
         city: str | None = None,
+        region: str | None = None,
         country: str | None = None,
         rubric_id: int | None = None,
         vision_category: str | None = None,
@@ -1556,6 +1562,8 @@ class DataAccess:
             payload_updates["longitude"] = longitude
         if city is not None:
             payload_updates["city"] = city
+        if region is not None:
+            payload_updates["region"] = region
         if country is not None:
             payload_updates["country"] = country
         if shot_at_utc is not None:

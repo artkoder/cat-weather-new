@@ -50,6 +50,7 @@ class Asset:
     wave_score_0_10: float | None = None
     wave_conf: float | None = None
     sky_code: str | None = None
+    postcard_score: int | None = None
     source: str | None = None
     captured_at: str | None = None
     doy: int | None = None
@@ -146,6 +147,15 @@ class Asset:
                 return parsed
             return [parsed]
         return [value]
+
+    @staticmethod
+    def _normalize_postcard_score(value: Any) -> int | None:
+        score = Asset._to_int(value)
+        if score is None:
+            return None
+        if 1 <= score <= 5:
+            return score
+        return None
 
     def _resolve(self, key: str, default: Any | None = None) -> Any | None:
         if key in self.legacy_values:
@@ -1136,6 +1146,7 @@ class DataAccess:
         sky_visible: str | bool | None = None,
         wave_score_0_10: float | None = None,
         wave_conf: float | None = None,
+        postcard_score: int | None = None,
     ) -> str:
         """Insert or update asset metadata."""
 
@@ -1177,6 +1188,12 @@ class DataAccess:
             wave_conf_value = existing.wave_conf
         else:
             wave_conf_value = None
+        if postcard_score is not None:
+            postcard_score_value = Asset._normalize_postcard_score(postcard_score)
+        elif existing:
+            postcard_score_value = existing.postcard_score
+        else:
+            postcard_score_value = None
         sky_visible_value = self._normalize_sky_visible(sky_visible)
         if sky_visible_value is None and existing:
             sky_visible_value = existing.sky_visible_hint
@@ -1291,36 +1308,38 @@ class DataAccess:
                        sky_visible=?,
                        wave_score_0_10=?,
                        wave_conf=?,
+                       postcard_score=?,
                        captured_at=?,
                        doy=?,
                        daypart=?,
                        payload_json=?
-                 WHERE id=?
-                """,
-                (
-                    file_ref,
-                    content_type,
-                    sha256,
-                    width,
-                    height,
-                    exif_json_value,
-                    labels_json,
-                    tg_identifier,
-                    shot_at_value,
-                    shot_doy_value,
-                    photo_doy_value,
-                    photo_wave_value,
-                    sky_visible_value,
-                    wave_score_0_10_value,
-                    wave_conf_value,
-                    captured_at_value,
-                    doy_value,
-                    daypart_value,
-                    payload_json,
-                    existing.id,
-                ),
-            )
-            self.conn.commit()
+                       WHERE id=?
+                       """,
+                       (
+                       file_ref,
+                       content_type,
+                       sha256,
+                       width,
+                       height,
+                       exif_json_value,
+                       labels_json,
+                       tg_identifier,
+                       shot_at_value,
+                       shot_doy_value,
+                       photo_doy_value,
+                       photo_wave_value,
+                       sky_visible_value,
+                       wave_score_0_10_value,
+                       wave_conf_value,
+                       postcard_score_value,
+                       captured_at_value,
+                       doy_value,
+                       daypart_value,
+                       payload_json,
+                       existing.id,
+                       ),
+                       )
+
             return existing.id
 
         asset_id = str(uuid4())
@@ -1349,10 +1368,11 @@ class DataAccess:
                 sky_visible,
                 wave_score_0_10,
                 wave_conf,
+                postcard_score,
                 captured_at,
                 doy,
                 daypart
-            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 asset_id,
@@ -1374,6 +1394,7 @@ class DataAccess:
                 sky_visible_value,
                 wave_score_0_10_value,
                 wave_conf_value,
+                postcard_score_value,
                 captured_at_value,
                 doy_value,
                 daypart_value,
@@ -1444,6 +1465,7 @@ class DataAccess:
         vision_sky_bucket: str | None = None,
         wave_score_0_10: float | None = None,
         wave_conf: float | None = None,
+        postcard_score: int | None = None,
         sky_code: str | None = None,
     ) -> None:
         """Update selected asset fields while preserving unset values."""
@@ -1565,6 +1587,9 @@ class DataAccess:
             column_dirty = True
         if wave_conf is not None:
             columns["wave_conf"] = Asset._to_float(wave_conf)
+            column_dirty = True
+        if postcard_score is not None:
+            columns["postcard_score"] = Asset._normalize_postcard_score(postcard_score)
             column_dirty = True
         if sky_code is not None:
             columns["sky_code"] = str(sky_code)
@@ -1877,9 +1902,10 @@ class DataAccess:
             if sky_code_raw is not None and str(sky_code_raw).strip()
             else None
         )
+        postcard_score_val = Asset._normalize_postcard_score(row_dict.get("postcard_score"))
 
         return Asset(
-            id=str(row_dict.get("id")),
+
             upload_id=row_dict.get("upload_id"),
             file_ref=row_dict.get("file_ref"),
             content_type=row_dict.get("content_type"),
@@ -1902,6 +1928,7 @@ class DataAccess:
             wave_score_0_10=wave_score_0_10_val,
             wave_conf=wave_conf_val,
             sky_code=sky_code_val,
+            postcard_score=postcard_score_val,
             source=(str(row_dict.get("source")) if row_dict.get("source") is not None else None),
             captured_at=captured_at_val,
             doy=doy_val,

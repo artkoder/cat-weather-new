@@ -224,6 +224,24 @@ async def test_job_vision_nsfw_caption_includes_warning(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_job_vision_adds_postcard_score_and_caption(tmp_path, monkeypatch):
+    calls, asset, _ = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        vision_overrides={"postcard_score": 5},
+    )
+    copy_calls = [call for call in calls if call["method"] == "copyMessage"]
+    assert copy_calls
+    caption = copy_calls[0]["data"].get("caption")
+    assert caption is not None
+    assert "Открыточность: 5/5" in caption
+    assert asset.postcard_score == 5
+    assert asset.vision_results is not None
+    assert "postcard" in asset.vision_results.get("tags", [])
+
+
+@pytest.mark.asyncio
 async def test_job_vision_skips_exif_debug_by_default(tmp_path, monkeypatch):
     calls, _, _ = await _run_vision_job_collect_calls(tmp_path, monkeypatch, flag_enabled=False)
     assert any(call["method"] == "copyMessage" for call in calls)

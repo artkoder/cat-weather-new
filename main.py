@@ -814,6 +814,12 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
             },
             "required": ["label", "confidence"],
         },
+        "postcard_score": {
+            "type": ["integer", "null"],
+            "description": "Оценка 'открыточности' кадра по шкале 1 (обычное фото) – 5 (идеальная открытка).",
+            "minimum": 1,
+            "maximum": 5,
+        },
         "safety": {
             "type": "object",
             "description": ("Информация о чувствительном контенте: nsfw и краткая причина."),
@@ -849,6 +855,7 @@ ASSET_VISION_V1_SCHEMA: dict[str, Any] = {
         "sky_visible",
         "is_sunset",
         "season_guess",
+        "postcard_score",
         "safety",
     ],
 }
@@ -5500,14 +5507,16 @@ class Bot:
                 "Дополнительно определи, есть ли море, океан, пляж или береговая линия — поле is_sea. "
                 "Если is_sea=true, оцени sea_wave_score по шкале 0..10 (0 — гладь, 10 — шквал), укажи photo_sky одной из категорий sunny/partly_cloudy/mostly_cloudy/overcast/night/unknown и выставь is_sunset=true, когда заметен закат. "
                 "Если моря нет, sea_wave_score ставь null, но всё равно классифицируй photo_sky по видимому небу. "
-                "Обязательно укажи sky_visible=true, если на фото видно небо (даже частично), иначе sky_visible=false. Если небо не видно или неясно, ставь photo_sky=unknown."
+                "Обязательно укажи sky_visible=true, если на фото видно небо (даже частично), иначе sky_visible=false. Если небо не видно или неясно, ставь photo_sky=unknown. "
+                "Также оцени postcard_score (1 — обычное фото, 5 — идеальная открытка) с учётом композиции, света и художественности кадра."
             )
             user_prompt = (
                 "Опиши сцену, перечисли объекты, теги, достопримечательности, архитектуру и безопасность фото. Укажи кадровку (framing), "
                 "наличие архитектуры крупным планом и панорам, погодный тег (weather_image), сезон и стиль архитектуры (если можно). "
                 "Если локация неочевидна, ставь guess_country/guess_city = null и указывай низкую числовую уверенность. "
                 "Отдельно отметь, присутствует ли море/океан/пляж (is_sea), оцени sea_wave_score 0..10, классифицируй небо photo_sky и укажи is_sunset для закатных кадров. "
-                "Обязательно определи, видно ли небо на фото (sky_visible), и если небо не видно или неясно, используй photo_sky=unknown."
+                "Обязательно определи, видно ли небо на фото (sky_visible), и если небо не видно или неясно, используй photo_sky=unknown. "
+                "Также оцени postcard_score (1..5) и возвращай значение даже при низкой художественности кадра."
             )
             self._enforce_openai_limit(job, "gpt-4o-mini")
             logging.info(
@@ -5719,6 +5728,7 @@ class Bot:
                 if isinstance(sky_visible_raw, bool)
                 else str(sky_visible_raw).strip().lower() in {"1", "true", "yes", "да"}
             )
+            postcard_score_value = Asset._normalize_postcard_score(result.get("postcard_score"))
             raw_objects = result.get("objects")
             objects: list[str] = []
             if isinstance(raw_objects, list):
@@ -5756,6 +5766,9 @@ class Bot:
                 tags.append("architecture_close_up")
             if architecture_wide and "architecture_wide" not in tags:
                 tags.append("architecture_wide")
+            if postcard_score_value is not None and postcard_score_value >= 3:
+                if "postcard" not in tags:
+                    tags.append("postcard")
             await self._maybe_append_marine_tag(asset, tags)
             metadata_dict = asset.metadata if isinstance(asset.metadata, dict) else {}
             capture_datetime: datetime | None = None
@@ -6069,6 +6082,8 @@ class Bot:
             caption_lines.append(f"Время съёмки: {capture_display_value}")
             caption_lines.append(f"Погода: {weather_caption_display}")
             caption_lines.append(f"Сезон: {season_caption_display}")
+            if postcard_score_value is not None and postcard_score_value >= 3:
+                caption_lines.append(f"Открыточность: {postcard_score_value}/5")
             if arch_style and arch_style.get("label"):
                 confidence_value = arch_style.get("confidence")
                 style_line = f"Стиль: {arch_style['label']}"
@@ -6173,6 +6188,7 @@ class Bot:
                 "photo_sky": photo_sky_result,
                 "sky_visible": sky_visible,
                 "is_sunset": is_sunset,
+                "postcard_score": postcard_score_value,
             }
             if rubric_id is not None:
                 result_payload["rubric_id"] = rubric_id
@@ -6410,6 +6426,8 @@ class Bot:
                 "vision_caption": caption_text,
                 "local_path": None,
             }
+            if postcard_score_value is not None:
+                asset_update_kwargs["postcard_score"] = postcard_score_value
             if rubric_id is not None:
                 asset_update_kwargs["rubric_id"] = rubric_id
             self.data.update_asset(asset_id, **asset_update_kwargs)

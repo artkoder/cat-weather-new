@@ -30,7 +30,7 @@ def _sanitize_prompt_leaks(text: str) -> str:
 def _build_link_block() -> str:
     from main import build_rubric_link_block  # avoid circular import at module load
 
-    return build_rubric_link_block("sea")
+    return build_rubric_link_block("postcard")
 
 
 def _normalize_hashtag_candidate(value: str | None) -> str | None:

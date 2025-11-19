@@ -104,6 +104,7 @@ from sea_selection import (
     calc_wave_penalty,
     sky_similarity,
 )
+from selectors.postcard import select_postcard_asset
 from storage import Storage, create_storage_from_env
 from supabase_client import SupabaseClient
 from utils_wave import wave_m_to_score
@@ -233,10 +234,11 @@ WMO_EMOJI = {
 }
 
 LOVE_COLLECTION_LINK = '<a href="https://t.me/addlist/sW-rkrslxqo1NTVi">📂 Полюбить 39</a>'
+POSTCARD_DEFAULT_REGION_HASHTAG = "#КалининградскаяОбласть"
 
 
 def build_rubric_link_block(rubric_code: str) -> str:
-    if rubric_code == "sea":
+    if rubric_code in {"sea", "postcard"}:
         return LOVE_COLLECTION_LINK
     return ""
 
@@ -916,6 +918,15 @@ DEFAULT_RUBRIC_PRESETS: dict[str, dict[str, Any]] = {
             "assets": {"min": 1, "max": 1, "categories": ["sea"]},
             "sea_id": 1,
             "enable_facts": True,
+        },
+    },
+    "postcard": {
+        "title": "Открыточный вид",
+        "config": {
+            "enabled": False,
+            "schedules": [],
+            "postcard_region_hashtag": POSTCARD_DEFAULT_REGION_HASHTAG,
+            "postcard_stopwords": [],
         },
     },
 }
@@ -14850,9 +14861,175 @@ class Bot:
         await self._cleanup_assets(assets, extra_paths=overlay_paths)
         return True
 
-    async def _publish_sea(
+    async def _publish_postcard(
         self,
         rubric: Rubric,
+        channel_id: int,
+        *,
+        test: bool = False,
+        job: Job | None = None,
+        initiator_id: int | None = None,
+        instructions: str | None = None,
+    ) -> bool:
+        del job  # postcard handler does not use job metadata directly
+        config = rubric.config or {}
+        if channel_id is None:
+            logging.warning("POSTCARD_RUBRIC missing_channel_id test=%s", int(test))
+            return False
+        target_channel = int(channel_id)
+        asset = select_postcard_asset(self.data, now=datetime.now(UTC))
+        if not asset:
+            logging.info(
+                "POSTCARD_RUBRIC no_candidates channel_id=%s test=%d",
+                target_channel,
+                int(test),
+            )
+            if initiator_id is not None:
+                title = rubric.title or "Открыточный вид"
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": initiator_id,
+                        "text": (
+                            f"Для рубрики «{title}» подходящие кадры сейчас не найдены. "
+                            "Добавьте фотографии с высоким postcard_score и попробуйте снова."
+                        ),
+                    },
+                )
+                return True
+            return False
+
+        def _normalize_stopwords(value: Any) -> list[str]:
+            if not value:
+                return []
+            if isinstance(value, str):
+                items = re.split(r"[,\n]+", value)
+            elif isinstance(value, Iterable):
+                items = list(value)
+            else:
+                return []
+            normalized: list[str] = []
+            for item in items:
+                text = str(item or "").strip()
+                if text:
+                    normalized.append(text)
+            return normalized
+
+        region_hashtag = str(
+            config.get("postcard_region_hashtag")
+            or config.get("region_hashtag")
+            or POSTCARD_DEFAULT_REGION_HASHTAG
+        )
+        stopwords = _normalize_stopwords(
+            config.get("postcard_stopwords") or config.get("stopwords")
+        )
+        caption_text, hashtags = await caption_gen.generate_postcard_caption(
+            self.openai,
+            asset,
+            region_hashtag,
+            stopwords,
+        )
+        prepared_hashtags = self._prepare_hashtags(hashtags)
+        hashtag_block = " ".join(prepared_hashtags)
+        link_block = LOVE_COLLECTION_LINK
+        caption_body = caption_text.strip()
+        if link_block and link_block in caption_body:
+            caption_body = caption_body.replace(link_block, "").strip()
+        final_parts = [caption_body] if caption_body else []
+        if hashtag_block:
+            final_parts.append(hashtag_block)
+        if link_block:
+            final_parts.append(link_block)
+        final_caption = "\n\n".join(part for part in final_parts if part).strip()
+        if not final_caption:
+            logging.warning("POSTCARD_RUBRIC empty_caption asset_id=%s", asset.id)
+            return False
+
+        logging.info(
+            "POSTCARD_RUBRIC send asset_id=%s score=%s channel_id=%s test=%d",
+            asset.id,
+            asset.postcard_score,
+            target_channel,
+            int(test),
+        )
+
+        file_id = asset.file_id
+        if file_id:
+            response = await self.api_request(
+                "sendPhoto",
+                {
+                    "chat_id": target_channel,
+                    "photo": file_id,
+                    "caption": final_caption,
+                    "parse_mode": "HTML",
+                },
+            )
+        else:
+            source_path, should_cleanup = await self._ensure_asset_source(asset)
+            if not source_path:
+                logging.warning("POSTCARD_RUBRIC missing_source asset_id=%s", asset.id)
+                return False
+            try:
+                file_data = Path(source_path).read_bytes()
+            except Exception:
+                logging.exception("POSTCARD_RUBRIC read_error asset_id=%s", asset.id)
+                if should_cleanup:
+                    self._remove_file(source_path)
+                return False
+            finally:
+                if should_cleanup:
+                    self._remove_file(source_path)
+                    try:
+                        self.data.update_asset(asset.id, local_path=None)
+                    except Exception:
+                        logging.exception(
+                            "POSTCARD_RUBRIC clear_local_path_failed asset_id=%s",
+                            asset.id,
+                        )
+            response = await self.api_request(
+                "sendPhoto",
+                {
+                    "chat_id": target_channel,
+                    "caption": final_caption,
+                    "parse_mode": "HTML",
+                },
+                files={"photo": ("postcard.jpg", file_data)},
+            )
+
+        if not response.get("ok"):
+            logging.error("POSTCARD_RUBRIC tg_error response=%s", response)
+            return False
+
+        result_payload = response.get("result")
+        if isinstance(result_payload, dict):
+            message_id = int(result_payload.get("message_id") or 0)
+        else:
+            message_id = 0
+
+        self.data.mark_assets_used([asset.id])
+        metadata = {
+            "rubric_code": rubric.code,
+            "asset_ids": [asset.id],
+            "test": test,
+            "hashtags": prepared_hashtags,
+            "region_hashtag": region_hashtag,
+            "stopwords": stopwords,
+            "postcard_score": asset.postcard_score,
+            "caption": caption_text,
+        }
+        if instructions:
+            metadata["instructions"] = instructions
+        self.data.record_post_history(
+            target_channel,
+            message_id,
+            asset.id,
+            rubric.id,
+            metadata,
+        )
+        return True
+
+    async def _publish_sea(
+        self,
         channel_id: int,
         *,
         test: bool = False,
@@ -14887,12 +15064,10 @@ class Bot:
         test_channel_cfg = config.get("test_channel_id")
         prod_channel = _coerce_channel(prod_channel_cfg)
         test_channel = _coerce_channel(test_channel_cfg)
-        selected_channel = prod_channel if is_prod else test_channel
-        if selected_channel is None:
-            fallback_channel = _coerce_channel(original_channel_id)
-            if fallback_channel is not None:
-                selected_channel = fallback_channel
-        if selected_channel is None:
+        resolved_channel = _coerce_channel(original_channel_id)
+        if resolved_channel is None:
+            resolved_channel = prod_channel if is_prod else test_channel
+        if resolved_channel is None:
             logging.error(
                 "SEA_RUBRIC channel_unresolved prod=%d prod_channel=%s test_channel=%s fallback=%s",
                 int(is_prod),
@@ -14901,7 +15076,7 @@ class Bot:
                 original_channel_id,
             )
             return False
-        channel_id = int(selected_channel)
+        channel_id = int(resolved_channel)
         logging.info(
             "SEA_RUBRIC channel_resolved prod=%d channel_id=%s prod_channel=%s test_channel=%s fallback=%s",
             int(is_prod),
@@ -16966,6 +17141,7 @@ class Bot:
             "flowers": ["#котопогода", "#цветы"],
             "guess_arch": ["#угадайархитектуру", "#калининград", "#котопогода"],
             "sea": ["#котопогода", "#море", "#БалтийскоеМоре"],
+            "postcard": caption_gen.POSTCARD_DEFAULT_HASHTAGS,
         }
         return mapping.get(code, ["#котопогода"])
 

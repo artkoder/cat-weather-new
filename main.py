@@ -13777,6 +13777,7 @@ class Bot:
 
     async def _publish_sea(
         self,
+        rubric: Rubric,
         channel_id: int,
         *,
         test: bool = False,

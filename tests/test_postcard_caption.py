@@ -88,7 +88,9 @@ async def test_postcard_caption_with_location_and_love_block() -> None:
     assert caption.startswith(POSTCARD_PREFIX)
     assert "Светлогорск" in caption
     assert LOVE_COLLECTION_LINK in caption
+    assert caption.strip().endswith(LOVE_COLLECTION_LINK)
     assert any(tag.casefold() == "#калининградскаяобласть".casefold() for tag in hashtags)
+    assert any(tag.casefold() == "#светлогорск".casefold() for tag in hashtags)
     assert 3 <= len(hashtags) <= 5
 
 
@@ -129,6 +131,7 @@ async def test_postcard_caption_filters_stopwords() -> None:
     assert len(client.calls) == 2
     assert "волшеб" not in caption.casefold()
     assert LOVE_COLLECTION_LINK in caption
+    assert caption.strip().endswith(LOVE_COLLECTION_LINK)
     assert any(tag.casefold() == "#калининградскаяобласть".casefold() for tag in hashtags)
 
 
@@ -146,5 +149,6 @@ async def test_postcard_caption_fallback_without_openai() -> None:
     assert caption.startswith(POSTCARD_PREFIX)
     assert "Куршская коса" in caption
     assert LOVE_COLLECTION_LINK in caption
+    assert caption.strip().endswith(LOVE_COLLECTION_LINK)
     assert any(tag.casefold() == "#калининградскаяобласть".casefold() for tag in hashtags)
     assert 3 <= len(hashtags) <= 5

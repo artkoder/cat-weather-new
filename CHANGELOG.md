@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- В таблице `assets` появилось поле `postcard_score` — числовая оценка «открыточности» кадра от 1 (обычное фото) до 5 (идеальная открытка), которое проставляет vision-модель и которое теперь доступно в отборах и админке.
+- Ассеты с `postcard_score ≥ 3` автоматически получают тег `postcard`, а в подписи ассет-канала для таких кадров появляется строка «Открыточность: N/5», чтобы операторы сразу видели сильные открытки.
+- Запущена рубрика «Открыточный вид» (`postcard`):
+  - селектор выбирает лучший кадр по `postcard_score`, приоритет отдаётся свежим (до трёх суток) съёмкам и тем, что попадают в сезонное окно ±30 дней, с защитой от повторов за последние семь дней;
+  - генератор подписи стартует с «Порадую вас красивым видом …», обязательно упоминает локацию из метаданных и завершает текст фирменной ссылкой «Полюбить 39».
 - Photo metadata persistence for sea assets (`photo_doy`, `photo_wave`, tri-state `sky_visible`) with
   repeatable migrations and reporting CLI.
 - Weather migration utility now offers `--fill-doy`, `--recalc-sky-visible`, and `--backfill-wave`
@@ -36,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Schemathesis-powered contract test suite that exercises the latest API surface to guard against regressions in mobile attach, upload, and webhook flows.
 
 ### Changed
+- Internal cleanup:
+  - обработчики джобов `vision` и `publish_rubric` переехали из `main.py` в `jobs/vision.py` и `jobs/publish_rubric.py`, поэтому основная точка входа больше не тянет их бизнес-логику;
+  - генерация подписей вынесена в `caption_gen.py`, и теперь любые промпты для моря и открыток обновляются в одном месте;
+  - маршрутизация каналов для рубрик (включая «Море» и «Открыточный вид») приведена в порядок и корректно выбирает боевой или тестовый канал как для расписаний, так и для ручных запусков.
 - Sea rubric scoring now applies configuration-driven penalties per B0/B1/B2/AN stage, widening tolerances without dropping pools and enforcing calm-day caps even in emergency fallback.
 - Sea rubric seasonal window now uses Europe/Kaliningrad timezone instead of UTC for day-of-year calculations, ensuring accurate seasonal matching for the local region.
 - Sea rubric storm state classification now based on the 0–10 wave score (≤2 calm, <6 storm, ≥6 strong_storm) instead of raw wave heights for more nuanced weather state determination.

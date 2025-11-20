@@ -474,7 +474,8 @@ async def generate_sea_caption(
             continue
         if "raw" in response.content and "caption" not in response.content:
             logging.warning(
-                "SEA_RUBRIC json_parse_error attempt=%d (OpenAI returned raw text, not JSON)", attempt
+                "SEA_RUBRIC json_parse_error attempt=%d (OpenAI returned raw text, not JSON)",
+                attempt,
             )
             continue
         caption_raw = response.content.get("caption")
@@ -487,7 +488,8 @@ async def generate_sea_caption(
             continue
         if not raw_hashtags or not isinstance(raw_hashtags, list):
             logging.warning(
-                "SEA_RUBRIC hashtags_missing_or_invalid attempt=%d (using default hashtags)", attempt
+                "SEA_RUBRIC hashtags_missing_or_invalid attempt=%d (using default hashtags)",
+                attempt,
             )
             raw_hashtags = []
         cleaned_caption = bot.strip_header(caption_raw)
@@ -495,7 +497,8 @@ async def generate_sea_caption(
         caption, hashtags = bot._build_final_sea_caption(caption, raw_hashtags)
         if not caption:
             logging.warning(
-                "SEA_RUBRIC empty_caption_error attempt=%d (caption empty after processing)", attempt
+                "SEA_RUBRIC empty_caption_error attempt=%d (caption empty after processing)",
+                attempt,
             )
             continue
         paragraphs = [p.strip() for p in caption.split("\n\n") if p.strip()]
@@ -513,14 +516,16 @@ async def generate_sea_caption(
         if caption_length > 400:
             logging.warning("SEA_RUBRIC caption_length %d exceeds soft limit 400", caption_length)
         if paragraph_count >= 2:
-            emoji_pattern = (
-                r"[\U0001F300-\U0001F9FF]|[\U0001F600-\U0001F64F]|[\U0001F680-\U0001F6FF]|[\U00002600-\U000027BF]"
-            )
+            emoji_pattern = r"[\U0001F300-\U0001F9FF]|[\U0001F600-\U0001F64F]|[\U0001F680-\U0001F6FF]|[\U00002600-\U000027BF]"
             if re.search(emoji_pattern, paragraphs[1]):
-                logging.warning("SEA_RUBRIC caption_emoji found in paragraph 2 (expected only in para 1)")
+                logging.warning(
+                    "SEA_RUBRIC caption_emoji found in paragraph 2 (expected only in para 1)"
+                )
         if bot._is_duplicate_rubric_copy("sea", "caption", caption, hashtags):
             logging.info(
-                "Получен повторяющийся текст для рубрики sea, пробуем снова (%s/%s)", attempt, attempts
+                "Получен повторяющийся текст для рубрики sea, пробуем снова (%s/%s)",
+                attempt,
+                attempts,
             )
             continue
         logging.info("SEA_RUBRIC caption_accepted attempt=%d source=llm", attempt)
@@ -578,7 +583,8 @@ async def generate_sea_caption_with_timeout(
             openai_metadata["timeout_hit"] = 1
             openai_metadata["fallback"] = 1
             logging.warning(
-                "SEA_RUBRIC OPENAI_CALL timeout=global_deadline elapsed_ms=%.1f", elapsed_global * 1000
+                "SEA_RUBRIC OPENAI_CALL timeout=global_deadline elapsed_ms=%.1f",
+                elapsed_global * 1000,
             )
             break
         remaining_time = min(per_attempt_timeout, openai_deadline - elapsed_global)

@@ -3099,7 +3099,7 @@ async def test_rubrics_overview_lists_configs(tmp_path):
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
     rubrics = bot.data.list_rubrics()
-    assert {r.code for r in rubrics} == {"flowers", "guess_arch", "sea"}
+    assert {r.code for r in rubrics} == {"flowers", "guess_arch", "postcard", "sea"}
     bot.data.upsert_rubric(
         "flowers",
         "Flowers",

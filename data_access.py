@@ -528,6 +528,7 @@ class DataAccess:
         self.conn.row_factory = sqlite3.Row
         self._ensure_assets_payload_schema()
         self.conn.row_factory = sqlite3.Row
+        self._has_postcard_score_column = self._has_column("assets", "postcard_score")
 
     def _table_info(self, table: str) -> list[sqlite3.Row]:
         try:
@@ -1295,115 +1296,108 @@ class DataAccess:
         tg_identifier = self._build_tg_message_identifier(tg_chat_id, message_id)
 
         if existing:
-            self.conn.execute(
-                """
+            update_pairs: list[tuple[str, Any]] = [
+                ("file_ref", file_ref),
+                ("content_type", content_type),
+                ("sha256", sha256),
+                ("width", width),
+                ("height", height),
+                ("exif_json", exif_json_value),
+                ("labels_json", labels_json),
+                ("tg_message_id", tg_identifier),
+                ("shot_at_utc", shot_at_value),
+                ("shot_doy", shot_doy_value),
+                ("photo_doy", photo_doy_value),
+                ("photo_wave", photo_wave_value),
+                ("sky_visible", sky_visible_value),
+                ("wave_score_0_10", wave_score_0_10_value),
+                ("wave_conf", wave_conf_value),
+            ]
+            if self._has_postcard_score_column:
+                update_pairs.append(("postcard_score", postcard_score_value))
+            update_pairs.extend(
+                [
+                    ("captured_at", captured_at_value),
+                    ("doy", doy_value),
+                    ("daypart", daypart_value),
+                    ("payload_json", payload_json),
+                ]
+            )
+            set_clause = ",\n                       ".join(
+                f"{column}=?" for column, _ in update_pairs
+            )
+            sql = f"""
                 UPDATE assets
-                   SET file_ref=?,
-                       content_type=?,
-                       sha256=?,
-                       width=?,
-                       height=?,
-                       exif_json=?,
-                       labels_json=?,
-                       tg_message_id=?,
-                       shot_at_utc=?,
-                       shot_doy=?,
-                       photo_doy=?,
-                       photo_wave=?,
-                       sky_visible=?,
-                       wave_score_0_10=?,
-                       wave_conf=?,
-                       postcard_score=?,
-                       captured_at=?,
-                       doy=?,
-                       daypart=?,
-                       payload_json=?
-                       WHERE id=?
-                       """,
-                       (
-                       file_ref,
-                       content_type,
-                       sha256,
-                       width,
-                       height,
-                       exif_json_value,
-                       labels_json,
-                       tg_identifier,
-                       shot_at_value,
-                       shot_doy_value,
-                       photo_doy_value,
-                       photo_wave_value,
-                       sky_visible_value,
-                       wave_score_0_10_value,
-                       wave_conf_value,
-                       postcard_score_value,
-                       captured_at_value,
-                       doy_value,
-                       daypart_value,
-                       payload_json,
-                       existing.id,
-                       ),
-                       )
+                   SET {set_clause}
+                 WHERE id=?
+            """
+            params = [value for _, value in update_pairs]
+            params.append(existing.id)
+            self.conn.execute(sql, params)
 
             return existing.id
 
         asset_id = str(uuid4())
         payload["created_at"] = payload.get("created_at", now)
         payload_json = self._encode_payload_blob(payload)
+        insert_columns = [
+            "id",
+            "upload_id",
+            "file_ref",
+            "content_type",
+            "sha256",
+            "width",
+            "height",
+            "exif_json",
+            "labels_json",
+            "tg_message_id",
+            "payload_json",
+            "created_at",
+            "source",
+            "shot_at_utc",
+            "shot_doy",
+            "photo_doy",
+            "photo_wave",
+            "sky_visible",
+            "wave_score_0_10",
+            "wave_conf",
+        ]
+        insert_values: list[Any] = [
+            asset_id,
+            None,
+            file_ref,
+            content_type,
+            sha256,
+            width,
+            height,
+            exif_json_value,
+            labels_json,
+            tg_identifier,
+            payload_json,
+            now,
+            source,
+            shot_at_value,
+            shot_doy_value,
+            photo_doy_value,
+            photo_wave_value,
+            sky_visible_value,
+            wave_score_0_10_value,
+            wave_conf_value,
+        ]
+        if self._has_postcard_score_column:
+            insert_columns.append("postcard_score")
+            insert_values.append(postcard_score_value)
+        insert_columns.extend(["captured_at", "doy", "daypart"])
+        insert_values.extend([captured_at_value, doy_value, daypart_value])
+        placeholders = ", ".join("?" for _ in insert_columns)
+        columns_sql = ",\n                ".join(insert_columns)
         self.conn.execute(
-            """
+            f"""
             INSERT INTO assets (
-                id,
-                upload_id,
-                file_ref,
-                content_type,
-                sha256,
-                width,
-                height,
-                exif_json,
-                labels_json,
-                tg_message_id,
-                payload_json,
-                created_at,
-                source,
-                shot_at_utc,
-                shot_doy,
-                photo_doy,
-                photo_wave,
-                sky_visible,
-                wave_score_0_10,
-                wave_conf,
-                postcard_score,
-                captured_at,
-                doy,
-                daypart
-            ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                {columns_sql}
+            ) VALUES ({placeholders})
             """,
-            (
-                asset_id,
-                file_ref,
-                content_type,
-                sha256,
-                width,
-                height,
-                exif_json_value,
-                labels_json,
-                tg_identifier,
-                payload_json,
-                now,
-                source,
-                shot_at_value,
-                shot_doy_value,
-                photo_doy_value,
-                photo_wave_value,
-                sky_visible_value,
-                wave_score_0_10_value,
-                wave_conf_value,
-                postcard_score_value,
-                captured_at_value,
-                doy_value,
-                daypart_value,
-            ),
+            insert_values,
         )
         self.conn.commit()
         return asset_id
@@ -1596,7 +1590,7 @@ class DataAccess:
         if wave_conf is not None:
             columns["wave_conf"] = Asset._to_float(wave_conf)
             column_dirty = True
-        if postcard_score is not None:
+        if postcard_score is not None and self._has_postcard_score_column:
             columns["postcard_score"] = Asset._normalize_postcard_score(postcard_score)
             column_dirty = True
         if sky_code is not None:
@@ -1787,6 +1781,12 @@ class DataAccess:
         keys = row.keys()
         row_dict = {key: row[key] for key in keys}
 
+        asset_id_raw = row_dict.get("id")
+        if asset_id_raw is None:
+            logging.warning("Asset row missing id column")
+            return None
+        asset_id = str(asset_id_raw)
+
         def _parse_json(raw: Any) -> Any | None:
             if raw is None:
                 return None
@@ -1913,7 +1913,7 @@ class DataAccess:
         postcard_score_val = Asset._normalize_postcard_score(row_dict.get("postcard_score"))
 
         return Asset(
-
+            id=asset_id,
             upload_id=row_dict.get("upload_id"),
             file_ref=row_dict.get("file_ref"),
             content_type=row_dict.get("content_type"),

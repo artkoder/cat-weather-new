@@ -110,7 +110,7 @@ async def test_postcard_caption_filters_stopwords() -> None:
     )
     good = OpenAIResponse(
         {
-            "caption": f"{POSTCARD_PREFIX}Балтийской косы — тихая линия горизонта вдохновляет.",
+            "caption": f"{POSTCARD_PREFIX}Светлогорска — тихая линия горизонта вдохновляет.",
             "hashtags": ["#БалтийскаяКоса", "#вид"],
         },
         {

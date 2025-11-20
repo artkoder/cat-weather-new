@@ -174,9 +174,7 @@ async def run_vision(bot: Bot, job: Job) -> None:
                     job.id,
                     asset_id,
                 )
-            bot.data.update_asset(
-                asset_id, vision_results={"status": "skipped"}, local_path=None
-            )
+            bot.data.update_asset(asset_id, vision_results={"status": "skipped"}, local_path=None)
             return
         process = psutil.Process(os.getpid())
 
@@ -563,13 +561,9 @@ async def run_vision(bot: Bot, job: Job) -> None:
             logging.info("Supabase token usage insert succeeded", extra=log_context)
         else:
             if error == "disabled":
-                logging.debug(
-                    "Supabase client disabled; token usage skipped", extra=log_context
-                )
+                logging.debug("Supabase client disabled; token usage skipped", extra=log_context)
             elif error:
-                logging.error(
-                    "Supabase token usage insert failed: %s", error, extra=log_context
-                )
+                logging.error("Supabase token usage insert failed: %s", error, extra=log_context)
             else:
                 logging.error("Supabase token usage insert failed", extra=log_context)
         safety_raw = result.get("safety")
@@ -666,9 +660,7 @@ async def run_vision(bot: Bot, job: Job) -> None:
                 if sea_wave_response and isinstance(sea_wave_response.content, dict):
                     wave_score_raw = sea_wave_response.content.get("sea_wave_score")
                     confidence_raw = sea_wave_response.content.get("confidence")
-                    if isinstance(wave_score_raw, int) and isinstance(
-                        confidence_raw, (int, float)
-                    ):
+                    if isinstance(wave_score_raw, int) and isinstance(confidence_raw, (int, float)):
                         wave_score = max(0, min(10, wave_score_raw))
                         confidence = max(0.0, min(1.0, float(confidence_raw)))
                         sea_wave_score_data = {
@@ -742,12 +734,10 @@ async def run_vision(bot: Bot, job: Job) -> None:
                 if isinstance(fallback_value, str):
                     fallback_text = fallback_value
 
-            formatted_exif, dedupe_values, has_osm_components = (
-                bot._format_exif_address_caption(
-                    exif_address if isinstance(exif_address, dict) else None,
-                    exif_lat,
-                    exif_lon,
-                )
+            formatted_exif, dedupe_values, has_osm_components = bot._format_exif_address_caption(
+                exif_address if isinstance(exif_address, dict) else None,
+                exif_lat,
+                exif_lon,
             )
 
             for value in dedupe_values:
@@ -1076,9 +1066,7 @@ async def run_vision(bot: Bot, job: Job) -> None:
             method_used,
             new_mid,
         )
-        weather_display_log = (
-            weather_final_display or photo_weather_display or photo_weather or "-"
-        )
+        weather_display_log = weather_final_display or photo_weather_display or photo_weather or "-"
         weather_source_log: str | None
         if metadata_weather:
             weather_source_log = "metadata"

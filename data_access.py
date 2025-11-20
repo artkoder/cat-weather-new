@@ -571,6 +571,23 @@ class DataAccess:
             module.run(self.conn)
             self.conn.commit()
 
+    def _normalize_upload_id(self, upload_id: Any | None) -> str | None:
+        if upload_id is None:
+            return None
+        try:
+            value = str(upload_id).strip()
+        except Exception:
+            return None
+        if not value:
+            return None
+        try:
+            row = self.conn.execute("SELECT 1 FROM uploads WHERE id=?", (value,)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        if row is None:
+            return None
+        return value
+
     def create_asset(
         self,
         *,
@@ -590,7 +607,7 @@ class DataAccess:
         photo_doy: int | None = None,
         photo_wave: float | None = None,
         sky_visible: str | bool | None = None,
-    ) -> str:
+        ) -> str:
         """Create a new asset entry tied to an upload and return its UUID."""
 
         asset_id = str(uuid4())
@@ -635,6 +652,8 @@ class DataAccess:
             shot_doy=shot_doy,
         )
 
+        upload_id_value = self._normalize_upload_id(upload_id)
+
         self.conn.execute(
             """
             INSERT INTO assets (
@@ -660,7 +679,7 @@ class DataAccess:
             """,
             (
                 asset_id,
-                upload_id,
+                upload_id_value,
                 file_ref,
                 content_type,
                 sha256,
@@ -1141,6 +1160,7 @@ class DataAccess:
         forward_from_user: int | None = None,
         forward_from_chat: int | None = None,
         metadata: dict[str, Any] | None = None,
+        upload_id: str | None = None,
         categories: Iterable[str] | None = None,
         rubric_id: int | None = None,
         origin: str = "weather",
@@ -1340,18 +1360,7 @@ class DataAccess:
         asset_id = str(uuid4())
         payload["created_at"] = payload.get("created_at", now)
         payload_json = self._encode_payload_blob(payload)
-        upload_id_value = str(upload_id).strip() if upload_id else None
-        if upload_id_value == "":
-            upload_id_value = None
-        if upload_id_value is not None:
-            try:
-                exists = self.conn.execute(
-                    "SELECT 1 FROM uploads WHERE id=?", (upload_id_value,)
-                ).fetchone()
-            except sqlite3.OperationalError:
-                exists = None
-            if exists is None:
-                upload_id_value = None
+        upload_id_value = self._normalize_upload_id(upload_id)
         insert_columns = [
             "id",
             "upload_id",
@@ -3349,7 +3358,6 @@ class DataAccess:
                 """
                 DELETE FROM jobs_queue
                 WHERE status IN ('queued','delayed')
-                  AND name='publish_rubric'
                   AND json_extract(payload, '$.rubric_code') = :rubric_code
                   AND (
                       :include_manual = 1

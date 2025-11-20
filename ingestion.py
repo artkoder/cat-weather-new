@@ -273,6 +273,7 @@ class SaveAssetPayload(TypedDict, total=False):
     kind: str | None
     file_meta: dict[str, Any] | None
     metadata: dict[str, Any] | None
+    upload_id: str | None
     categories: list[str] | None
     rubric_id: int | None
     origin: str
@@ -1372,6 +1373,8 @@ async def _ingest_photo_internal(
                 "wave_score_0_10": wave_score_value,
                 "wave_conf": wave_conf_value,
             }
+            if inputs.upload_id:
+                save_payload["upload_id"] = inputs.upload_id
             asset_id = callbacks.save_asset(save_payload)
 
         if asset_id and callbacks.link_upload_asset and inputs.upload_id:

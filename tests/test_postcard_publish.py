@@ -10,7 +10,7 @@ import pytest
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import main as main_module  # noqa: E402
-from caption_gen import POSTCARD_PREFIX  # noqa: E402
+from caption_gen import POSTCARD_OPENING_CHOICES  # noqa: E402
 from main import LOVE_COLLECTION_LINK  # noqa: E402
 from openai_client import OpenAIResponse  # noqa: E402
 
@@ -30,11 +30,11 @@ async def async_noop(*_args: Any, **_kwargs: Any) -> None:
 
 
 class DummyPostcardOpenAI:
-    def __init__(self, caption: str) -> None:
+    def __init__(self, sentence: str) -> None:
         self.api_key = "test-key"
         self._response = OpenAIResponse(
             {
-                "caption": caption,
+                "sentence": sentence,
                 "hashtags": ["#Светлогорск", "#БалтийскоеМоре"],
             },
             {
@@ -90,7 +90,7 @@ async def test_postcard_publish_routes_to_prod_channel(
 
     bot = main_module.Bot("dummy", str(tmp_path / "postcard-prod.db"))
     bot.supabase = DummySupabase()
-    bot.openai = DummyPostcardOpenAI(f"{POSTCARD_PREFIX}над Балтикой — мягкий свет")
+    bot.openai = DummyPostcardOpenAI("Это Светлогорск — мягкий свет над Балтикой.")
 
     rubric = bot.data.get_rubric_by_code("postcard")
     assert rubric is not None
@@ -128,7 +128,7 @@ async def test_postcard_publish_routes_to_prod_channel(
     payload = send_calls[0]["data"]
     assert payload["chat_id"] == prod_channel
     caption = payload["caption"]
-    assert caption.startswith(POSTCARD_PREFIX)
+    assert caption.startswith(POSTCARD_OPENING_CHOICES)
     assert LOVE_COLLECTION_LINK in caption
     assert payload["parse_mode"] == "HTML"
 
@@ -143,7 +143,7 @@ async def test_postcard_publish_routes_to_test_channel(
 
     bot = main_module.Bot("dummy", str(tmp_path / "postcard-test.db"))
     bot.supabase = DummySupabase()
-    bot.openai = DummyPostcardOpenAI(f"{POSTCARD_PREFIX}в Янтарном — вечернее золото")
+    bot.openai = DummyPostcardOpenAI("Это Янтарный — вечернее золото на набережной.")
 
     rubric = bot.data.get_rubric_by_code("postcard")
     assert rubric is not None
@@ -181,7 +181,7 @@ async def test_postcard_publish_routes_to_test_channel(
     payload = send_calls[0]["data"]
     assert payload["chat_id"] == test_channel
     caption = payload["caption"]
-    assert caption.startswith(POSTCARD_PREFIX)
+    assert caption.startswith(POSTCARD_OPENING_CHOICES)
     assert LOVE_COLLECTION_LINK in caption
 
     bot.db.close()

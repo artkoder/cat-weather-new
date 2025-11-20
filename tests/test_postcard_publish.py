@@ -72,7 +72,7 @@ def _create_postcard_asset(
         "UPDATE assets SET payload_json=?, postcard_score=?, captured_at=?, photo_doy=? WHERE id=?",
         (
             json.dumps(payload, ensure_ascii=False),
-            5,
+            10,
             now.isoformat(),
             now.timetuple().tm_yday,
             asset_id,

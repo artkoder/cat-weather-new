@@ -20,6 +20,26 @@ if TYPE_CHECKING:
     from main import Bot
 
 
+POSTCARD_SCORE_MIN = 1
+POSTCARD_SCORE_MAX = 10
+POSTCARD_TAG_THRESHOLD = 6
+
+
+def _extract_postcard_score(raw: Any) -> int | None:
+    score = Asset._to_int(raw)
+    if score is None:
+        return None
+    if POSTCARD_SCORE_MIN <= score <= POSTCARD_SCORE_MAX:
+        return score
+    clamped = max(POSTCARD_SCORE_MIN, min(POSTCARD_SCORE_MAX, score))
+    logging.warning(
+        "Vision postcard_score out of range raw=%s clamped=%s",
+        score,
+        clamped,
+    )
+    return clamped
+
+
 async def handle_vision(bot: Bot, job: Job) -> None:
     async with bot._vision_semaphore:
         await run_vision(bot, job)
@@ -201,7 +221,11 @@ async def run_vision(bot: Bot, job: Job) -> None:
             "Если is_sea=true, оцени sea_wave_score по шкале 0..10 (0 — гладь, 10 — шквал), укажи photo_sky одной из категорий sunny/partly_cloudy/mostly_cloudy/overcast/night/unknown и выставь is_sunset=true, когда заметен закат. "
             "Если моря нет, sea_wave_score ставь null, но всё равно классифицируй photo_sky по видимому небу. "
             "Обязательно укажи sky_visible=true, если на фото видно небо (даже частично), иначе sky_visible=false. Если небо не видно или неясно, ставь photo_sky=unknown. "
-            "Также оцени postcard_score (1 — обычное фото, 5 — идеальная открытка) с учётом композиции, света и художественности кадра."
+            "Поле postcard_score обязательно: верни целое число 1–10, которое отражает «открыточность» кадра (1 — совсем не открытка, 10 — почти идеальная открытка). "
+            "Шкала ориентиров: 1–2 — бытовой кадр без композиции, 3–4 — есть вид, но композиция средняя и заметен визуальный шум, 5–6 — приятный кадр без эффекта «вау», "
+            "7–8 — заметно красивый вид с хорошей композицией и читаемой глубиной, 9–10 — очень красивый кадр, который хочется сохранить и показывать другим. "
+            "Примеры: 2/10 — случайный двор у подъезда без света, 5/10 — аккуратная набережная с ровным светом, 8/10 — выразительный город у воды при хорошем освещении, "
+            "10/10 — эффектный пейзаж или городская панорама с идеальным светом. Используй весь диапазон 1–10 и не бойся ставить значения 2, 5, 7, 9, если они точнее описывают сцену."
         )
         user_prompt = (
             "Опиши сцену, перечисли объекты, теги, достопримечательности, архитектуру и безопасность фото. Укажи кадровку (framing), "
@@ -209,7 +233,7 @@ async def run_vision(bot: Bot, job: Job) -> None:
             "Если локация неочевидна, ставь guess_country/guess_city = null и указывай низкую числовую уверенность. "
             "Отдельно отметь, присутствует ли море/океан/пляж (is_sea), оцени sea_wave_score 0..10, классифицируй небо photo_sky и укажи is_sunset для закатных кадров. "
             "Обязательно определи, видно ли небо на фото (sky_visible), и если небо не видно или неясно, используй photo_sky=unknown. "
-            "Также оцени postcard_score (1..5) и возвращай значение даже при низкой художественности кадра."
+            "Также оцени postcard_score (1..10): 1 — совсем не открытка, 10 — почти идеальная. Используй весь диапазон и возвращай значение даже при низкой художественности кадра."
         )
         bot._enforce_openai_limit(job, "gpt-4o-mini")
         logging.info(
@@ -421,7 +445,7 @@ async def run_vision(bot: Bot, job: Job) -> None:
             if isinstance(sky_visible_raw, bool)
             else str(sky_visible_raw).strip().lower() in {"1", "true", "yes", "да"}
         )
-        postcard_score_value = Asset._normalize_postcard_score(result.get("postcard_score"))
+        postcard_score_value = _extract_postcard_score(result.get("postcard_score"))
         raw_objects = result.get("objects")
         objects: list[str] = []
         if isinstance(raw_objects, list):
@@ -459,7 +483,7 @@ async def run_vision(bot: Bot, job: Job) -> None:
             tags.append("architecture_close_up")
         if architecture_wide and "architecture_wide" not in tags:
             tags.append("architecture_wide")
-        if postcard_score_value is not None and postcard_score_value >= 3:
+        if postcard_score_value is not None and postcard_score_value >= POSTCARD_TAG_THRESHOLD:
             if "postcard" not in tags:
                 tags.append("postcard")
         await bot._maybe_append_marine_tag(asset, tags)
@@ -765,8 +789,8 @@ async def run_vision(bot: Bot, job: Job) -> None:
         caption_lines.append(f"Время съёмки: {capture_display_value}")
         caption_lines.append(f"Погода: {weather_caption_display}")
         caption_lines.append(f"Сезон: {season_caption_display}")
-        if postcard_score_value is not None and postcard_score_value >= 3:
-            caption_lines.append(f"Открыточность: {postcard_score_value}/5")
+        if postcard_score_value is not None and postcard_score_value >= POSTCARD_TAG_THRESHOLD:
+            caption_lines.append(f"Открыточность: {postcard_score_value}/10")
         if arch_style and arch_style.get("label"):
             confidence_value = arch_style.get("confidence")
             style_line = f"Стиль: {arch_style['label']}"

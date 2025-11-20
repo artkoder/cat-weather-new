@@ -447,9 +447,9 @@ def test_asset_vision_schema_definition():
             },
             "postcard_score": {
                 "type": ["integer", "null"],
-                "description": "Оценка 'открыточности' кадра по шкале 1 (обычное фото) – 5 (идеальная открытка).",
+                "description": "Оценка 'открыточности' кадра по шкале 1 (совсем не открытка) – 10 (почти идеальная открытка).",
                 "minimum": 1,
-                "maximum": 5,
+                "maximum": 10,
             },
             "safety": {
                 "type": "object",

@@ -247,14 +247,7 @@ def _is_sea_scene(asset: Asset) -> bool:
                 return True
         except (TypeError, ValueError):
             pass
-        tags = results.get("tags")
-        if isinstance(tags, (list, tuple, set)):
-            for tag in tags:
-                text = str(tag or "").strip().casefold()
-                if not text:
-                    continue
-                if any(keyword in text for keyword in ("море", "морск", "sea")):
-                    return True
+
     return False
 
 

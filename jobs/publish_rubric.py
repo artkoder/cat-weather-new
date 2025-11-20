@@ -57,6 +57,7 @@ async def handle_publish_rubric(bot: Bot, job: Job) -> None:
             resolved_channel,
         )
     success = await publish_rubric(
+        bot,
         code,
         channel_id=resolved_channel,
         test=test_mode,
@@ -120,4 +121,3 @@ async def publish_rubric(
         initiator_id=initiator_id,
         instructions=instructions,
     )
-

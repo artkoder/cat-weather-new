@@ -62,7 +62,11 @@ def select_postcard_asset(data: DataAccess, *, now: datetime) -> Asset | None:
         """,
         (_MIN_SCORE,),
     ).fetchone()
-    max_score = int(max_score_row["max_score"]) if max_score_row and max_score_row["max_score"] is not None else None
+    max_score = (
+        int(max_score_row["max_score"])
+        if max_score_row and max_score_row["max_score"] is not None
+        else None
+    )
     if max_score is None:
         logger.info("POSTCARD_RUBRIC score_pool empty threshold=%s", _MIN_SCORE)
         return None
@@ -112,9 +116,7 @@ def select_postcard_asset(data: DataAccess, *, now: datetime) -> Asset | None:
     )
     working_set = fresh_candidates if fresh_candidates else candidates
     if not fresh_candidates:
-        logger.info(
-            "POSTCARD_RUBRIC freshness fallback_to_stale count=%s", len(working_set)
-        )
+        logger.info("POSTCARD_RUBRIC freshness fallback_to_stale count=%s", len(working_set))
 
     in_season = [c for c in working_set if _matches_season(c.photo_doy, doy_now)]
     season_candidates = in_season if in_season else working_set
@@ -257,4 +259,3 @@ def _to_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
-

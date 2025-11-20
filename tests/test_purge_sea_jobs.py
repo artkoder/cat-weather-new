@@ -117,8 +117,7 @@ async def test_purge_sea_jobs_deletes_future_jobs(tmp_path):
         assert schedule_keys.count("manual-test") == 1
         assert any(row["rubric_code"] == "flowers" for row in remaining)
         assert all(
-            (row["rubric_code"] != "sea")
-            or (row["schedule_key"] in {"manual", "manual-test"})
+            (row["rubric_code"] != "sea") or (row["schedule_key"] in {"manual", "manual-test"})
             for row in remaining
         )
     finally:

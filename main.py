@@ -1166,9 +1166,7 @@ class Bot:
             self.db.commit()
         self.jobs = JobQueue(self.db, concurrency=1)
         self.jobs.register_handler("ingest", self._job_ingest)
-        self.jobs.register_handler(
-            "vision", functools.partial(vision_jobs.handle_vision, self)
-        )
+        self.jobs.register_handler("vision", functools.partial(vision_jobs.handle_vision, self))
         self.jobs.register_handler(
             "publish_rubric",
             functools.partial(publish_rubric_jobs.handle_publish_rubric, self),
@@ -5360,7 +5358,6 @@ class Bot:
         vision_job = self.jobs.enqueue("vision", {"asset_id": asset_id, "tz_offset": tz_offset})
         logging.info("Asset %s queued for vision job %s after ingest", asset_id, vision_job)
 
-
     async def _job_vision(self, job: Job) -> None:
         await vision_jobs.handle_vision(self, job)
 
@@ -5503,11 +5500,23 @@ class Bot:
             if isinstance(value, (list, tuple, set)):
                 return [_to_plain(item) for item in value]
             if hasattr(value, "__dict__"):
-                return {
+                attrs = {
                     key: _to_plain(val)
                     for key, val in vars(value).items()
                     if not key.startswith("_")
                 }
+                if not attrs:
+                    for key in dir(value):
+                        if key.startswith("_"):
+                            continue
+                        try:
+                            attr_value = getattr(value, key)
+                        except AttributeError:
+                            continue
+                        if callable(attr_value):
+                            continue
+                        attrs[key] = _to_plain(attr_value)
+                return attrs
             return value
 
         payload_raw = _to_plain(message)
@@ -10250,7 +10259,6 @@ class Bot:
         if instructions:
             payload["instructions"] = instructions
         return self.jobs.enqueue("publish_rubric", payload)
-
 
     async def _job_publish_rubric(self, job: Job) -> None:
         await publish_rubric_jobs.handle_publish_rubric(self, job)

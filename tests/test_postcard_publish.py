@@ -48,7 +48,9 @@ class DummyPostcardOpenAI:
         return self._response
 
 
-def _create_postcard_asset(bot: main_module.Bot, *, city: str = "Светлогорск", region: str = "Калининградская область") -> str:
+def _create_postcard_asset(
+    bot: main_module.Bot, *, city: str = "Светлогорск", region: str = "Калининградская область"
+) -> str:
     asset_id = bot.data.create_asset(
         upload_id="upload-1",
         file_ref="photo-file",
@@ -58,9 +60,11 @@ def _create_postcard_asset(bot: main_module.Bot, *, city: str = "Светлог�
         height=1350,
         tg_message_id="1:1",
         tg_chat_id=1,
-        source="test",
+        source="telegram",
     )
-    payload_row = bot.db.execute("SELECT payload_json FROM assets WHERE id=?", (asset_id,)).fetchone()
+    payload_row = bot.db.execute(
+        "SELECT payload_json FROM assets WHERE id=?", (asset_id,)
+    ).fetchone()
     payload = json.loads(payload_row["payload_json"] or "{}")
     payload.update({"city": city, "region": region, "tg_chat_id": 1, "message_id": 1})
     now = datetime.now(UTC)
@@ -79,7 +83,9 @@ def _create_postcard_asset(bot: main_module.Bot, *, city: str = "Светлог�
 
 
 @pytest.mark.asyncio
-async def test_postcard_publish_routes_to_prod_channel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_postcard_publish_routes_to_prod_channel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_noop, raising=False)
 
     bot = main_module.Bot("dummy", str(tmp_path / "postcard-prod.db"))
@@ -130,7 +136,9 @@ async def test_postcard_publish_routes_to_prod_channel(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_postcard_publish_routes_to_test_channel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_postcard_publish_routes_to_test_channel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_noop, raising=False)
 
     bot = main_module.Bot("dummy", str(tmp_path / "postcard-test.db"))

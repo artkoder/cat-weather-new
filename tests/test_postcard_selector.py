@@ -145,7 +145,9 @@ def test_uses_stale_asset_when_no_fresh_available(data: DataAccess) -> None:
     assert asset.id == "asset-old"
 
 
-def test_logs_season_fallback_when_no_match(data: DataAccess, caplog: pytest.LogCaptureFixture) -> None:
+def test_logs_season_fallback_when_no_match(
+    data: DataAccess, caplog: pytest.LogCaptureFixture
+) -> None:
     tz = ZoneInfo("Europe/Kaliningrad")
     now = datetime(2024, 2, 1, 8, 0, tzinfo=tz)
     far_doy = ((now.timetuple().tm_yday + 200 - 1) % 366) + 1

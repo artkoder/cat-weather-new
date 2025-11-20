@@ -313,15 +313,41 @@ def _finalize_postcard_hashtags(
         if not is_sea_scene and _looks_like_marine_tag(tag):
             continue
         filtered.append(tag)
-    if region_hashtag:
+    normalized_region_tag = _normalize_hashtag_candidate(region_hashtag)
+    if normalized_region_tag:
+        filtered.append(normalized_region_tag)
+    elif region_hashtag:
         filtered.append(region_hashtag)
     if city_hashtag:
         filtered.append(city_hashtag)
     filtered.append(POSTCARD_RUBRIC_HASHTAG)
     finalized = _deduplicate_hashtags(filtered)
-    if len(finalized) > POSTCARD_HASHTAG_LIMIT:
-        finalized = finalized[:POSTCARD_HASHTAG_LIMIT]
-    return finalized
+
+    required_keys: set[str] = {POSTCARD_RUBRIC_HASHTAG.casefold()}
+    if normalized_region_tag:
+        required_keys.add(normalized_region_tag.casefold())
+
+    if len(finalized) <= POSTCARD_HASHTAG_LIMIT:
+        return finalized
+
+    limited: list[str] = []
+    optional_indices: list[int] = []
+    present_required: set[str] = set()
+    for tag in finalized:
+        key = tag.casefold()
+        is_required = key in required_keys
+        if len(limited) < POSTCARD_HASHTAG_LIMIT:
+            limited.append(tag)
+            if is_required:
+                present_required.add(key)
+            else:
+                optional_indices.append(len(limited) - 1)
+            continue
+        if is_required and key not in present_required and optional_indices:
+            replace_index = optional_indices.pop()
+            limited[replace_index] = tag
+            present_required.add(key)
+    return limited
 
 
 def _postcard_fallback_sentence(location: _LocationInfo, semantic_tags: Sequence[str]) -> str:

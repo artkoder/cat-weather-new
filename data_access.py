@@ -1340,6 +1340,18 @@ class DataAccess:
         asset_id = str(uuid4())
         payload["created_at"] = payload.get("created_at", now)
         payload_json = self._encode_payload_blob(payload)
+        upload_id_value = str(upload_id).strip() if upload_id else None
+        if upload_id_value == "":
+            upload_id_value = None
+        if upload_id_value is not None:
+            try:
+                exists = self.conn.execute(
+                    "SELECT 1 FROM uploads WHERE id=?", (upload_id_value,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                exists = None
+            if exists is None:
+                upload_id_value = None
         insert_columns = [
             "id",
             "upload_id",
@@ -1364,7 +1376,7 @@ class DataAccess:
         ]
         insert_values: list[Any] = [
             asset_id,
-            None,
+            upload_id_value,
             file_ref,
             content_type,
             sha256,
@@ -3337,6 +3349,7 @@ class DataAccess:
                 """
                 DELETE FROM jobs_queue
                 WHERE status IN ('queued','delayed')
+                  AND name='publish_rubric'
                   AND json_extract(payload, '$.rubric_code') = :rubric_code
                   AND (
                       :include_manual = 1

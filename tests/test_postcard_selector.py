@@ -90,7 +90,7 @@ def test_selects_best_recent_asset(data: DataAccess) -> None:
     _add_asset(
         data,
         asset_id="asset-a",
-        score=5,
+        score=10,
         created_at=now - timedelta(days=1),
         captured_at=now - timedelta(days=1),
         photo_doy=doy_now,
@@ -99,7 +99,7 @@ def test_selects_best_recent_asset(data: DataAccess) -> None:
     _add_asset(
         data,
         asset_id="asset-b",
-        score=5,
+        score=10,
         created_at=now - timedelta(days=5),
         captured_at=now - timedelta(days=5),
         photo_doy=doy_now,
@@ -107,7 +107,7 @@ def test_selects_best_recent_asset(data: DataAccess) -> None:
     _add_asset(
         data,
         asset_id="asset-c",
-        score=4,
+        score=8,
         created_at=now - timedelta(days=1),
         captured_at=now - timedelta(days=1),
         photo_doy=doy_now,
@@ -126,7 +126,7 @@ def test_uses_stale_asset_when_no_fresh_available(data: DataAccess) -> None:
     _add_asset(
         data,
         asset_id="asset-old",
-        score=5,
+        score=10,
         created_at=now - timedelta(days=6),
         captured_at=now - timedelta(days=6),
         photo_doy=doy_now,
@@ -134,7 +134,7 @@ def test_uses_stale_asset_when_no_fresh_available(data: DataAccess) -> None:
     _add_asset(
         data,
         asset_id="asset-lower",
-        score=4,
+        score=8,
         created_at=now - timedelta(days=1),
         captured_at=now - timedelta(days=1),
         photo_doy=doy_now,
@@ -155,7 +155,7 @@ def test_logs_season_fallback_when_no_match(
     _add_asset(
         data,
         asset_id="asset-season",
-        score=5,
+        score=10,
         created_at=now - timedelta(days=1),
         captured_at=now - timedelta(days=1),
         photo_doy=far_doy,
@@ -183,7 +183,7 @@ def test_repeat_guard_skips_recently_used_assets(data: DataAccess) -> None:
     _add_asset(
         data,
         asset_id="asset-stale",
-        score=5,
+        score=10,
         created_at=now - timedelta(days=2),
         captured_at=now - timedelta(days=2),
         photo_doy=doy_now,
@@ -192,7 +192,7 @@ def test_repeat_guard_skips_recently_used_assets(data: DataAccess) -> None:
     _add_asset(
         data,
         asset_id="asset-fresh",
-        score=5,
+        score=10,
         created_at=now - timedelta(days=2),
         captured_at=now - timedelta(days=2),
         photo_doy=doy_now,

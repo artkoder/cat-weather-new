@@ -160,8 +160,8 @@ For integration tests, provide real credentials via environment variables.
 - **uploads** — device upload ledger keyed by `(device_id, idempotency_key)` to enforce idempotency. Status transitions follow `queued → processing → done|failed`; failed rows keep the last error and completed entries remain for at most 24 hours to prevent duplicate retries.
 
 #### Метаданные «открыточности»
-- Vision-модель записывает `assets.postcard_score` — оценку «открыточности» в диапазоне 1–5, которая доступна в админке и используется для подборов.
-- Кадры с `postcard_score ≥ 3` автоматически получают тег `postcard` в `vision_results.tags`, а в техподписи ассет-канала появляется строка «Открыточность: N/5», чтобы операторы сразу видели сильные открытки.
+- Vision-модель записывает `assets.postcard_score` — оценку «открыточности» в диапазоне 1–10, которая доступна в админке и используется для подборов.
+- Кадры с `postcard_score ≥ 6` автоматически получают тег `postcard` в `vision_results.tags`, а в техподписи ассет-канала появляется строка «Открыточность: N/10», чтобы операторы сразу видели сильные открытки.
 - Эти поля используются рубрикой `postcard`, поэтому не обнуляйте `postcard_score` и не снимайте тег вручную, если кадр должен оставаться в пуле открыток.
 
 The job queue starts a periodic cleanup task that runs every five minutes. It purges expired pairing tokens and nonces and removes upload rows whose idempotency window (24 hours) has elapsed, keeping the database lean without manual intervention.

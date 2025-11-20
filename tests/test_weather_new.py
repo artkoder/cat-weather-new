@@ -229,14 +229,14 @@ async def test_job_vision_adds_postcard_score_and_caption(tmp_path, monkeypatch)
         tmp_path,
         monkeypatch,
         flag_enabled=False,
-        vision_overrides={"postcard_score": 5},
+        vision_overrides={"postcard_score": 8},
     )
     copy_calls = [call for call in calls if call["method"] == "copyMessage"]
     assert copy_calls
     caption = copy_calls[0]["data"].get("caption")
     assert caption is not None
-    assert "Открыточность: 5/5" in caption
-    assert asset.postcard_score == 5
+    assert "Открыточность: 8/10" in caption
+    assert asset.postcard_score == 8
     assert asset.vision_results is not None
     assert "postcard" in asset.vision_results.get("tags", [])
 

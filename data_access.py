@@ -153,7 +153,7 @@ class Asset:
         score = Asset._to_int(value)
         if score is None:
             return None
-        if 1 <= score <= 5:
+        if 1 <= score <= 10:
             return score
         return None
 

@@ -126,7 +126,7 @@ def test_delete_future_rubric_jobs_filters_manual_and_statuses() -> None:
     conn.commit()
 
     deleted = data.delete_future_rubric_jobs("sea")
-    assert deleted == 3
+    assert deleted == 2
 
     remaining = conn.execute(
         """
@@ -139,7 +139,7 @@ def test_delete_future_rubric_jobs_filters_manual_and_statuses() -> None:
         """
     ).fetchall()
     sea_keys = {row["schedule_key"] for row in remaining if row["rubric_code"] == "sea"}
-    assert sea_keys == {"manual", "manual-test", "sea:running"}
+    assert sea_keys == {"manual", "manual-test", "sea:running", "sea:export"}
     assert any(row["rubric_code"] == "flowers" for row in remaining)
     assert any(row["name"] == "export_inventory" for row in remaining)
 
@@ -148,11 +148,26 @@ def test_delete_future_rubric_jobs_filters_manual_and_statuses() -> None:
 
     final_rows = conn.execute(
         """
-        SELECT json_extract(payload, '$.rubric_code') AS rubric_code
+        SELECT json_extract(payload, '$.schedule_key') AS schedule_key,
+               json_extract(payload, '$.rubric_code') AS rubric_code,
+               status,
+               name
         FROM jobs_queue
         ORDER BY id
         """
     ).fetchall()
-    assert all(row["rubric_code"] != "sea" for row in final_rows)
+    final_sea_keys = {row["schedule_key"] for row in final_rows if row["rubric_code"] == "sea"}
+    assert final_sea_keys == {"sea:running", "sea:export"}
+    assert not any(
+        row["rubric_code"] == "sea" and row["schedule_key"] in {"manual", "manual-test"}
+        for row in final_rows
+    )
+    assert any(row["name"] == "export_inventory" for row in final_rows)
+    assert any(
+        row["rubric_code"] == "sea"
+        and row["schedule_key"] == "sea:running"
+        and row["status"] == "running"
+        for row in final_rows
+    )
 
     conn.close()

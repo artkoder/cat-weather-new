@@ -607,7 +607,7 @@ class DataAccess:
         photo_doy: int | None = None,
         photo_wave: float | None = None,
         sky_visible: str | bool | None = None,
-        ) -> str:
+    ) -> str:
         """Create a new asset entry tied to an upload and return its UUID."""
 
         asset_id = str(uuid4())
@@ -3341,23 +3341,25 @@ class DataAccess:
 
     def delete_future_rubric_jobs(self, rubric_code: str, include_manual: bool = False) -> int:
         """
-        Delete future scheduled jobs for the given rubric_code.
+        Delete future scheduled publish_rubric jobs for the given rubric_code.
 
         Future here means jobs that are not running or finished: status IN ('queued', 'delayed').
-        Matching is done via payload.rubric_code so publish/export and similar rubric jobs are purged.
-        By default, do NOT delete manual/test publications (payload.schedule_key in ['manual', 'manual-test']).
-        Return number of deleted rows.
+        Matching is done via payload.rubric_code but only for publish_rubric queue entries so auxiliary
+        rubric jobs (for example exports) remain untouched. By default, do NOT delete manual/test
+        publications (payload.schedule_key in ['manual', 'manual-test']). Return number of deleted rows.
         """
 
         params = {
             "rubric_code": rubric_code,
             "include_manual": 1 if include_manual else 0,
+            "job_name": "publish_rubric",
         }
         try:
             cur = self.conn.execute(
                 """
                 DELETE FROM jobs_queue
-                WHERE status IN ('queued','delayed')
+                WHERE name = :job_name
+                  AND status IN ('queued','delayed')
                   AND json_extract(payload, '$.rubric_code') = :rubric_code
                   AND (
                       :include_manual = 1

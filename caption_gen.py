@@ -49,6 +49,58 @@ POSTCARD_ADDITIONAL_STOP_PHRASES = (
     "уникальная",
     "уникальное",
     "особенное место, где хочется остаться навсегда",
+    "шепчет",
+    "шептала",
+    "шептали",
+    "нашёптывает",
+    "нашептывали",
+    "ласкает",
+    "ласкают",
+    "манит",
+    "манят",
+    "манящий",
+    "манящая",
+    "манящее",
+    "место силы",
+    "магия места",
+    "окутывает",
+    "окутывают",
+    "укутывает",
+    "укутывают",
+    "обнимает",
+    "обнимают",
+    "дарит настроение",
+    "дарит ощущение",
+    "дарит тепло",
+    "создаёт настроение",
+    "создаёт особую атмосферу",
+    "особая атмосфера",
+    "неповторимая атмосфера",
+    "сказочная атмосфера",
+    "волшебная атмосфера",
+    "делает настроение",
+    "наполняет теплом",
+    "наполняет энергией",
+    "заряжает энергией",
+    "заряжает настроением",
+    "уютный уголок",
+    "уютный уголочек",
+    "уютное местечко",
+    "словно из открытки",
+    "как на открытке",
+    "словно кадр из фильма",
+    "как кадр из фильма",
+    "как из фильма",
+    "как в кино",
+    "как из сказки",
+    "словно в сказке",
+    "волшебный",
+    "волшебная",
+    "волшебное",
+    "обязательно стоит побывать",
+    "обязательно загляните",
+    "каждый найдёт что-то своё",
+    "здесь найдёт что-то своё каждый",
 )
 POSTCARD_MARINE_KEYWORDS = ("море", "морск", "sea", "ocean", "coast", "shore", "beach")
 POSTCARD_RUBRIC_TAG_THRESHOLD = 9
@@ -82,6 +134,7 @@ POSTCARD_BIRD_TAGS = (
 )
 POSTCARD_BIRD_TAG_KEYS = {tag.casefold() for tag in POSTCARD_BIRD_TAGS}
 _LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]")
+_MARKDOWN_ESCAPE_PATTERN = re.compile(r"([\\_*[\]()])")
 _POSTCARD_COMMON_STOPWORDS: tuple[str, ...] | None = None
 _POSTCARD_TZ = ZoneInfo("Europe/Kaliningrad")
 _POSTCARD_SEASON_AGE_THRESHOLD_DAYS = 60
@@ -202,6 +255,16 @@ def _append_season_line(text: str, season_line: str | None) -> str:
     return season_line
 
 
+def _append_map_links(text: str, map_line: str | None) -> str:
+    cleaned_text = text.strip()
+    cleaned_line = (map_line or "").strip()
+    if not cleaned_line:
+        return cleaned_text
+    if cleaned_text:
+        return f"{cleaned_text}\n\n{cleaned_line}"
+    return cleaned_line
+
+
 def _attach_link_block(text: str, link_block: str) -> str:
     cleaned_text = text.strip()
     cleaned_link = (link_block or "").strip()
@@ -221,7 +284,19 @@ def _sanitize_prompt_leaks(text: str) -> str:
 def _build_link_block() -> str:
     from main import build_rubric_link_block  # avoid circular import at module load
 
-    return build_rubric_link_block("postcard")
+    return build_rubric_link_block("postcard", parse_mode="Markdown")
+
+
+def _build_postcard_map_links(asset: Asset) -> str | None:
+    latitude = asset.latitude
+    longitude = asset.longitude
+    if latitude is None or longitude is None:
+        return None
+    return (
+        "📍 "
+        f"[2ГИС](https://2gis.ru/?m={longitude:.6f},{latitude:.6f})  "
+        f"[Яндекс](https://yandex.ru/maps/?ll={longitude:.6f},{latitude:.6f}&z=15)"
+    )
 
 
 def _normalize_hashtag_candidate(value: str | None) -> str | None:
@@ -351,6 +426,12 @@ def _sanitize_postcard_caption_text(text: str) -> str:
     cleaned = re.sub(r"\n{2,}", "\n", cleaned)
     cleaned = re.sub(r"\s{2,}", " ", cleaned)
     return cleaned.strip()
+
+
+def _escape_markdown_text(text: str) -> str:
+    if not text:
+        return ""
+    return _MARKDOWN_ESCAPE_PATTERN.sub(r"\\\1", text)
 
 
 def _remove_latin_words(text: str) -> str:
@@ -682,8 +763,15 @@ async def generate_postcard_caption(
         system_prompt_lines.append(
             "Когда is_out_of_season=false, описывай детали в настоящем времени, будто сцена происходит прямо сейчас."
         )
-    if stopwords_text:
-        system_prompt_lines.append(f"Запрещены стоп-слова и клише: {stopwords_text}.")
+    if banned_words:
+        system_prompt_lines.append("Не используй нейросетевые штампы и заезженные фразы.")
+        system_prompt_lines.append(
+            "Запрещено использовать слова и выражения из этого списка (и любые их формы): "
+            f"{stopwords_text}."
+        )
+        system_prompt_lines.append(
+            "Если хочется передать похожий смысл — перефразируй по-человечески простым, живым языком."
+        )
     system_prompt_lines.append(
         "Если has_birds=true или перечислены bird_tags, мягко упомяни заметных птиц (лебеди, утки, чайки и т. п.), если это органично."
     )
@@ -746,12 +834,15 @@ async def generate_postcard_caption(
         include_rubric_tag=include_rubric_tag,
         fallback_keywords=semantic_tags,
     )
+    map_links_line = _build_postcard_map_links(asset)
     link_block = _build_link_block()
     if not openai or not getattr(openai, "api_key", None):
         fallback_sentence = _postcard_fallback_sentence(location, semantic_tags)
         opening = _build_postcard_opening(location)
         combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
-        caption_body = _append_season_line(combined, season_line)
+        combined = _escape_markdown_text(combined)
+        caption_with_map = _append_map_links(combined, map_links_line)
+        caption_body = _append_season_line(caption_with_map, season_line)
         caption_with_block = _attach_link_block(caption_body, link_block)
         return caption_with_block.strip(), default_tags
     attempts = 3
@@ -816,14 +907,18 @@ async def generate_postcard_caption(
             include_rubric_tag=include_rubric_tag,
             fallback_keywords=semantic_tags,
         )
-        caption_with_season = _append_season_line(caption_text, season_line)
+        escaped_caption = _escape_markdown_text(caption_text)
+        caption_with_map = _append_map_links(escaped_caption, map_links_line)
+        caption_with_season = _append_season_line(caption_with_map, season_line)
         caption_with_block = _attach_link_block(caption_with_season, link_block)
         return caption_with_block.strip(), hashtags
     logging.warning("POSTCARD_CAPTION fallback_used")
     fallback_sentence = _postcard_fallback_sentence(location, semantic_tags)
     opening = _build_postcard_opening(location)
     combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
-    caption_body = _append_season_line(combined, season_line)
+    combined = _escape_markdown_text(combined)
+    caption_with_map = _append_map_links(combined, map_links_line)
+    caption_body = _append_season_line(caption_with_map, season_line)
     caption_with_block = _attach_link_block(caption_body, link_block)
     return caption_with_block.strip(), default_tags
 

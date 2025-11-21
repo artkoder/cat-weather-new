@@ -11,10 +11,11 @@ from PIL import Image, ImageChops
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+import caption_gen  # noqa: E402
 import main as main_module  # noqa: E402
 import postcard_watermark  # noqa: E402
 from caption_gen import POSTCARD_OPENING_CHOICES  # noqa: E402
-from main import LOVE_COLLECTION_LINK  # noqa: E402
+from main import LOVE_COLLECTION_LINK_MARKDOWN  # noqa: E402
 from openai_client import OpenAIResponse  # noqa: E402
 from postcard_watermark import WATERMARK_PATH  # noqa: E402
 
@@ -146,8 +147,8 @@ async def test_postcard_publish_routes_to_prod_channel(
     assert payload["chat_id"] == prod_channel
     caption = payload["caption"]
     assert caption.startswith(POSTCARD_OPENING_CHOICES)
-    assert LOVE_COLLECTION_LINK in caption
-    assert payload["parse_mode"] == "HTML"
+    assert LOVE_COLLECTION_LINK_MARKDOWN in caption
+    assert payload["parse_mode"] == "Markdown"
 
     bot.db.close()
 
@@ -199,7 +200,69 @@ async def test_postcard_publish_routes_to_test_channel(
     assert payload["chat_id"] == test_channel
     caption = payload["caption"]
     assert caption.startswith(POSTCARD_OPENING_CHOICES)
-    assert LOVE_COLLECTION_LINK in caption
+    assert LOVE_COLLECTION_LINK_MARKDOWN in caption
+
+    bot.db.close()
+
+
+@pytest.mark.asyncio
+async def test_postcard_publish_renders_expected_markdown_caption(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_noop, raising=False)
+
+    bot = main_module.Bot("dummy", str(tmp_path / "postcard-md.db"))
+    bot.supabase = DummySupabase()
+    bot.openai = None
+
+    rubric = bot.data.get_rubric_by_code("postcard")
+    assert rubric is not None
+    config = dict(rubric.config or {})
+    config.update(
+        {
+            "enabled": True,
+            "channel_id": -910701,
+            "test_channel_id": -910702,
+            "postcard_region_hashtag": "#КалининградскаяОбласть",
+            "postcard_stopwords": [],
+        }
+    )
+    bot.data.save_rubric_config("postcard", config)
+    _create_postcard_asset(bot)
+
+    async def fake_generate_postcard_caption(*_args: Any, **_kwargs: Any) -> tuple[str, list[str]]:
+        base = f"{POSTCARD_OPENING_CHOICES[0]} Мягкий свет над водой."
+        return f"{base}\n\n{LOVE_COLLECTION_LINK_MARKDOWN}", ["#один", "#два"]
+
+    monkeypatch.setattr(
+        caption_gen,
+        "generate_postcard_caption",
+        fake_generate_postcard_caption,
+        raising=False,
+    )
+
+    send_calls: list[dict[str, Any]] = []
+
+    async def capture_api_request(
+        self: main_module.Bot, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:  # type: ignore[override]
+        if method == "sendPhoto":
+            send_calls.append({"data": data, "files": files})
+            return {"ok": True, "result": {"message_id": 7777}}
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
+
+    result = await bot.publish_rubric("postcard", test=True)
+
+    assert result is True
+    assert send_calls
+    payload = send_calls[0]["data"]
+    expected_body = f"{POSTCARD_OPENING_CHOICES[0]} Мягкий свет над водой."
+    expected_hashtags = "#один #два"
+    expected_caption = f"{expected_body}\n\n{expected_hashtags}\n\n{LOVE_COLLECTION_LINK_MARKDOWN}"
+    assert payload["caption"] == expected_caption
+    assert payload["parse_mode"] == "Markdown"
 
     bot.db.close()
 

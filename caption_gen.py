@@ -383,7 +383,9 @@ def _finalize_postcard_hashtags(
     region_value = normalized_region_tag or (
         region_hashtag.strip() if isinstance(region_hashtag, str) else None
     )
-    city_value = normalized_city_tag or (city_hashtag.strip() if isinstance(city_hashtag, str) else None)
+    city_value = normalized_city_tag or (
+        city_hashtag.strip() if isinstance(city_hashtag, str) else None
+    )
     region_required_key: str | None = None
     if region_value:
         filtered.append(region_value)
@@ -477,8 +479,6 @@ def _postcard_fallback_sentence(location: _LocationInfo, semantic_tags: Sequence
     return _sanitize_sentence(sentence)
 
 
-
-
 async def generate_postcard_caption(
     openai: OpenAIClient | None,
     asset: Asset,
@@ -542,7 +542,9 @@ async def generate_postcard_caption(
         f"Хэштеги возвращай отдельным массивом: всего 3–5 тегов, обязательно включай региональный тег {region_prompt} и 2–4 смысловых."
     )
     if city_tag:
-        system_prompt_lines.append("Если есть city, добавь отдельный хэштег с его названием в формате #Город.")
+        system_prompt_lines.append(
+            "Если есть city, добавь отдельный хэштег с его названием в формате #Город."
+        )
     system_prompt_lines.append("Хэштеги #котопогода и дубли запрещены.")
     if include_rubric_tag:
         system_prompt_lines.append(
@@ -561,7 +563,7 @@ async def generate_postcard_caption(
     user_prompt = (
         "Контекст сцены (JSON):\n"
         f"{payload_text}\n\n"
-        "Сформируй JSON {\"caption\":\"...\",\"hashtags\":[\"#...\"]}.\n"
+        'Сформируй JSON {"caption":"...","hashtags":["#..."]}.\n'
         "Caption — полная подпись по правилам system prompt (без хэштегов, ссылок и «Полюбить 39»).\n"
         "Hashtags — 3–5 тегов с символом #, без #котопогода и повторов. Обязательно включи региональный тег "
         f"{region_prompt} и подбери 2–4 смысловых тега по сцене.\n"
@@ -672,6 +674,7 @@ async def generate_postcard_caption(
     combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
     caption_with_block = f"{combined}\n\n{link_block}"
     return caption_with_block.strip(), default_tags
+
 
 async def generate_sea_caption(
     bot: Bot,

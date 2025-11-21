@@ -8,8 +8,8 @@ import time
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from datetime import date, datetime, timezone
+from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
 
 from data_access import Asset
@@ -85,6 +85,7 @@ _LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]")
 _POSTCARD_COMMON_STOPWORDS: tuple[str, ...] | None = None
 _POSTCARD_TZ = ZoneInfo("Europe/Kaliningrad")
 _POSTCARD_SEASON_AGE_THRESHOLD_DAYS = 60
+SeasonName = Literal["winter", "spring", "summer", "autumn"]
 
 
 def _now_kaliningrad() -> datetime:
@@ -128,30 +129,68 @@ def _resolve_photo_datetime(asset: Asset) -> datetime | None:
     return None
 
 
-def _format_postcard_season_label(photo_date: datetime) -> str:
-    month = photo_date.month
-    year = photo_date.year
+def _get_season(value: datetime | date) -> SeasonName:
+    month = value.month
     if month in (3, 4, 5):
-        return f"весна {year}"
+        return "spring"
     if month in (6, 7, 8):
-        return f"лето {year}"
+        return "summer"
     if month in (9, 10, 11):
+        return "autumn"
+    return "winter"
+
+
+def _format_postcard_season_label(photo_date: datetime) -> str:
+    season = _get_season(photo_date)
+    year = photo_date.year
+    if season == "spring":
+        return f"весна {year}"
+    if season == "summer":
+        return f"лето {year}"
+    if season == "autumn":
         return f"осень {year}"
-    if month == 12:
-        return f"зима {year}/{year + 1}"
-    # month is 1 or 2
-    return f"зима {year - 1}/{year}"
+    # winter
+    if photo_date.month == 12:
+        start_year = year
+    else:
+        start_year = year - 1
+    return f"зима {start_year}/{start_year + 1}"
 
 
-def _resolve_postcard_season_line(asset: Asset) -> str | None:
-    photo_dt = _resolve_photo_datetime(asset)
+def _resolve_postcard_season_line(
+    asset: Asset,
+    *,
+    photo_dt: datetime | None = None,
+    today: date | None = None,
+) -> str | None:
+    if photo_dt is None:
+        photo_dt = _resolve_photo_datetime(asset)
+    return _resolve_postcard_season_line_from_datetime(photo_dt, today=today)
+
+
+def _resolve_postcard_season_line_from_datetime(
+    photo_dt: datetime | None,
+    *,
+    today: date | None = None,
+) -> str | None:
     if photo_dt is None:
         return None
-    today = _now_kaliningrad().date()
-    age_days = (today - photo_dt.date()).days
+    today_value = today or _now_kaliningrad().date()
+    age_days = (today_value - photo_dt.date()).days
     if age_days <= _POSTCARD_SEASON_AGE_THRESHOLD_DAYS:
         return None
     return _format_postcard_season_label(photo_dt)
+
+
+def _is_postcard_out_of_season(
+    photo_dt: datetime | None,
+    *,
+    reference: datetime | None = None,
+) -> bool:
+    if photo_dt is None:
+        return False
+    now_value = reference or _now_kaliningrad()
+    return _get_season(photo_dt) != _get_season(now_value)
 
 
 def _append_season_line(text: str, season_line: str | None) -> str:
@@ -580,7 +619,14 @@ async def generate_postcard_caption(
     bird_tags = _collect_bird_tags(asset)
     has_birds = bool(bird_tags)
     is_sea_scene = _is_sea_scene(asset)
-    season_line = _resolve_postcard_season_line(asset)
+    photo_datetime = _resolve_photo_datetime(asset)
+    now_local = _now_kaliningrad()
+    season_line = _resolve_postcard_season_line(
+        asset,
+        photo_dt=photo_datetime,
+        today=now_local.date(),
+    )
+    is_out_of_season = _is_postcard_out_of_season(photo_datetime, reference=now_local)
     region_tag = _normalize_hashtag_candidate(region_hashtag)
     city_tag = _normalize_city_hashtag(location.city)
     banned_words = _collect_postcard_stopwords(stopwords)
@@ -598,6 +644,7 @@ async def generate_postcard_caption(
         "location_case_hint": "prepositional",
         "has_birds": has_birds,
         "is_sea_scene": is_sea_scene,
+        "is_out_of_season": is_out_of_season,
     }
     extra_hint = asset.vision_results or {}
     if isinstance(extra_hint, dict):
@@ -624,6 +671,17 @@ async def generate_postcard_caption(
         "Обязательно назови указанную локацию (город или регион) в корректной форме.",
         "Сохраняй дружелюбный и лаконичный тон, избегай рекламных штампов.",
     ]
+    if is_out_of_season:
+        system_prompt_lines.append(
+            "Когда is_out_of_season=true, фото не совпадает с сезоном сейчас, поэтому после стартовой фразы опиши сцену преимущественно в прошедшем времени с лёгким ностальгическим оттенком и без кринж-ностальгии."
+        )
+        system_prompt_lines.append(
+            "Можешь начать второе предложение мягкими конструкциями вроде «Вспомним…», «Вспомни…», «Помните, как…» или «Напомню вам…», если это звучит тепло и по-человечески."
+        )
+    else:
+        system_prompt_lines.append(
+            "Когда is_out_of_season=false, описывай детали в настоящем времени, будто сцена происходит прямо сейчас."
+        )
     if stopwords_text:
         system_prompt_lines.append(f"Запрещены стоп-слова и клише: {stopwords_text}.")
     system_prompt_lines.append(

@@ -1,13 +1,17 @@
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import caption_gen
 from caption_gen import POSTCARD_OPENING_CHOICES, POSTCARD_RUBRIC_HASHTAG, generate_postcard_caption
 from data_access import Asset
 from openai_client import OpenAIResponse
 from main import LOVE_COLLECTION_LINK
+from zoneinfo import ZoneInfo
+
+KALININGRAD_TZ = ZoneInfo("Europe/Kaliningrad")
 
 
 def _make_asset(
@@ -76,6 +80,25 @@ class DummyOpenAI:
         self.calls.append(kwargs)
         index = min(len(self.calls) - 1, len(self.responses) - 1)
         return self.responses[index]
+
+
+def _set_postcard_now(monkeypatch: pytest.MonkeyPatch, current: datetime) -> None:
+    monkeypatch.setattr(caption_gen, "_now_kaliningrad", lambda: current, raising=False)
+
+
+def _dummy_postcard_client(caption_text: str) -> DummyOpenAI:
+    response = OpenAIResponse(
+        {
+            "caption": caption_text,
+            "hashtags": ["#Светлогорск", "#вид", "#детали"],
+        },
+        {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2,
+        },
+    )
+    return DummyOpenAI([response])
 
 
 @pytest.mark.asyncio
@@ -356,3 +379,148 @@ async def test_postcard_prompt_includes_bird_info() -> None:
     prompt = str(client.calls[0]["user_prompt"])
     assert "has_birds: true" in prompt
     assert "bird_tags: лебедь" in prompt
+
+
+@pytest.mark.asyncio
+async def test_postcard_caption_omits_season_line_for_recent_photo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2024, 8, 1, tzinfo=KALININGRAD_TZ)
+    _set_postcard_now(monkeypatch, now)
+    asset = _make_asset()
+    asset.captured_at = (now - timedelta(days=30)).isoformat()
+    client = _dummy_postcard_client(
+        "Порадую вас красивым видом Светлогорска. Тёплое солнце ложится на улицы."
+    )
+
+    caption, _ = await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    assert not re.search(r"(весна|лето|осень|зима) \d{4}", caption)
+
+
+@pytest.mark.asyncio
+async def test_postcard_caption_includes_season_line_for_old_summer_photo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2025, 10, 1, tzinfo=KALININGRAD_TZ)
+    _set_postcard_now(monkeypatch, now)
+    asset = _make_asset()
+    asset.captured_at = datetime(2025, 7, 10, tzinfo=UTC).isoformat()
+    client = _dummy_postcard_client(
+        "Порадую вас красивым видом Светлогорска. Тёплый воздух подчёркивает линии набережной."
+    )
+
+    caption, _ = await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    parts = caption.split("\n\n")
+    assert "лето 2025" in parts
+    assert parts[-1] == LOVE_COLLECTION_LINK
+
+
+@pytest.mark.asyncio
+async def test_postcard_caption_includes_season_line_for_old_autumn_photo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2025, 1, 10, tzinfo=KALININGRAD_TZ)
+    _set_postcard_now(monkeypatch, now)
+    asset = _make_asset()
+    asset.captured_at = datetime(2024, 10, 5, tzinfo=UTC).isoformat()
+    client = _dummy_postcard_client(
+        "Порадую вас красивым видом Светлогорска. Спокойные дома прячутся в мягком свете."
+    )
+
+    caption, _ = await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    assert "осень 2024" in caption.split("\n\n")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("capture_date", "now_value", "expected"),
+    [
+        (datetime(2023, 12, 20, tzinfo=UTC), datetime(2024, 3, 1, tzinfo=KALININGRAD_TZ), "зима 2023/2024"),
+        (datetime(2024, 1, 15, tzinfo=UTC), datetime(2024, 4, 1, tzinfo=KALININGRAD_TZ), "зима 2023/2024"),
+    ],
+)
+async def test_postcard_caption_includes_winter_season_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capture_date: datetime,
+    now_value: datetime,
+    expected: str,
+) -> None:
+    _set_postcard_now(monkeypatch, now_value)
+    asset = _make_asset()
+    asset.captured_at = capture_date.isoformat()
+    client = _dummy_postcard_client(
+        "Порадую вас красивым видом Светлогорска. Лёгкий холод подчёркивает спокойствие улиц."
+    )
+
+    caption, _ = await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    assert expected in caption.split("\n\n")
+
+
+@pytest.mark.asyncio
+async def test_postcard_caption_uses_created_at_when_captured_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2024, 9, 1, tzinfo=KALININGRAD_TZ)
+    _set_postcard_now(monkeypatch, now)
+    asset = _make_asset()
+    asset.captured_at = None
+    asset.created_at = datetime(2024, 5, 1, tzinfo=UTC).isoformat()
+    client = _dummy_postcard_client(
+        "Порадую вас красивым видом Светлогорска. Солнечные дорожки ведут к воде."
+    )
+
+    caption, _ = await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    assert "весна 2024" in caption.split("\n\n")
+
+
+@pytest.mark.asyncio
+async def test_postcard_caption_skips_season_line_without_dates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2024, 8, 1, tzinfo=KALININGRAD_TZ)
+    _set_postcard_now(monkeypatch, now)
+    asset = _make_asset()
+    asset.captured_at = None
+    asset.created_at = ""
+    client = _dummy_postcard_client(
+        "Порадую вас красивым видом Светлогорска. Ровные линии домов поддерживают тишину."
+    )
+
+    caption, _ = await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    assert not re.search(r"(весна|лето|осень|зима) \d{4}", caption)

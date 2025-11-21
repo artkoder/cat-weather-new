@@ -8,7 +8,9 @@ import time
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from data_access import Asset
 from openai_client import OpenAIClient
@@ -81,6 +83,94 @@ POSTCARD_BIRD_TAGS = (
 POSTCARD_BIRD_TAG_KEYS = {tag.casefold() for tag in POSTCARD_BIRD_TAGS}
 _LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]")
 _POSTCARD_COMMON_STOPWORDS: tuple[str, ...] | None = None
+_POSTCARD_TZ = ZoneInfo("Europe/Kaliningrad")
+_POSTCARD_SEASON_AGE_THRESHOLD_DAYS = 60
+
+
+def _now_kaliningrad() -> datetime:
+    return datetime.now(tz=_POSTCARD_TZ)
+
+
+def _parse_asset_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        normalized = text
+        if normalized.upper().endswith("Z"):
+            normalized = f"{normalized[:-1]}+00:00"
+        match = re.match(r"(.*)([+-]\d{2})(\d{2})$", normalized)
+        if match and ":" not in match.group(3):
+            normalized = f"{match.group(1)}{match.group(2)}:{match.group(3)}"
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            try:
+                timestamp = float(text)
+            except (TypeError, ValueError):
+                return None
+            dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_POSTCARD_TZ)
+
+
+def _resolve_photo_datetime(asset: Asset) -> datetime | None:
+    candidates = (getattr(asset, "captured_at", None), getattr(asset, "created_at", None))
+    for candidate in candidates:
+        dt = _parse_asset_datetime(candidate)
+        if dt is not None:
+            return dt
+    return None
+
+
+def _format_postcard_season_label(photo_date: datetime) -> str:
+    month = photo_date.month
+    year = photo_date.year
+    if month in (3, 4, 5):
+        return f"весна {year}"
+    if month in (6, 7, 8):
+        return f"лето {year}"
+    if month in (9, 10, 11):
+        return f"осень {year}"
+    if month == 12:
+        return f"зима {year}/{year + 1}"
+    # month is 1 or 2
+    return f"зима {year - 1}/{year}"
+
+
+def _resolve_postcard_season_line(asset: Asset) -> str | None:
+    photo_dt = _resolve_photo_datetime(asset)
+    if photo_dt is None:
+        return None
+    today = _now_kaliningrad().date()
+    age_days = (today - photo_dt.date()).days
+    if age_days <= _POSTCARD_SEASON_AGE_THRESHOLD_DAYS:
+        return None
+    return _format_postcard_season_label(photo_dt)
+
+
+def _append_season_line(text: str, season_line: str | None) -> str:
+    cleaned = text.strip()
+    if not season_line:
+        return cleaned
+    if cleaned:
+        return f"{cleaned}\n\n{season_line}"
+    return season_line
+
+
+def _attach_link_block(text: str, link_block: str) -> str:
+    cleaned_text = text.strip()
+    cleaned_link = (link_block or "").strip()
+    if not cleaned_link:
+        return cleaned_text
+    if cleaned_text:
+        return f"{cleaned_text}\n\n{cleaned_link}"
+    return cleaned_link
 
 
 def _sanitize_prompt_leaks(text: str) -> str:
@@ -490,6 +580,7 @@ async def generate_postcard_caption(
     bird_tags = _collect_bird_tags(asset)
     has_birds = bool(bird_tags)
     is_sea_scene = _is_sea_scene(asset)
+    season_line = _resolve_postcard_season_line(asset)
     region_tag = _normalize_hashtag_candidate(region_hashtag)
     city_tag = _normalize_city_hashtag(location.city)
     banned_words = _collect_postcard_stopwords(stopwords)
@@ -602,7 +693,8 @@ async def generate_postcard_caption(
         fallback_sentence = _postcard_fallback_sentence(location, semantic_tags)
         opening = _build_postcard_opening(location)
         combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
-        caption_with_block = f"{combined}\n\n{link_block}"
+        caption_body = _append_season_line(combined, season_line)
+        caption_with_block = _attach_link_block(caption_body, link_block)
         return caption_with_block.strip(), default_tags
     attempts = 3
     for attempt in range(1, attempts + 1):
@@ -666,13 +758,15 @@ async def generate_postcard_caption(
             include_rubric_tag=include_rubric_tag,
             fallback_keywords=semantic_tags,
         )
-        caption_with_block = f"{caption_text}\n\n{link_block}"
+        caption_with_season = _append_season_line(caption_text, season_line)
+        caption_with_block = _attach_link_block(caption_with_season, link_block)
         return caption_with_block.strip(), hashtags
     logging.warning("POSTCARD_CAPTION fallback_used")
     fallback_sentence = _postcard_fallback_sentence(location, semantic_tags)
     opening = _build_postcard_opening(location)
     combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
-    caption_with_block = f"{combined}\n\n{link_block}"
+    caption_body = _append_season_line(combined, season_line)
+    caption_with_block = _attach_link_block(caption_body, link_block)
     return caption_with_block.strip(), default_tags
 
 

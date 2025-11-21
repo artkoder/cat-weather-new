@@ -190,7 +190,7 @@ def _contains_banned_word(text: str, banned_words: Iterable[str]) -> bool:
     return False
 
 
-def _build_postcard_opening(location: "_LocationInfo") -> str:
+def _build_postcard_opening(location: _LocationInfo) -> str:
     label = (location.city or location.region or "").strip()
     if label:
         opening = f"Порадую вас красивым видом {label}."

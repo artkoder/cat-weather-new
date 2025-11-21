@@ -55,6 +55,8 @@ dmypy.json
 *.db
 .env
 .env.local
+# Watermark assets are distributed manually due to licensing
+assets/watermarks/LoveKaliningrad.png
 
 # OS
 .DS_Store

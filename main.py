@@ -107,6 +107,7 @@ from sea_selection import (
     sky_similarity,
 )
 from asset_selectors.postcard import select_postcard_asset
+from postcard_watermark import WATERMARK_PATH, add_love_kaliningrad_watermark
 from storage import Storage, create_storage_from_env
 from supabase_client import SupabaseClient
 from utils_wave import wave_m_to_score
@@ -13615,6 +13616,68 @@ class Bot:
         await self._cleanup_assets(assets, extra_paths=overlay_paths)
         return True
 
+    def _prepare_postcard_photo_upload(
+        self,
+        asset: Asset,
+        source_path: str,
+    ) -> tuple[bytes, str, str] | None:
+        temp_path = self.asset_storage / f"{asset.id}_postcard_watermarked.jpg"
+        base_image: Image.Image | None = None
+        watermarked_image: Image.Image | None = None
+        cleanup_path: Path | None = None
+        try:
+            with Image.open(source_path) as original:
+                transposed = ImageOps.exif_transpose(original)
+                if transposed is original:
+                    working = original.copy()
+                else:
+                    working = transposed.copy()
+                    transposed.close()
+            base_image = working
+            if base_image.mode != "RGB":
+                converted = base_image.convert("RGB")
+                base_image.close()
+                base_image = converted
+            watermarked_image = add_love_kaliningrad_watermark(base_image)
+            base_image.close()
+            base_image = None
+            watermarked_image.save(
+                temp_path,
+                format="JPEG",
+                quality=95,
+                optimize=True,
+                progressive=True,
+            )
+            send_path, cleanup_path, filename, content_type, *_ = self._prepare_photo_for_upload(
+                str(temp_path)
+            )
+            file_bytes = send_path.read_bytes()
+            return file_bytes, filename, content_type
+        except FileNotFoundError as exc:
+            missing_target = None
+            missing_name = getattr(exc, "filename", None)
+            if missing_name:
+                try:
+                    missing_target = Path(missing_name).resolve()
+                except Exception:
+                    missing_target = None
+            if missing_target and missing_target == WATERMARK_PATH.resolve():
+                logging.error("POSTCARD_RUBRIC watermark_missing path=%s", WATERMARK_PATH)
+            else:
+                logging.exception("POSTCARD_RUBRIC source_missing asset_id=%s", asset.id)
+            return None
+        except Exception:
+            logging.exception("POSTCARD_RUBRIC watermark_failed asset_id=%s", asset.id)
+            return None
+        finally:
+            if watermarked_image is not None:
+                watermarked_image.close()
+            if base_image is not None:
+                base_image.close()
+            if cleanup_path is not None and cleanup_path != temp_path:
+                self._remove_file(str(cleanup_path))
+            self._remove_file(str(temp_path))
+
     async def _publish_postcard(
         self,
         rubric: Rubric,
@@ -13707,48 +13770,34 @@ class Bot:
             int(test),
         )
 
-        file_id = asset.file_id
-        if file_id:
-            response = await self.api_request(
-                "sendPhoto",
-                {
-                    "chat_id": target_channel,
-                    "photo": file_id,
-                    "caption": final_caption,
-                    "parse_mode": "HTML",
-                },
-            )
-        else:
-            source_path, should_cleanup = await self._ensure_asset_source(asset)
-            if not source_path:
-                logging.warning("POSTCARD_RUBRIC missing_source asset_id=%s", asset.id)
+        source_path, should_cleanup = await self._ensure_asset_source(asset)
+        if not source_path:
+            logging.warning("POSTCARD_RUBRIC missing_source asset_id=%s", asset.id)
+            return False
+        try:
+            prepared = self._prepare_postcard_photo_upload(asset, source_path)
+            if not prepared:
                 return False
-            try:
-                file_data = Path(source_path).read_bytes()
-            except Exception:
-                logging.exception("POSTCARD_RUBRIC read_error asset_id=%s", asset.id)
-                if should_cleanup:
-                    self._remove_file(source_path)
-                return False
-            finally:
-                if should_cleanup:
-                    self._remove_file(source_path)
-                    try:
-                        self.data.update_asset(asset.id, local_path=None)
-                    except Exception:
-                        logging.exception(
-                            "POSTCARD_RUBRIC clear_local_path_failed asset_id=%s",
-                            asset.id,
-                        )
-            response = await self.api_request(
-                "sendPhoto",
-                {
-                    "chat_id": target_channel,
-                    "caption": final_caption,
-                    "parse_mode": "HTML",
-                },
-                files={"photo": ("postcard.jpg", file_data)},
-            )
+            file_data, filename, content_type = prepared
+        finally:
+            if should_cleanup:
+                self._remove_file(source_path)
+                try:
+                    self.data.update_asset(asset.id, local_path=None)
+                except Exception:
+                    logging.exception(
+                        "POSTCARD_RUBRIC clear_local_path_failed asset_id=%s",
+                        asset.id,
+                    )
+        response = await self.api_request(
+            "sendPhoto",
+            {
+                "chat_id": target_channel,
+                "caption": final_caption,
+                "parse_mode": "HTML",
+            },
+            files={"photo": (filename, file_data, content_type)},
+        )
 
         if not response.get("ok"):
             logging.error("POSTCARD_RUBRIC tg_error response=%s", response)

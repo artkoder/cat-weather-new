@@ -10,9 +10,9 @@ from postcard_watermark import WATERMARK_PATH, add_love_kaliningrad_watermark  #
 
 
 def test_love_kaliningrad_watermark_exists() -> None:
-    assert WATERMARK_PATH.is_file(), (
-        "LoveKaliningrad watermark is missing. Place assets/watermarks/LoveKaliningrad.png manually."
-    )
+    assert (
+        WATERMARK_PATH.is_file()
+    ), "LoveKaliningrad watermark is missing. Place assets/watermarks/LoveKaliningrad.png manually."
 
 
 def test_add_love_kaliningrad_watermark_modifies_bottom_center() -> None:

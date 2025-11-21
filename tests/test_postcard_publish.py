@@ -87,6 +87,15 @@ def _create_postcard_asset(
         ),
     )
     bot.db.commit()
+
+    image_path = Path(bot.asset_storage) / f"{asset_id}.jpg"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    placeholder = Image.new("RGB", (1080, 1350), color=(64, 64, 64))
+    try:
+        placeholder.save(image_path, format="JPEG")
+    finally:
+        placeholder.close()
+    bot.data.update_asset(asset_id, local_path=str(image_path))
     return asset_id
 
 

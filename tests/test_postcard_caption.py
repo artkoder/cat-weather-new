@@ -101,6 +101,15 @@ def _dummy_postcard_client(caption_text: str) -> DummyOpenAI:
     return DummyOpenAI([response])
 
 
+def _extract_prompt_payload(prompt_text: str) -> dict[str, object]:
+    marker = "Контекст сцены (JSON):\n"
+    start = prompt_text.index(marker) + len(marker)
+    end_marker = "\n\nСформируй JSON"
+    end = prompt_text.index(end_marker, start)
+    payload_text = prompt_text[start:end]
+    return json.loads(payload_text)
+
+
 @pytest.mark.asyncio
 async def test_postcard_caption_with_location_and_love_block() -> None:
     asset = _make_asset(tags=["море", "закат"])
@@ -524,3 +533,88 @@ async def test_postcard_caption_skips_season_line_without_dates(
     )
 
     assert not re.search(r"(весна|лето|осень|зима) \d{4}", caption)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("captured_at", "created_at", "now_value", "expected"),
+    [
+        (datetime(2024, 7, 10, tzinfo=UTC), None, datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ), False),
+        (datetime(2024, 1, 15, tzinfo=UTC), None, datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ), True),
+        (datetime(2024, 12, 20, tzinfo=UTC), None, datetime(2025, 1, 5, tzinfo=KALININGRAD_TZ), False),
+        (datetime(2024, 12, 20, tzinfo=UTC), None, datetime(2025, 5, 10, tzinfo=KALININGRAD_TZ), True),
+        (None, datetime(2024, 1, 15, tzinfo=UTC), datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ), True),
+        (None, None, datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ), False),
+    ],
+)
+async def test_postcard_is_out_of_season_flag_in_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_at: datetime | None,
+    created_at: datetime | None,
+    now_value: datetime,
+    expected: bool,
+) -> None:
+    _set_postcard_now(monkeypatch, now_value)
+    asset = _make_asset()
+    asset.captured_at = captured_at.isoformat() if captured_at else None
+    asset.created_at = created_at.isoformat() if created_at else None
+    client = _dummy_postcard_client(
+        "Порадую вас красивым видом Светлогорска. Свет лёгким эхом скользит по домам."
+    )
+
+    await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    assert client.calls, "OpenAI client should receive at least one call"
+    prompt_payload = _extract_prompt_payload(str(client.calls[0]["user_prompt"]))
+    assert prompt_payload.get("is_out_of_season") is expected
+
+
+@pytest.mark.asyncio
+async def test_postcard_prompt_in_season_instructions(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ)
+    _set_postcard_now(monkeypatch, now)
+    asset = _make_asset()
+    asset.captured_at = datetime(2024, 7, 2, tzinfo=UTC).isoformat()
+    client = _dummy_postcard_client(
+        "Порадую вас красивым видом Светлогорска. Лучи утреннего солнца бегут по плитке."
+    )
+
+    await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    assert client.calls, "OpenAI client should receive at least one call"
+    system_prompt = str(client.calls[0]["system_prompt"]).casefold()
+    assert "прошедшем времени" not in system_prompt
+    assert "вспом" not in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_postcard_prompt_out_of_season_instructions(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ)
+    _set_postcard_now(monkeypatch, now)
+    asset = _make_asset()
+    asset.captured_at = datetime(2024, 1, 15, tzinfo=UTC).isoformat()
+    client = _dummy_postcard_client(
+        "Порадую вас красивым видом Светлогорска. Лёгкий иней остался на плитке набережной."
+    )
+
+    await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    assert client.calls, "OpenAI client should receive at least one call"
+    system_prompt = str(client.calls[0]["system_prompt"])  # keep original case
+    assert "прошедшем времени" in system_prompt
+    assert "Вспом" in system_prompt

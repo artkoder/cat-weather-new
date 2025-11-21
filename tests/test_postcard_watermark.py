@@ -14,9 +14,7 @@ from postcard_watermark import (  # noqa: E402
 
 
 def test_love_kaliningrad_watermark_exists() -> None:
-    assert (
-        WATERMARK_PATH.is_file()
-    ), (
+    assert WATERMARK_PATH.is_file(), (
         "LoveKaliningrad watermark is missing. "
         "Place assets/watermarks/LoveKaliningrad.png manually."
     )
@@ -35,14 +33,10 @@ def test_add_love_kaliningrad_watermark_modifies_bottom_center() -> None:
         region_height = max(10, height // 6)
         region_width = max(10, width // 5)
         left = max(0, (width - region_width) // 2)
-        bottom_region = diff.crop(
-            (left, height - region_height, left + region_width, height)
-        )
+        bottom_region = diff.crop((left, height - region_height, left + region_width, height))
         extrema = bottom_region.getextrema()
         assert extrema is not None
-        assert extrema[1] > 0, (
-            "Bottom-center pixels should change after applying the watermark"
-        )
+        assert extrema[1] > 0, "Bottom-center pixels should change after applying the watermark"
     finally:
         base_image.close()
         if result_image is not None:

@@ -462,8 +462,16 @@ async def test_postcard_caption_includes_season_line_for_old_autumn_photo(
 @pytest.mark.parametrize(
     ("capture_date", "now_value", "expected"),
     [
-        (datetime(2023, 12, 20, tzinfo=UTC), datetime(2024, 3, 1, tzinfo=KALININGRAD_TZ), "зима 2023/2024"),
-        (datetime(2024, 1, 15, tzinfo=UTC), datetime(2024, 4, 1, tzinfo=KALININGRAD_TZ), "зима 2023/2024"),
+        (
+            datetime(2023, 12, 20, tzinfo=UTC),
+            datetime(2024, 3, 1, tzinfo=KALININGRAD_TZ),
+            "зима 2023/2024",
+        ),
+        (
+            datetime(2024, 1, 15, tzinfo=UTC),
+            datetime(2024, 4, 1, tzinfo=KALININGRAD_TZ),
+            "зима 2023/2024",
+        ),
     ],
 )
 async def test_postcard_caption_includes_winter_season_line(
@@ -539,11 +547,36 @@ async def test_postcard_caption_skips_season_line_without_dates(
 @pytest.mark.parametrize(
     ("captured_at", "created_at", "now_value", "expected"),
     [
-        (datetime(2024, 7, 10, tzinfo=UTC), None, datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ), False),
-        (datetime(2024, 1, 15, tzinfo=UTC), None, datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ), True),
-        (datetime(2024, 12, 20, tzinfo=UTC), None, datetime(2025, 1, 5, tzinfo=KALININGRAD_TZ), False),
-        (datetime(2024, 12, 20, tzinfo=UTC), None, datetime(2025, 5, 10, tzinfo=KALININGRAD_TZ), True),
-        (None, datetime(2024, 1, 15, tzinfo=UTC), datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ), True),
+        (
+            datetime(2024, 7, 10, tzinfo=UTC),
+            None,
+            datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ),
+            False,
+        ),
+        (
+            datetime(2024, 1, 15, tzinfo=UTC),
+            None,
+            datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ),
+            True,
+        ),
+        (
+            datetime(2024, 12, 20, tzinfo=UTC),
+            None,
+            datetime(2025, 1, 5, tzinfo=KALININGRAD_TZ),
+            False,
+        ),
+        (
+            datetime(2024, 12, 20, tzinfo=UTC),
+            None,
+            datetime(2025, 5, 10, tzinfo=KALININGRAD_TZ),
+            True,
+        ),
+        (
+            None,
+            datetime(2024, 1, 15, tzinfo=UTC),
+            datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ),
+            True,
+        ),
         (None, None, datetime(2024, 7, 1, tzinfo=KALININGRAD_TZ), False),
     ],
 )

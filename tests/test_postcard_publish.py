@@ -34,8 +34,8 @@ class DummyPostcardOpenAI:
         self.api_key = "test-key"
         self._response = OpenAIResponse(
             {
-                "sentence": sentence,
-                "hashtags": ["#Светлогорск", "#БалтийскоеМоре"],
+                "caption": sentence,
+                "hashtags": ["#Светлогорск", "#вид"],
             },
             {
                 "prompt_tokens": 5,

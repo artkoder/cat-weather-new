@@ -19,12 +19,13 @@ if TYPE_CHECKING:  # pragma: no cover
 
 POSTCARD_OPENING_CHOICES = (
     "Порадую вас открыточным видом.",
-    "Порадую вас красивым видом.",
+    "Порадую вас красивым видом",
 )
 POSTCARD_PREFIX = POSTCARD_OPENING_CHOICES[1]
 POSTCARD_RUBRIC_HASHTAG = "#открыточныйвид"
-POSTCARD_DEFAULT_HASHTAGS = [POSTCARD_RUBRIC_HASHTAG]
-POSTCARD_HASHTAG_LIMIT = 4
+POSTCARD_DEFAULT_HASHTAGS = ["#Балтика", "#КрасивыйВид"]
+POSTCARD_MIN_HASHTAGS = 3
+POSTCARD_HASHTAG_LIMIT = 5
 POSTCARD_BANNED_TAGS = {
     "#котопогода",
     "#Котопогода",
@@ -37,8 +38,47 @@ POSTCARD_ADDITIONAL_STOP_PHRASES = (
     "делает настроение особенным",
     "наполняет особым настроением",
     "момент, который хочется сохранить навсегда",
+    "идеальное место",
+    "атмосферный",
+    "атмосферная",
+    "атмосферное",
+    "магия момента",
+    "уникальный",
+    "уникальная",
+    "уникальное",
+    "особенное место, где хочется остаться навсегда",
 )
 POSTCARD_MARINE_KEYWORDS = ("море", "морск", "sea", "ocean", "coast", "shore", "beach")
+POSTCARD_RUBRIC_TAG_THRESHOLD = 9
+POSTCARD_BIRD_TAGS = (
+    "bird",
+    "birds",
+    "swan",
+    "swans",
+    "duck",
+    "ducks",
+    "seagull",
+    "seagulls",
+    "goose",
+    "geese",
+    "лебедь",
+    "лебеди",
+    "утка",
+    "утки",
+    "чайка",
+    "чайки",
+    "гусь",
+    "гуси",
+    "журавль",
+    "журавли",
+    "аист",
+    "аисты",
+    "баклан",
+    "бакланы",
+    "птица",
+    "птицы",
+)
+POSTCARD_BIRD_TAG_KEYS = {tag.casefold() for tag in POSTCARD_BIRD_TAGS}
 _LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]")
 _POSTCARD_COMMON_STOPWORDS: tuple[str, ...] | None = None
 
@@ -150,13 +190,12 @@ def _contains_banned_word(text: str, banned_words: Iterable[str]) -> bool:
     return False
 
 
-def _pick_postcard_opening(asset: Asset | None = None) -> str:
-    if asset and getattr(asset, "id", None):
-        text = str(asset.id)
-        total = sum(ord(ch) for ch in text)
-        index = total % len(POSTCARD_OPENING_CHOICES)
-        return POSTCARD_OPENING_CHOICES[index]
-    return random.choice(POSTCARD_OPENING_CHOICES)
+def _build_postcard_opening(location: _LocationInfo) -> str:
+    label = (location.city or location.region or "").strip()
+    if label:
+        opening = f"Порадую вас красивым видом {label}."
+        return _sanitize_sentence(opening)
+    return POSTCARD_OPENING_CHOICES[0]
 
 
 def _sanitize_sentence(text: str) -> str:
@@ -173,6 +212,16 @@ def _ensure_sentence_punctuation(value: str) -> str:
     if value[-1] not in ".!?…":
         return f"{value}."
     return value
+
+
+def _sanitize_postcard_caption_text(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = _sanitize_prompt_leaks(str(text).strip())
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
 
 
 def _remove_latin_words(text: str) -> str:
@@ -288,45 +337,106 @@ def _collect_semantic_tags(asset: Asset) -> list[str]:
     return tags[:8]
 
 
+def _collect_bird_tags(asset: Asset) -> list[str]:
+    results = asset.vision_results or {}
+    raw_tags = results.get("tags") if isinstance(results, dict) else None
+    if not isinstance(raw_tags, (list, tuple, set)):
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    for tag in raw_tags:
+        text = str(tag or "").strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in POSTCARD_BIRD_TAG_KEYS and key not in seen:
+            seen.add(key)
+            found.append(text)
+    return found
+
+
 def _finalize_postcard_hashtags(
     candidate_tags: Iterable[str],
     region_hashtag: str | None,
     city_hashtag: str | None,
     *,
     is_sea_scene: bool,
+    include_rubric_tag: bool,
+    fallback_keywords: Sequence[str] | None = None,
 ) -> list[str]:
     prepared = _deduplicate_hashtags(candidate_tags)
     filtered: list[str] = []
+    rubric_key = POSTCARD_RUBRIC_HASHTAG.lstrip("#").casefold()
     for tag in prepared:
         if not tag:
             continue
         key = tag.lstrip("#").casefold()
         if key in POSTCARD_BANNED_TAG_KEYS:
             continue
+        if key == rubric_key and not include_rubric_tag:
+            continue
         if not is_sea_scene and _looks_like_marine_tag(tag):
             continue
         filtered.append(tag)
     normalized_region_tag = _normalize_hashtag_candidate(region_hashtag)
-    if normalized_region_tag:
-        filtered.append(normalized_region_tag)
-    elif region_hashtag:
-        filtered.append(region_hashtag)
-    if city_hashtag:
-        filtered.append(city_hashtag)
-    filtered.append(POSTCARD_RUBRIC_HASHTAG)
-    finalized = _deduplicate_hashtags(filtered)
+    normalized_city_tag = _normalize_hashtag_candidate(city_hashtag)
+    region_value = normalized_region_tag or (
+        region_hashtag.strip() if isinstance(region_hashtag, str) else None
+    )
+    city_value = normalized_city_tag or (city_hashtag.strip() if isinstance(city_hashtag, str) else None)
+    region_required_key: str | None = None
+    if region_value:
+        filtered.append(region_value)
+        region_required_key = region_value.casefold()
+    if city_value:
+        filtered.append(city_value)
+    if include_rubric_tag:
+        filtered.append(POSTCARD_RUBRIC_HASHTAG)
+    combined = _deduplicate_hashtags(filtered)
+    fallback_candidates: list[str] = []
+    if fallback_keywords:
+        for keyword in fallback_keywords:
+            candidate = _normalize_hashtag_candidate(keyword)
+            if not candidate:
+                continue
+            key = candidate.lstrip("#").casefold()
+            if key in POSTCARD_BANNED_TAG_KEYS:
+                continue
+            if key == rubric_key and not include_rubric_tag:
+                continue
+            if not is_sea_scene and _looks_like_marine_tag(candidate):
+                continue
+            if candidate not in combined:
+                fallback_candidates.append(candidate)
+    while len(combined) < POSTCARD_MIN_HASHTAGS and fallback_candidates:
+        combined.append(fallback_candidates.pop(0))
+    if len(combined) < POSTCARD_MIN_HASHTAGS:
+        for fallback in POSTCARD_DEFAULT_HASHTAGS:
+            candidate = _normalize_hashtag_candidate(fallback) or fallback
+            key = candidate.lstrip("#").casefold()
+            if key in POSTCARD_BANNED_TAG_KEYS:
+                continue
+            if key == rubric_key and not include_rubric_tag:
+                continue
+            if candidate not in combined:
+                combined.append(candidate)
+            if len(combined) >= POSTCARD_MIN_HASHTAGS:
+                break
+    required_keys: set[str] = set()
+    if region_required_key:
+        required_keys.add(region_required_key)
+    if include_rubric_tag:
+        required_keys.add(POSTCARD_RUBRIC_HASHTAG.casefold())
+    return _limit_postcard_hashtags(combined, required_keys)
 
-    required_keys: set[str] = {POSTCARD_RUBRIC_HASHTAG.casefold()}
-    if normalized_region_tag:
-        required_keys.add(normalized_region_tag.casefold())
 
-    if len(finalized) <= POSTCARD_HASHTAG_LIMIT:
-        return finalized
-
+def _limit_postcard_hashtags(tags: list[str], required_keys: set[str]) -> list[str]:
+    if len(tags) <= POSTCARD_HASHTAG_LIMIT:
+        return tags
     limited: list[str] = []
     optional_indices: list[int] = []
     present_required: set[str] = set()
-    for tag in finalized:
+    for tag in tags:
         key = tag.casefold()
         is_required = key in required_keys
         if len(limited) < POSTCARD_HASHTAG_LIMIT:
@@ -367,6 +477,8 @@ def _postcard_fallback_sentence(location: _LocationInfo, semantic_tags: Sequence
     return _sanitize_sentence(sentence)
 
 
+
+
 async def generate_postcard_caption(
     openai: OpenAIClient | None,
     asset: Asset,
@@ -375,18 +487,26 @@ async def generate_postcard_caption(
 ) -> tuple[str, list[str]]:
     location = _resolve_location(asset)
     semantic_tags = _collect_semantic_tags(asset)
+    bird_tags = _collect_bird_tags(asset)
+    has_birds = bool(bird_tags)
     is_sea_scene = _is_sea_scene(asset)
     region_tag = _normalize_hashtag_candidate(region_hashtag)
     city_tag = _normalize_city_hashtag(location.city)
     banned_words = _collect_postcard_stopwords(stopwords)
+    score_value = asset.postcard_score if isinstance(asset.postcard_score, int) else None
+    include_rubric_tag = bool(
+        score_value is not None and score_value >= POSTCARD_RUBRIC_TAG_THRESHOLD
+    )
     context_payload: dict[str, Any] = {
         "location": location.display,
         "city": location.city,
         "region": location.region,
         "country": location.country,
         "tags": semantic_tags,
-        "postcard_score": asset.postcard_score,
-        "location_case_hint": "nominative",
+        "postcard_score": score_value,
+        "location_case_hint": "prepositional",
+        "has_birds": has_birds,
+        "is_sea_scene": is_sea_scene,
     }
     extra_hint = asset.vision_results or {}
     if isinstance(extra_hint, dict):
@@ -394,61 +514,94 @@ async def generate_postcard_caption(
             context_payload["weather"] = extra_hint.get("weather_final_display")
         if extra_hint.get("is_sunset"):
             context_payload["is_sunset"] = True
-    context_payload["is_sea_scene"] = is_sea_scene
+    if bird_tags:
+        context_payload["bird_tags"] = bird_tags
     payload_text = json.dumps(context_payload, ensure_ascii=False, separators=(",", ": "))
     stopwords_text = ", ".join(banned_words) if banned_words else ""
+    region_prompt = region_tag or _normalize_hashtag_candidate(region_hashtag)
+    if not region_prompt and isinstance(region_hashtag, str):
+        region_prompt = region_hashtag.strip()
+    if not region_prompt:
+        region_prompt = "#КалининградскаяОбласть"
     system_prompt_lines = [
-        "Ты — голос проекта «Котопогода» и описываешь рубрику «Открыточный вид».",
-        "Первая фраза подписи уже выбрана («Порадую вас … видом»), поэтому ты придумываешь только второе короткое предложение длиной до 150 символов.",
-        "Пиши только по-русски, не используй слова на других языках и не вставляй хэштеги, ссылки или «Полюбить 39» в само предложение.",
-        "Во втором предложении обязательно назови указанную локацию (город или область) и подбери естественный предлог и падеж (например, «в Калининградской области», «в Зеленоградске»).",
-        "Локация передана в именительном падеже — измени её форму по смыслу.",
-        "Добавь 1–2 конкретные детали из подсказок (море, озеро, закат, улицы и т. п.) и передай спокойное настроение без пафоса.",
-        "Тон дружелюбный и конкретный, без рекламных штампов и канцелярита.",
+        "Ты — голос проекта «Котопогода» и готовишь подпись для рубрики «Открыточный вид».",
+        "Собери подпись из 2–3 коротких предложений (до 250 символов) в спокойном, человеческом тоне.",
+        "Первая фраза строго одна из двух: «Порадую вас открыточным видом.» или «Порадую вас красивым видом <локации>.».",
+        "Если в данных есть город или регион, используй вторую формулу и поставь название в подходящем падеже (например, «в Калининградской области», «в Зеленоградске»).",
+        "После первой фразы добавь 1–2 коротких предложения с конкретными деталями сцены без пафоса и канцелярита.",
+        "Пиши только по-русски, не используй английские слова, эмодзи, хэштеги или ссылки внутри текста.",
+        "Обязательно назови указанную локацию (город или регион) в корректной форме.",
+        "Сохраняй дружелюбный и лаконичный тон, избегай рекламных штампов.",
     ]
     if stopwords_text:
         system_prompt_lines.append(f"Запрещены стоп-слова и клише: {stopwords_text}.")
-    system_prompt_lines.append("Соблюдай орфографию и избегай повторов.")
-    system_prompt = "\n".join(system_prompt_lines)
-    user_prompt = (
-        "Контекст (JSON):\n"
-        f"{payload_text}\n\n"
-        "Сформулируй одно короткое предложение, которое станет вторым предложением подписи.\n"
-        "1. Укажи локацию в подходящем падеже.\n"
-        "2. Добавь 1–2 детали сцены и задай настроение.\n"
-        "3. Не используй англицизмов, эмодзи, хэштегов и ссылок в предложении.\n"
-        "4. Сохраняй лаконичность и дружелюбный тон.\n\n"
-        "Отдельно подбери до четырёх хэштегов с символом #. Обязательно включи региональный тег "
-        f"{region_tag or region_hashtag}, добавь городской тег при наличии и 1–2 смысловых тега (река, озеро, закат и т. п.).\n\n"
-        'Формат ответа: {"sentence": "<текст>", "hashtags": ["#…"]}.'
+    system_prompt_lines.append(
+        "Если has_birds=true или перечислены bird_tags, мягко упомяни заметных птиц (лебеди, утки, чайки и т. п.), если это органично."
     )
+    system_prompt_lines.append(
+        f"Хэштеги возвращай отдельным массивом: всего 3–5 тегов, обязательно включай региональный тег {region_prompt} и 2–4 смысловых."
+    )
+    if city_tag:
+        system_prompt_lines.append("Если есть city, добавь отдельный хэштег с его названием в формате #Город.")
+    system_prompt_lines.append("Хэштеги #котопогода и дубли запрещены.")
+    if include_rubric_tag:
+        system_prompt_lines.append(
+            f"При высоком postcard_score добавь тег {POSTCARD_RUBRIC_HASHTAG} (только в массиве hashtags)."
+        )
+    else:
+        system_prompt_lines.append(
+            f"Не используй тег {POSTCARD_RUBRIC_HASHTAG} при текущем postcard_score."
+        )
+    system_prompt_lines.append("Ссылку «Полюбить 39» добавит система — не упоминай её в тексте.")
+    system_prompt = "\n".join(system_prompt_lines)
+    bird_info_lines = [f"has_birds: {'true' if has_birds else 'false'}."]
+    if bird_tags:
+        bird_info_lines.append(f"bird_tags: {', '.join(bird_tags)}.")
+    bird_info = " ".join(bird_info_lines)
+    user_prompt = (
+        "Контекст сцены (JSON):\n"
+        f"{payload_text}\n\n"
+        "Сформируй JSON {\"caption\":\"...\",\"hashtags\":[\"#...\"]}.\n"
+        "Caption — полная подпись по правилам system prompt (без хэштегов, ссылок и «Полюбить 39»).\n"
+        "Hashtags — 3–5 тегов с символом #, без #котопогода и повторов. Обязательно включи региональный тег "
+        f"{region_prompt} и подбери 2–4 смысловых тега по сцене.\n"
+    )
+    if city_tag:
+        user_prompt += "Если указан city, добавь отдельный тег с названием города (#Город).\n"
+    if include_rubric_tag:
+        user_prompt += f"Добавь тег {POSTCARD_RUBRIC_HASHTAG} в массив hashtags.\n"
+    else:
+        user_prompt += f"Не используй тег {POSTCARD_RUBRIC_HASHTAG}.\n"
+    user_prompt += f"\nПодсказка о птицах:\n{bird_info}"
     schema = {
         "type": "object",
         "properties": {
-            "sentence": {"type": "string"},
+            "caption": {"type": "string"},
             "hashtags": {
                 "type": "array",
                 "items": {"type": "string"},
-                "minItems": 2,
+                "minItems": 3,
+                "maxItems": 5,
             },
         },
-        "required": ["sentence", "hashtags"],
+        "required": ["caption", "hashtags"],
     }
-    normalized_region_tag = region_tag or _normalize_hashtag_candidate(region_hashtag)
+    region_value_for_tags = region_prompt
     default_tags = _finalize_postcard_hashtags(
         [],
-        normalized_region_tag,
+        region_value_for_tags,
         city_tag,
         is_sea_scene=is_sea_scene,
+        include_rubric_tag=include_rubric_tag,
+        fallback_keywords=semantic_tags,
     )
     link_block = _build_link_block()
     if not openai or not getattr(openai, "api_key", None):
         fallback_sentence = _postcard_fallback_sentence(location, semantic_tags)
-        opening = _pick_postcard_opening(asset)
+        opening = _build_postcard_opening(location)
         combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
         caption_with_block = f"{combined}\n\n{link_block}"
         return caption_with_block.strip(), default_tags
-
     attempts = 3
     for attempt in range(1, attempts + 1):
         try:
@@ -470,57 +623,55 @@ async def generate_postcard_caption(
             logging.warning("POSTCARD_CAPTION invalid_response attempt=%s", attempt)
             continue
         hashtag_raw = response.content.get("hashtags")
-        sentence_raw = response.content.get("sentence")
-        if not isinstance(sentence_raw, str):
-            sentence_raw = response.content.get("caption")
-        if not isinstance(sentence_raw, str):
-            logging.warning("POSTCARD_CAPTION missing_sentence attempt=%s", attempt)
-            continue
         if not isinstance(hashtag_raw, list):
             hashtag_raw = []
-        second_sentence = _sanitize_sentence(sentence_raw)
-        if "#" in second_sentence:
-            second_sentence = re.sub(r"#\S+", "", second_sentence).strip()
-        for prefix in POSTCARD_OPENING_CHOICES:
-            if second_sentence.casefold().startswith(prefix.casefold()):
-                parts = re.split(r"(?<=[.!?…])\s+", second_sentence, maxsplit=1)
-                second_sentence = parts[1] if len(parts) > 1 else ""
-                break
-        second_sentence = _sanitize_sentence(second_sentence)
-        if not second_sentence:
-            logging.info("POSTCARD_CAPTION short_sentence attempt=%s", attempt)
+        caption_raw = response.content.get("caption")
+        if not isinstance(caption_raw, str):
+            caption_raw = response.content.get("sentence")
+        if not isinstance(caption_raw, str):
+            logging.warning("POSTCARD_CAPTION missing_caption attempt=%s", attempt)
             continue
-        pieces = re.split(r"(?<=[.!?…])\s+", second_sentence)
-        if pieces:
-            second_sentence = pieces[0].strip()
-        second_sentence = _ensure_sentence_punctuation(second_sentence)
-        if _contains_banned_word(second_sentence, banned_words):
+        caption_text = _sanitize_postcard_caption_text(caption_raw)
+        if not caption_text:
+            logging.info("POSTCARD_CAPTION empty_caption attempt=%s", attempt)
+            continue
+        caption_text = re.sub(r"#\S+", "", caption_text).strip()
+        caption_text = _remove_latin_words(caption_text)
+        caption_text = re.sub(r"\s{2,}", " ", caption_text).strip()
+        if not caption_text:
+            logging.info("POSTCARD_CAPTION empty_after_latin attempt=%s", attempt)
+            continue
+        if caption_text[-1] not in ".!?…":
+            caption_text = f"{caption_text}."
+        opening_sentence = re.split(r"(?<=[.!?…])\s+", caption_text)[0]
+        lowered_opening = opening_sentence.casefold()
+        if not any(
+            lowered_opening.startswith(prefix.casefold()) for prefix in POSTCARD_OPENING_CHOICES
+        ):
+            logging.info("POSTCARD_CAPTION invalid_opening attempt=%s", attempt)
+            continue
+        if banned_words and _contains_banned_word(caption_text, banned_words):
             logging.info("POSTCARD_CAPTION banned_word attempt=%s", attempt)
             continue
-        if not _mentions_location(second_sentence, location):
+        if (location.city or location.region) and not _mentions_location(caption_text, location):
             logging.info("POSTCARD_CAPTION missing_location attempt=%s", attempt)
             continue
         hashtags = _finalize_postcard_hashtags(
             hashtag_raw,
-            normalized_region_tag,
+            region_value_for_tags,
             city_tag,
             is_sea_scene=is_sea_scene,
+            include_rubric_tag=include_rubric_tag,
+            fallback_keywords=semantic_tags,
         )
-        opening = _pick_postcard_opening(asset)
-        combined = _remove_latin_words(f"{opening} {second_sentence}".strip())
-        if not combined:
-            logging.info("POSTCARD_CAPTION empty_after_latin attempt=%s", attempt)
-            continue
-        caption_with_block = f"{combined}\n\n{link_block}"
+        caption_with_block = f"{caption_text}\n\n{link_block}"
         return caption_with_block.strip(), hashtags
-
     logging.warning("POSTCARD_CAPTION fallback_used")
     fallback_sentence = _postcard_fallback_sentence(location, semantic_tags)
-    opening = _pick_postcard_opening(asset)
+    opening = _build_postcard_opening(location)
     combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
     caption_with_block = f"{combined}\n\n{link_block}"
     return caption_with_block.strip(), default_tags
-
 
 async def generate_sea_caption(
     bot: Bot,

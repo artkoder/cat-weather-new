@@ -236,12 +236,16 @@ WMO_EMOJI = {
     99: "\u26c8\ufe0f",
 }
 
-LOVE_COLLECTION_LINK = '<a href="https://t.me/addlist/sW-rkrslxqo1NTVi">📂 Полюбить 39</a>'
+LOVE_COLLECTION_URL = "https://t.me/addlist/sW-rkrslxqo1NTVi"
+LOVE_COLLECTION_LINK = f'<a href="{LOVE_COLLECTION_URL}">📂 Полюбить 39</a>'
+LOVE_COLLECTION_LINK_MARKDOWN = f"[📂 Полюбить 39]({LOVE_COLLECTION_URL})"
 POSTCARD_DEFAULT_REGION_HASHTAG = "#КалининградскаяОбласть"
 
 
-def build_rubric_link_block(rubric_code: str) -> str:
+def build_rubric_link_block(rubric_code: str, *, parse_mode: str = "HTML") -> str:
     if rubric_code in {"sea", "postcard"}:
+        if parse_mode.lower().startswith("markdown"):
+            return LOVE_COLLECTION_LINK_MARKDOWN
         return LOVE_COLLECTION_LINK
     return ""
 
@@ -13753,7 +13757,7 @@ class Bot:
         )
         prepared_hashtags = self._prepare_hashtags(hashtags)
         hashtag_block = " ".join(prepared_hashtags)
-        link_block = LOVE_COLLECTION_LINK
+        link_block = build_rubric_link_block("postcard", parse_mode="Markdown")
         caption_body = caption_text.strip()
         if link_block and link_block in caption_body:
             caption_body = caption_body.replace(link_block, "").strip()
@@ -13799,7 +13803,7 @@ class Bot:
             {
                 "chat_id": target_channel,
                 "caption": final_caption,
-                "parse_mode": "HTML",
+                "parse_mode": "Markdown",
             },
             files={"photo": (filename, file_data, content_type)},
         )

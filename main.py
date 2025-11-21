@@ -25,7 +25,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as dtime
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, cast
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -2369,7 +2369,7 @@ class Bot:
         method: str,
         data: dict | None = None,
         *,
-        files: dict[str, tuple[str, bytes]] | None = None,
+        files: dict[str, tuple[str, bytes] | tuple[str, bytes, str]] | None = None,
     ) -> Any:
         if self.dry_run:
             logging.debug("Simulated API call %s with %s", method, data)
@@ -2382,8 +2382,13 @@ class Bot:
                     form.add_field(key, json.dumps(value))
                 else:
                     form.add_field(key, str(value))
-            for name, (filename, blob) in files.items():
-                form.add_field(name, blob, filename=filename)
+            for name, payload in files.items():
+                if len(payload) == 3:
+                    filename, blob, content_type = cast(tuple[str, bytes, str], payload)
+                    form.add_field(name, blob, filename=filename, content_type=content_type)
+                else:
+                    filename, blob = cast(tuple[str, bytes], payload)
+                    form.add_field(name, blob, filename=filename)
             async with self.session.post(url, data=form) as resp:
                 text = await resp.text()
         else:

@@ -1,14 +1,16 @@
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 import caption_gen
-from caption_gen import POSTCARD_OPENING_CHOICES, POSTCARD_RUBRIC_HASHTAG, generate_postcard_caption
+from caption_gen import POSTCARD_RUBRIC_HASHTAG, generate_postcard_caption
 from data_access import Asset
 from openai_client import OpenAIResponse
 from main import LOVE_COLLECTION_LINK
+from osm_utils import NationalParkInfo, SettlementInfo, WaterInfo
 from zoneinfo import ZoneInfo
 
 KALININGRAD_TZ = ZoneInfo("Europe/Kaliningrad")
@@ -82,6 +84,35 @@ class DummyOpenAI:
         return self.responses[index]
 
 
+@pytest.fixture(autouse=True)
+def stub_osm(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    state = SimpleNamespace(
+        water_result=None,
+        national_park_result=None,
+        settlement_result=None,
+        water_calls=[],
+        park_calls=[],
+        settlement_calls=[],
+    )
+
+    async def fake_water(lat: float, lon: float, radius_m: int = 300) -> WaterInfo | None:
+        state.water_calls.append((lat, lon, radius_m))
+        return state.water_result
+
+    async def fake_park(lat: float, lon: float) -> NationalParkInfo | None:
+        state.park_calls.append((lat, lon))
+        return state.national_park_result
+
+    async def fake_settlement(lat: float, lon: float, radius_m: int) -> SettlementInfo | None:
+        state.settlement_calls.append((lat, lon, radius_m))
+        return state.settlement_result
+
+    monkeypatch.setattr(caption_gen, "find_water_body", fake_water)
+    monkeypatch.setattr(caption_gen, "find_national_park", fake_park)
+    monkeypatch.setattr(caption_gen, "find_nearest_settlement", fake_settlement)
+    return state
+
+
 def _set_postcard_now(monkeypatch: pytest.MonkeyPatch, current: datetime) -> None:
     monkeypatch.setattr(caption_gen, "_now_kaliningrad", lambda: current, raising=False)
 
@@ -99,6 +130,12 @@ def _dummy_postcard_client(caption_text: str) -> DummyOpenAI:
         },
     )
     return DummyOpenAI([response])
+
+
+def _assert_postcard_opening(text: str) -> None:
+    first_sentence = re.split(r"(?<=[.!?…])\s+", text.strip())[0]
+    assert first_sentence.startswith("Порадую вас ")
+    assert "вид" in first_sentence.casefold()
 
 
 def _extract_prompt_payload(prompt_text: str) -> dict[str, object]:
@@ -121,6 +158,9 @@ def test_postcard_stopwords_include_new_phrases() -> None:
         "уютный уголок",
         "словно из открытки",
         "обязательно стоит побывать",
+        "магический",
+        "дыхание города",
+        "игра света и тени",
     )
     for phrase in required:
         assert phrase in lowered
@@ -218,7 +258,7 @@ async def test_postcard_caption_with_location_and_love_block() -> None:
 
     parts = caption.split("\n\n")
     text_part = parts[0]
-    assert text_part.startswith(POSTCARD_OPENING_CHOICES)
+    _assert_postcard_opening(text_part)
     assert "Светлогор" in text_part
     assert not re.search(r"[A-Za-z]", text_part)
     assert LOVE_COLLECTION_LINK in caption
@@ -230,7 +270,7 @@ async def test_postcard_caption_with_location_and_love_block() -> None:
     assert "#котопогода" not in normalized_tags
     assert "#балтийскоморе" not in normalized_tags
     assert all("море" not in tag for tag in normalized_tags)
-    assert 3 <= len(hashtags) <= 5
+    assert 3 <= len(hashtags) <= 7
 
 
 @pytest.mark.asyncio
@@ -273,7 +313,7 @@ async def test_postcard_caption_filters_stopwords() -> None:
     assert caption.strip().endswith(LOVE_COLLECTION_LINK)
     normalized_tags = {tag.casefold() for tag in hashtags}
     assert "#калининградскаяобласть" in normalized_tags
-    assert 3 <= len(hashtags) <= 5
+    assert 3 <= len(hashtags) <= 7
 
 
 @pytest.mark.asyncio
@@ -288,14 +328,14 @@ async def test_postcard_caption_fallback_without_openai() -> None:
     )
 
     text_part = caption.split("\n\n")[0]
-    assert text_part.startswith(POSTCARD_OPENING_CHOICES)
+    _assert_postcard_opening(text_part)
     assert "Куршская коса" in text_part
     assert LOVE_COLLECTION_LINK in caption
     assert caption.strip().endswith(LOVE_COLLECTION_LINK)
     normalized_tags = {tag.casefold() for tag in hashtags}
     assert "#калининградскаяобласть" in normalized_tags
     assert POSTCARD_RUBRIC_HASHTAG in hashtags
-    assert 3 <= len(hashtags) <= 5
+    assert 3 <= len(hashtags) <= 7
 
 
 @pytest.mark.asyncio
@@ -324,7 +364,7 @@ async def test_postcard_caption_strips_latin_words() -> None:
     text_part = caption.split("\n\n")[0]
     assert "calm" not in text_part.lower()
     assert "light" not in text_part.lower()
-    assert text_part.startswith(POSTCARD_OPENING_CHOICES)
+    _assert_postcard_opening(text_part)
 
 
 @pytest.mark.asyncio
@@ -348,8 +388,7 @@ async def test_postcard_caption_adds_map_links_with_coordinates() -> None:
     assert map_line is not None
     assert '<a href="https://2gis.ru/?m=20.452200,54.710400/17">2ГИС</a>' in map_line
     assert (
-        '<a href="https://yandex.ru/maps/?whatshere[point]=20.452200%2C54.710400'
-        '&amp;whatshere[zoom]=17&amp;mode=whatshere">Яндекс</a>'
+        '<a href="https://yandex.ru/maps/?pt=20.452200,54.710400&amp;z=17&amp;l=map">Яндекс</a>'
     ) in map_line
 
 
@@ -398,16 +437,21 @@ async def test_postcard_map_links_precede_season_line(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_postcard_caption_keeps_sea_hashtags_for_sea_scene() -> None:
+async def test_postcard_caption_adds_baltic_hashtag_for_detected_water(
+    stub_osm: SimpleNamespace,
+) -> None:
     asset = _make_asset(
         city="Зеленоградск",
-        tags=["море"],
+        tags=["water", "sea"],
         vision_results={"sea_wave_score": {"value": 2}},
     )
+    asset.payload["latitude"] = 54.971
+    asset.payload["longitude"] = 20.243
+    stub_osm.water_result = WaterInfo(kind="sea", name_ru="Балтийское море")
     response = OpenAIResponse(
         {
             "caption": "Порадую вас красивым видом Зеленоградска. Море сегодня спокойно тянется к берегу.",
-            "hashtags": ["#море", "#морскойбриз"],
+            "hashtags": ["#ocean", "#морскойбриз"],
         },
         {
             "prompt_tokens": 5,
@@ -424,8 +468,47 @@ async def test_postcard_caption_keeps_sea_hashtags_for_sea_scene() -> None:
         stopwords=[],
     )
 
-    assert any(tag.casefold().startswith("#море") for tag in hashtags)
-    assert 3 <= len(hashtags) <= 5
+    normalized_tags = {tag.casefold() for tag in hashtags}
+    assert "#балтийскоморе" in normalized_tags
+    assert "#ocean" not in normalized_tags
+    assert 3 <= len(hashtags) <= 7
+
+
+@pytest.mark.asyncio
+async def test_postcard_hashtags_include_national_park(stub_osm: SimpleNamespace) -> None:
+    asset = _make_asset(postcard_score=9)
+    asset.payload["latitude"] = 54.966
+    asset.payload["longitude"] = 20.465
+    stub_osm.national_park_result = NationalParkInfo(
+        osm_name_ru="Нацпарк Куршская коса",
+        short_name="Куршская коса",
+        hashtag="#КуршскаяКоса",
+    )
+    response = OpenAIResponse(
+        {
+            "caption": "Порадую вас красивым видом Куршской косы. Свет уходит вдоль сосен.",
+            "hashtags": ["#закат"],
+        },
+        {
+            "prompt_tokens": 4,
+            "completion_tokens": 8,
+            "total_tokens": 12,
+        },
+    )
+    client = DummyOpenAI([response])
+
+    _, hashtags = await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    normalized_tags = {tag.casefold() for tag in hashtags}
+    assert "#нацпарк" in normalized_tags
+    assert "#куршскаякоса" in normalized_tags
+    assert POSTCARD_RUBRIC_HASHTAG in hashtags
+    assert 3 <= len(hashtags) <= 7
 
 
 @pytest.mark.asyncio
@@ -455,7 +538,7 @@ async def test_postcard_caption_removes_forbidden_hashtags_and_keeps_region() ->
     assert "#котопогода" not in normalized_tags
     assert POSTCARD_RUBRIC_HASHTAG not in hashtags
     assert "#калининградскаяобласть" in normalized_tags
-    assert 3 <= len(hashtags) <= 5
+    assert 3 <= len(hashtags) <= 7
 
 
 @pytest.mark.asyncio
@@ -535,6 +618,39 @@ async def test_postcard_prompt_includes_bird_info() -> None:
     prompt = str(client.calls[0]["user_prompt"])
     assert "has_birds: true" in prompt
     assert "bird_tags: лебедь" in prompt
+
+
+@pytest.mark.asyncio
+async def test_postcard_prompt_includes_place_text_and_water(stub_osm: SimpleNamespace) -> None:
+    asset = _make_asset(tags=["water"], region="Калининградская область")
+    asset.payload["latitude"] = 54.956
+    asset.payload["longitude"] = 20.488
+    stub_osm.water_result = WaterInfo(kind="lagoon", name_ru="Куршский залив")
+    stub_osm.national_park_result = NationalParkInfo(
+        osm_name_ru="Нацпарк Куршская коса",
+        short_name="Куршская коса",
+        hashtag="#КуршскаяКоса",
+    )
+    stub_osm.settlement_result = SettlementInfo(name="Светлогорск", distance_m=750)
+    client = _dummy_postcard_client(
+        "Порадую вас красивым видом Светлогорска. Свет играет на воде."
+    )
+
+    await generate_postcard_caption(
+        client,
+        asset,
+        region_hashtag="#КалининградскаяОбласть",
+        stopwords=[],
+    )
+
+    assert client.calls, "OpenAI client should be called"
+    payload = _extract_prompt_payload(str(client.calls[0]["user_prompt"]))
+    assert payload["place_text"].startswith("в окрестностях Светлогорск")
+    assert "Курш" in payload["place_text"]
+    assert payload["water_kind"] == "lagoon"
+    assert payload["water_name_ru"] == "Куршский залив"
+    assert payload["national_park_short"] == "Куршская коса"
+    assert payload["has_water_in_frame"] is True
 
 
 @pytest.mark.asyncio

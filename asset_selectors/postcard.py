@@ -14,7 +14,7 @@ from data_access import Asset, DataAccess
 
 logger = logging.getLogger(__name__)
 
-_MIN_SCORE = 6
+_MIN_SCORE = 7
 _CANDIDATE_LIMIT = 200
 _FRESHNESS_WINDOW = timedelta(days=3)
 _SEASON_WINDOW_DAYS = 30

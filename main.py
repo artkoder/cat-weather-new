@@ -240,6 +240,7 @@ LOVE_COLLECTION_URL = "https://t.me/addlist/sW-rkrslxqo1NTVi"
 LOVE_COLLECTION_LINK = f'<a href="{LOVE_COLLECTION_URL}">📂 Полюбить 39</a>'
 LOVE_COLLECTION_LINK_MARKDOWN = f"[📂 Полюбить 39]({LOVE_COLLECTION_URL})"
 POSTCARD_DEFAULT_REGION_HASHTAG = "#КалининградскаяОбласть"
+POSTCARD_MIN_SCORE = 7
 
 
 def build_rubric_link_block(rubric_code: str, *, parse_mode: str = "HTML") -> str:
@@ -13699,31 +13700,29 @@ class Bot:
     ) -> bool:
         del job  # postcard handler does not use job metadata directly
         config = rubric.config or {}
+        is_prod = not test
+        rubric_title = rubric.title or "Открыточный вид"
         if channel_id is None:
             logging.warning("POSTCARD_RUBRIC missing_channel_id test=%s", int(test))
             return False
         target_channel = int(channel_id)
         asset = select_postcard_asset(self.data, now=datetime.now(UTC))
-        if not asset:
+        asset_score = Asset._to_int(asset.postcard_score) if asset else None
+        if not asset or asset_score is None or asset_score < POSTCARD_MIN_SCORE:
+            skip_reason = "no_candidates" if not asset else "low_score"
             logging.info(
-                "POSTCARD_RUBRIC no_candidates channel_id=%s test=%d",
+                "POSTCARD_RUBRIC %s channel_id=%s test=%d score=%s min_score=%s",
+                skip_reason,
                 target_channel,
                 int(test),
+                asset_score,
+                POSTCARD_MIN_SCORE,
             )
-            if initiator_id is not None:
-                title = rubric.title or "Открыточный вид"
-                await self.api_request(
-                    "sendMessage",
-                    {
-                        "chat_id": initiator_id,
-                        "text": (
-                            f"Для рубрики «{title}» подходящие кадры сейчас не найдены. "
-                            "Добавьте фотографии с высоким postcard_score и попробуйте снова."
-                        ),
-                    },
-                )
-                return True
-            return False
+            await self._notify_postcard_no_inventory(
+                rubric_title=rubric_title,
+                initiator_id=initiator_id,
+            )
+            return initiator_id is not None
 
         def _normalize_stopwords(value: Any) -> list[str]:
             if not value:
@@ -13838,7 +13837,110 @@ class Bot:
             rubric.id,
             metadata,
         )
+
+        await self._send_postcard_inventory_report(
+            is_prod=is_prod,
+            rubric_title=rubric_title,
+            initiator_id=initiator_id,
+        )
         return True
+
+    def _compute_postcard_inventory_stats(self) -> tuple[int, dict[int, int]]:
+        """Count postcard-ready assets grouped by postcard_score."""
+        query = (
+            "SELECT postcard_score AS score, COUNT(*) AS count FROM assets "
+            "WHERE postcard_score BETWEEN ? AND ? GROUP BY postcard_score"
+        )
+        rows = self.db.execute(query, (POSTCARD_MIN_SCORE, 10)).fetchall()
+        score_counts: dict[int, int] = {score: 0 for score in range(POSTCARD_MIN_SCORE, 11)}
+        total_count = 0
+        for row in rows:
+            try:
+                score = int(row["score"])
+                count = int(row["count"])
+            except (TypeError, ValueError):
+                logging.debug("POSTCARD_INVENTORY skip_row row=%s", dict(row))
+                continue
+            if score < POSTCARD_MIN_SCORE or score > 10:
+                continue
+            score_counts[score] = count
+            total_count += count
+        return total_count, score_counts
+
+    async def _send_postcard_inventory_report(
+        self,
+        *,
+        is_prod: bool,
+        rubric_title: str | None = None,
+        initiator_id: int | None = None,
+    ) -> None:
+        total_count, score_counts = self._compute_postcard_inventory_stats()
+
+        logging.info("POSTCARD_INVENTORY_COUNTS raw=%s", dict(score_counts))
+        logging.info(
+            "POSTCARD_INVENTORY_REPORT prod=%d total=%d min_score=%s",
+            int(is_prod),
+            total_count,
+            POSTCARD_MIN_SCORE,
+        )
+
+        rows = [
+            self._format_inventory_row(f"{score}/10", score_counts.get(score, 0))
+            for score in range(POSTCARD_MIN_SCORE, 11)
+        ]
+        sections = [("Волнение (7–10)", rows)]
+        title = rubric_title or "Открыточный вид"
+        report_text = self._compose_inventory_report_text(
+            rubric_title=title,
+            total_count=total_count,
+            sections=sections,
+        )
+        await self._send_inventory_report_message(
+            rubric_code="postcard",
+            report_text=report_text,
+            total_count=total_count,
+            is_prod=is_prod,
+            initiator_id=initiator_id,
+        )
+
+    async def _notify_postcard_no_inventory(
+        self,
+        *,
+        rubric_title: str | None,
+        initiator_id: int | None = None,
+    ) -> None:
+        title = rubric_title or "Открыточный вид"
+        message_text = (
+            f"⚠️ Рубрика «{title}» пропущена — нет фотографий с уровнем открыточности "
+            f"{POSTCARD_MIN_SCORE}–10 баллов."
+        )
+        target_ids = [initiator_id] if initiator_id else self.get_superadmin_ids()
+        if not target_ids:
+            logging.info(
+                "POSTCARD_RUBRIC skip_notify recipients=0 min_score=%s",
+                POSTCARD_MIN_SCORE,
+            )
+            return
+        for target_id in target_ids:
+            try:
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": target_id,
+                        "text": message_text,
+                    },
+                )
+                logging.info(
+                    "POSTCARD_RUBRIC skip_notify_sent target_id=%s min_score=%s",
+                    target_id,
+                    POSTCARD_MIN_SCORE,
+                )
+            except Exception as exc:
+                logging.error(
+                    "POSTCARD_RUBRIC skip_notify_failed target_id=%s err=%s",
+                    target_id,
+                    str(exc)[:200],
+                )
 
     async def _publish_sea(
         self,
@@ -15379,6 +15481,76 @@ class Bot:
                 return bucket
         return "partly_cloudy"
 
+    def _format_inventory_row(
+        self,
+        label: str,
+        count: int | None,
+        *,
+        warning_threshold: int | None = 10,
+        warn_marker: str = " ⚠️ мало",
+    ) -> str:
+        value = int(count or 0)
+        warning = ""
+        if warning_threshold is not None and value < warning_threshold:
+            warning = warn_marker
+        return f"• {label}: {value}{warning}"
+
+    def _compose_inventory_report_text(
+        self,
+        *,
+        rubric_title: str,
+        total_count: int,
+        sections: Sequence[tuple[str, Sequence[str]]],
+    ) -> str:
+        lines = [f"🗂 Остатки фото «{rubric_title}»: {total_count}"]
+        for title, rows in sections:
+            lines.append("")
+            lines.append(title)
+            lines.extend(rows)
+        return "\n".join(lines)
+
+    async def _send_inventory_report_message(
+        self,
+        *,
+        rubric_code: str,
+        report_text: str,
+        total_count: int,
+        is_prod: bool,
+        initiator_id: int | None = None,
+    ) -> None:
+        target_ids = [initiator_id] if initiator_id else self.get_superadmin_ids()
+        if not target_ids:
+            logging.info(
+                "%s_INVENTORY skip_send recipients=0 prod=%d total=%d",
+                rubric_code.upper(),
+                int(is_prod),
+                total_count,
+            )
+            return
+        for target_id in target_ids:
+            try:
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": target_id,
+                        "text": report_text,
+                    },
+                )
+                logging.info(
+                    "%s_INVENTORY_SENT prod=%d total=%d target_id=%s",
+                    rubric_code.upper(),
+                    int(is_prod),
+                    total_count,
+                    target_id,
+                )
+            except Exception as exc:
+                logging.error(
+                    "%s_INVENTORY_SEND_FAILED target_id=%s err=%s",
+                    rubric_code.upper(),
+                    target_id,
+                    str(exc)[:200],
+                )
+
     def _compute_sea_inventory_stats(self) -> tuple[int, dict[str, int], dict[int, int]]:
         """Aggregate sea inventory statistics by sky bucket and wave score."""
         sea_rubric = self.data.get_rubric_by_code("sea")
@@ -15481,54 +15653,37 @@ class Bot:
         }
         SKY_ORDER = ("clear", "mostly_clear", "partly_cloudy", "mostly_cloudy", "overcast")
 
-        report_lines = [
-            f"🗂 Остатки фото «Море»: {total_count}\n",
-            "Небо",
+        sky_rows = [
+            self._format_inventory_row(SKY_LABELS[sky], sky_counts.get(sky, 0)) for sky in SKY_ORDER
         ]
-
-        for sky in SKY_ORDER:
-            label = SKY_LABELS[sky]
-            count = sky_counts.get(sky, 0)
-            warning = " ⚠️ мало" if count < 10 else ""
-            report_lines.append(f"• {label}: {count}{warning}")
-
-        report_lines.append("\nВолнение (0–10)")
-
+        wave_rows: list[str] = []
         for wave_score in range(11):
             count = wave_counts.get(wave_score, 0)
             if count == 0:
                 continue
-            warning = " ⚠️ мало" if count < 10 else ""
+            label = f"{wave_score}/10"
             if wave_score == 0:
-                report_lines.append(f"• {wave_score}/10 (штиль): {count}{warning}")
-            else:
-                report_lines.append(f"• {wave_score}/10: {count}{warning}")
+                label += " (штиль)"
+            wave_rows.append(self._format_inventory_row(label, count))
 
-        report_text = "\n".join(report_lines)
+        sections: list[tuple[str, Sequence[str]]] = [
+            ("Небо", sky_rows),
+            ("Волнение (0–10)", wave_rows),
+        ]
 
-        target_ids = [initiator_id] if initiator_id else self.get_superadmin_ids()
+        report_text = self._compose_inventory_report_text(
+            rubric_title="Море",
+            total_count=total_count,
+            sections=sections,
+        )
 
-        for target_id in target_ids:
-            try:
-                await self.api_request(
-                    "sendMessage",
-                    {
-                        "chat_id": target_id,
-                        "text": report_text,
-                    },
-                )
-                logging.info(
-                    "SEA_INVENTORY_SENT prod=%d total=%d sky_buckets=%d wave_scores=%d target_id=%d",
-                    int(is_prod),
-                    total_count,
-                    sum(1 for value in sky_counts.values() if value > 0),
-                    len(wave_counts),
-                    target_id,
-                )
-            except Exception as e:
-                logging.error(
-                    "SEA_INVENTORY_SEND_FAILED target_id=%d err=%s", target_id, str(e)[:200]
-                )
+        await self._send_inventory_report_message(
+            rubric_code="sea",
+            report_text=report_text,
+            total_count=total_count,
+            is_prod=is_prod,
+            initiator_id=initiator_id,
+        )
 
     async def _handle_sea_no_candidates(
         self,

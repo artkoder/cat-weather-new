@@ -10,7 +10,7 @@ import pytest
 from zoneinfo import ZoneInfo
 
 from data_access import DataAccess
-from asset_selectors.postcard import select_postcard_asset
+from asset_selectors.postcard import _MIN_SCORE as POSTCARD_SELECTOR_MIN_SCORE, select_postcard_asset
 
 
 @pytest.fixture
@@ -202,3 +202,21 @@ def test_repeat_guard_skips_recently_used_assets(data: DataAccess) -> None:
     asset = select_postcard_asset(data, now=now)
     assert asset is not None
     assert asset.id == "asset-fresh"
+
+
+def test_returns_none_when_scores_below_threshold(data: DataAccess) -> None:
+    tz = ZoneInfo("Europe/Kaliningrad")
+    now = datetime(2024, 9, 5, 10, 0, tzinfo=tz)
+    doy_now = now.timetuple().tm_yday
+
+    _add_asset(
+        data,
+        asset_id="asset-low",
+        score=POSTCARD_SELECTOR_MIN_SCORE - 1,
+        created_at=now - timedelta(days=1),
+        captured_at=now - timedelta(days=1),
+        photo_doy=doy_now,
+    )
+
+    asset = select_postcard_asset(data, now=now)
+    assert asset is None

@@ -8,9 +8,9 @@ import pytest
 import caption_gen
 from caption_gen import POSTCARD_RUBRIC_HASHTAG, generate_postcard_caption
 from data_access import Asset
+from geo_context import GeoContext
 from openai_client import OpenAIResponse
 from main import LOVE_COLLECTION_LINK
-from osm_utils import NationalParkInfo, SettlementInfo, WaterInfo
 from zoneinfo import ZoneInfo
 
 KALININGRAD_TZ = ZoneInfo("Europe/Kaliningrad")
@@ -85,31 +85,35 @@ class DummyOpenAI:
 
 
 @pytest.fixture(autouse=True)
-def stub_osm(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+def stub_geo_context(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     state = SimpleNamespace(
-        water_result=None,
-        national_park_result=None,
-        settlement_result=None,
-        water_calls=[],
-        park_calls=[],
-        settlement_calls=[],
+        geo_context=GeoContext(
+            main_place="Светлогорск",
+            water_name=None,
+            water_kind=None,
+            national_park=None,
+        ),
+        calls=[],
     )
 
-    async def fake_water(lat: float, lon: float, radius_m: int = 300) -> WaterInfo | None:
-        state.water_calls.append((lat, lon, radius_m))
-        return state.water_result
+    async def fake_builder(
+        *,
+        lat: float | None,
+        lon: float | None,
+        asset_city: str | None,
+        asset_tags: list[str] | None,
+    ) -> GeoContext:
+        state.calls.append(
+            {
+                "lat": lat,
+                "lon": lon,
+                "asset_city": asset_city,
+                "asset_tags": list(asset_tags or []),
+            }
+        )
+        return state.geo_context
 
-    async def fake_park(lat: float, lon: float) -> NationalParkInfo | None:
-        state.park_calls.append((lat, lon))
-        return state.national_park_result
-
-    async def fake_settlement(lat: float, lon: float, radius_m: int) -> SettlementInfo | None:
-        state.settlement_calls.append((lat, lon, radius_m))
-        return state.settlement_result
-
-    monkeypatch.setattr(caption_gen, "find_water_body", fake_water)
-    monkeypatch.setattr(caption_gen, "find_national_park", fake_park)
-    monkeypatch.setattr(caption_gen, "find_nearest_settlement", fake_settlement)
+    monkeypatch.setattr(caption_gen, "build_geo_context_for_asset", fake_builder)
     return state
 
 
@@ -438,7 +442,7 @@ async def test_postcard_map_links_precede_season_line(monkeypatch: pytest.Monkey
 
 @pytest.mark.asyncio
 async def test_postcard_caption_adds_baltic_hashtag_for_detected_water(
-    stub_osm: SimpleNamespace,
+    stub_geo_context: SimpleNamespace,
 ) -> None:
     asset = _make_asset(
         city="Зеленоградск",
@@ -447,7 +451,12 @@ async def test_postcard_caption_adds_baltic_hashtag_for_detected_water(
     )
     asset.payload["latitude"] = 54.971
     asset.payload["longitude"] = 20.243
-    stub_osm.water_result = WaterInfo(kind="sea", name_ru="Балтийское море")
+    stub_geo_context.geo_context = GeoContext(
+        main_place="Зеленоградск",
+        water_name="Балтийское море",
+        water_kind="sea",
+        national_park=None,
+    )
     response = OpenAIResponse(
         {
             "caption": "Порадую вас красивым видом Зеленоградска. Море сегодня спокойно тянется к берегу.",
@@ -475,14 +484,17 @@ async def test_postcard_caption_adds_baltic_hashtag_for_detected_water(
 
 
 @pytest.mark.asyncio
-async def test_postcard_hashtags_include_national_park(stub_osm: SimpleNamespace) -> None:
+async def test_postcard_hashtags_include_national_park(
+    stub_geo_context: SimpleNamespace,
+) -> None:
     asset = _make_asset(postcard_score=9)
     asset.payload["latitude"] = 54.966
     asset.payload["longitude"] = 20.465
-    stub_osm.national_park_result = NationalParkInfo(
-        osm_name_ru="Нацпарк Куршская коса",
-        short_name="Куршская коса",
-        hashtag="#КуршскаяКоса",
+    stub_geo_context.geo_context = GeoContext(
+        main_place="Светлогорск",
+        water_name=None,
+        water_kind=None,
+        national_park="Куршская коса",
     )
     response = OpenAIResponse(
         {
@@ -621,17 +633,18 @@ async def test_postcard_prompt_includes_bird_info() -> None:
 
 
 @pytest.mark.asyncio
-async def test_postcard_prompt_includes_place_text_and_water(stub_osm: SimpleNamespace) -> None:
+async def test_postcard_prompt_includes_geo_fields(
+    stub_geo_context: SimpleNamespace,
+) -> None:
     asset = _make_asset(tags=["water"], region="Калининградская область")
     asset.payload["latitude"] = 54.956
     asset.payload["longitude"] = 20.488
-    stub_osm.water_result = WaterInfo(kind="lagoon", name_ru="Куршский залив")
-    stub_osm.national_park_result = NationalParkInfo(
-        osm_name_ru="Нацпарк Куршская коса",
-        short_name="Куршская коса",
-        hashtag="#КуршскаяКоса",
+    stub_geo_context.geo_context = GeoContext(
+        main_place="Светлогорск",
+        water_name="Куршский залив",
+        water_kind="lagoon",
+        national_park="Куршская коса",
     )
-    stub_osm.settlement_result = SettlementInfo(name="Светлогорск", distance_m=750)
     client = _dummy_postcard_client("Порадую вас красивым видом Светлогорска. Свет играет на воде.")
 
     await generate_postcard_caption(
@@ -643,11 +656,10 @@ async def test_postcard_prompt_includes_place_text_and_water(stub_osm: SimpleNam
 
     assert client.calls, "OpenAI client should be called"
     payload = _extract_prompt_payload(str(client.calls[0]["user_prompt"]))
-    assert payload["place_text"].startswith("в окрестностях Светлогорск")
-    assert "Курш" in payload["place_text"]
+    assert payload["location"] == "Светлогорск"
     assert payload["water_kind"] == "lagoon"
-    assert payload["water_name_ru"] == "Куршский залив"
-    assert payload["national_park_short"] == "Куршская коса"
+    assert payload["water_name"] == "Куршский залив"
+    assert payload["national_park"] == "Куршская коса"
     assert payload["has_water_in_frame"] is True
 
 

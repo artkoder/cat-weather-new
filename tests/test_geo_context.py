@@ -53,7 +53,9 @@ async def test_build_geo_context_prefers_asset_city(stub_overpass: SimpleNamespa
 
 
 @pytest.mark.asyncio
-async def test_build_geo_context_uses_settlement_within_park(stub_overpass: SimpleNamespace) -> None:
+async def test_build_geo_context_uses_settlement_within_park(
+    stub_overpass: SimpleNamespace,
+) -> None:
     stub_overpass.park = SimpleNamespace(short_name="Куршская коса")
     stub_overpass.settlement = SimpleNamespace(name="Морское")
 
@@ -82,7 +84,9 @@ async def test_build_geo_context_skips_water_without_tags(stub_overpass: SimpleN
 
 
 @pytest.mark.asyncio
-async def test_detects_baltic_sea_when_coastline_and_sea_tag(stub_overpass: SimpleNamespace) -> None:
+async def test_detects_baltic_sea_when_coastline_and_sea_tag(
+    stub_overpass: SimpleNamespace,
+) -> None:
     stub_overpass.coastline_elements = [
         {"center": {"lat": 54.7005, "lon": 20.5001}},
     ]

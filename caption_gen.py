@@ -566,7 +566,6 @@ class _LocationInfo:
     country: str | None
 
 
-
 def _resolve_location(asset: Asset) -> _LocationInfo:
     city = (asset.city or "").strip() or None
     region = getattr(asset, "region", None)
@@ -581,7 +580,6 @@ def _format_national_park_phrase(name: str | None) -> str | None:
     if not name:
         return None
     return NATIONAL_PARK_PLACE_PHRASES.get(name) or f"на {name}"
-
 
 
 def _extract_asset_tags(asset: Asset) -> list[str]:

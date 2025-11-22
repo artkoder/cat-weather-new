@@ -135,7 +135,9 @@ def _closest_distance(elements: Any, lat: float, lon: float) -> float | None:
     return best_distance
 
 
-def _extract_water_candidate(element: dict[str, Any], lat: float, lon: float) -> _WaterCandidate | None:
+def _extract_water_candidate(
+    element: dict[str, Any], lat: float, lon: float
+) -> _WaterCandidate | None:
     if not isinstance(element, dict):
         return None
     tags = element.get("tags")
@@ -272,7 +274,9 @@ async def build_geo_context_for_asset(
         national_park_name = _normalize_text(getattr(park, "short_name", None))
     settlement_name: str | None = None
     if not main_place:
-        radius = _SETTLEMENT_RADIUS_IN_PARK_M if national_park_name else _SETTLEMENT_RADIUS_DEFAULT_M
+        radius = (
+            _SETTLEMENT_RADIUS_IN_PARK_M if national_park_name else _SETTLEMENT_RADIUS_DEFAULT_M
+        )
         try:
             settlement = await find_nearest_settlement(lat, lon, radius)
         except Exception:  # pragma: no cover - network errors are rare

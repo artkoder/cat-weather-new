@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 from osm_utils import find_national_park, find_nearest_settlement, overpass_query
 

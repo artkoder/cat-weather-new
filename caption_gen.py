@@ -302,10 +302,7 @@ def _build_postcard_map_links(asset: Asset) -> str | None:
     )
     twogis_href = html.escape(twogis_url, quote=True)
     yandex_href = html.escape(yandex_url, quote=True)
-    return (
-        f'📍 <a href="{twogis_href}">2ГИС</a> '
-        f'<a href="{yandex_href}">Яндекс</a>'
-    )
+    return f'📍 <a href="{twogis_href}">2ГИС</a> ' f'<a href="{yandex_href}">Яндекс</a>'
 
 
 def _normalize_hashtag_candidate(value: str | None) -> str | None:

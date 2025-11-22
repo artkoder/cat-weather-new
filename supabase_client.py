@@ -176,40 +176,76 @@ class SupabaseClient:
             logging.debug("Supabase client disabled; skipping token usage check")
             return None, None, "disabled"
 
-        now = datetime.now(UTC)
-        since = now - timedelta(hours=24)
-        since_iso = since.isoformat()
+        since_iso = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+        params = {
+            "select": "sum_total:sum(total_tokens)",
+            "bot": f"eq.{bot}",
+            "model": f"eq.{model}",
+            "at": f"gte.{since_iso}",
+        }
 
         try:
-            response = await self._client.get(
-                "/token_usage",
-                params={
-                    "select": "total_tokens.sum()",
-                    "bot": f"eq.{bot}",
-                    "model": f"eq.{model}",
-                    "created_at": f"gte.{since_iso}",
-                },
-            )
-            if response.status_code != 200:
-                message = f"HTTP {response.status_code}: {response.text}".strip()
-                logging.warning("Failed to fetch 24h OCR usage from Supabase: %s", message)
-                return None, None, message
-
-            raw_payload = response.json()
-            if isinstance(raw_payload, list) and raw_payload and isinstance(raw_payload[0], dict):
-                sum_value = raw_payload[0].get("sum")
-                if sum_value is None:
-                    return 0, raw_payload, None
-                return int(sum_value), raw_payload, None
-
-            logging.warning(
-                "Failed to parse 24h OCR usage from Supabase: unexpected format %s", raw_payload
-            )
-            return None, raw_payload, "parsing_error"
-
+            response = await self._client.get("/token_usage", params=params)
         except httpx.HTTPError as exc:
             logging.warning("Failed to fetch 24h OCR usage from Supabase: %s", exc)
             return None, None, str(exc)
+
+        raw_payload: Any | None = None
+        parse_error: Exception | None = None
+        try:
+            raw_payload = response.json()
         except (ValueError, TypeError) as exc:
-            logging.warning("Failed to parse 24h OCR usage response: %s", exc)
-            return None, None, str(exc)
+            parse_error = exc
+            raw_payload = None
+            if response.status_code != 200:
+                logging.warning("Failed to parse Supabase error payload: %s", exc)
+
+        if response.status_code != 200:
+            message = f"HTTP {response.status_code}: {response.text}".strip()
+            logging.warning("Failed to fetch 24h OCR usage from Supabase: %s", message)
+            return None, raw_payload, message
+
+        if parse_error is not None:
+            logging.warning("Failed to parse 24h OCR usage response: %s", parse_error)
+            return None, None, str(parse_error)
+
+        first_row: Any
+        if isinstance(raw_payload, list):
+            if not raw_payload:
+                return 0, raw_payload, None
+            first_row = raw_payload[0]
+        elif isinstance(raw_payload, dict):
+            first_row = raw_payload
+        else:
+            logging.warning(
+                "Failed to parse 24h OCR usage from Supabase: unexpected format %s",
+                raw_payload,
+            )
+            return None, raw_payload, "invalid_payload"
+
+        sum_present = False
+        sum_value: Any | None = None
+        if isinstance(first_row, dict):
+            if "sum_total" in first_row:
+                sum_present = True
+                sum_value = first_row.get("sum_total")
+            elif "sum" in first_row:
+                sum_present = True
+                sum_value = first_row.get("sum")
+        if not sum_present:
+            logging.warning(
+                "Failed to parse 24h OCR usage from Supabase: missing sum_total in %s",
+                raw_payload,
+            )
+            return None, raw_payload, "invalid_payload"
+
+        if sum_value is None:
+            return 0, raw_payload, None
+
+        try:
+            used_tokens = int(sum_value)
+        except (TypeError, ValueError) as exc:
+            logging.warning("Failed to parse 24h OCR usage total: %s", exc)
+            return None, raw_payload, str(exc)
+
+        return max(used_tokens, 0), raw_payload, None

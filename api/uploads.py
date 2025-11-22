@@ -431,8 +431,13 @@ async def handle_get_upload_status(request: web.Request) -> web.Response:
     payload["asset_id"] = record.get("asset_id")
 
     if payload["status"] == "done":
-        bot_supabase = request.app["bot"].supabase
-        ocr_percent = await get_ocr_remaining_percent(bot_supabase)
+        supabase_client: SupabaseClient | None = None
+        bot = request.app.get("bot")
+        if bot is not None:
+            supabase_client = getattr(bot, "supabase", None)
+        if supabase_client is None:
+            supabase_client = request.app.get("supabase")
+        ocr_percent = await get_ocr_remaining_percent(supabase_client)
         if ocr_percent is not None:
             payload["ocr_remaining_percent"] = ocr_percent
             logging.info(

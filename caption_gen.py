@@ -15,6 +15,14 @@ from zoneinfo import ZoneInfo
 
 from data_access import Asset
 from openai_client import OpenAIClient
+from osm_utils import (
+    NationalParkInfo,
+    SettlementInfo,
+    WaterInfo,
+    find_national_park,
+    find_nearest_settlement,
+    find_water_body,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from jobs import Job
@@ -24,16 +32,13 @@ POSTCARD_OPENING_CHOICES = (
     "Порадую вас открыточным видом.",
     "Порадую вас красивым видом",
 )
-POSTCARD_PREFIX = POSTCARD_OPENING_CHOICES[1]
 POSTCARD_RUBRIC_HASHTAG = "#открыточныйвид"
 POSTCARD_DEFAULT_HASHTAGS = ["#Балтика", "#КрасивыйВид"]
 POSTCARD_MIN_HASHTAGS = 3
-POSTCARD_HASHTAG_LIMIT = 5
+POSTCARD_HASHTAG_LIMIT = 7
 POSTCARD_BANNED_TAGS = {
     "#котопогода",
     "#Котопогода",
-    "#БалтийскоеМоре",
-    "#балтийскоеморе",
 }
 POSTCARD_BANNED_TAG_KEYS = {tag.lstrip("#").casefold() for tag in POSTCARD_BANNED_TAGS}
 POSTCARD_ADDITIONAL_STOP_PHRASES = (
@@ -46,6 +51,10 @@ POSTCARD_ADDITIONAL_STOP_PHRASES = (
     "атмосферная",
     "атмосферное",
     "магия момента",
+    "магию момента",
+    "магический",
+    "магическая",
+    "магическое",
     "уникальный",
     "уникальная",
     "уникальное",
@@ -73,17 +82,28 @@ POSTCARD_ADDITIONAL_STOP_PHRASES = (
     "дарит настроение",
     "дарит ощущение",
     "дарит тепло",
+    "дарит уют",
     "создаёт настроение",
     "создаёт особую атмосферу",
     "особая атмосфера",
     "неповторимая атмосфера",
     "сказочная атмосфера",
+    "сказочный",
+    "сказочная",
+    "сказочное",
     "волшебная атмосфера",
     "делает настроение",
     "наполняет теплом",
+    "наполняет душу теплом",
     "наполняет энергией",
     "заряжает энергией",
     "заряжает настроением",
+    "дыхание города",
+    "город дышит",
+    "кадр дышит",
+    "пейзаж дышит",
+    "окрашено мягкими красками",
+    "игра света и тени",
     "уютный уголок",
     "уютный уголочек",
     "уютное местечко",
@@ -134,7 +154,19 @@ POSTCARD_BIRD_TAGS = (
     "птицы",
 )
 POSTCARD_BIRD_TAG_KEYS = {tag.casefold() for tag in POSTCARD_BIRD_TAGS}
+POSTCARD_REGION_LABEL = "Калининградская область"
+WATER_KIND_HASHTAGS: dict[str, str] = {
+    "lake": "#озеро",
+    "lagoon": "#залив",
+    "river": "#река",
+}
+NATIONAL_PARK_PLACE_PHRASES: dict[str, str] = {
+    "Куршская коса": "на Куршской косе",
+    "Балтийская коса": "на Балтийской косе",
+    "Виштынецкий": "в Виштынецком парке",
+}
 _LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]")
+_CYRILLIC_PATTERN = re.compile(r"[А-Яа-яЁё]")
 _POSTCARD_COMMON_STOPWORDS: tuple[str, ...] | None = None
 _POSTCARD_TZ = ZoneInfo("Europe/Kaliningrad")
 _POSTCARD_SEASON_AGE_THRESHOLD_DAYS = 60
@@ -208,6 +240,28 @@ def _format_postcard_season_label(photo_date: datetime) -> str:
     else:
         start_year = year - 1
     return f"зима {start_year}/{start_year + 1}"
+
+
+def _season_name_ru(season: SeasonName) -> str:
+    if season == "spring":
+        return "весна"
+    if season == "summer":
+        return "лето"
+    if season == "autumn":
+        return "осень"
+    return "зима"
+
+
+def _resolve_photo_year_label(photo_dt: datetime | None) -> str | None:
+    if photo_dt is None:
+        return None
+    return _format_postcard_season_label(photo_dt)
+
+
+def _resolve_photo_season_ru(photo_dt: datetime | None) -> str | None:
+    if photo_dt is None:
+        return None
+    return _season_name_ru(_get_season(photo_dt))
 
 
 def _resolve_postcard_season_line(
@@ -295,11 +349,7 @@ def _build_postcard_map_links(asset: Asset) -> str | None:
     lon_value = f"{longitude:.6f}"
     lat_value = f"{latitude:.6f}"
     twogis_url = f"https://2gis.ru/?m={lon_value},{lat_value}/17"
-    yandex_url = (
-        "https://yandex.ru/maps/?whatshere[point]="
-        f"{lon_value}%2C{lat_value}"
-        "&whatshere[zoom]=17&mode=whatshere"
-    )
+    yandex_url = f"https://yandex.ru/maps/?pt={lon_value},{lat_value}&z=17&l=map"
     twogis_href = html.escape(twogis_url, quote=True)
     yandex_href = html.escape(yandex_url, quote=True)
     return f'📍 <a href="{twogis_href}">2ГИС</a> ' f'<a href="{yandex_href}">Яндекс</a>'
@@ -408,6 +458,13 @@ def _build_postcard_opening(location: _LocationInfo) -> str:
     return POSTCARD_OPENING_CHOICES[0]
 
 
+def _is_valid_postcard_opening(sentence: str) -> bool:
+    normalized = sentence.strip().casefold()
+    if not normalized.startswith("порадую вас "):
+        return False
+    return "видом" in normalized
+
+
 def _sanitize_sentence(text: str) -> str:
     if not text:
         return ""
@@ -459,6 +516,12 @@ def _remove_latin_words(text: str) -> str:
     return rebuilt.strip()
 
 
+def _contains_cyrillic(text: str | None) -> bool:
+    if not text:
+        return False
+    return bool(_CYRILLIC_PATTERN.search(text))
+
+
 def _location_value_in_text(text: str, candidate: str) -> bool:
     normalized_text = text.casefold()
     normalized_candidate = candidate.casefold().strip()
@@ -496,26 +559,6 @@ def _looks_like_marine_tag(tag: str) -> bool:
     return any(keyword in key for keyword in POSTCARD_MARINE_KEYWORDS)
 
 
-def _is_sea_scene(asset: Asset) -> bool:
-    results = asset.vision_results or {}
-    if isinstance(results, dict):
-        if bool(results.get("is_sea")):
-            return True
-        sea_wave = results.get("sea_wave_score")
-        value: float | None = None
-        if isinstance(sea_wave, dict):
-            value = sea_wave.get("value")  # type: ignore[assignment]
-        else:
-            value = sea_wave  # type: ignore[assignment]
-        try:
-            if value is not None and float(value) >= 0:
-                return True
-        except (TypeError, ValueError):
-            pass
-
-    return False
-
-
 @dataclass(slots=True)
 class _LocationInfo:
     display: str
@@ -524,14 +567,78 @@ class _LocationInfo:
     country: str | None
 
 
+@dataclass(slots=True)
+class _PostcardGeoContext:
+    place_text: str | None
+    settlement: SettlementInfo | None
+    national_park: NationalParkInfo | None
+    water: WaterInfo | None
+
+
 def _resolve_location(asset: Asset) -> _LocationInfo:
     city = (asset.city or "").strip() or None
     region = getattr(asset, "region", None)
     if isinstance(region, str):
         region = region.strip() or None
     country = (asset.country or "").strip() or None
-    display = city or region or country or "Калининградская область"
+    display = city or region or country or POSTCARD_REGION_LABEL
     return _LocationInfo(display=display, city=city, region=region, country=country)
+
+
+def _format_national_park_phrase(park: NationalParkInfo | None) -> str | None:
+    if not park:
+        return None
+    return NATIONAL_PARK_PLACE_PHRASES.get(park.short_name) or f"на {park.short_name}"
+
+
+def _build_place_text(
+    settlement: SettlementInfo | None,
+    park: NationalParkInfo | None,
+) -> str | None:
+    park_phrase = _format_national_park_phrase(park)
+    settlement_name = settlement.name if settlement else None
+    if park_phrase and settlement_name:
+        return f"в окрестностях {settlement_name}, {park_phrase}"
+    if park_phrase:
+        return park_phrase
+    if settlement_name:
+        return f"в окрестностях {settlement_name}"
+    return None
+
+
+async def _resolve_postcard_geo_context(
+    asset: Asset,
+    *,
+    has_water_tag: bool,
+) -> _PostcardGeoContext:
+    lat = asset.latitude
+    lon = asset.longitude
+    if lat is None or lon is None:
+        return _PostcardGeoContext(place_text=None, settlement=None, national_park=None, water=None)
+    national_park: NationalParkInfo | None = None
+    try:
+        national_park = await find_national_park(lat, lon)
+    except Exception:
+        logging.exception("POSTCARD_OSM national_park_error lat=%.5f lon=%.5f", lat, lon)
+    settlement: SettlementInfo | None = None
+    settlement_radius = 500 if national_park else 3000
+    try:
+        settlement = await find_nearest_settlement(lat, lon, settlement_radius)
+    except Exception:
+        logging.exception("POSTCARD_OSM settlement_error lat=%.5f lon=%.5f", lat, lon)
+    water: WaterInfo | None = None
+    if has_water_tag:
+        try:
+            water = await find_water_body(lat, lon)
+        except Exception:
+            logging.exception("POSTCARD_OSM water_error lat=%.5f lon=%.5f", lat, lon)
+    place_text = _build_place_text(settlement, national_park)
+    return _PostcardGeoContext(
+        place_text=place_text,
+        settlement=settlement,
+        national_park=national_park,
+        water=water,
+    )
 
 
 def _collect_semantic_tags(asset: Asset) -> list[str]:
@@ -571,80 +678,119 @@ def _collect_bird_tags(asset: Asset) -> list[str]:
     return found
 
 
+def _asset_has_water_tag(asset: Asset) -> bool:
+    results = asset.vision_results or {}
+    raw_tags = results.get("tags") if isinstance(results, dict) else None
+    if not isinstance(raw_tags, (list, tuple, set)):
+        return False
+    for tag in raw_tags:
+        text = str(tag or "").strip().casefold()
+        if text in {"water", "sea"}:
+            return True
+    return False
+
+
 def _finalize_postcard_hashtags(
     candidate_tags: Iterable[str],
     region_hashtag: str | None,
     city_hashtag: str | None,
     *,
-    is_sea_scene: bool,
     include_rubric_tag: bool,
     fallback_keywords: Sequence[str] | None = None,
+    water_info: WaterInfo | None = None,
+    has_water_tag: bool,
+    national_park: NationalParkInfo | None = None,
 ) -> list[str]:
-    prepared = _deduplicate_hashtags(candidate_tags)
+    def _should_filter_marine(tag_value: str) -> bool:
+        if not _looks_like_marine_tag(tag_value):
+            return False
+        if not has_water_tag:
+            return True
+        if not water_info:
+            return True
+        return water_info.kind != "sea"
+
+    normalized_candidates = _deduplicate_hashtags(candidate_tags)
     filtered: list[str] = []
     rubric_key = POSTCARD_RUBRIC_HASHTAG.lstrip("#").casefold()
-    for tag in prepared:
-        if not tag:
+    for tag in normalized_candidates:
+        normalized = _normalize_hashtag_candidate(tag)
+        if not normalized:
             continue
-        key = tag.lstrip("#").casefold()
+        key = normalized.lstrip("#").casefold()
         if key in POSTCARD_BANNED_TAG_KEYS:
             continue
         if key == rubric_key and not include_rubric_tag:
             continue
-        if not is_sea_scene and _looks_like_marine_tag(tag):
+        if not _contains_cyrillic(normalized):
             continue
-        filtered.append(tag)
+        if _should_filter_marine(normalized):
+            continue
+        filtered.append(normalized)
+
     normalized_region_tag = _normalize_hashtag_candidate(region_hashtag)
+    region_value = normalized_region_tag or "#КалининградскаяОбласть"
     normalized_city_tag = _normalize_hashtag_candidate(city_hashtag)
-    region_value = normalized_region_tag or (
-        region_hashtag.strip() if isinstance(region_hashtag, str) else None
-    )
-    city_value = normalized_city_tag or (
-        city_hashtag.strip() if isinstance(city_hashtag, str) else None
-    )
-    region_required_key: str | None = None
-    if region_value:
-        filtered.append(region_value)
-        region_required_key = region_value.casefold()
-    if city_value:
-        filtered.append(city_value)
+
+    required_keys: set[str] = set()
+    filtered.append(region_value)
+    required_keys.add(region_value.casefold())
+    if normalized_city_tag:
+        filtered.append(normalized_city_tag)
     if include_rubric_tag:
         filtered.append(POSTCARD_RUBRIC_HASHTAG)
-    combined = _deduplicate_hashtags(filtered)
+        required_keys.add(POSTCARD_RUBRIC_HASHTAG.casefold())
+
+    if has_water_tag and water_info:
+        if water_info.kind == "sea":
+            filtered.append("#БалтийскоеМоре")
+            required_keys.add("#балтийскоморе")
+        else:
+            extra = WATER_KIND_HASHTAGS.get(water_info.kind)
+            if extra:
+                filtered.append(extra)
+
+    if national_park:
+        filtered.append("#нацпарк")
+        required_keys.add("#нацпарк")
+        filtered.append(national_park.hashtag)
+        required_keys.add(national_park.hashtag.casefold())
+
     fallback_candidates: list[str] = []
     if fallback_keywords:
         for keyword in fallback_keywords:
             candidate = _normalize_hashtag_candidate(keyword)
-            if not candidate:
+            if not candidate or not _contains_cyrillic(candidate):
                 continue
             key = candidate.lstrip("#").casefold()
             if key in POSTCARD_BANNED_TAG_KEYS:
                 continue
             if key == rubric_key and not include_rubric_tag:
                 continue
-            if not is_sea_scene and _looks_like_marine_tag(candidate):
+            if _should_filter_marine(candidate):
                 continue
-            if candidate not in combined:
+            if candidate not in filtered:
                 fallback_candidates.append(candidate)
-    while len(combined) < POSTCARD_MIN_HASHTAGS and fallback_candidates:
-        combined.append(fallback_candidates.pop(0))
-    if len(combined) < POSTCARD_MIN_HASHTAGS:
+    while len(filtered) < POSTCARD_MIN_HASHTAGS and fallback_candidates:
+        filtered.append(fallback_candidates.pop(0))
+    if len(filtered) < POSTCARD_MIN_HASHTAGS:
         for fallback in POSTCARD_DEFAULT_HASHTAGS:
             candidate = _normalize_hashtag_candidate(fallback) or fallback
+            if not _contains_cyrillic(candidate):
+                continue
             key = candidate.lstrip("#").casefold()
             if key in POSTCARD_BANNED_TAG_KEYS:
                 continue
             if key == rubric_key and not include_rubric_tag:
                 continue
-            if candidate not in combined:
-                combined.append(candidate)
-            if len(combined) >= POSTCARD_MIN_HASHTAGS:
+            if _should_filter_marine(candidate):
+                continue
+            if candidate not in filtered:
+                filtered.append(candidate)
+            if len(filtered) >= POSTCARD_MIN_HASHTAGS:
                 break
-    required_keys: set[str] = set()
-    if region_required_key:
-        required_keys.add(region_required_key)
-    if include_rubric_tag:
-        required_keys.add(POSTCARD_RUBRIC_HASHTAG.casefold())
+
+    combined = _deduplicate_hashtags(filtered)
     return _limit_postcard_hashtags(combined, required_keys)
 
 
@@ -671,19 +817,24 @@ def _limit_postcard_hashtags(tags: list[str], required_keys: set[str]) -> list[s
     return limited
 
 
-def _postcard_fallback_sentence(location: _LocationInfo, semantic_tags: Sequence[str]) -> str:
+def _postcard_fallback_sentence(
+    location: _LocationInfo,
+    semantic_tags: Sequence[str],
+    *,
+    has_water_hint: bool,
+) -> str:
     detail = None
     for tag in semantic_tags:
         text = str(tag or "").strip()
         if text:
             detail = text
             break
-    label = location.display or "Калининградская область"
+    label = location.display or POSTCARD_REGION_LABEL
     fragment: str
     lowered = detail.casefold() if isinstance(detail, str) else ""
     if lowered and "закат" in lowered:
         fragment = "закат мягко подсвечивает горизонт"
-    elif lowered and "море" in lowered:
+    elif lowered and "море" in lowered and has_water_hint:
         fragment = "тихая вода подчёркивает простор"
     elif lowered and "город" in lowered:
         fragment = "городские линии звучат спокойно"
@@ -705,7 +856,7 @@ async def generate_postcard_caption(
     semantic_tags = _collect_semantic_tags(asset)
     bird_tags = _collect_bird_tags(asset)
     has_birds = bool(bird_tags)
-    is_sea_scene = _is_sea_scene(asset)
+    has_water_tag = _asset_has_water_tag(asset)
     photo_datetime = _resolve_photo_datetime(asset)
     now_local = _now_kaliningrad()
     season_line = _resolve_postcard_season_line(
@@ -721,18 +872,44 @@ async def generate_postcard_caption(
     include_rubric_tag = bool(
         score_value is not None and score_value >= POSTCARD_RUBRIC_TAG_THRESHOLD
     )
+    geo_context = await _resolve_postcard_geo_context(asset, has_water_tag=has_water_tag)
+    national_park = geo_context.national_park
+    settlement = geo_context.settlement
+    place_text = geo_context.place_text
+    nearest_city = settlement.name if settlement else location.city
+    region_label = location.region or POSTCARD_REGION_LABEL
+    water_info = geo_context.water if has_water_tag else None
+    photo_year_label = _resolve_photo_year_label(photo_datetime)
+    photo_season_name = _resolve_photo_season_ru(photo_datetime)
+    has_water_in_frame = has_water_tag
     context_payload: dict[str, Any] = {
-        "location": location.display,
+        "region": POSTCARD_REGION_LABEL,
+        "location_display": location.display,
         "city": location.city,
-        "region": location.region,
+        "region_raw": location.region,
         "country": location.country,
         "tags": semantic_tags,
         "postcard_score": score_value,
-        "location_case_hint": "prepositional",
         "has_birds": has_birds,
-        "is_sea_scene": is_sea_scene,
         "is_out_of_season": is_out_of_season,
+        "place_text": place_text,
+        "nearest_city": nearest_city,
+        "has_water_in_frame": has_water_in_frame,
+        "photo_year_label": photo_year_label,
+        "photo_season": photo_season_name,
+        "season_line": season_line,
     }
+    context_payload["region_label"] = region_label
+    if settlement and settlement.distance_m is not None:
+        context_payload["nearest_city_distance_m"] = round(settlement.distance_m, 1)
+    if national_park:
+        context_payload["national_park_short"] = national_park.short_name
+        context_payload["national_park_hashtag"] = national_park.hashtag
+        context_payload["national_park_name"] = national_park.osm_name_ru
+    if water_info:
+        context_payload["water_kind"] = water_info.kind
+        if water_info.name_ru:
+            context_payload["water_name_ru"] = water_info.name_ru
     extra_hint = asset.vision_results or {}
     if isinstance(extra_hint, dict):
         if extra_hint.get("weather_final_display"):
@@ -750,25 +927,24 @@ async def generate_postcard_caption(
         region_prompt = "#КалининградскаяОбласть"
     system_prompt_lines = [
         "Ты — голос проекта «Котопогода» и готовишь подпись для рубрики «Открыточный вид».",
-        "Рубрика про Балтику и слово «Океан» — держи образ берега и воды без пафоса.",
-        "Собери подпись из 2–3 коротких предложений (до 250 символов) в спокойном, человеческом тоне.",
-        "Первая фраза строго одна из двух: «Порадую вас открыточным видом.» или «Порадую вас красивым видом <локации>.».",
-        "Если в данных есть город или регион, используй вторую формулу и поставь название в подходящем падеже (например, «в Калининградской области», «в Зеленоградске»).",
-        "После первой фразы добавь 1–2 коротких предложения с конкретными деталями сцены без пафоса и канцелярита.",
-        "Пиши только по-русски, не используй английские слова, эмодзи, хэштеги или ссылки внутри текста.",
-        "Обязательно назови указанную локацию (город или регион) в корректной форме.",
-        "Сохраняй дружелюбный и лаконичный тон, избегай рекламных штампов.",
+        "Форма текста строгая: 1–3 коротких предложения (≈200–300 символов) в спокойном человеческом тоне.",
+        "Первая фраза обязана начинаться словами «Порадую вас … видом …». Не ставь ничего перед этими словами и сам сформулируй продолжение.",
+        "Используй place_text, если оно передано. Если place_text пустое, но есть nearest_city — упомяни этот населённый пункт. Всегда явно назови Калининградскую область хотя бы один раз.",
+        "Если national_park_short указан, впиши парк естественно (например, «на Куршской косе», «на Балтийской косе», «во Виштынецком парке»).",
+        "Когда has_water_in_frame=true и есть water_name_ru, мягко упомяни этот водоём (для Балтийского моря можно сказать «море»). Если has_water_in_frame=false — не пиши про море, залив, озеро или воду вовсе.",
+        "Стиль дружелюбный, живой и конкретный. Можно аккуратно использовать объекты из списка objects, но без перечислений.",
+        "Не очеловечивай природу (никаких «море шепчет», «ветер ласкает», «закат обнимает город») и не используй заезженные клише.",
+        "Пиши только по-русски, без латиницы, эмодзи, ссылок и хэштегов внутри caption.",
+        "Ты редактор: проверь орфографию, логику и соответствие сезона/времени съёмки. photo_year_label и photo_season — подсказки для тебя, лишнюю служебную строку система добавит сама.",
+        "Ссылку «Полюбить 39» и карты добавит система — не упоминай их.",
     ]
     if is_out_of_season:
         system_prompt_lines.append(
-            "Когда is_out_of_season=true, фото не совпадает с сезоном сейчас, поэтому после стартовой фразы опиши сцену преимущественно в прошедшем времени с лёгким ностальгическим оттенком и без кринж-ностальгии."
-        )
-        system_prompt_lines.append(
-            "Можешь начать второе предложение мягкими конструкциями вроде «Вспомним…», «Вспомни…», «Помните, как…» или «Напомню вам…», если это звучит тепло и по-человечески."
+            "Фото из другого сезона — рассказывай в прошедшем времени, можно начать второе предложение с «Вспомним…», «Напомню…», избегай слов «сейчас», «сегодня» и их форм."
         )
     else:
         system_prompt_lines.append(
-            "Когда is_out_of_season=false, описывай детали в настоящем времени, будто сцена происходит прямо сейчас."
+            "Снимок совпадает с сезоном сейчас — опиши сцену в настоящем времени, будто она происходит прямо сейчас."
         )
     if banned_words:
         system_prompt_lines.append("Не используй нейросетевые штампы и заезженные фразы.")
@@ -780,14 +956,14 @@ async def generate_postcard_caption(
             "Если хочется передать похожий смысл — перефразируй по-человечески простым, живым языком."
         )
     system_prompt_lines.append(
-        "Если has_birds=true или перечислены bird_tags, мягко упомяни заметных птиц (лебеди, утки, чайки и т. п.), если это органично."
+        "Если has_birds=true или перечислены bird_tags, упомяни заметных птиц только если это органично."
     )
     system_prompt_lines.append(
         f"Хэштеги возвращай отдельным массивом: всего 3–5 тегов, обязательно включай региональный тег {region_prompt} и 2–4 смысловых."
     )
     if city_tag:
         system_prompt_lines.append(
-            "Если есть city, добавь отдельный хэштег с его названием в формате #Город."
+            "Если указан city, добавь отдельный хэштег с его названием в формате #Город."
         )
     system_prompt_lines.append("Хэштеги #котопогода и дубли запрещены.")
     if include_rubric_tag:
@@ -798,7 +974,6 @@ async def generate_postcard_caption(
         system_prompt_lines.append(
             f"Не используй тег {POSTCARD_RUBRIC_HASHTAG} при текущем postcard_score."
         )
-    system_prompt_lines.append("Ссылку «Полюбить 39» добавит система — не упоминай её в тексте.")
     system_prompt = "\n".join(system_prompt_lines)
     bird_info_lines = [f"has_birds: {'true' if has_birds else 'false'}."]
     if bird_tags:
@@ -808,8 +983,8 @@ async def generate_postcard_caption(
         "Контекст сцены (JSON):\n"
         f"{payload_text}\n\n"
         'Сформируй JSON {"caption":"...","hashtags":["#..."]}.\n'
-        "Caption — полная подпись по правилам system prompt (без хэштегов, ссылок и «Полюбить 39»).\n"
-        "Hashtags — 3–5 тегов с символом #, без #котопогода и повторов. Обязательно включи региональный тег "
+        "Caption — 1–3 предложения по правилам system prompt (без хэштегов, ссылок и «Полюбить 39»).\n"
+        "Hashtags — 3–5 тегов с символом #, только кириллица, без #котопогода и без латиницы. Обязательно включи региональный тег "
         f"{region_prompt} и подбери 2–4 смысловых тега по сцене.\n"
     )
     if city_tag:
@@ -818,7 +993,10 @@ async def generate_postcard_caption(
         user_prompt += f"Добавь тег {POSTCARD_RUBRIC_HASHTAG} в массив hashtags.\n"
     else:
         user_prompt += f"Не используй тег {POSTCARD_RUBRIC_HASHTAG}.\n"
-    user_prompt += f"\nПодсказка о птицах:\n{bird_info}"
+    user_prompt += (
+        "Не выдумывай море или воду, если has_water_in_frame=false.\n"
+        f"\nПодсказка о птицах:\n{bird_info}"
+    )
     schema = {
         "type": "object",
         "properties": {
@@ -837,14 +1015,20 @@ async def generate_postcard_caption(
         [],
         region_value_for_tags,
         city_tag,
-        is_sea_scene=is_sea_scene,
         include_rubric_tag=include_rubric_tag,
         fallback_keywords=semantic_tags,
+        water_info=water_info,
+        has_water_tag=has_water_tag,
+        national_park=national_park,
     )
     map_links_line = _build_postcard_map_links(asset)
     link_block = _build_link_block()
     if not openai or not getattr(openai, "api_key", None):
-        fallback_sentence = _postcard_fallback_sentence(location, semantic_tags)
+        fallback_sentence = _postcard_fallback_sentence(
+            location,
+            semantic_tags,
+            has_water_hint=has_water_tag,
+        )
         opening = _build_postcard_opening(location)
         combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
         combined = _escape_html_text(combined)
@@ -894,25 +1078,35 @@ async def generate_postcard_caption(
         if caption_text[-1] not in ".!?…":
             caption_text = f"{caption_text}."
         opening_sentence = re.split(r"(?<=[.!?…])\s+", caption_text)[0]
-        lowered_opening = opening_sentence.casefold()
-        if not any(
-            lowered_opening.startswith(prefix.casefold()) for prefix in POSTCARD_OPENING_CHOICES
-        ):
+        if not _is_valid_postcard_opening(opening_sentence):
             logging.info("POSTCARD_CAPTION invalid_opening attempt=%s", attempt)
             continue
         if banned_words and _contains_banned_word(caption_text, banned_words):
             logging.info("POSTCARD_CAPTION banned_word attempt=%s", attempt)
             continue
-        if (location.city or location.region) and not _mentions_location(caption_text, location):
+        normalized_caption = caption_text.casefold()
+        location_candidates = [
+            location.city,
+            location.region,
+            location.display,
+            nearest_city,
+            POSTCARD_REGION_LABEL,
+        ]
+        if not any(
+            candidate and _location_value_in_text(normalized_caption, candidate)
+            for candidate in location_candidates
+        ):
             logging.info("POSTCARD_CAPTION missing_location attempt=%s", attempt)
             continue
         hashtags = _finalize_postcard_hashtags(
             hashtag_raw,
             region_value_for_tags,
             city_tag,
-            is_sea_scene=is_sea_scene,
             include_rubric_tag=include_rubric_tag,
             fallback_keywords=semantic_tags,
+            water_info=water_info,
+            has_water_tag=has_water_tag,
+            national_park=national_park,
         )
         escaped_caption = _escape_html_text(caption_text)
         caption_with_map = _append_map_links(escaped_caption, map_links_line)
@@ -920,7 +1114,11 @@ async def generate_postcard_caption(
         caption_with_block = _attach_link_block(caption_with_season, link_block)
         return caption_with_block.strip(), hashtags
     logging.warning("POSTCARD_CAPTION fallback_used")
-    fallback_sentence = _postcard_fallback_sentence(location, semantic_tags)
+    fallback_sentence = _postcard_fallback_sentence(
+        location,
+        semantic_tags,
+        has_water_hint=has_water_tag,
+    )
     opening = _build_postcard_opening(location)
     combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
     combined = _escape_html_text(combined)

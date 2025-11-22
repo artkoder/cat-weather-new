@@ -51,6 +51,25 @@ from storage import LocalStorage, Storage
 from supabase_client import SupabaseClient
 
 
+async def get_ocr_remaining_percent(supabase: SupabaseClient | None) -> int | None:
+    """
+    Возвращает целое 0..100 или None, если посчитать не удалось.
+    """
+    if not supabase or not supabase.enabled:
+        return None
+
+    used_tokens, _raw, _error = await supabase.get_24h_usage_total(
+        bot="kotopogoda", model="gpt-4o-mini"
+    )
+    if used_tokens is None:
+        return None
+
+    limit = 10_000_000
+    remaining = max(limit - used_tokens, 0)
+    percent = int((remaining * 100) // limit)
+    return max(0, min(percent, 100))
+
+
 @dataclass(slots=True)
 class UploadJobDependencies:
     storage: Storage
@@ -410,6 +429,17 @@ async def handle_get_upload_status(request: web.Request) -> web.Response:
     if error_value is not None:
         payload["error"] = error_value
     payload["asset_id"] = record.get("asset_id")
+
+    if payload["status"] == "done":
+        bot_supabase = request.app["bot"].supabase
+        ocr_percent = await get_ocr_remaining_percent(bot_supabase)
+        if ocr_percent is not None:
+            payload["ocr_remaining_percent"] = ocr_percent
+            logging.info(
+                "OCR remaining percent: %s%% (model=gpt-4o-mini) for last 24h",
+                ocr_percent,
+            )
+
     logging.info(
         "UPLOAD_STATUS id=%s status=%s 200",
         payload["id"],

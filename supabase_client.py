@@ -5,7 +5,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -161,3 +161,59 @@ class SupabaseClient:
                 response.status_code,
                 message,
             )
+
+    async def get_24h_usage_total(
+        self,
+        *,
+        bot: str = "kotopogoda",
+        model: str = "gpt-4o-mini",
+    ) -> tuple[int | None, dict[str, Any] | None, str | None]:
+        """
+        Возвращает (used_tokens, raw_payload, error_message).
+        used_tokens = суммарный total_tokens за последние 24 часа или None при ошибке/disabled.
+        """
+        if not self._client:
+            logging.debug("Supabase client disabled; skipping token usage check")
+            return None, None, "disabled"
+
+        now = datetime.now(UTC)
+        since = now - timedelta(hours=24)
+        since_iso = since.isoformat()
+
+        try:
+            response = await self._client.get(
+                "/token_usage",
+                params={
+                    "select": "total_tokens.sum()",
+                    "bot": f"eq.{bot}",
+                    "model": f"eq.{model}",
+                    "created_at": f"gte.{since_iso}",
+                },
+            )
+            if response.status_code != 200:
+                message = f"HTTP {response.status_code}: {response.text}".strip()
+                logging.warning("Failed to fetch 24h OCR usage from Supabase: %s", message)
+                return None, None, message
+
+            raw_payload = response.json()
+            if (
+                isinstance(raw_payload, list)
+                and raw_payload
+                and isinstance(raw_payload[0], dict)
+            ):
+                sum_value = raw_payload[0].get("sum")
+                if sum_value is None:
+                    return 0, raw_payload, None
+                return int(sum_value), raw_payload, None
+
+            logging.warning(
+                "Failed to parse 24h OCR usage from Supabase: unexpected format %s", raw_payload
+            )
+            return None, raw_payload, "parsing_error"
+
+        except httpx.HTTPError as exc:
+            logging.warning("Failed to fetch 24h OCR usage from Supabase: %s", exc)
+            return None, None, str(exc)
+        except (ValueError, TypeError) as exc:
+            logging.warning("Failed to parse 24h OCR usage response: %s", exc)
+            return None, None, str(exc)

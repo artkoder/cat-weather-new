@@ -10,7 +10,10 @@ import pytest
 from zoneinfo import ZoneInfo
 
 from data_access import DataAccess
-from asset_selectors.postcard import _MIN_SCORE as POSTCARD_SELECTOR_MIN_SCORE, select_postcard_asset
+from asset_selectors.postcard import (
+    _MIN_SCORE as POSTCARD_SELECTOR_MIN_SCORE,
+    select_postcard_asset,
+)
 
 
 @pytest.fixture

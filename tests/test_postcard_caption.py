@@ -469,7 +469,7 @@ async def test_postcard_caption_adds_baltic_hashtag_for_detected_water(
     )
 
     normalized_tags = {tag.casefold() for tag in hashtags}
-    assert "#балтийскоморе" in normalized_tags
+    assert "#балтийскоеморе" in normalized_tags
     assert "#ocean" not in normalized_tags
     assert 3 <= len(hashtags) <= 7
 
@@ -632,9 +632,7 @@ async def test_postcard_prompt_includes_place_text_and_water(stub_osm: SimpleNam
         hashtag="#КуршскаяКоса",
     )
     stub_osm.settlement_result = SettlementInfo(name="Светлогорск", distance_m=750)
-    client = _dummy_postcard_client(
-        "Порадую вас красивым видом Светлогорска. Свет играет на воде."
-    )
+    client = _dummy_postcard_client("Порадую вас красивым видом Светлогорска. Свет играет на воде.")
 
     await generate_postcard_caption(
         client,

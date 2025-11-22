@@ -522,7 +522,6 @@ def _contains_cyrillic(text: str | None) -> bool:
     return bool(_CYRILLIC_PATTERN.search(text))
 
 
-
 def _location_value_in_text(text: str, candidate: str) -> bool:
     normalized_text = text.casefold()
     normalized_candidate = candidate.casefold().strip()
@@ -558,7 +557,6 @@ def _looks_like_marine_tag(tag: str) -> bool:
         return False
     key = normalized.lstrip("#").casefold()
     return any(keyword in key for keyword in POSTCARD_MARINE_KEYWORDS)
-
 
 
 @dataclass(slots=True)
@@ -943,9 +941,6 @@ async def generate_postcard_caption(
     if is_out_of_season:
         system_prompt_lines.append(
             "Фото из другого сезона — рассказывай в прошедшем времени, можно начать второе предложение с «Вспомним…», «Напомню…», избегай слов «сейчас», «сегодня» и их форм."
-        )
-        system_prompt_lines.append(
-            "Раз фото из другого сезона, держи лёгкий ностальгический тон и избегай слов «сейчас», «сегодня» и их форм."
         )
     else:
         system_prompt_lines.append(

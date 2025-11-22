@@ -26,7 +26,9 @@ async def test_find_water_body_detects_sea(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_find_water_body_returns_nearest_named_element(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_find_water_body_returns_nearest_named_element(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     queries: list[str] = []
     responses = types.SimpleNamespace(step=0)
 
@@ -38,11 +40,11 @@ async def test_find_water_body_returns_nearest_named_element(monkeypatch: pytest
         return {
             "elements": [
                 {
-                    "center": {"lat": 54.71, "lon": 20.45},
+                    "center": {"lat": 54.7052, "lon": 20.412},
                     "tags": {"name:ru": "Куршский залив", "water": "lagoon"},
                 },
                 {
-                    "center": {"lat": 54.70, "lon": 20.40},
+                    "center": {"lat": 54.71, "lon": 20.45},
                     "tags": {"name": "Синявинское озеро / Sinyavino", "water": "lake"},
                 },
             ]

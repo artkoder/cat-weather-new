@@ -106,15 +106,29 @@ class FakeOpenAIClient:
 
 
 class FakeSupabaseClient:
-    def __init__(self, succeed: bool = True) -> None:
+    def __init__(self, succeed: bool = True, *, enabled: bool = True) -> None:
         self.succeed = succeed
+        self.enabled = enabled
         self.calls: list[dict[str, Any]] = []
+        self.usage_calls: list[dict[str, str]] = []
+        self.usage_total: int = 0
+        self.usage_error: str | None = None
 
     async def insert_token_usage(self, **kwargs: Any) -> tuple[bool, dict[str, Any], str | None]:
         self.calls.append(kwargs)
         if self.succeed:
             return True, kwargs, None
         return False, kwargs, "error"
+
+    async def get_24h_usage_total(
+        self, *, bot: str = "kotopogoda", model: str = "gpt-4o-mini"
+    ) -> tuple[int | None, dict[str, Any] | None, str | None]:
+        self.usage_calls.append({"bot": bot, "model": model})
+        if not self.enabled:
+            return None, None, "disabled"
+        if self.usage_error:
+            return None, {"error": self.usage_error}, self.usage_error
+        return self.usage_total, {"sum_total": self.usage_total}, None
 
 
 def _make_test_image_bytes(
@@ -288,6 +302,7 @@ class UploadTestEnv:
             client_max_size=config.max_upload_bytes + 1024,
         )
         setup_upload_routes(app, storage=storage, conn=conn, jobs=jobs, config=config)
+        app["supabase"] = self.supabase_client
         self.config = config
 
         server = TestServer(app)
@@ -415,6 +430,30 @@ async def _signed_get(
     response = await env.client.get(path, headers=headers)
     payload = await response.json()
     return response.status, payload
+
+
+async def _wait_for_status(
+    env: UploadTestEnv,
+    *,
+    upload_id: str,
+    device_id: str,
+    secret: str = DEVICE_SECRET,
+    timeout: float = 5.0,
+    interval: float = 0.2,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status_resp, status_payload = await _signed_get(
+            env,
+            path=f"/v1/uploads/{upload_id}/status",
+            device_id=device_id,
+            secret=secret,
+        )
+        assert status_resp == 200
+        if status_payload.get("status") in {"done", "failed"}:
+            return status_payload
+        await asyncio.sleep(interval)
+    pytest.fail("process_upload did not complete in time")
 
 
 @pytest.mark.integration
@@ -658,6 +697,74 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
         assert queued_jobs
         ingest_payload = json.loads(queued_jobs[0]["payload"])
         assert ingest_payload == {"asset_id": row["id"]}
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_upload_status_includes_ocr_remaining_percent(tmp_path: Path):
+    supabase_client = FakeSupabaseClient()
+    supabase_client.usage_total = 500_000
+    env = UploadTestEnv(tmp_path)
+    await env.start(supabase_client=supabase_client)
+    try:
+        env.create_device(device_id="device-1")
+
+        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
+        status, payload = await _signed_post(
+            env,
+            path="/v1/uploads",
+            body=body,
+            boundary=boundary,
+            device_id="device-1",
+            secret=DEVICE_SECRET,
+            idempotency_key="idem-ocr",
+        )
+        assert status == 202
+        upload_id = payload["id"]
+
+        final_payload = await _wait_for_status(
+            env,
+            upload_id=upload_id,
+            device_id="device-1",
+            secret=DEVICE_SECRET,
+        )
+        assert final_payload["status"] == "done"
+        assert final_payload["ocr_remaining_percent"] == 95
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
+async def test_upload_status_omits_ocr_percent_on_supabase_error(tmp_path: Path):
+    supabase_client = FakeSupabaseClient()
+    supabase_client.usage_error = "supabase_failure"
+    env = UploadTestEnv(tmp_path)
+    await env.start(supabase_client=supabase_client)
+    try:
+        env.create_device(device_id="device-1")
+
+        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
+        status, payload = await _signed_post(
+            env,
+            path="/v1/uploads",
+            body=body,
+            boundary=boundary,
+            device_id="device-1",
+            secret=DEVICE_SECRET,
+            idempotency_key="idem-ocr-error",
+        )
+        assert status == 202
+        upload_id = payload["id"]
+
+        final_payload = await _wait_for_status(
+            env,
+            upload_id=upload_id,
+            device_id="device-1",
+            secret=DEVICE_SECRET,
+        )
+        assert final_payload["status"] == "done"
+        assert "ocr_remaining_percent" not in final_payload
     finally:
         await env.close()
 

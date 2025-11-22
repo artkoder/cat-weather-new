@@ -15,7 +15,7 @@ import caption_gen  # noqa: E402
 import main as main_module  # noqa: E402
 import postcard_watermark  # noqa: E402
 from caption_gen import POSTCARD_OPENING_CHOICES  # noqa: E402
-from main import LOVE_COLLECTION_LINK_MARKDOWN  # noqa: E402
+from main import LOVE_COLLECTION_LINK_MARKDOWN, POSTCARD_MIN_SCORE  # noqa: E402
 from openai_client import OpenAIResponse  # noqa: E402
 from postcard_watermark import WATERMARK_PATH  # noqa: E402
 
@@ -128,6 +128,7 @@ async def test_postcard_publish_routes_to_prod_channel(
     _create_postcard_asset(bot)
 
     send_calls: list[dict[str, Any]] = []
+    _message_calls: list[dict[str, Any]] = []
 
     async def capture_api_request(
         self: main_module.Bot, method: str, data: Any = None, *, files: Any = None
@@ -135,6 +136,9 @@ async def test_postcard_publish_routes_to_prod_channel(
         if method == "sendPhoto":
             send_calls.append({"data": data, "files": files})
             return {"ok": True, "result": {"message_id": 777}}
+        if method == "sendMessage":
+            _message_calls.append(data or {})
+            return {"ok": True, "result": {}}
         return {"ok": True, "result": {}}
 
     monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
@@ -181,6 +185,7 @@ async def test_postcard_publish_routes_to_test_channel(
     _create_postcard_asset(bot, city="Янтарный")
 
     send_calls: list[dict[str, Any]] = []
+    _message_calls: list[dict[str, Any]] = []
 
     async def capture_api_request(
         self: main_module.Bot, method: str, data: Any = None, *, files: Any = None
@@ -188,6 +193,9 @@ async def test_postcard_publish_routes_to_test_channel(
         if method == "sendPhoto":
             send_calls.append({"data": data, "files": files})
             return {"ok": True, "result": {"message_id": 888}}
+        if method == "sendMessage":
+            _message_calls.append(data or {})
+            return {"ok": True, "result": {}}
         return {"ok": True, "result": {}}
 
     monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
@@ -242,6 +250,7 @@ async def test_postcard_publish_renders_expected_markdown_caption(
     )
 
     send_calls: list[dict[str, Any]] = []
+    _message_calls: list[dict[str, Any]] = []
 
     async def capture_api_request(
         self: main_module.Bot, method: str, data: Any = None, *, files: Any = None
@@ -249,6 +258,9 @@ async def test_postcard_publish_renders_expected_markdown_caption(
         if method == "sendPhoto":
             send_calls.append({"data": data, "files": files})
             return {"ok": True, "result": {"message_id": 7777}}
+        if method == "sendMessage":
+            _message_calls.append(data or {})
+            return {"ok": True, "result": {}}
         return {"ok": True, "result": {}}
 
     monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
@@ -308,6 +320,7 @@ async def test_postcard_publish_applies_watermark_to_photo(
     _make_local_asset(first_asset_path, (32, 64, 96))
 
     send_calls: list[dict[str, Any]] = []
+    _message_calls: list[dict[str, Any]] = []
 
     async def capture_api_request(
         self: main_module.Bot, method: str, data: Any = None, *, files: Any = None
@@ -315,6 +328,9 @@ async def test_postcard_publish_applies_watermark_to_photo(
         if method == "sendPhoto":
             send_calls.append({"data": data, "files": files})
             return {"ok": True, "result": {"message_id": len(send_calls)}}
+        if method == "sendMessage":
+            _message_calls.append(data or {})
+            return {"ok": True, "result": {}}
         return {"ok": True, "result": {}}
 
     monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
@@ -372,3 +388,117 @@ async def test_postcard_publish_applies_watermark_to_photo(
         if watermarked_image is not None:
             watermarked_image.close()
         bot.db.close()
+
+
+@pytest.mark.asyncio
+async def test_postcard_publish_sends_inventory_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_noop, raising=False)
+
+    bot = main_module.Bot("dummy", str(tmp_path / "postcard-inventory.db"))
+    bot.supabase = DummySupabase()
+    bot.openai = DummyPostcardOpenAI("Это Пионерский — золото на горизонте.")
+
+    rubric = bot.data.get_rubric_by_code("postcard")
+    assert rubric is not None
+    rubric_title = rubric.title or "Открыточный вид"
+    config = dict(rubric.config or {})
+    config.update(
+        {
+            "enabled": True,
+            "channel_id": -920001,
+            "test_channel_id": -920002,
+            "postcard_region_hashtag": "#КалининградскаяОбласть",
+            "postcard_stopwords": [],
+        }
+    )
+    bot.data.save_rubric_config("postcard", config)
+    _create_postcard_asset(bot)
+
+    send_calls: list[dict[str, Any]] = []
+    message_calls: list[dict[str, Any]] = []
+
+    async def capture_api_request(
+        self: main_module.Bot, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:  # type: ignore[override]
+        if method == "sendPhoto":
+            send_calls.append({"data": data, "files": files})
+            return {"ok": True, "result": {"message_id": 1010}}
+        if method == "sendMessage":
+            message_calls.append(data or {})
+            return {"ok": True, "result": {}}
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
+
+    result = await bot.publish_rubric("postcard", test=True, initiator_id=4321)
+
+    assert result is True
+    assert send_calls
+    assert len(message_calls) == 1
+    message = message_calls[0]
+    assert message["chat_id"] == 4321
+    text = message["text"]
+    assert f"🗂 Остатки фото «{rubric_title}»: 1" in text
+    assert "Волнение (7–10)" in text
+    for score in range(POSTCARD_MIN_SCORE, 10):
+        assert f"• {score}/10: 0 ⚠️ мало" in text
+    assert "• 10/10: 1 ⚠️ мало" in text
+
+    bot.db.close()
+
+
+@pytest.mark.asyncio
+async def test_postcard_publish_notifies_when_no_high_score_assets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_noop, raising=False)
+
+    bot = main_module.Bot("dummy", str(tmp_path / "postcard-empty.db"))
+    bot.supabase = DummySupabase()
+    bot.openai = DummyPostcardOpenAI("Это Балтийск — пустая набережная.")
+
+    rubric = bot.data.get_rubric_by_code("postcard")
+    assert rubric is not None
+    config = dict(rubric.config or {})
+    config.update(
+        {
+            "enabled": True,
+            "channel_id": -930001,
+            "test_channel_id": -930002,
+            "postcard_region_hashtag": "#КалининградскаяОбласть",
+            "postcard_stopwords": [],
+        }
+    )
+    bot.data.save_rubric_config("postcard", config)
+    _create_postcard_asset(bot, postcard_score=POSTCARD_MIN_SCORE - 1)
+
+    send_calls: list[dict[str, Any]] = []
+    message_calls: list[dict[str, Any]] = []
+
+    async def capture_api_request(
+        self: main_module.Bot, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:  # type: ignore[override]
+        if method == "sendPhoto":
+            send_calls.append({"data": data, "files": files})
+            return {"ok": True, "result": {"message_id": 1}}
+        if method == "sendMessage":
+            message_calls.append(data or {})
+            return {"ok": True, "result": {}}
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
+
+    result = await bot.publish_rubric("postcard", test=True, initiator_id=9876)
+
+    assert result is True
+    assert not send_calls
+    assert len(message_calls) == 1
+    alert = message_calls[0]
+    assert alert["chat_id"] == 9876
+    text = alert["text"]
+    assert "пропущена" in text
+    assert f"{POSTCARD_MIN_SCORE}–10" in text
+
+    bot.db.close()

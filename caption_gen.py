@@ -14,15 +14,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
 
 from data_access import Asset
+from geo_context import GeoContext, build_geo_context_for_asset
 from openai_client import OpenAIClient
-from osm_utils import (
-    NationalParkInfo,
-    SettlementInfo,
-    WaterInfo,
-    find_national_park,
-    find_nearest_settlement,
-    find_water_body,
-)
 
 if TYPE_CHECKING:  # pragma: no cover
     from jobs import Job
@@ -155,6 +148,7 @@ POSTCARD_BIRD_TAGS = (
 )
 POSTCARD_BIRD_TAG_KEYS = {tag.casefold() for tag in POSTCARD_BIRD_TAGS}
 POSTCARD_REGION_LABEL = "Калининградская область"
+_POSTCARD_WATER_TAG_KEYS = {"water", "sea", "lake", "river", "ocean"}
 WATER_KIND_HASHTAGS: dict[str, str] = {
     "lake": "#озеро",
     "lagoon": "#залив",
@@ -163,7 +157,12 @@ WATER_KIND_HASHTAGS: dict[str, str] = {
 NATIONAL_PARK_PLACE_PHRASES: dict[str, str] = {
     "Куршская коса": "на Куршской косе",
     "Балтийская коса": "на Балтийской косе",
-    "Виштынецкий": "в Виштынецком парке",
+    "Виштынецкий": "в Виштынецком краю",
+}
+NATIONAL_PARK_HASHTAGS: dict[str, str] = {
+    "Куршская коса": "#КуршскаяКоса",
+    "Балтийская коса": "#БалтийскаяКоса",
+    "Виштынецкий": "#Виштынец",
 }
 _LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]")
 _CYRILLIC_PATTERN = re.compile(r"[А-Яа-яЁё]")
@@ -567,13 +566,6 @@ class _LocationInfo:
     country: str | None
 
 
-@dataclass(slots=True)
-class _PostcardGeoContext:
-    place_text: str | None
-    settlement: SettlementInfo | None
-    national_park: NationalParkInfo | None
-    water: WaterInfo | None
-
 
 def _resolve_location(asset: Asset) -> _LocationInfo:
     city = (asset.city or "").strip() or None
@@ -585,78 +577,49 @@ def _resolve_location(asset: Asset) -> _LocationInfo:
     return _LocationInfo(display=display, city=city, region=region, country=country)
 
 
-def _format_national_park_phrase(park: NationalParkInfo | None) -> str | None:
-    if not park:
+def _format_national_park_phrase(name: str | None) -> str | None:
+    if not name:
         return None
-    return NATIONAL_PARK_PLACE_PHRASES.get(park.short_name) or f"на {park.short_name}"
+    return NATIONAL_PARK_PLACE_PHRASES.get(name) or f"на {name}"
 
 
-def _build_place_text(
-    settlement: SettlementInfo | None,
-    park: NationalParkInfo | None,
-) -> str | None:
-    park_phrase = _format_national_park_phrase(park)
-    settlement_name = settlement.name if settlement else None
-    if park_phrase and settlement_name:
-        return f"в окрестностях {settlement_name}, {park_phrase}"
-    if park_phrase:
-        return park_phrase
-    if settlement_name:
-        return f"в окрестностях {settlement_name}"
-    return None
 
-
-async def _resolve_postcard_geo_context(
-    asset: Asset,
-    *,
-    has_water_tag: bool,
-) -> _PostcardGeoContext:
-    lat = asset.latitude
-    lon = asset.longitude
-    if lat is None or lon is None:
-        return _PostcardGeoContext(place_text=None, settlement=None, national_park=None, water=None)
-    national_park: NationalParkInfo | None = None
-    try:
-        national_park = await find_national_park(lat, lon)
-    except Exception:
-        logging.exception("POSTCARD_OSM national_park_error lat=%.5f lon=%.5f", lat, lon)
-    settlement: SettlementInfo | None = None
-    settlement_radius = 500 if national_park else 3000
-    try:
-        settlement = await find_nearest_settlement(lat, lon, settlement_radius)
-    except Exception:
-        logging.exception("POSTCARD_OSM settlement_error lat=%.5f lon=%.5f", lat, lon)
-    water: WaterInfo | None = None
-    if has_water_tag:
-        try:
-            water = await find_water_body(lat, lon)
-        except Exception:
-            logging.exception("POSTCARD_OSM water_error lat=%.5f lon=%.5f", lat, lon)
-    place_text = _build_place_text(settlement, national_park)
-    return _PostcardGeoContext(
-        place_text=place_text,
-        settlement=settlement,
-        national_park=national_park,
-        water=water,
-    )
-
-
-def _collect_semantic_tags(asset: Asset) -> list[str]:
-    tags: list[str] = []
+def _extract_asset_tags(asset: Asset) -> list[str]:
     results = asset.vision_results or {}
     raw_tags = results.get("tags") if isinstance(results, dict) else None
-    if isinstance(raw_tags, (list, tuple, set)):
-        for tag in raw_tags:
-            text = str(tag or "").strip()
-            if text and text not in tags:
-                tags.append(text)
+    if not isinstance(raw_tags, (list, tuple, set)):
+        return []
+    tags: list[str] = []
+    seen: set[str] = set()
+    for tag in raw_tags:
+        text = str(tag or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        tags.append(text)
+    return tags
+
+
+def _collect_semantic_tags(asset: Asset, base_tags: Sequence[str] | None = None) -> list[str]:
+    tags: list[str] = []
+    seen: set[str] = set()
+
+    def _append(value: object) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        tags.append(text)
+
+    initial_tags = base_tags if base_tags is not None else _extract_asset_tags(asset)
+    for tag in initial_tags:
+        _append(tag)
+    results = asset.vision_results or {}
     if isinstance(results, dict):
-        if results.get("is_sunset") and "закат" not in tags:
-            tags.append("закат")
+        if results.get("is_sunset"):
+            _append("закат")
         if results.get("photo_weather_display"):
-            weather = str(results.get("photo_weather_display") or "").strip()
-            if weather and weather not in tags:
-                tags.append(weather)
+            _append(results.get("photo_weather_display"))
     return tags[:8]
 
 
@@ -678,14 +641,10 @@ def _collect_bird_tags(asset: Asset) -> list[str]:
     return found
 
 
-def _asset_has_water_tag(asset: Asset) -> bool:
-    results = asset.vision_results or {}
-    raw_tags = results.get("tags") if isinstance(results, dict) else None
-    if not isinstance(raw_tags, (list, tuple, set)):
-        return False
-    for tag in raw_tags:
+def _asset_has_water_tag(asset_tags: Sequence[str]) -> bool:
+    for tag in asset_tags:
         text = str(tag or "").strip().casefold()
-        if text in {"water", "sea"}:
+        if text in _POSTCARD_WATER_TAG_KEYS:
             return True
     return False
 
@@ -697,18 +656,18 @@ def _finalize_postcard_hashtags(
     *,
     include_rubric_tag: bool,
     fallback_keywords: Sequence[str] | None = None,
-    water_info: WaterInfo | None = None,
+    water_kind: str | None = None,
     has_water_tag: bool,
-    national_park: NationalParkInfo | None = None,
+    national_park: str | None = None,
 ) -> list[str]:
     def _should_filter_marine(tag_value: str) -> bool:
         if not _looks_like_marine_tag(tag_value):
             return False
         if not has_water_tag:
             return True
-        if not water_info:
+        if not water_kind:
             return True
-        return water_info.kind != "sea"
+        return water_kind != "sea"
 
     normalized_candidates = _deduplicate_hashtags(candidate_tags)
     filtered: list[str] = []
@@ -741,20 +700,22 @@ def _finalize_postcard_hashtags(
         filtered.append(POSTCARD_RUBRIC_HASHTAG)
         required_keys.add(POSTCARD_RUBRIC_HASHTAG.casefold())
 
-    if has_water_tag and water_info:
-        if water_info.kind == "sea":
+    if has_water_tag and water_kind:
+        if water_kind == "sea":
             filtered.append("#БалтийскоеМоре")
             required_keys.add("#балтийскоморе")
         else:
-            extra = WATER_KIND_HASHTAGS.get(water_info.kind)
+            extra = WATER_KIND_HASHTAGS.get(water_kind)
             if extra:
                 filtered.append(extra)
 
     if national_park:
         filtered.append("#нацпарк")
         required_keys.add("#нацпарк")
-        filtered.append(national_park.hashtag)
-        required_keys.add(national_park.hashtag.casefold())
+        park_tag = NATIONAL_PARK_HASHTAGS.get(national_park)
+        if park_tag:
+            filtered.append(park_tag)
+            required_keys.add(park_tag.casefold())
 
     fallback_candidates: list[str] = []
     if fallback_keywords:
@@ -853,10 +814,11 @@ async def generate_postcard_caption(
     stopwords: Sequence[str],
 ) -> tuple[str, list[str]]:
     location = _resolve_location(asset)
-    semantic_tags = _collect_semantic_tags(asset)
+    asset_tags = _extract_asset_tags(asset)
+    semantic_tags = _collect_semantic_tags(asset, base_tags=asset_tags)
     bird_tags = _collect_bird_tags(asset)
     has_birds = bool(bird_tags)
-    has_water_tag = _asset_has_water_tag(asset)
+    has_water_tag = _asset_has_water_tag(asset_tags)
     photo_datetime = _resolve_photo_datetime(asset)
     now_local = _now_kaliningrad()
     season_line = _resolve_postcard_season_line(
@@ -872,17 +834,35 @@ async def generate_postcard_caption(
     include_rubric_tag = bool(
         score_value is not None and score_value >= POSTCARD_RUBRIC_TAG_THRESHOLD
     )
-    geo_context = await _resolve_postcard_geo_context(asset, has_water_tag=has_water_tag)
-    national_park = geo_context.national_park
-    settlement = geo_context.settlement
-    place_text = geo_context.place_text
-    nearest_city = settlement.name if settlement else location.city
+    lat = getattr(asset, "latitude", None)
+    lon = getattr(asset, "longitude", None)
+    try:
+        geo_context = await build_geo_context_for_asset(
+            lat=lat,
+            lon=lon,
+            asset_city=location.city,
+            asset_tags=asset_tags,
+        )
+    except Exception:  # pragma: no cover - unexpected runtime error
+        logging.exception("POSTCARD_GEO_CONTEXT error lat=%s lon=%s", lat, lon)
+        geo_context = GeoContext(
+            main_place=location.city,
+            water_name=None,
+            water_kind=None,
+            national_park=None,
+        )
+    national_park_name = geo_context.national_park
+    national_park_phrase = _format_national_park_phrase(national_park_name)
+    geo_location = geo_context.main_place or location.city
     region_label = location.region or POSTCARD_REGION_LABEL
-    water_info = geo_context.water if has_water_tag else None
+    water_kind = geo_context.water_kind if has_water_tag else None
+    water_name = geo_context.water_name if has_water_tag else None
+    location_value = geo_location or location.display
     photo_year_label = _resolve_photo_year_label(photo_datetime)
     photo_season_name = _resolve_photo_season_ru(photo_datetime)
     has_water_in_frame = has_water_tag
     context_payload: dict[str, Any] = {
+        "location": location_value,
         "region": POSTCARD_REGION_LABEL,
         "location_display": location.display,
         "city": location.city,
@@ -892,24 +872,20 @@ async def generate_postcard_caption(
         "postcard_score": score_value,
         "has_birds": has_birds,
         "is_out_of_season": is_out_of_season,
-        "place_text": place_text,
-        "nearest_city": nearest_city,
         "has_water_in_frame": has_water_in_frame,
         "photo_year_label": photo_year_label,
         "photo_season": photo_season_name,
         "season_line": season_line,
     }
     context_payload["region_label"] = region_label
-    if settlement and settlement.distance_m is not None:
-        context_payload["nearest_city_distance_m"] = round(settlement.distance_m, 1)
-    if national_park:
-        context_payload["national_park_short"] = national_park.short_name
-        context_payload["national_park_hashtag"] = national_park.hashtag
-        context_payload["national_park_name"] = national_park.osm_name_ru
-    if water_info:
-        context_payload["water_kind"] = water_info.kind
-        if water_info.name_ru:
-            context_payload["water_name_ru"] = water_info.name_ru
+    if national_park_name:
+        context_payload["national_park"] = national_park_name
+        if national_park_phrase:
+            context_payload["national_park_phrase"] = national_park_phrase
+    if water_kind:
+        context_payload["water_kind"] = water_kind
+    if water_name:
+        context_payload["water_name"] = water_name
     extra_hint = asset.vision_results or {}
     if isinstance(extra_hint, dict):
         if extra_hint.get("weather_final_display"):
@@ -929,9 +905,10 @@ async def generate_postcard_caption(
         "Ты — голос проекта «Котопогода» и готовишь подпись для рубрики «Открыточный вид».",
         "Форма текста строгая: 1–3 коротких предложения (≈200–300 символов) в спокойном человеческом тоне.",
         "Первая фраза обязана начинаться словами «Порадую вас … видом …». Не ставь ничего перед этими словами и сам сформулируй продолжение.",
-        "Используй place_text, если оно передано. Если place_text пустое, но есть nearest_city — упомяни этот населённый пункт. Всегда явно назови Калининградскую область хотя бы один раз.",
-        "Если national_park_short указан, впиши парк естественно (например, «на Куршской косе», «на Балтийской косе», «во Виштынецком парке»).",
-        "Когда has_water_in_frame=true и есть water_name_ru, мягко упомяни этот водоём (для Балтийского моря можно сказать «море»). Если has_water_in_frame=false — не пиши про море, залив, озеро или воду вовсе.",
+        "Поле location в JSON — единственный населённый пункт. Если он пустой, ориентируйся на location_display и не придумывай другие города.",
+        "Всегда явно назови Калининградскую область хотя бы один раз.",
+        "Если national_park указан, используй короткую форму (например, «на Куршской косе», «на Балтийской косе», «в Виштынецком краю»).",
+        "Когда has_water_in_frame=true и передан water_name, мягко упомяни этот водоём (для Балтийского моря можно сказать «море»). Если has_water_in_frame=false — не пиши про море, залив, озеро или воду вовсе и не придумывай новые водоёмы.",
         "Стиль дружелюбный, живой и конкретный. Можно аккуратно использовать объекты из списка objects, но без перечислений.",
         "Не очеловечивай природу (никаких «море шепчет», «ветер ласкает», «закат обнимает город») и не используй заезженные клише.",
         "Пиши только по-русски, без латиницы, эмодзи, ссылок и хэштегов внутри caption.",
@@ -1017,9 +994,9 @@ async def generate_postcard_caption(
         city_tag,
         include_rubric_tag=include_rubric_tag,
         fallback_keywords=semantic_tags,
-        water_info=water_info,
+        water_kind=water_kind,
         has_water_tag=has_water_tag,
-        national_park=national_park,
+        national_park=national_park_name,
     )
     map_links_line = _build_postcard_map_links(asset)
     link_block = _build_link_block()
@@ -1089,9 +1066,13 @@ async def generate_postcard_caption(
             location.city,
             location.region,
             location.display,
-            nearest_city,
+            location_value,
             POSTCARD_REGION_LABEL,
         ]
+        if national_park_name:
+            location_candidates.append(national_park_name)
+        if national_park_phrase:
+            location_candidates.append(national_park_phrase)
         if not any(
             candidate and _location_value_in_text(normalized_caption, candidate)
             for candidate in location_candidates
@@ -1104,9 +1085,9 @@ async def generate_postcard_caption(
             city_tag,
             include_rubric_tag=include_rubric_tag,
             fallback_keywords=semantic_tags,
-            water_info=water_info,
+            water_kind=water_kind,
             has_water_tag=has_water_tag,
-            national_park=national_park,
+            national_park=national_park_name,
         )
         escaped_caption = _escape_html_text(caption_text)
         caption_with_map = _append_map_links(escaped_caption, map_links_line)

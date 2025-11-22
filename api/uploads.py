@@ -58,7 +58,9 @@ async def get_ocr_remaining_percent(supabase: SupabaseClient | None) -> int | No
     if not supabase or not supabase.enabled:
         return None
 
-    used_tokens, _raw, _error = await supabase.get_24h_usage_total()
+    used_tokens, _raw, _error = await supabase.get_24h_usage_total(
+        bot="kotopogoda", model="gpt-4o-mini"
+    )
     if used_tokens is None:
         return None
 

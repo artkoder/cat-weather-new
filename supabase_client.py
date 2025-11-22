@@ -167,7 +167,7 @@ class SupabaseClient:
         *,
         bot: str = "kotopogoda",
         model: str = "gpt-4o-mini",
-    ) -> tuple[int | None, dict[str, Any] | None, str | None]:
+    ) -> tuple[int | None, Any | None, str | None]:
         """
         Возвращает (used_tokens, raw_payload, error_message).
         used_tokens = суммарный total_tokens за последние 24 часа или None при ошибке/disabled.
@@ -196,11 +196,7 @@ class SupabaseClient:
                 return None, None, message
 
             raw_payload = response.json()
-            if (
-                isinstance(raw_payload, list)
-                and raw_payload
-                and isinstance(raw_payload[0], dict)
-            ):
+            if isinstance(raw_payload, list) and raw_payload and isinstance(raw_payload[0], dict):
                 sum_value = raw_payload[0].get("sum")
                 if sum_value is None:
                     return 0, raw_payload, None

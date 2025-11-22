@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import logging
 import random
@@ -134,7 +135,6 @@ POSTCARD_BIRD_TAGS = (
 )
 POSTCARD_BIRD_TAG_KEYS = {tag.casefold() for tag in POSTCARD_BIRD_TAGS}
 _LATIN_WORD_PATTERN = re.compile(r"[A-Za-z]")
-_MARKDOWN_ESCAPE_PATTERN = re.compile(r"([\\_*[\]()])")
 _POSTCARD_COMMON_STOPWORDS: tuple[str, ...] | None = None
 _POSTCARD_TZ = ZoneInfo("Europe/Kaliningrad")
 _POSTCARD_SEASON_AGE_THRESHOLD_DAYS = 60
@@ -284,7 +284,7 @@ def _sanitize_prompt_leaks(text: str) -> str:
 def _build_link_block() -> str:
     from main import build_rubric_link_block  # avoid circular import at module load
 
-    return build_rubric_link_block("postcard", parse_mode="Markdown")
+    return build_rubric_link_block("postcard", parse_mode="HTML")
 
 
 def _build_postcard_map_links(asset: Asset) -> str | None:
@@ -292,10 +292,19 @@ def _build_postcard_map_links(asset: Asset) -> str | None:
     longitude = asset.longitude
     if latitude is None or longitude is None:
         return None
+    lon_value = f"{longitude:.6f}"
+    lat_value = f"{latitude:.6f}"
+    twogis_url = f"https://2gis.ru/?m={lon_value},{lat_value}/17"
+    yandex_url = (
+        "https://yandex.ru/maps/?whatshere[point]="
+        f"{lon_value}%2C{lat_value}"
+        "&whatshere[zoom]=17&mode=whatshere"
+    )
+    twogis_href = html.escape(twogis_url, quote=True)
+    yandex_href = html.escape(yandex_url, quote=True)
     return (
-        "📍 "
-        f"[2ГИС](https://2gis.ru/?m={longitude:.6f},{latitude:.6f})  "
-        f"[Яндекс](https://yandex.ru/maps/?ll={longitude:.6f},{latitude:.6f}&z=15)"
+        f'📍 <a href="{twogis_href}">2ГИС</a> '
+        f'<a href="{yandex_href}">Яндекс</a>'
     )
 
 
@@ -428,10 +437,10 @@ def _sanitize_postcard_caption_text(text: str) -> str:
     return cleaned.strip()
 
 
-def _escape_markdown_text(text: str) -> str:
+def _escape_html_text(text: str) -> str:
     if not text:
         return ""
-    return _MARKDOWN_ESCAPE_PATTERN.sub(r"\\\1", text)
+    return html.escape(text, quote=False)
 
 
 def _remove_latin_words(text: str) -> str:
@@ -744,6 +753,7 @@ async def generate_postcard_caption(
         region_prompt = "#КалининградскаяОбласть"
     system_prompt_lines = [
         "Ты — голос проекта «Котопогода» и готовишь подпись для рубрики «Открыточный вид».",
+        "Рубрика про Балтику и слово «Океан» — держи образ берега и воды без пафоса.",
         "Собери подпись из 2–3 коротких предложений (до 250 символов) в спокойном, человеческом тоне.",
         "Первая фраза строго одна из двух: «Порадую вас открыточным видом.» или «Порадую вас красивым видом <локации>.».",
         "Если в данных есть город или регион, используй вторую формулу и поставь название в подходящем падеже (например, «в Калининградской области», «в Зеленоградске»).",
@@ -840,7 +850,7 @@ async def generate_postcard_caption(
         fallback_sentence = _postcard_fallback_sentence(location, semantic_tags)
         opening = _build_postcard_opening(location)
         combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
-        combined = _escape_markdown_text(combined)
+        combined = _escape_html_text(combined)
         caption_with_map = _append_map_links(combined, map_links_line)
         caption_body = _append_season_line(caption_with_map, season_line)
         caption_with_block = _attach_link_block(caption_body, link_block)
@@ -907,7 +917,7 @@ async def generate_postcard_caption(
             include_rubric_tag=include_rubric_tag,
             fallback_keywords=semantic_tags,
         )
-        escaped_caption = _escape_markdown_text(caption_text)
+        escaped_caption = _escape_html_text(caption_text)
         caption_with_map = _append_map_links(escaped_caption, map_links_line)
         caption_with_season = _append_season_line(caption_with_map, season_line)
         caption_with_block = _attach_link_block(caption_with_season, link_block)
@@ -916,7 +926,7 @@ async def generate_postcard_caption(
     fallback_sentence = _postcard_fallback_sentence(location, semantic_tags)
     opening = _build_postcard_opening(location)
     combined = _remove_latin_words(f"{opening} {fallback_sentence}".strip())
-    combined = _escape_markdown_text(combined)
+    combined = _escape_html_text(combined)
     caption_with_map = _append_map_links(combined, map_links_line)
     caption_body = _append_season_line(caption_with_map, season_line)
     caption_with_block = _attach_link_block(caption_body, link_block)

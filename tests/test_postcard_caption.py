@@ -8,7 +8,7 @@ import caption_gen
 from caption_gen import POSTCARD_OPENING_CHOICES, POSTCARD_RUBRIC_HASHTAG, generate_postcard_caption
 from data_access import Asset
 from openai_client import OpenAIResponse
-from main import LOVE_COLLECTION_LINK_MARKDOWN
+from main import LOVE_COLLECTION_LINK
 from zoneinfo import ZoneInfo
 
 KALININGRAD_TZ = ZoneInfo("Europe/Kaliningrad")
@@ -221,8 +221,8 @@ async def test_postcard_caption_with_location_and_love_block() -> None:
     assert text_part.startswith(POSTCARD_OPENING_CHOICES)
     assert "Светлогор" in text_part
     assert not re.search(r"[A-Za-z]", text_part)
-    assert LOVE_COLLECTION_LINK_MARKDOWN in caption
-    assert caption.strip().endswith(LOVE_COLLECTION_LINK_MARKDOWN)
+    assert LOVE_COLLECTION_LINK in caption
+    assert caption.strip().endswith(LOVE_COLLECTION_LINK)
     normalized_tags = {tag.casefold() for tag in hashtags}
     assert POSTCARD_RUBRIC_HASHTAG in hashtags
     assert "#калининградскаяобласть" in normalized_tags
@@ -269,8 +269,8 @@ async def test_postcard_caption_filters_stopwords() -> None:
 
     assert len(client.calls) == 2
     assert "волшеб" not in caption.casefold()
-    assert LOVE_COLLECTION_LINK_MARKDOWN in caption
-    assert caption.strip().endswith(LOVE_COLLECTION_LINK_MARKDOWN)
+    assert LOVE_COLLECTION_LINK in caption
+    assert caption.strip().endswith(LOVE_COLLECTION_LINK)
     normalized_tags = {tag.casefold() for tag in hashtags}
     assert "#калининградскаяобласть" in normalized_tags
     assert 3 <= len(hashtags) <= 5
@@ -290,8 +290,8 @@ async def test_postcard_caption_fallback_without_openai() -> None:
     text_part = caption.split("\n\n")[0]
     assert text_part.startswith(POSTCARD_OPENING_CHOICES)
     assert "Куршская коса" in text_part
-    assert LOVE_COLLECTION_LINK_MARKDOWN in caption
-    assert caption.strip().endswith(LOVE_COLLECTION_LINK_MARKDOWN)
+    assert LOVE_COLLECTION_LINK in caption
+    assert caption.strip().endswith(LOVE_COLLECTION_LINK)
     normalized_tags = {tag.casefold() for tag in hashtags}
     assert "#калининградскаяобласть" in normalized_tags
     assert POSTCARD_RUBRIC_HASHTAG in hashtags
@@ -346,8 +346,11 @@ async def test_postcard_caption_adds_map_links_with_coordinates() -> None:
     parts = caption.split("\n\n")
     map_line = next((part for part in parts if part.startswith("📍")), None)
     assert map_line is not None
-    assert "[2ГИС](https://2gis.ru/?m=20.452200,54.710400)" in map_line
-    assert "[Яндекс](https://yandex.ru/maps/?ll=20.452200,54.710400&z=15)" in map_line
+    assert '<a href="https://2gis.ru/?m=20.452200,54.710400/17">2ГИС</a>' in map_line
+    assert (
+        '<a href="https://yandex.ru/maps/?whatshere[point]=20.452200%2C54.710400'
+        '&amp;whatshere[zoom]=17&amp;mode=whatshere">Яндекс</a>'
+    ) in map_line
 
 
 @pytest.mark.asyncio
@@ -577,7 +580,7 @@ async def test_postcard_caption_includes_season_line_for_old_summer_photo(
 
     parts = caption.split("\n\n")
     assert "лето 2025" in parts
-    assert parts[-1] == LOVE_COLLECTION_LINK_MARKDOWN
+    assert parts[-1] == LOVE_COLLECTION_LINK
 
 
 @pytest.mark.asyncio

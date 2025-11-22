@@ -13756,13 +13756,14 @@ class Bot:
         )
         prepared_hashtags = self._prepare_hashtags(hashtags)
         hashtag_block = " ".join(prepared_hashtags)
-        link_block = build_rubric_link_block("postcard", parse_mode="Markdown")
+        hashtag_block_html = html.escape(hashtag_block) if hashtag_block else ""
+        link_block = build_rubric_link_block("postcard", parse_mode="HTML")
         caption_body = caption_text.strip()
         if link_block and link_block in caption_body:
             caption_body = caption_body.replace(link_block, "").strip()
         final_parts = [caption_body] if caption_body else []
-        if hashtag_block:
-            final_parts.append(hashtag_block)
+        if hashtag_block_html:
+            final_parts.append(hashtag_block_html)
         if link_block:
             final_parts.append(link_block)
         final_caption = "\n\n".join(part for part in final_parts if part).strip()
@@ -13802,7 +13803,7 @@ class Bot:
             {
                 "chat_id": target_channel,
                 "caption": final_caption,
-                "parse_mode": "Markdown",
+                "parse_mode": "HTML",
             },
             files={"photo": (filename, file_data, content_type)},
         )

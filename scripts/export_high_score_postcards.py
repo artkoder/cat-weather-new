@@ -16,13 +16,13 @@ if str(PROJECT_ROOT) not in sys.path:
 from postcard_export import export_high_score_assets
 
 DEFAULT_DB_FALLBACK = "/data/bot.db"
-DEFAULT_OUTPUT = "high_score_postcards_dump.csv"
+DEFAULT_OUTPUT = "postcard_photos_dump.csv"
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Dump all postcard-ready assets with score 7 or 8. "
+            "Dump all postcard assets regardless of postcard_score. "
             "Scores are resolved both from the assets table and the latest vision result."
         )
     )
@@ -34,7 +34,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--output",
         default=DEFAULT_OUTPUT,
         help=(
-            "Destination CSV file (defaults to high_score_postcards_dump.csv in the CWD)."
+            "Destination CSV file (defaults to postcard_photos_dump.csv in the CWD)."
         ),
     )
     parser.add_argument(

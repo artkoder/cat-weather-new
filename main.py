@@ -5798,7 +5798,7 @@ class Bot:
                     "- `/addsea <name> <lat> <lon>` — добавить морскую точку для температуры воды.\n"
                     "- `/seas` — показать все морские точки и удалить ненужные.\n"
                     "- `/dump_sea` — экспортировать CSV со всеми морскими ассетами, метаданными волн/неба и vision_json (только для супер-админов).\n"
-                    "- `/postcard_photos_db [pretty]` — выгрузить CSV со всеми кадрами с открыточностью 7–8 без дополнительных фильтров; добавьте `pretty`, чтобы JSON был в столбик.\n"
+                    "- `/postcard_photos_db [pretty]` — выгрузить CSV со всеми кадрами без фильтра по открыточности; добавьте `pretty`, чтобы JSON был в столбик.\n"
                     "- `/backfill_waves [dry-run]` — заполнить волны/небо из vision_results (используйте dry-run для проверки без изменений).\n"
                     "- `/inv_sea` — остатки фото «Море» по небу и волне.\n"
                     "- `/sea_audit` — проверка и очистка «мёртвых душ» в базе.\n"
@@ -6061,7 +6061,7 @@ class Bot:
                 timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
                 filename = f"postcard_photos_{timestamp}.csv"
                 pretty_hint = " (JSON по строкам)" if pretty_json else ""
-                caption = f"Экспорт открыток 7–8 готов{pretty_hint}.\nСтрок: {row_count}."
+                caption = f"Экспорт открыток готов{pretty_hint}.\nСтрок: {row_count}."
                 await self.api_request(
                     "sendDocument",
                     {

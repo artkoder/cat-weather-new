@@ -6,14 +6,14 @@ import argparse
 import os
 import sqlite3
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from postcard_export import export_high_score_assets
+from postcard_export import export_high_score_assets  # noqa: E402
 
 DEFAULT_DB_FALLBACK = "/data/bot.db"
 DEFAULT_OUTPUT = "postcard_photos_dump.csv"
@@ -33,9 +33,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output",
         default=DEFAULT_OUTPUT,
-        help=(
-            "Destination CSV file (defaults to postcard_photos_dump.csv in the CWD)."
-        ),
+        help=("Destination CSV file (defaults to postcard_photos_dump.csv in the CWD)."),
     )
     parser.add_argument(
         "--pretty-json",

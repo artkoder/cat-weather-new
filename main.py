@@ -113,6 +113,7 @@ from storage import Storage, create_storage_from_env
 from supabase_client import SupabaseClient
 from utils_wave import wave_m_to_score
 from weather_migration import migrate_weather_publish_channels
+from db_utils import dump_database
 
 if TYPE_CHECKING:
     from openai_client import OpenAIResponse
@@ -6025,11 +6026,55 @@ class Bot:
                 )
             return
 
+        if text.startswith("/dump_db") and self.is_superadmin(user_id):
+            target_chat_id = chat_id if chat_id else user_id
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": target_chat_id, "text": "⏳ Starting database backup..."},
+            )
+            try:
+                dump_path = await asyncio.to_thread(dump_database, DB_PATH)
+
+                try:
+                    logging.info(
+                        "Sending database dump to chat %s (user %s): %s (%d bytes)",
+                        target_chat_id,
+                        user_id,
+                        dump_path.name,
+                        dump_path.stat().st_size,
+                    )
+
+                    with open(dump_path, "rb") as fh:
+                        await self.api_request_multipart(
+                            "sendDocument",
+                            {
+                                "chat_id": target_chat_id,
+                                "caption": f"Full database dump {dump_path.name}",
+                            },
+                            files={"document": (dump_path.name, fh, "application/vnd.sqlite3")},
+                        )
+                finally:
+                    # Ensure we cleanup the temp file
+                    try:
+                        if dump_path.exists():
+                            dump_path.unlink()
+                    except OSError:
+                        logging.warning(
+                            "Failed to cleanup temp DB dump %s", dump_path, exc_info=True
+                        )
+
+            except Exception as e:
+                logging.exception("Failed to perform database dump")
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": target_chat_id, "text": f"❌ Database backup failed: {e}"},
+                )
+            return
+
         if text.startswith("/postcard_photos_db") and self.is_superadmin(user_id):
             args = text.split()
             pretty_json = any(
-                token.strip().lower() in {"pretty", "--pretty", "pretty_json"}
-                for token in args[1:]
+                token.strip().lower() in {"pretty", "--pretty", "pretty_json"} for token in args[1:]
             )
             tmp_path: Path | None = None
             try:

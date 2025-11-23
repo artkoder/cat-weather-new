@@ -42,10 +42,34 @@ async def test_postcard_photos_db_command_exports_scores(monkeypatch, tmp_path):
     bot = main_module.Bot("dummy", str(db_path))
 
     timestamp = "2024-11-23T12:00:00+00:00"
-    _insert_asset(bot.db, asset_id="asset-seven", postcard_score=7, payload={"city": "A"}, created_at=timestamp)
-    _insert_asset(bot.db, asset_id="asset-eight", postcard_score=8, payload={"city": "B"}, created_at=timestamp)
-    _insert_asset(bot.db, asset_id="asset-vision", postcard_score=None, payload={"city": "Vision"}, created_at=timestamp)
-    _insert_asset(bot.db, asset_id="asset-low", postcard_score=5, payload={"city": "Low"}, created_at=timestamp)
+    _insert_asset(
+        bot.db,
+        asset_id="asset-seven",
+        postcard_score=7,
+        payload={"city": "A"},
+        created_at=timestamp,
+    )
+    _insert_asset(
+        bot.db,
+        asset_id="asset-eight",
+        postcard_score=8,
+        payload={"city": "B"},
+        created_at=timestamp,
+    )
+    _insert_asset(
+        bot.db,
+        asset_id="asset-vision",
+        postcard_score=None,
+        payload={"city": "Vision"},
+        created_at=timestamp,
+    )
+    _insert_asset(
+        bot.db,
+        asset_id="asset-low",
+        postcard_score=5,
+        payload={"city": "Low"},
+        created_at=timestamp,
+    )
 
     bot.db.execute(
         """

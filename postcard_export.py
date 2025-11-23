@@ -5,8 +5,9 @@ from __future__ import annotations
 import csv
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 _QUERY_WITH_VISION = """
 WITH latest_vision AS (
@@ -71,8 +72,7 @@ def _iter_asset_rows(conn: sqlite3.Connection) -> Iterator[sqlite3.Row]:
         query = _QUERY_WITHOUT_VISION
     cursor = conn.execute(query)
     try:
-        for row in cursor:
-            yield row
+        yield from cursor
     finally:
         cursor.close()
 

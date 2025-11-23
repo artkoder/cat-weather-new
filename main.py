@@ -6717,40 +6717,92 @@ class Bot:
             logging.info("ADMIN_RESTORE: command invoked by %s", user_id)
             error_text = "❌ Не удалось восстановить пул. Проверьте логи."
             try:
-                row = self.db.execute(
+                rows = self.db.execute(
                     """
-                    SELECT COUNT(*) AS candidate_count
+                    SELECT id, payload_json
                       FROM assets
                      WHERE postcard_score >= ?
-                       AND json_extract(payload_json, '$.last_used_at') IS NOT NULL
                     """,
                     (POSTCARD_MIN_SCORE,),
-                ).fetchone()
-                raw_count = row["candidate_count"] if row else 0
-                count_before = int(raw_count) if raw_count is not None else 0
-            except (sqlite3.Error, ValueError, TypeError):
-                logging.exception("ADMIN_RESTORE: failed to count postcard candidates")
+                ).fetchall()
+            except sqlite3.Error:
+                logging.exception("ADMIN_RESTORE: failed to fetch postcard candidates")
                 await self.api_request(
                     "sendMessage",
                     {"chat_id": user_id, "text": error_text},
                 )
                 return
+
+            scanned_count = len(rows)
+            tagged_count = 0
             restored_count = 0
-            if count_before:
+            updates: list[tuple[str, int]] = []
+            sample_payload: str | None = None
+            sample_asset_id: int | None = None
+
+            for row in rows:
+                payload_raw = row["payload_json"]
+                if isinstance(payload_raw, bytes):
+                    payload_str = payload_raw.decode("utf-8", errors="ignore")
+                elif isinstance(payload_raw, str):
+                    payload_str = payload_raw
+                elif payload_raw is None:
+                    payload_str = ""
+                else:
+                    payload_str = str(payload_raw)
+
+                if sample_payload is None:
+                    sample_payload = payload_str
+                    sample_asset_id = row["id"]
+
+                if not payload_str:
+                    continue
+
+                try:
+                    payload = json.loads(payload_str)
+                except json.JSONDecodeError:
+                    logging.exception(
+                        "ADMIN_RESTORE: invalid_json asset_id=%s payload=%s",
+                        row["id"],
+                        payload_str,
+                    )
+                    continue
+
+                if not isinstance(payload, dict):
+                    logging.warning(
+                        "ADMIN_RESTORE: payload_not_object asset_id=%s type=%s",
+                        row["id"],
+                        type(payload).__name__,
+                    )
+                    continue
+
+                if "last_used_at" not in payload:
+                    continue
+
+                tagged_count += 1
+                payload.pop("last_used_at", None)
+
+                try:
+                    new_json = json.dumps(payload, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    logging.exception(
+                        "ADMIN_RESTORE: dump_failed asset_id=%s payload_type=%s",
+                        row["id"],
+                        type(payload).__name__,
+                    )
+                    continue
+
+                updates.append((new_json, row["id"]))
+
+            if updates:
                 try:
                     with self.db:
-                        cursor = self.db.execute(
-                            """
-                            UPDATE assets
-                               SET payload_json = json_remove(payload_json, '$.last_used_at')
-                             WHERE postcard_score >= ?
-                               AND json_extract(payload_json, '$.last_used_at') IS NOT NULL
-                            """,
-                            (POSTCARD_MIN_SCORE,),
-                        )
-                    affected = cursor.rowcount
-                    if isinstance(affected, int) and affected > 0:
-                        restored_count = affected
+                        for new_json, asset_id in updates:
+                            self.db.execute(
+                                "UPDATE assets SET payload_json = ? WHERE id = ?",
+                                (new_json, asset_id),
+                            )
+                    restored_count = len(updates)
                 except sqlite3.Error:
                     logging.exception("ADMIN_RESTORE: failed to restore postcard pool")
                     await self.api_request(
@@ -6758,43 +6810,29 @@ class Bot:
                         {"chat_id": user_id, "text": error_text},
                     )
                     return
-            logging.info("ADMIN_RESTORE: Restored %s postcard assets", restored_count)
-            logging.info("ADMIN_RESTORE: Candidates before restore=%s", count_before)
-            if restored_count == 0:
-                sample_row = self.db.execute(
-                    """
-                    SELECT id, payload_json
-                      FROM assets
-                     WHERE postcard_score = ?
-                     LIMIT 1
-                    """,
-                    (POSTCARD_MIN_SCORE,),
-                ).fetchone()
-                if not sample_row:
-                    sample_row = self.db.execute(
-                        """
-                        SELECT id, payload_json
-                          FROM assets
-                         WHERE postcard_score >= ?
-                         LIMIT 1
-                        """,
-                        (POSTCARD_MIN_SCORE,),
-                    ).fetchone()
-                if sample_row:
-                    logging.info(
-                        "ADMIN_RESTORE: sample_payload asset_id=%s payload=%s",
-                        sample_row["id"],
-                        sample_row["payload_json"],
-                    )
+
+            logging.info(
+                "ADMIN_RESTORE: summary scanned=%s tagged=%s restored=%s",
+                scanned_count,
+                tagged_count,
+                restored_count,
+            )
+
+            if restored_count == 0 and sample_payload is not None:
+                logging.info(
+                    "ADMIN_RESTORE: sample_payload asset_id=%s payload=%s",
+                    sample_asset_id,
+                    sample_payload,
+                )
+
+            report_text = (
+                f"Просканировано: {scanned_count}. "
+                f"Найдено с меткой: {tagged_count}. "
+                f"Восстановлено: {restored_count}."
+            )
             await self.api_request(
                 "sendMessage",
-                {
-                    "chat_id": user_id,
-                    "text": (
-                        "✅ Восстановлен пул фото для рубрики Открытка. "
-                        f"Возвращено в ротацию: {restored_count} шт."
-                    ),
-                },
+                {"chat_id": user_id, "text": report_text},
             )
             return
 

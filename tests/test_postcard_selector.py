@@ -207,6 +207,47 @@ def test_repeat_guard_skips_recently_used_assets(data: DataAccess) -> None:
     assert asset.id == "asset-fresh"
 
 
+def test_test_mode_randomizes_selection(
+    data: DataAccess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tz = ZoneInfo("Europe/Kaliningrad")
+    now = datetime(2024, 8, 25, 12, 0, tzinfo=tz)
+    doy_now = now.timetuple().tm_yday
+
+    _add_asset(
+        data,
+        asset_id="asset-priority",
+        score=10,
+        created_at=now - timedelta(days=1),
+        captured_at=now - timedelta(days=1),
+        photo_doy=doy_now,
+        last_used_at=now - timedelta(days=10),
+    )
+    _add_asset(
+        data,
+        asset_id="asset-random",
+        score=10,
+        created_at=now - timedelta(days=2),
+        captured_at=now - timedelta(days=2),
+        photo_doy=doy_now,
+        last_used_at=now - timedelta(days=9),
+    )
+
+    def fake_choice(items):
+        assert len(items) == 2
+        for candidate in items:
+            if candidate.asset_id == "asset-random":
+                return candidate
+        raise AssertionError("asset-random not found in candidates")
+
+    monkeypatch.setattr("asset_selectors.postcard.random.choice", fake_choice)
+
+    asset = select_postcard_asset(data, now=now, test=True)
+    assert asset is not None
+    assert asset.id == "asset-random"
+
+
+
 def test_returns_none_when_scores_below_threshold(data: DataAccess) -> None:
     tz = ZoneInfo("Europe/Kaliningrad")
     now = datetime(2024, 9, 5, 10, 0, tzinfo=tz)

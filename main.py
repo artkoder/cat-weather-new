@@ -13719,7 +13719,7 @@ class Bot:
             "prod" if is_prod else "test",
             target_channel,
         )
-        asset = select_postcard_asset(self.data, now=datetime.now(UTC))
+        asset = select_postcard_asset(self.data, now=datetime.now(UTC), test=test)
         asset_score = Asset._to_int(asset.postcard_score) if asset else None
         if not asset or asset_score is None or asset_score < POSTCARD_MIN_SCORE:
             skip_reason = "no_candidates" if not asset else "low_score"
@@ -13857,13 +13857,16 @@ class Bot:
         else:
             message_id = 0
 
-        self.data.mark_assets_used([asset.id])
+        marked_used = False
+        if not test:
+            self.data.mark_assets_used([asset.id])
+            marked_used = True
         logging.info(
             "POSTCARD_RUBRIC asset_usage asset_id=%s job_id=%s mode=%s marked_used=%s",
             asset.id,
             job_id or "-",
             "prod" if is_prod else "test",
-            True,
+            marked_used,
         )
         metadata = {
             "rubric_code": rubric.code,

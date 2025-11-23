@@ -206,7 +206,7 @@ Use the diagnostic exporter when you need a dump of every asset whose `postcard_
 python scripts/export_high_score_postcards.py --db-path /postcard_photos_db --output high_score_postcards_dump.csv
 ```
 
-The script saves a CSV file (defaults to `high_score_postcards_dump.csv` in the current directory), pretty-prints JSON blobs when `--pretty-json` is supplied and prints both the absolute output path and the number of exported rows so it is easy to share the results with the team.
+The script saves a CSV file (defaults to `high_score_postcards_dump.csv` in the current directory), pretty-prints JSON blobs when `--pretty-json` is supplied and prints both the absolute output path and the number of exported rows so it is easy to share the results with the team. Superadmins can request the same export directly in Telegram via `/postcard_photos_db` (append `pretty` to format JSON columns in multiple lines); the bot sends the generated CSV back without applying any filters beyond postcard scores 7 and 8.
 
 ## Operator Interface
 

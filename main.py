@@ -108,6 +108,7 @@ from sea_selection import (
 )
 from asset_selectors.postcard import select_postcard_asset
 from postcard_watermark import WATERMARK_PATH, add_love_kaliningrad_watermark
+from postcard_export import export_high_score_assets
 from storage import Storage, create_storage_from_env
 from supabase_client import SupabaseClient
 from utils_wave import wave_m_to_score
@@ -5797,6 +5798,7 @@ class Bot:
                     "- `/addsea <name> <lat> <lon>` — добавить морскую точку для температуры воды.\n"
                     "- `/seas` — показать все морские точки и удалить ненужные.\n"
                     "- `/dump_sea` — экспортировать CSV со всеми морскими ассетами, метаданными волн/неба и vision_json (только для супер-админов).\n"
+                    "- `/postcard_photos_db [pretty]` — выгрузить CSV со всеми кадрами с открыточностью 7–8 без дополнительных фильтров; добавьте `pretty`, чтобы JSON был в столбик.\n"
                     "- `/backfill_waves [dry-run]` — заполнить волны/небо из vision_results (используйте dry-run для проверки без изменений).\n"
                     "- `/inv_sea` — остатки фото «Море» по небу и волне.\n"
                     "- `/sea_audit` — проверка и очистка «мёртвых душ» в базе.\n"
@@ -6021,6 +6023,57 @@ class Bot:
                     "sendMessage",
                     {"chat_id": user_id, "text": f"❌ Error generating CSV: {e}"},
                 )
+            return
+
+        if text.startswith("/postcard_photos_db") and self.is_superadmin(user_id):
+            args = text.split()
+            pretty_json = any(
+                token.strip().lower() in {"pretty", "--pretty", "pretty_json"}
+                for token in args[1:]
+            )
+            tmp_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    prefix="postcard_export_", suffix=".csv", delete=False
+                ) as tmp_file:
+                    tmp_path = Path(tmp_file.name)
+                logging.info(
+                    "POSTCARD_EXPORT command user_id=%s pretty_json=%d",
+                    user_id,
+                    int(pretty_json),
+                )
+                row_count = export_high_score_assets(
+                    self.db,
+                    output_path=tmp_path,
+                    pretty_json=pretty_json,
+                )
+                csv_bytes = tmp_path.read_bytes() if tmp_path else b""
+            except Exception:
+                logging.exception("POSTCARD_EXPORT failed to generate dump")
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": "❌ Не удалось подготовить выгрузку открыток. Проверьте логи.",
+                    },
+                )
+            else:
+                timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                filename = f"postcard_photos_{timestamp}.csv"
+                pretty_hint = " (JSON по строкам)" if pretty_json else ""
+                caption = f"Экспорт открыток 7–8 готов{pretty_hint}.\nСтрок: {row_count}."
+                await self.api_request(
+                    "sendDocument",
+                    {
+                        "chat_id": user_id,
+                        "caption": caption,
+                    },
+                    files={"document": (filename, csv_bytes)},
+                )
+            finally:
+                if tmp_path is not None:
+                    with contextlib.suppress(FileNotFoundError):
+                        tmp_path.unlink()
             return
 
         if text.startswith("/backfill_waves"):

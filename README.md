@@ -198,6 +198,16 @@ PY
 
 Replace `/data/bot.db` with the desired SQLite path (for local development you can keep it under `./data`). The same helper executes SQL and Python-based migrations in order and records their application in `schema_migrations`.
 
+### Exporting high-score postcard assets
+
+Use the diagnostic exporter when you need a dump of every asset whose `postcard_score` equals 7 or 8, regardless of whether the score lives in the `assets` column or inside `vision_results.result_json`. Run the helper with the production database path (for example `/postcard_photos_db`) and point it at the desired output file:
+
+```bash
+python scripts/export_high_score_postcards.py --db-path /postcard_photos_db --output high_score_postcards_dump.csv
+```
+
+The script saves a CSV file (defaults to `high_score_postcards_dump.csv` in the current directory), pretty-prints JSON blobs when `--pretty-json` is supplied and prints both the absolute output path and the number of exported rows so it is easy to share the results with the team.
+
 ## Operator Interface
 
 ### Access & governance

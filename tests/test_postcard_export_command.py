@@ -122,12 +122,15 @@ async def test_postcard_photos_db_command_exports_scores(monkeypatch, tmp_path):
 
     csv_reader = csv.DictReader(io.StringIO(file_bytes.decode("utf-8")))
     rows = list(csv_reader)
-    assert len(rows) == 3
+    assert len(rows) == 4
     asset_ids = {row["asset_id"] for row in rows}
-    assert asset_ids == {"asset-seven", "asset-eight", "asset-vision"}
+    assert asset_ids == {"asset-seven", "asset-eight", "asset-vision", "asset-low"}
     vision_row = next(row for row in rows if row["asset_id"] == "asset-vision")
     assert vision_row["resolved_postcard_score"] == "8"
     assert vision_row["score_source"] == "vision"
+    low_row = next(row for row in rows if row["asset_id"] == "asset-low")
+    assert low_row["resolved_postcard_score"] == "5"
+    assert low_row["score_source"] == "column"
 
     await bot.close()
 

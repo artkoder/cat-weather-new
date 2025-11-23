@@ -1,4 +1,4 @@
-"""Utilities for exporting postcard-ready assets (scores 7 and 8)."""
+"""Utilities for exporting postcard assets into CSV files."""
 
 from __future__ import annotations
 
@@ -8,10 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterator
 
-TARGET_SCORES: tuple[int, int] = (7, 8)
-_SCORE_FILTER = ", ".join(str(score) for score in TARGET_SCORES)
-
-_QUERY_WITH_VISION = f"""
+_QUERY_WITH_VISION = """
 WITH latest_vision AS (
     SELECT
         vr.asset_id,
@@ -37,14 +34,11 @@ SELECT
     lv.result_json
 FROM assets AS a
 LEFT JOIN latest_vision AS lv ON lv.asset_id = a.id
-WHERE
-    CAST(a.postcard_score AS INTEGER) IN ({_SCORE_FILTER})
-    OR CAST(lv.vision_score AS INTEGER) IN ({_SCORE_FILTER})
 ORDER BY a.created_at DESC,
          a.id ASC
 """
 
-_QUERY_WITHOUT_VISION = f"""
+_QUERY_WITHOUT_VISION = """
 SELECT
     a.id AS asset_id,
     a.created_at,
@@ -54,7 +48,6 @@ SELECT
     a.payload_json,
     NULL AS result_json
 FROM assets AS a
-WHERE CAST(a.postcard_score AS INTEGER) IN ({_SCORE_FILTER})
 ORDER BY a.created_at DESC,
          a.id ASC
 """
@@ -71,8 +64,11 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
         cursor.close()
 
 
-def _iter_high_score_rows(conn: sqlite3.Connection) -> Iterator[sqlite3.Row]:
-    query = _QUERY_WITH_VISION if _table_exists(conn, "vision_results") else _QUERY_WITHOUT_VISION
+def _iter_asset_rows(conn: sqlite3.Connection) -> Iterator[sqlite3.Row]:
+    if _table_exists(conn, "vision_results"):
+        query = _QUERY_WITH_VISION
+    else:
+        query = _QUERY_WITHOUT_VISION
     cursor = conn.execute(query)
     try:
         for row in cursor:
@@ -146,10 +142,7 @@ def export_high_score_assets(
     output_path: Path,
     pretty_json: bool = False,
 ) -> int:
-    """Export postcard-ready assets (scores 7 and 8) into a CSV file.
-
-    Returns the number of exported rows (excluding the header).
-    """
+    """Export postcard assets into a CSV file."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
@@ -167,7 +160,7 @@ def export_high_score_assets(
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        for row in _iter_high_score_rows(conn):
+        for row in _iter_asset_rows(conn):
             writer.writerow(_prepare_record(row, pretty_json=pretty_json))
             row_count += 1
     return row_count

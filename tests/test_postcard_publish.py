@@ -337,7 +337,7 @@ async def test_postcard_publish_applies_watermark_to_photo(
         return asset_id
 
     first_asset_path = tmp_path / "postcard-first.jpg"
-    _make_local_asset(first_asset_path, (32, 64, 96))
+    first_asset_id = _make_local_asset(first_asset_path, (32, 64, 96))
 
     send_calls: list[dict[str, Any]] = []
     _message_calls: list[dict[str, Any]] = []
@@ -367,6 +367,10 @@ async def test_postcard_publish_applies_watermark_to_photo(
                 raising=False,
             )
             assert await bot.publish_rubric("postcard", test=True) is True
+
+        # Mark the first asset as used so it is not selected again.
+        # The first run consumes (deletes) the local file, so selecting it again would fail.
+        bot.data.mark_assets_used([first_asset_id])
 
         assert send_calls, "Expected baseline sendPhoto call"
 

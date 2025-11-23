@@ -207,9 +207,7 @@ def test_repeat_guard_skips_recently_used_assets(data: DataAccess) -> None:
     assert asset.id == "asset-fresh"
 
 
-def test_test_mode_randomizes_selection(
-    data: DataAccess, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_test_mode_randomizes_selection(data: DataAccess, monkeypatch: pytest.MonkeyPatch) -> None:
     tz = ZoneInfo("Europe/Kaliningrad")
     now = datetime(2024, 8, 25, 12, 0, tzinfo=tz)
     doy_now = now.timetuple().tm_yday
@@ -245,7 +243,6 @@ def test_test_mode_randomizes_selection(
     asset = select_postcard_asset(data, now=now, test=True)
     assert asset is not None
     assert asset.id == "asset-random"
-
 
 
 def test_returns_none_when_scores_below_threshold(data: DataAccess) -> None:

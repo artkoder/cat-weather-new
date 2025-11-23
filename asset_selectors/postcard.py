@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -47,8 +48,16 @@ class _Candidate:
         return self.captured_dt or self.created_dt or _MIN_DATETIME
 
 
-def select_postcard_asset(data: DataAccess, *, now: datetime) -> Asset | None:
-    """Choose the best postcard asset based on score, freshness and season."""
+def select_postcard_asset(
+    data: DataAccess,
+    *,
+    now: datetime,
+    test: bool = False,
+) -> Asset | None:
+    """Choose the best postcard asset based on score, freshness and season.
+
+    When ``test`` is True, selection is randomized to better sample the pool.
+    """
 
     now_utc = _ensure_aware(now)
     now_local = now_utc.astimezone(KALININGRAD_TZ)
@@ -145,9 +154,6 @@ def select_postcard_asset(data: DataAccess, *, now: datetime) -> Asset | None:
         logger.info("POSTCARD_RUBRIC selection_empty max_score=%s", max_score)
         return None
 
-    repeat_candidates.sort(key=_sort_key)
-    best = repeat_candidates[0]
-
     selection_notes: list[str] = []
     if not fresh_candidates:
         selection_notes.append("stale_pool")
@@ -155,6 +161,14 @@ def select_postcard_asset(data: DataAccess, *, now: datetime) -> Asset | None:
         selection_notes.append("season_fallback")
     if not non_recent:
         selection_notes.append("repeat_guard_fallback")
+
+    if test:
+        best = random.choice(repeat_candidates)
+        selection_notes.append("test_random")
+    else:
+        repeat_candidates.sort(key=_sort_key)
+        best = repeat_candidates[0]
+
     selection_notes_str = ",".join(selection_notes) if selection_notes else "direct"
 
     freshness_hours: float | None = None

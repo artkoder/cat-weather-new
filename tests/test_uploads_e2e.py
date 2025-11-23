@@ -702,6 +702,36 @@ async def test_uploads_e2e_happy_path(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_upload_create_returns_cached_ocr_percent(tmp_path: Path):
+    env = UploadTestEnv(tmp_path)
+    await env.start()
+    try:
+        env.create_device(device_id="device-1")
+        assert env.data_access is not None
+        env.data_access.log_token_usage(
+            model="gpt-4o-mini",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=500_000,
+        )
+
+        body, boundary = _multipart_body(DEFAULT_IMAGE_BYTES)
+        status, payload = await _signed_post(
+            env,
+            path="/v1/uploads",
+            body=body,
+            boundary=boundary,
+            device_id="device-1",
+            secret=DEVICE_SECRET,
+            idempotency_key="idem-ocr-cache",
+        )
+        assert status == 202
+        assert payload["ocr_remaining_percent"] == 95
+    finally:
+        await env.close()
+
+
+@pytest.mark.asyncio
 async def test_upload_status_includes_ocr_remaining_percent(tmp_path: Path):
     supabase_client = FakeSupabaseClient()
     supabase_client.usage_total = 500_000
@@ -721,6 +751,7 @@ async def test_upload_status_includes_ocr_remaining_percent(tmp_path: Path):
             idempotency_key="idem-ocr",
         )
         assert status == 202
+        assert payload["ocr_remaining_percent"] == 100
         upload_id = payload["id"]
 
         final_payload = await _wait_for_status(

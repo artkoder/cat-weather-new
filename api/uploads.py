@@ -5,10 +5,11 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import tempfile
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -65,6 +66,62 @@ async def get_ocr_remaining_percent(supabase: SupabaseClient | None) -> int | No
         return None
 
     limit = 10_000_000
+    remaining = max(limit - used_tokens, 0)
+    percent = int((remaining * 100) // limit)
+    return max(0, min(percent, 100))
+
+
+_OCR_USAGE_MODEL = "gpt-4o-mini"
+_OCR_LIMIT_ENV_VARS = (
+    "OPENAI_DAILY_TOKEN_LIMIT_GPT_4O_MINI",
+    "OPENAI_DAILY_TOKEN_LIMIT_4O_MINI",
+    "OPENAI_DAILY_TOKEN_LIMIT",
+)
+_DEFAULT_OCR_LIMIT = 10_000_000
+
+
+def _load_cached_ocr_limit() -> int:
+    for env_name in _OCR_LIMIT_ENV_VARS:
+        raw = os.getenv(env_name)
+        if not raw:
+            continue
+        try:
+            parsed = int(raw)
+        except ValueError:
+            logging.warning("Invalid %s=%s; ignoring OCR limit override", env_name, raw)
+            continue
+        if parsed > 0:
+            return parsed
+        logging.warning("Ignoring non-positive %s=%s for OCR limit", env_name, raw)
+    return _DEFAULT_OCR_LIMIT
+
+
+_OCR_LIMIT_TOKENS = _load_cached_ocr_limit()
+
+
+def _get_cached_ocr_remaining_percent(conn: Any) -> int | None:
+    limit = _OCR_LIMIT_TOKENS
+    if limit <= 0:
+        return None
+    since = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+    try:
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(COALESCE(total_tokens, 0)), 0)
+            FROM token_usage
+            WHERE timestamp >= ?
+              AND model = ?
+            """,
+            (since, _OCR_USAGE_MODEL),
+        ).fetchone()
+    except sqlite3.Error:
+        logging.exception("Failed to fetch cached OCR usage from DB")
+        return None
+    used_value = row[0] if row else 0
+    try:
+        used_tokens = int(used_value or 0)
+    except (TypeError, ValueError):
+        used_tokens = 0
     remaining = max(limit - used_tokens, 0)
     percent = int((remaining * 100) // limit)
     return max(0, min(percent, 100))
@@ -347,6 +404,9 @@ async def handle_create_upload(request: web.Request) -> web.Response:
                     payload["upload_error"] = existing.get("error")
                 if existing.get("asset_id") is not None:
                     payload["asset_id"] = existing.get("asset_id")
+            ocr_percent = _get_cached_ocr_remaining_percent(conn)
+            if ocr_percent is not None:
+                payload["ocr_remaining_percent"] = ocr_percent
             return web.json_response(payload, status=409)
 
         record_upload_created()
@@ -407,7 +467,11 @@ async def handle_create_upload(request: web.Request) -> web.Response:
                 "timestamp": datetime.now(UTC).isoformat(),
             },
         )
-        return web.json_response({"id": upload_id, "status": "queued"}, status=202)
+        ocr_percent = _get_cached_ocr_remaining_percent(conn)
+        payload: dict[str, Any] = {"id": upload_id, "status": "queued"}
+        if ocr_percent is not None:
+            payload["ocr_remaining_percent"] = ocr_percent
+        return web.json_response(payload, status=202)
 
 
 async def handle_get_upload_status(request: web.Request) -> web.Response:

@@ -13698,14 +13698,27 @@ class Bot:
         initiator_id: int | None = None,
         instructions: str | None = None,
     ) -> bool:
-        del job  # postcard handler does not use job metadata directly
+        job_id = getattr(job, "id", None) if job else None
         config = rubric.config or {}
         is_prod = not test
         rubric_title = rubric.title or "Открыточный вид"
+        logging.info(
+            "POSTCARD_RUBRIC publish_start job_id=%s test=%d channel_id=%s instructions=%s",
+            job_id or "-",
+            int(test),
+            channel_id,
+            bool(instructions),
+        )
         if channel_id is None:
             logging.warning("POSTCARD_RUBRIC missing_channel_id test=%s", int(test))
             return False
         target_channel = int(channel_id)
+        logging.info(
+            "POSTCARD_RUBRIC run_mode job_id=%s mode=%s channel_id=%s",
+            job_id or "-",
+            "prod" if is_prod else "test",
+            target_channel,
+        )
         asset = select_postcard_asset(self.data, now=datetime.now(UTC))
         asset_score = Asset._to_int(asset.postcard_score) if asset else None
         if not asset or asset_score is None or asset_score < POSTCARD_MIN_SCORE:
@@ -13723,6 +13736,15 @@ class Bot:
                 initiator_id=initiator_id,
             )
             return initiator_id is not None
+
+        logging.info(
+            "POSTCARD_RUBRIC asset_ready job_id=%s test=%d asset_id=%s score=%s channel_id=%s",
+            job_id or "-",
+            int(test),
+            asset.id,
+            asset.postcard_score,
+            target_channel,
+        )
 
         def _normalize_stopwords(value: Any) -> list[str]:
             if not value:
@@ -13748,6 +13770,14 @@ class Bot:
         stopwords = _normalize_stopwords(
             config.get("postcard_stopwords") or config.get("stopwords")
         )
+        logging.info(
+            "POSTCARD_RUBRIC caption_params job_id=%s asset_id=%s region_tag=%s stopwords_count=%s stopwords_preview=%s",
+            job_id or "-",
+            asset.id,
+            region_hashtag,
+            len(stopwords),
+            stopwords[:5],
+        )
         caption_text, hashtags = await caption_gen.generate_postcard_caption(
             self.openai,
             asset,
@@ -13770,6 +13800,15 @@ class Bot:
         if not final_caption:
             logging.warning("POSTCARD_RUBRIC empty_caption asset_id=%s", asset.id)
             return False
+
+        caption_log = final_caption.replace("\n", "\\n")
+        logging.info(
+            "POSTCARD_RUBRIC final_caption asset_id=%s job_id=%s caption=%s hashtags=%s",
+            asset.id,
+            job_id or "-",
+            caption_log,
+            prepared_hashtags,
+        )
 
         logging.info(
             "POSTCARD_RUBRIC send asset_id=%s score=%s channel_id=%s test=%d",
@@ -13819,6 +13858,13 @@ class Bot:
             message_id = 0
 
         self.data.mark_assets_used([asset.id])
+        logging.info(
+            "POSTCARD_RUBRIC asset_usage asset_id=%s job_id=%s mode=%s marked_used=%s",
+            asset.id,
+            job_id or "-",
+            "prod" if is_prod else "test",
+            True,
+        )
         metadata = {
             "rubric_code": rubric.code,
             "asset_ids": [asset.id],

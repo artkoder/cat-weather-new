@@ -29,7 +29,7 @@ class GeoContext:
     settlement_distance_m: float | None = None
     settlement_radius_m: int | None = None
     coastline_distance_m: float | None = None
-    water_candidates: tuple["_WaterCandidate", ...] = field(default_factory=tuple)
+    water_candidates: tuple[_WaterCandidate, ...] = field(default_factory=tuple)
     water_decision_reason: str | None = None
     has_water_hint: bool = False
 

@@ -6038,7 +6038,10 @@ class Bot:
                 try:
                     logging.info(
                         "Sending database dump to chat %s (user %s): %s (%d bytes)",
-                        target_chat_id, user_id, dump_path.name, dump_path.stat().st_size
+                        target_chat_id,
+                        user_id,
+                        dump_path.name,
+                        dump_path.stat().st_size,
                     )
 
                     with open(dump_path, "rb") as fh:
@@ -6056,7 +6059,9 @@ class Bot:
                         if dump_path.exists():
                             dump_path.unlink()
                     except OSError:
-                        logging.warning("Failed to cleanup temp DB dump %s", dump_path, exc_info=True)
+                        logging.warning(
+                            "Failed to cleanup temp DB dump %s", dump_path, exc_info=True
+                        )
 
             except Exception as e:
                 logging.exception("Failed to perform database dump")
@@ -6069,8 +6074,7 @@ class Bot:
         if text.startswith("/postcard_photos_db") and self.is_superadmin(user_id):
             args = text.split()
             pretty_json = any(
-                token.strip().lower() in {"pretty", "--pretty", "pretty_json"}
-                for token in args[1:]
+                token.strip().lower() in {"pretty", "--pretty", "pretty_json"} for token in args[1:]
             )
             tmp_path: Path | None = None
             try:

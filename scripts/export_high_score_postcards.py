@@ -33,9 +33,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output",
         default=DEFAULT_OUTPUT,
-        help=(
-            "Destination CSV file (defaults to postcard_photos_dump.csv in the CWD)."
-        ),
+        help=("Destination CSV file (defaults to postcard_photos_dump.csv in the CWD)."),
     )
     parser.add_argument(
         "--pretty-json",

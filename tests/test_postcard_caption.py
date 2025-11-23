@@ -102,6 +102,7 @@ def stub_geo_context(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         lon: float | None,
         asset_city: str | None,
         asset_tags: list[str] | None,
+        asset_id: str | None = None,
     ) -> GeoContext:
         state.calls.append(
             {
@@ -109,6 +110,7 @@ def stub_geo_context(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
                 "lon": lon,
                 "asset_city": asset_city,
                 "asset_tags": list(asset_tags or []),
+                "asset_id": asset_id,
             }
         )
         return state.geo_context

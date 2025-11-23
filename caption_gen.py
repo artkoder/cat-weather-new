@@ -776,6 +776,62 @@ def _limit_postcard_hashtags(tags: list[str], required_keys: set[str]) -> list[s
     return limited
 
 
+def _truncate_for_log(value: str | None, limit: int = 400) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3]}..."
+
+
+def _water_candidates_for_log(candidates: Sequence[Any], limit: int = 5) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for candidate in list(candidates)[:limit]:
+        distance = getattr(candidate, "distance_m", None)
+        if isinstance(distance, (int, float)):
+            distance_value: float | None = round(float(distance), 1)
+        else:
+            distance_value = None
+        items.append(
+            {
+                "name": getattr(candidate, "name", None),
+                "kind": getattr(candidate, "kind", None),
+                "distance_m": distance_value,
+            }
+        )
+    return items
+
+
+def _log_postcard_dict(event: str, asset_id: str | None, payload: dict[str, Any]) -> None:
+    try:
+        serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ": "))
+    except Exception:
+        serialized = str(payload)
+    logging.info("%s asset_id=%s payload=%s", event, asset_id or "-", serialized)
+
+
+def _log_caption_result(
+    *,
+    asset_id: str | None,
+    caption: str,
+    hashtags: Sequence[str],
+    source: str,
+    season_line: str | None,
+    has_map_links: bool,
+) -> None:
+    payload = {
+        "source": source,
+        "caption_preview": _truncate_for_log(caption, 600),
+        "length": len(caption),
+        "hashtags": list(hashtags),
+        "season_line": season_line,
+        "has_map_links": has_map_links,
+    }
+    _log_postcard_dict("POSTCARD_RUBRIC caption_result", asset_id, payload)
+
+
+
 def _postcard_fallback_sentence(
     location: _LocationInfo,
     semantic_tags: Sequence[str],
@@ -811,6 +867,7 @@ async def generate_postcard_caption(
     region_hashtag: str,
     stopwords: Sequence[str],
 ) -> tuple[str, list[str]]:
+    asset_id = getattr(asset, "id", None)
     location = _resolve_location(asset)
     asset_tags = _extract_asset_tags(asset)
     semantic_tags = _collect_semantic_tags(asset, base_tags=asset_tags)
@@ -834,20 +891,44 @@ async def generate_postcard_caption(
     )
     lat = getattr(asset, "latitude", None)
     lon = getattr(asset, "longitude", None)
+    asset_context_payload = {
+        "city": location.city,
+        "region": location.region,
+        "country": location.country,
+        "vision_tags": asset_tags,
+        "semantic_tags": semantic_tags,
+        "bird_tags": bird_tags,
+        "has_birds": has_birds,
+        "has_water_tag": has_water_tag,
+        "postcard_score": score_value,
+        "latitude": lat,
+        "longitude": lon,
+        "captured_at": getattr(asset, "captured_at", None),
+        "created_at": getattr(asset, "created_at", None),
+    }
+    _log_postcard_dict("POSTCARD_RUBRIC asset_context", asset_id, asset_context_payload)
     try:
         geo_context = await build_geo_context_for_asset(
             lat=lat,
             lon=lon,
             asset_city=location.city,
             asset_tags=asset_tags,
+            asset_id=asset_id,
         )
     except Exception:  # pragma: no cover - unexpected runtime error
-        logging.exception("POSTCARD_GEO_CONTEXT error lat=%s lon=%s", lat, lon)
+        logging.exception(
+            "POSTCARD_RUBRIC geo_context_error asset_id=%s lat=%s lon=%s",
+            asset_id or "-",
+            lat,
+            lon,
+        )
         geo_context = GeoContext(
             main_place=location.city,
             water_name=None,
             water_kind=None,
             national_park=None,
+            location_mode="inside_city" if location.city else "no_city",
+            has_water_hint=has_water_tag,
         )
     national_park_name = geo_context.national_park
     national_park_phrase = _format_national_park_phrase(national_park_name)
@@ -859,6 +940,28 @@ async def generate_postcard_caption(
     photo_year_label = _resolve_photo_year_label(photo_datetime)
     photo_season_name = _resolve_photo_season_ru(photo_datetime)
     has_water_in_frame = has_water_tag
+    geo_log_payload = {
+        "asset_city": location.city,
+        "location_display": location.display,
+        "resolved_place": location_value,
+        "location_mode": geo_context.location_mode,
+        "region_label": region_label,
+        "national_park": national_park_name,
+        "national_park_raw": geo_context.national_park_raw,
+        "park_phrase": national_park_phrase,
+        "latitude": lat,
+        "longitude": lon,
+        "has_water_tag": has_water_tag,
+        "has_water_hint": geo_context.has_water_hint,
+        "water_name": water_name,
+        "water_kind": water_kind,
+        "water_decision_reason": geo_context.water_decision_reason,
+        "coastline_distance_m": geo_context.coastline_distance_m,
+        "settlement_distance_m": geo_context.settlement_distance_m,
+        "settlement_radius_m": geo_context.settlement_radius_m,
+        "water_candidates": _water_candidates_for_log(geo_context.water_candidates),
+    }
+    _log_postcard_dict("POSTCARD_RUBRIC geo_decision", asset_id, geo_log_payload)
     context_payload: dict[str, Any] = {
         "location": location_value,
         "region": POSTCARD_REGION_LABEL,
@@ -892,6 +995,7 @@ async def generate_postcard_caption(
             context_payload["is_sunset"] = True
     if bird_tags:
         context_payload["bird_tags"] = bird_tags
+    _log_postcard_dict("POSTCARD_RUBRIC context_payload", asset_id, dict(context_payload))
     payload_text = json.dumps(context_payload, ensure_ascii=False, separators=(",", ": "))
     stopwords_text = ", ".join(banned_words) if banned_words else ""
     region_prompt = region_tag or _normalize_hashtag_candidate(region_hashtag)
@@ -899,6 +1003,22 @@ async def generate_postcard_caption(
         region_prompt = region_hashtag.strip()
     if not region_prompt:
         region_prompt = "#КалининградскаяОбласть"
+    prompt_meta = {
+        "region_hashtag": region_prompt,
+        "include_rubric_tag": include_rubric_tag,
+        "stopwords": banned_words,
+        "stopwords_count": len(banned_words),
+        "season_line": season_line,
+        "photo_year_label": photo_year_label,
+        "photo_season": photo_season_name,
+        "is_out_of_season": is_out_of_season,
+        "has_water_tag": has_water_tag,
+        "has_water_hint": geo_context.has_water_hint,
+        "national_park": national_park_name,
+        "water_name": water_name,
+        "water_kind": water_kind,
+    }
+    _log_postcard_dict("POSTCARD_RUBRIC prompt_meta", asset_id, prompt_meta)
     system_prompt_lines = [
         "Ты — голос проекта «Котопогода» и готовишь подпись для рубрики «Открыточный вид».",
         "Форма текста строгая: 1–3 коротких предложения (≈200–300 символов) в спокойном человеческом тоне.",
@@ -1010,12 +1130,25 @@ async def generate_postcard_caption(
         caption_with_map = _append_map_links(combined, map_links_line)
         caption_body = _append_season_line(caption_with_map, season_line)
         caption_with_block = _attach_link_block(caption_body, link_block)
-        return caption_with_block.strip(), default_tags
+        final_caption = caption_with_block.strip()
+        _log_caption_result(
+            asset_id=asset_id,
+            caption=final_caption,
+            hashtags=default_tags,
+            source="fallback_no_openai",
+            season_line=season_line,
+            has_map_links=bool(map_links_line),
+        )
+        return final_caption, default_tags
     attempts = 3
     for attempt in range(1, attempts + 1):
         try:
             logging.info(
-                "POSTCARD_CAPTION request model=%s attempt=%s/%s", "gpt-4o", attempt, attempts
+                "POSTCARD_CAPTION request asset_id=%s model=%s attempt=%s/%s",
+                asset_id or "-",
+                "gpt-4o",
+                attempt,
+                attempts,
             )
             response = await openai.generate_json(
                 model="gpt-4o",
@@ -1026,11 +1159,28 @@ async def generate_postcard_caption(
                 top_p=0.9,
             )
         except Exception:
-            logging.exception("POSTCARD_CAPTION openai_error attempt=%s", attempt)
+            logging.exception(
+                "POSTCARD_CAPTION openai_error asset_id=%s attempt=%s",
+                asset_id or "-",
+                attempt,
+            )
             continue
         if not response or not isinstance(response.content, dict):
-            logging.warning("POSTCARD_CAPTION invalid_response attempt=%s", attempt)
+            logging.warning(
+                "POSTCARD_CAPTION invalid_response asset_id=%s attempt=%s",
+                asset_id or "-",
+                attempt,
+            )
             continue
+        _log_postcard_dict(
+            "POSTCARD_CAPTION response",
+            asset_id,
+            {
+                "attempt": attempt,
+                "content": response.content,
+                "usage": getattr(response, "usage", None),
+            },
+        )
         hashtag_raw = response.content.get("hashtags")
         if not isinstance(hashtag_raw, list):
             hashtag_raw = []
@@ -1038,26 +1188,46 @@ async def generate_postcard_caption(
         if not isinstance(caption_raw, str):
             caption_raw = response.content.get("sentence")
         if not isinstance(caption_raw, str):
-            logging.warning("POSTCARD_CAPTION missing_caption attempt=%s", attempt)
+            logging.warning(
+                "POSTCARD_CAPTION missing_caption asset_id=%s attempt=%s",
+                asset_id or "-",
+                attempt,
+            )
             continue
         caption_text = _sanitize_postcard_caption_text(caption_raw)
         if not caption_text:
-            logging.info("POSTCARD_CAPTION empty_caption attempt=%s", attempt)
+            logging.info(
+                "POSTCARD_CAPTION empty_caption asset_id=%s attempt=%s",
+                asset_id or "-",
+                attempt,
+            )
             continue
         caption_text = re.sub(r"#\S+", "", caption_text).strip()
         caption_text = _remove_latin_words(caption_text)
         caption_text = re.sub(r"\s{2,}", " ", caption_text).strip()
         if not caption_text:
-            logging.info("POSTCARD_CAPTION empty_after_latin attempt=%s", attempt)
+            logging.info(
+                "POSTCARD_CAPTION empty_after_latin asset_id=%s attempt=%s",
+                asset_id or "-",
+                attempt,
+            )
             continue
         if caption_text[-1] not in ".!?…":
             caption_text = f"{caption_text}."
         opening_sentence = re.split(r"(?<=[.!?…])\s+", caption_text)[0]
         if not _is_valid_postcard_opening(opening_sentence):
-            logging.info("POSTCARD_CAPTION invalid_opening attempt=%s", attempt)
+            logging.info(
+                "POSTCARD_CAPTION invalid_opening asset_id=%s attempt=%s",
+                asset_id or "-",
+                attempt,
+            )
             continue
         if banned_words and _contains_banned_word(caption_text, banned_words):
-            logging.info("POSTCARD_CAPTION banned_word attempt=%s", attempt)
+            logging.info(
+                "POSTCARD_CAPTION banned_word asset_id=%s attempt=%s",
+                asset_id or "-",
+                attempt,
+            )
             continue
         normalized_caption = caption_text.casefold()
         location_candidates = [
@@ -1075,7 +1245,11 @@ async def generate_postcard_caption(
             candidate and _location_value_in_text(normalized_caption, candidate)
             for candidate in location_candidates
         ):
-            logging.info("POSTCARD_CAPTION missing_location attempt=%s", attempt)
+            logging.info(
+                "POSTCARD_CAPTION missing_location asset_id=%s attempt=%s",
+                asset_id or "-",
+                attempt,
+            )
             continue
         hashtags = _finalize_postcard_hashtags(
             hashtag_raw,
@@ -1091,8 +1265,17 @@ async def generate_postcard_caption(
         caption_with_map = _append_map_links(escaped_caption, map_links_line)
         caption_with_season = _append_season_line(caption_with_map, season_line)
         caption_with_block = _attach_link_block(caption_with_season, link_block)
-        return caption_with_block.strip(), hashtags
-    logging.warning("POSTCARD_CAPTION fallback_used")
+        final_caption = caption_with_block.strip()
+        _log_caption_result(
+            asset_id=asset_id,
+            caption=final_caption,
+            hashtags=hashtags,
+            source="openai",
+            season_line=season_line,
+            has_map_links=bool(map_links_line),
+        )
+        return final_caption, hashtags
+    logging.warning("POSTCARD_CAPTION fallback_used asset_id=%s", asset_id or "-")
     fallback_sentence = _postcard_fallback_sentence(
         location,
         semantic_tags,
@@ -1104,7 +1287,16 @@ async def generate_postcard_caption(
     caption_with_map = _append_map_links(combined, map_links_line)
     caption_body = _append_season_line(caption_with_map, season_line)
     caption_with_block = _attach_link_block(caption_body, link_block)
-    return caption_with_block.strip(), default_tags
+    final_caption = caption_with_block.strip()
+    _log_caption_result(
+        asset_id=asset_id,
+        caption=final_caption,
+        hashtags=default_tags,
+        source="fallback_retries",
+        season_line=season_line,
+        has_map_links=bool(map_links_line),
+    )
+    return final_caption, default_tags
 
 
 async def generate_sea_caption(

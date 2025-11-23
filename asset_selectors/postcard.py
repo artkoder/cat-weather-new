@@ -148,6 +148,15 @@ def select_postcard_asset(data: DataAccess, *, now: datetime) -> Asset | None:
     repeat_candidates.sort(key=_sort_key)
     best = repeat_candidates[0]
 
+    selection_notes: list[str] = []
+    if not fresh_candidates:
+        selection_notes.append("stale_pool")
+    if not in_season:
+        selection_notes.append("season_fallback")
+    if not non_recent:
+        selection_notes.append("repeat_guard_fallback")
+    selection_notes_str = ",".join(selection_notes) if selection_notes else "direct"
+
     freshness_hours: float | None = None
     try:
         delta = now_utc - best.effective_dt
@@ -156,17 +165,26 @@ def select_postcard_asset(data: DataAccess, *, now: datetime) -> Asset | None:
         freshness_hours = None
 
     recently_used = bool(best.last_used_dt and best.last_used_dt >= repeat_threshold)
+    season_match = _matches_season(best.photo_doy, doy_now)
+    is_fresh_choice = bool(best.effective_dt and best.effective_dt >= fresh_threshold)
+    captured_display = best.captured_raw or best.created_raw
+
     logger.info(
-        "POSTCARD_RUBRIC selected asset_id=%s score=%s captured_at=%s photo_doy=%s city=%s region=%s "
-        "freshness_hours=%s reused_recently=%s",
+        "POSTCARD_RUBRIC selection asset_id=%s score=%s captured_at=%s created_at=%s photo_doy=%s doy_now=%s city=%s region=%s "
+        "freshness_hours=%s reused_recently=%s season_match=%s fresh_window=%s notes=%s",
         best.asset_id,
         best.score,
-        best.captured_raw or best.created_raw,
+        captured_display,
+        best.created_raw,
         best.photo_doy,
+        doy_now,
         best.city or "",
         best.region or "",
         f"{freshness_hours:.2f}" if freshness_hours is not None else "unknown",
         recently_used,
+        season_match,
+        is_fresh_choice,
+        selection_notes_str,
     )
 
     asset = data.get_asset(best.asset_id)

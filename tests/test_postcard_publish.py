@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sys
 from datetime import UTC, datetime
@@ -15,6 +16,7 @@ import caption_gen  # noqa: E402
 import main as main_module  # noqa: E402
 import postcard_watermark  # noqa: E402
 from caption_gen import POSTCARD_OPENING_CHOICES  # noqa: E402
+from geo_context import GeoContext  # noqa: E402
 from main import LOVE_COLLECTION_LINK, POSTCARD_MIN_SCORE  # noqa: E402
 from openai_client import OpenAIResponse  # noqa: E402
 from postcard_watermark import WATERMARK_PATH  # noqa: E402
@@ -59,6 +61,9 @@ def _create_postcard_asset(
     city: str = "Светлогорск",
     region: str = "Калининградская область",
     postcard_score: int = 10,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    vision_tags: list[str] | None = None,
 ) -> str:
     asset_id = bot.data.create_asset(
         upload_id="upload-1",
@@ -76,6 +81,21 @@ def _create_postcard_asset(
     ).fetchone()
     payload = json.loads(payload_row["payload_json"] or "{}")
     payload.update({"city": city, "region": region, "tg_chat_id": 1, "message_id": 1})
+    if latitude is not None:
+        payload["latitude"] = latitude
+    if longitude is not None:
+        payload["longitude"] = longitude
+    if vision_tags:
+        vision_payload = payload.get("vision_results")
+        if not isinstance(vision_payload, dict):
+            vision_payload = {}
+        existing_tags = vision_payload.get("tags")
+        merged_tags: list[str] = list(existing_tags) if isinstance(existing_tags, list) else []
+        for tag in vision_tags:
+            if tag not in merged_tags:
+                merged_tags.append(tag)
+        vision_payload["tags"] = merged_tags
+        payload["vision_results"] = vision_payload
     now = datetime.now(UTC)
     bot.db.execute(
         "UPDATE assets SET payload_json=?, postcard_score=?, captured_at=?, photo_doy=? WHERE id=?",
@@ -500,5 +520,92 @@ async def test_postcard_publish_notifies_when_no_high_score_assets(
     text = alert["text"]
     assert "пропущена" in text
     assert f"{POSTCARD_MIN_SCORE}–10" in text
+
+    bot.db.close()
+
+
+@pytest.mark.asyncio
+async def test_postcard_logging_exposes_geo_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_noop, raising=False)
+
+    bot = main_module.Bot("dummy", str(tmp_path / "postcard-logs.db"))
+    bot.supabase = DummySupabase()
+    bot.openai = DummyPostcardOpenAI("Порадую вас красивым видом Светлогорска. Балтика рядом.")
+
+    rubric = bot.data.get_rubric_by_code("postcard")
+    assert rubric is not None
+    config = dict(rubric.config or {})
+    config.update(
+        {
+            "enabled": True,
+            "channel_id": -940001,
+            "test_channel_id": -940002,
+            "postcard_region_hashtag": "#КалининградскаяОбласть",
+            "postcard_stopwords": ["клише"],
+        }
+    )
+    bot.data.save_rubric_config("postcard", config)
+
+    geo_stub = GeoContext(
+        main_place="Светлогорск",
+        water_name="Балтийское море",
+        water_kind="sea",
+        national_park="Куршская коса",
+        location_mode="inside_city",
+        coastline_distance_m=120.0,
+        water_candidates=tuple(),
+        water_decision_reason="sea_tag_coastline",
+        has_water_hint=True,
+    )
+
+    async def fake_geo_builder(
+        *,
+        lat: float | None,
+        lon: float | None,
+        asset_city: str | None,
+        asset_tags: list[str] | None,
+        asset_id: str | None = None,
+    ) -> GeoContext:
+        return geo_stub
+
+    monkeypatch.setattr(caption_gen, "build_geo_context_for_asset", fake_geo_builder)
+
+    _create_postcard_asset(
+        bot,
+        city="Светлогорск",
+        postcard_score=9,
+        latitude=54.7104,
+        longitude=20.4522,
+        vision_tags=["water", "sea", "закат"],
+    )
+
+    send_calls: list[dict[str, Any]] = []
+
+    async def capture_api_request(
+        self: main_module.Bot, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:  # type: ignore[override]
+        if method == "sendPhoto":
+            send_calls.append(data or {})
+            return {"ok": True, "result": {"message_id": 2024}}
+        if method == "sendMessage":
+            return {"ok": True, "result": {}}
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        result = await bot.publish_rubric("postcard", test=True)
+
+    assert result is True
+    assert send_calls
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("POSTCARD_RUBRIC geo_decision" in msg for msg in messages)
+    assert any("POSTCARD_RUBRIC context_payload" in msg for msg in messages)
+    assert any("POSTCARD_CAPTION response" in msg for msg in messages)
+    assert any("POSTCARD_RUBRIC final_caption" in msg for msg in messages)
 
     bot.db.close()

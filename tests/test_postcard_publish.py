@@ -371,6 +371,9 @@ async def test_postcard_publish_applies_watermark_to_photo(
         # Mark the first asset as used so it is not selected again.
         # The first run consumes (deletes) the local file, so selecting it again would fail.
         bot.data.mark_assets_used([first_asset_id])
+        # In test mode, reuse logic is skipped, so we also lower the score to ensure the new asset is preferred.
+        bot.db.execute("UPDATE assets SET postcard_score=5 WHERE id=?", (first_asset_id,))
+        bot.db.commit()
 
         assert send_calls, "Expected baseline sendPhoto call"
 

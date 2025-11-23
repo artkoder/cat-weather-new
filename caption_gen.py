@@ -831,7 +831,6 @@ def _log_caption_result(
     _log_postcard_dict("POSTCARD_RUBRIC caption_result", asset_id, payload)
 
 
-
 def _postcard_fallback_sentence(
     location: _LocationInfo,
     semantic_tags: Sequence[str],

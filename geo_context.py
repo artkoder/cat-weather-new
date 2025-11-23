@@ -29,7 +29,7 @@ class GeoContext:
     settlement_distance_m: float | None = None
     settlement_radius_m: int | None = None
     coastline_distance_m: float | None = None
-    water_candidates: tuple["_WaterCandidate", ...] = field(default_factory=tuple)
+    water_candidates: tuple[_WaterCandidate, ...] = field(default_factory=tuple)
     water_decision_reason: str | None = None
     has_water_hint: bool = False
 
@@ -301,7 +301,9 @@ async def build_geo_context_for_asset(
         park = None
     if park:
         national_park_name = _normalize_text(getattr(park, "short_name", None))
-        national_park_raw = _normalize_text(getattr(park, "osm_name_ru", None)) or national_park_name
+        national_park_raw = (
+            _normalize_text(getattr(park, "osm_name_ru", None)) or national_park_name
+        )
     settlement_name: str | None = None
     settlement_distance: float | None = None
     settlement_radius: int | None = None

@@ -75,7 +75,9 @@ def test_data_access_restores_postcard_last_used(tmp_path: Path) -> None:
 
     DataAccess(conn)
 
-    restore_row = conn.execute("SELECT payload_json FROM assets WHERE id=?", ("restore-me",)).fetchone()
+    restore_row = conn.execute(
+        "SELECT payload_json FROM assets WHERE id=?", ("restore-me",)
+    ).fetchone()
     assert restore_row is not None
     restored_payload = json.loads(restore_row["payload_json"])
     assert "last_used_at" not in restored_payload
@@ -94,7 +96,9 @@ def test_data_access_restores_postcard_last_used(tmp_path: Path) -> None:
     assert guard_entry is not None
 
     DataAccess(conn)
-    restore_repeat = conn.execute("SELECT payload_json FROM assets WHERE id=?", ("restore-me",)).fetchone()
+    restore_repeat = conn.execute(
+        "SELECT payload_json FROM assets WHERE id=?", ("restore-me",)
+    ).fetchone()
     assert restore_repeat is not None
     repeat_payload = json.loads(restore_repeat["payload_json"])
     assert repeat_payload["updated_at"] == first_updated_at

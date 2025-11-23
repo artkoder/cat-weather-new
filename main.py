@@ -6713,6 +6713,91 @@ class Bot:
             )
             return
 
+        if text.startswith("/restore_postcard_pool") and self.is_superadmin(user_id):
+            logging.info("ADMIN_RESTORE: command invoked by %s", user_id)
+            error_text = "❌ Не удалось восстановить пул. Проверьте логи."
+            try:
+                row = self.db.execute(
+                    """
+                    SELECT COUNT(*) AS candidate_count
+                      FROM assets
+                     WHERE postcard_score >= ?
+                       AND json_extract(payload_json, '$.last_used_at') IS NOT NULL
+                    """,
+                    (POSTCARD_MIN_SCORE,),
+                ).fetchone()
+                raw_count = row["candidate_count"] if row else 0
+                count_before = int(raw_count) if raw_count is not None else 0
+            except (sqlite3.Error, ValueError, TypeError):
+                logging.exception("ADMIN_RESTORE: failed to count postcard candidates")
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": user_id, "text": error_text},
+                )
+                return
+            restored_count = 0
+            if count_before:
+                try:
+                    with self.db:
+                        cursor = self.db.execute(
+                            """
+                            UPDATE assets
+                               SET payload_json = json_remove(payload_json, '$.last_used_at')
+                             WHERE postcard_score >= ?
+                               AND json_extract(payload_json, '$.last_used_at') IS NOT NULL
+                            """,
+                            (POSTCARD_MIN_SCORE,),
+                        )
+                    affected = cursor.rowcount
+                    if isinstance(affected, int) and affected > 0:
+                        restored_count = affected
+                except sqlite3.Error:
+                    logging.exception("ADMIN_RESTORE: failed to restore postcard pool")
+                    await self.api_request(
+                        "sendMessage",
+                        {"chat_id": user_id, "text": error_text},
+                    )
+                    return
+            logging.info("ADMIN_RESTORE: Restored %s postcard assets", restored_count)
+            logging.info("ADMIN_RESTORE: Candidates before restore=%s", count_before)
+            if restored_count == 0:
+                sample_row = self.db.execute(
+                    """
+                    SELECT id, payload_json
+                      FROM assets
+                     WHERE postcard_score = ?
+                     LIMIT 1
+                    """,
+                    (POSTCARD_MIN_SCORE,),
+                ).fetchone()
+                if not sample_row:
+                    sample_row = self.db.execute(
+                        """
+                        SELECT id, payload_json
+                          FROM assets
+                         WHERE postcard_score >= ?
+                         LIMIT 1
+                        """,
+                        (POSTCARD_MIN_SCORE,),
+                    ).fetchone()
+                if sample_row:
+                    logging.info(
+                        "ADMIN_RESTORE: sample_payload asset_id=%s payload=%s",
+                        sample_row["id"],
+                        sample_row["payload_json"],
+                    )
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": user_id,
+                    "text": (
+                        "✅ Восстановлен пул фото для рубрики Открытка. "
+                        f"Возвращено в ротацию: {restored_count} шт."
+                    ),
+                },
+            )
+            return
+
         if text.startswith("/rubrics") and self.is_superadmin(user_id):
             self.rubric_dashboards.pop(user_id, None)
             self.rubric_overview_messages.pop(user_id, None)

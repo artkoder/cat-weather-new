@@ -56,7 +56,8 @@ def select_postcard_asset(
 ) -> Asset | None:
     """Choose the best postcard asset based on score, freshness and season.
 
-    When ``test`` is True, selection is randomized to better sample the pool.
+    When ``test`` is True, selection ignores repeat guard checks and randomizes across the
+    available pool to better sample inventory without burning real candidates.
     """
 
     now_utc = _ensure_aware(now)
@@ -163,8 +164,9 @@ def select_postcard_asset(
         selection_notes.append("repeat_guard_fallback")
 
     if test:
-        best = random.choice(repeat_candidates)
-        selection_notes.append("test_random")
+        random_pool = season_candidates if season_candidates else working_set
+        best = random.choice(random_pool)
+        selection_notes.append("test_random_full_pool")
     else:
         repeat_candidates.sort(key=_sort_key)
         best = repeat_candidates[0]

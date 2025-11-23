@@ -23,6 +23,8 @@ from zoneinfo import ZoneInfo
 PAIRING_TOKEN_TTL_SECONDS = 600
 NONCE_TTL_SECONDS = 600
 UPLOAD_IDEMPOTENCY_TTL_SECONDS = 24 * 3600
+POSTCARD_RUNTIME_RESTORE_GUARD = "postcard_runtime_restore_scores_7_8"
+POSTCARD_RESTORE_SCORES: tuple[int, ...] = (7, 8)
 
 
 @dataclass
@@ -529,6 +531,7 @@ class DataAccess:
         self._ensure_assets_payload_schema()
         self.conn.row_factory = sqlite3.Row
         self._has_postcard_score_column = self._has_column("assets", "postcard_score")
+        self._maybe_restore_postcard_last_used()
 
     def _table_info(self, table: str) -> list[sqlite3.Row]:
         try:
@@ -570,6 +573,64 @@ class DataAccess:
         if hasattr(module, "run"):
             module.run(self.conn)
             self.conn.commit()
+
+    def _maybe_restore_postcard_last_used(self) -> None:
+        if not self._has_postcard_score_column:
+            return
+        if not self._table_info("schema_migrations"):
+            return
+        guard_id = POSTCARD_RUNTIME_RESTORE_GUARD
+        try:
+            guard_row = self.conn.execute(
+                "SELECT 1 FROM schema_migrations WHERE id=?",
+                (guard_id,),
+            ).fetchone()
+        except sqlite3.Error:
+            return
+        if guard_row:
+            return
+        try:
+            rows = self.conn.execute(
+                """
+                SELECT id, payload_json
+                  FROM assets
+                 WHERE postcard_score IN (?, ?)
+                """,
+                POSTCARD_RESTORE_SCORES,
+            ).fetchall()
+        except sqlite3.Error:
+            return
+        now_iso = datetime.utcnow().isoformat()
+        updated = 0
+        try:
+            with self.conn:
+                for row in rows:
+                    payload = self._decode_payload_blob(row["payload_json"])
+                    if "last_used_at" not in payload:
+                        continue
+                    payload.pop("last_used_at", None)
+                    payload["updated_at"] = now_iso
+                    payload_json = self._encode_payload_blob(payload)
+                    self.conn.execute(
+                        "UPDATE assets SET payload_json=? WHERE id=?",
+                        (payload_json, row["id"]),
+                    )
+                    updated += 1
+                self.conn.execute(
+                    "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+                    (guard_id, now_iso),
+                )
+        except sqlite3.IntegrityError:
+            return
+        except sqlite3.Error:
+            logging.exception("POSTCARD_RUNTIME_RESTORE failed to restore assets")
+            return
+        if updated:
+            logging.info(
+                "POSTCARD_RUNTIME_RESTORE cleared_last_used=%s scores=%s",
+                updated,
+                POSTCARD_RESTORE_SCORES,
+            )
 
     def _normalize_upload_id(self, upload_id: Any | None) -> str | None:
         if upload_id is None:

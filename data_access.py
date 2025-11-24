@@ -668,6 +668,7 @@ class DataAccess:
         photo_doy: int | None = None,
         photo_wave: float | None = None,
         sky_visible: str | bool | None = None,
+        captured_at: str | None = None,
     ) -> str:
         """Create a new asset entry tied to an upload and return its UUID."""
 
@@ -711,6 +712,7 @@ class DataAccess:
             exif=exif_dict,
             shot_at_utc=shot_at_utc,
             shot_doy=shot_doy,
+            existing_captured_at=captured_at,
         )
 
         upload_id_value = self._normalize_upload_id(upload_id)
@@ -1008,17 +1010,28 @@ class DataAccess:
         existing_daypart: str | None = None,
     ) -> tuple[str | None, int | None, str | None]:
         captured_at = cls._extract_capture_datetime(exif) if exif else None
+        capture_override = existing_captured_at
+        capture_from_override = capture_override is not None
+        if capture_from_override:
+            captured_at = capture_override
         parsed_dt = cls._parse_datetime_string(captured_at)
-        if parsed_dt is None and shot_at_utc is not None:
+        shot_dt: datetime | None = None
+        if shot_at_utc is not None:
             try:
-                parsed_dt = datetime.fromtimestamp(int(shot_at_utc), tz=timezone.utc)
+                shot_dt = datetime.fromtimestamp(int(shot_at_utc), tz=timezone.utc)
             except (OSError, OverflowError, ValueError, TypeError):
-                parsed_dt = None
-            else:
-                if captured_at is None:
-                    captured_at = parsed_dt.astimezone(cls._LOCAL_TIMEZONE).isoformat()
-        if captured_at is None:
-            captured_at = existing_captured_at
+                shot_dt = None
+        if shot_dt is not None and not capture_from_override:
+            parsed_dt = shot_dt
+            captured_at = shot_dt.isoformat()
+        elif parsed_dt is None and shot_dt is not None:
+            parsed_dt = shot_dt
+            if captured_at is None:
+                captured_at = shot_dt.isoformat()
+        elif parsed_dt is not None:
+            captured_at = parsed_dt.isoformat()
+        elif captured_at is None and capture_override:
+            captured_at = capture_override
         if parsed_dt is None and captured_at:
             parsed_dt = cls._parse_datetime_string(captured_at)
 
@@ -1241,6 +1254,7 @@ class DataAccess:
         wave_score_0_10: float | None = None,
         wave_conf: float | None = None,
         postcard_score: int | None = None,
+        captured_at: str | None = None,
     ) -> str:
         """Insert or update asset metadata."""
 
@@ -1366,11 +1380,15 @@ class DataAccess:
         elif existing and isinstance(existing.exif, dict):
             exif_dict = existing.exif
 
+        capture_override = (
+            captured_at if captured_at is not None else (existing.captured_at if existing else None)
+        )
+
         captured_at_value, doy_value, daypart_value = self._compute_capture_fields(
             exif=exif_dict,
             shot_at_utc=shot_at_value,
             shot_doy=shot_doy_value,
-            existing_captured_at=existing.captured_at if existing else None,
+            existing_captured_at=capture_override,
             existing_doy=existing.doy if existing else None,
             existing_daypart=existing.daypart if existing else None,
         )
@@ -1556,6 +1574,7 @@ class DataAccess:
         wave_conf: float | None = None,
         postcard_score: int | None = None,
         sky_code: str | None = None,
+        captured_at: str | None = None,
     ) -> None:
         """Update selected asset fields while preserving unset values."""
 
@@ -1703,11 +1722,12 @@ class DataAccess:
                         exif_dict = parsed_exif
         if exif_dict is None and isinstance(row.exif, dict):
             exif_dict = row.exif
+        capture_override = captured_at if captured_at is not None else row.captured_at
         captured_at_value, doy_value, daypart_value = self._compute_capture_fields(
             exif=exif_dict,
             shot_at_utc=computed_shot_at,
             shot_doy=computed_shot_doy,
-            existing_captured_at=row.captured_at,
+            existing_captured_at=capture_override,
             existing_doy=row.doy,
             existing_daypart=row.daypart,
         )

@@ -309,6 +309,7 @@ class CreateAssetPayload(TypedDict, total=False):
     source: str
     shot_at_utc: int | None
     shot_doy: int | None
+    captured_at: str | None
 
 
 class SaveAssetPayload(TypedDict, total=False):
@@ -343,6 +344,7 @@ class SaveAssetPayload(TypedDict, total=False):
     wave_score_0_10: float | None
     wave_conf: float | None
     postcard_score: int | None
+    captured_at: str | None
 
 
 @dataclass(slots=True)
@@ -904,7 +906,7 @@ def _trim_caption_for_coords_model(text: str) -> str:
     stripped = text.strip()
     if len(stripped) <= _CAPTION_COORDS_PROMPT_LIMIT:
         return stripped
-    return stripped[: _CAPTION_COORDS_PROMPT_LIMIT]
+    return stripped[:_CAPTION_COORDS_PROMPT_LIMIT]
 
 
 def _normalize_caption_coordinate(value: Any, *, axis: str) -> float | None:
@@ -1484,9 +1486,9 @@ async def _ingest_photo_internal(
         wave_score_value: float | None = None
         wave_conf_value: float | None = None
 
-        if inputs.source in {"upload", "mobile"} and callbacks.create_asset:
-            if not inputs.upload_id or not inputs.file_ref:
-                raise RuntimeError("upload ingestion requires upload_id and file_ref")
+        should_create_asset = bool(callbacks.create_asset and inputs.upload_id and inputs.file_ref)
+
+        if should_create_asset:
             source_value = inputs.source if inputs.source in {"mobile", "telegram"} else "mobile"
 
             # Parse wave scores from vision payload if available
@@ -1517,9 +1519,10 @@ async def _ingest_photo_internal(
                     "source": source_value,
                     "shot_at_utc": shot_at_utc_value,
                     "shot_doy": shot_doy_value,
+                    "captured_at": gps_payload.get("captured_at"),
                 }
             )
-        elif inputs.source != "upload" and callbacks.save_asset:
+        elif callbacks.save_asset:
             combined_file_meta: dict[str, Any] = dict(inputs.file_metadata or {})
             if inputs.file_ref:
                 combined_file_meta.setdefault("file_ref", inputs.file_ref)
@@ -1608,6 +1611,7 @@ async def _ingest_photo_internal(
                 "sky_visible": sky_visible_value,
                 "wave_score_0_10": wave_score_value,
                 "wave_conf": wave_conf_value,
+                "captured_at": gps_payload.get("captured_at"),
             }
             if inputs.upload_id:
                 save_payload["upload_id"] = inputs.upload_id

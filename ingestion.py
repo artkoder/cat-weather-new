@@ -167,6 +167,54 @@ VISION_SCHEMA: dict[str, Any] = {
     },
 }
 
+_CAPTION_COORDS_MODEL_RAW = os.getenv("OPENAI_CAPTION_COORDS_MODEL")
+if _CAPTION_COORDS_MODEL_RAW is None:
+    _CAPTION_COORDS_MODEL = "gpt-4o-mini"
+else:
+    normalized_model = _CAPTION_COORDS_MODEL_RAW.strip()
+    if normalized_model.lower() in {"", "none", "null", "off"}:
+        _CAPTION_COORDS_MODEL = None
+    else:
+        _CAPTION_COORDS_MODEL = normalized_model
+
+_CAPTION_COORDS_PROMPT_LIMIT = 4000
+
+_CAPTION_COORDS_SYSTEM_PROMPT = (
+    "Ты ассистент проекта Котопогода. По тексту подписи нужно извлечь координаты места съёмки "
+    "и дату/время. Преобразуй любые форматы координат (включая градусы-минуты-секунды) в "
+    "десятичные градусы и строго следуй схеме. Не выдумывай данные, если они явно не указаны."
+)
+
+_CAPTION_COORDS_USER_PROMPT = (
+    "Найди координаты (широту и долготу) и дату/время съёмки в тексте между тройными кавычками. "
+    "Если значение отсутствует, верни null. Используй ISO 8601 со смещением, когда оно указано.\n"
+    '"""\n{caption}\n"""'
+)
+
+CAPTION_COORDS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "title": "asset_caption_geo_v1",
+    "additionalProperties": False,
+    "properties": {
+        "latitude": {
+            "type": ["number", "null"],
+            "description": "Широта в десятичных градусах",
+            "minimum": -90,
+            "maximum": 90,
+        },
+        "longitude": {
+            "type": ["number", "null"],
+            "description": "Долгота в десятичных градусах",
+            "minimum": -180,
+            "maximum": 180,
+        },
+        "captured_at_iso": {
+            "type": ["string", "null"],
+            "description": "Дата и время съёмки в ISO 8601, например 2024-05-23T10:15:00+03:00.",
+        },
+    },
+}
+
 
 def _get_assets_upload_mode() -> str:
     """Get the upload mode for assets from environment (photo or document)."""
@@ -852,6 +900,139 @@ def build_caption(*, gps: dict[str, Any], categories: list[str], capture_iso: st
     return "\n".join(parts)
 
 
+def _trim_caption_for_coords_model(text: str) -> str:
+    stripped = text.strip()
+    if len(stripped) <= _CAPTION_COORDS_PROMPT_LIMIT:
+        return stripped
+    return stripped[: _CAPTION_COORDS_PROMPT_LIMIT]
+
+
+def _normalize_caption_coordinate(value: Any, *, axis: str) -> float | None:
+    if value is None:
+        return None
+    number: float | None = None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        text = value.strip().replace(",", ".")
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            match = re.search(r"-?\d+(?:[.,]\d+)?", text)
+            if match:
+                try:
+                    number = float(match.group(0).replace(",", "."))
+                except ValueError:
+                    return None
+    else:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+    if number is None:
+        return None
+    if axis == "lat" and not (-90.0 <= number <= 90.0):
+        return None
+    if axis == "lon" and not (-180.0 <= number <= 180.0):
+        return None
+    return number
+
+
+def _normalize_caption_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed.isoformat()
+
+
+async def _extract_caption_geo_metadata(
+    *,
+    caption: str,
+    openai_client: OpenAIClient,
+    model: str,
+    token_logger: Callable[[TokenUsagePayload], None] | None,
+    supabase: SupabaseClient | None,
+    upload_id: str | None,
+    asset_id: str | None,
+    job_id: int | None,
+    job_name: str | None,
+    source: str,
+) -> dict[str, Any] | None:
+    prompt_text = _trim_caption_for_coords_model(caption)
+    if not prompt_text:
+        return None
+    try:
+        response = await openai_client.generate_json(
+            model=model,
+            system_prompt=_CAPTION_COORDS_SYSTEM_PROMPT,
+            user_prompt=_CAPTION_COORDS_USER_PROMPT.format(caption=prompt_text),
+            schema=CAPTION_COORDS_SCHEMA,
+            schema_name="asset_caption_geo_v1",
+            temperature=0,
+        )
+    except Exception:
+        logging.exception("Caption geo extraction failed for source %s", source)
+        return None
+
+    response_types: tuple[type, ...]
+    if OpenAIResponse is None:
+        response_types = ()
+    else:
+        response_types = (OpenAIResponse,)
+
+    if not isinstance(response, response_types):
+        return None
+
+    if token_logger:
+        payload: TokenUsagePayload = {
+            "model": model,
+            "prompt_tokens": response.prompt_tokens,
+            "completion_tokens": response.completion_tokens,
+            "total_tokens": response.total_tokens,
+            "job_id": job_id,
+            "request_id": response.request_id,
+        }
+        try:
+            token_logger(payload)
+        except Exception:
+            logging.exception("Token usage logger failed for caption geo extraction")
+
+    if supabase:
+        try:
+            await supabase.insert_token_usage(
+                bot="kotopogoda",
+                model=model,
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                total_tokens=response.total_tokens,
+                request_id=response.request_id,
+                endpoint=response.endpoint or "/v1/responses",
+                meta={
+                    "upload_id": upload_id,
+                    "asset_id": asset_id,
+                    "job_id": job_id,
+                    "job_name": job_name,
+                    "source": source,
+                    "kind": "caption_geo",
+                },
+            )
+        except Exception:
+            logging.exception("Caption geo token usage logging failed for source %s", source)
+
+    content = response.content if isinstance(response.content, dict) else None
+    return content
+
+
 def extract_message_id(response: Any) -> int | None:
     if isinstance(response, dict):
         if "result" in response:
@@ -1034,6 +1215,61 @@ async def _ingest_photo_internal(
             capture_candidate = _extract_capture_datetime(exif_payload)
             if capture_candidate:
                 gps_payload["captured_at"] = capture_candidate
+
+        caption_geo_payload: dict[str, Any] | None = None
+        caption_text = (inputs.caption or "").strip()
+        missing_latitude = gps_payload.get("latitude") is None
+        missing_longitude = gps_payload.get("longitude") is None
+        missing_capture = not gps_payload.get("captured_at")
+        if (
+            _CAPTION_COORDS_MODEL
+            and caption_text
+            and (missing_latitude or missing_longitude or missing_capture)
+            and context.openai
+        ):
+            caption_geo_payload = await _extract_caption_geo_metadata(
+                caption=caption_text,
+                openai_client=context.openai,
+                model=_CAPTION_COORDS_MODEL,
+                token_logger=context.token_logger,
+                supabase=context.supabase,
+                upload_id=inputs.upload_id,
+                asset_id=inputs.asset_id,
+                job_id=inputs.job_id,
+                job_name=inputs.job_name,
+                source=inputs.source,
+            )
+
+        if caption_geo_payload:
+            lat_value = _normalize_caption_coordinate(
+                caption_geo_payload.get("latitude"), axis="lat"
+            )
+            lon_value = _normalize_caption_coordinate(
+                caption_geo_payload.get("longitude"), axis="lon"
+            )
+            capture_iso_value = _normalize_caption_timestamp(
+                caption_geo_payload.get("captured_at_iso")
+            )
+            applied = False
+            if lat_value is not None and gps_payload.get("latitude") is None:
+                gps_payload["latitude"] = lat_value
+                applied = True
+            if lon_value is not None and gps_payload.get("longitude") is None:
+                gps_payload["longitude"] = lon_value
+                applied = True
+            if capture_iso_value and not gps_payload.get("captured_at"):
+                gps_payload["captured_at"] = capture_iso_value
+                applied = True
+            if applied:
+                logging.info(
+                    "CAPTION_COORDS_APPLIED upload=%s asset=%s lat=%s lon=%s captured_at=%s",
+                    inputs.upload_id,
+                    inputs.asset_id,
+                    gps_payload.get("latitude"),
+                    gps_payload.get("longitude"),
+                    gps_payload.get("captured_at"),
+                )
+
         exif_ifds = extracted_ifds
 
         capture_dt = None

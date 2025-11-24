@@ -272,6 +272,7 @@ The script saves a CSV file (defaults to `postcard_photos_dump.csv` in the curre
 | `ASSETS_DEBUG_EXIF` | `0` | When truthy, replies to recognized messages with a raw EXIF dump for debugging. |
 | `VISION_ENABLED` | – | Toggles the OpenAI vision classification step for new uploads. When disabled the job skips recognition entirely. |
 | `OPENAI_VISION_MODEL` | – | Model passed to the OpenAI Responses API for vision classification. Required whenever `VISION_ENABLED` is truthy. |
+| `OPENAI_CAPTION_COORDS_MODEL` | `gpt-4o-mini` | Model used to extract coordinates and shooting time from Telegram captions when EXIF GPS data is missing. Set to `none`/`off`/empty to disable caption parsing. |
 | `MAX_IMAGE_SIDE` | – | Optional upper bound (pixels) for the longest photo side. Downscales recognition/preview copies while preserving the original upload. |
 | `PORT` | `8080` | HTTP port that `web.run_app` listens on. Must align with the port exposed by the hosting platform. |
 | `4O_API_KEY` | – | API key used by the recognition pipeline and rubric copy generators; related jobs are skipped automatically when missing. |

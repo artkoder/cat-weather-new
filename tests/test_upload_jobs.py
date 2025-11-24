@@ -1513,7 +1513,6 @@ async def test_ingest_job_skips_caption_geo_when_coordinates_present(
 
 @pytest.mark.asyncio
 async def test_ingest_job_mobile_adapter_handles_documents(
-(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "bot.sqlite"

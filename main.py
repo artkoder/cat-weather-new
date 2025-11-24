@@ -5042,7 +5042,6 @@ class Bot:
             logging.exception("Failed to write asset file %s", path)
         return str(path)
 
-
     @staticmethod
     def _coerce_decimal(value: Any) -> float | None:
         try:
@@ -5067,19 +5066,19 @@ class Bot:
         if not text:
             return None
         candidate = text
-        if candidate.endswith('Z'):
-            candidate = candidate[:-1] + '+00:00'
+        if candidate.endswith("Z"):
+            candidate = candidate[:-1] + "+00:00"
         dt: datetime | None = None
         try:
             dt = datetime.fromisoformat(candidate)
         except ValueError:
             for fmt in (
-                '%d.%m.%Y %H:%M:%S',
-                '%d.%m.%Y %H:%M',
-                '%d-%m-%Y %H:%M:%S',
-                '%d-%m-%Y %H:%M',
-                '%Y-%m-%d %H:%M:%S',
-                '%Y-%m-%d %H:%M',
+                "%d.%m.%Y %H:%M:%S",
+                "%d.%m.%Y %H:%M",
+                "%d-%m-%Y %H:%M:%S",
+                "%d-%m-%Y %H:%M",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
             ):
                 try:
                     dt = datetime.strptime(candidate, fmt)
@@ -5102,7 +5101,7 @@ class Bot:
         need_coordinates: bool,
         need_datetime: bool,
     ) -> dict[str, Any] | None:
-        if not self.openai or not getattr(self.openai, 'api_key', None):
+        if not self.openai or not getattr(self.openai, "api_key", None):
             return None
         if not self._should_extract_caption_geo(caption):
             return None
@@ -5112,7 +5111,7 @@ class Bot:
         user_prompt = CAPTION_GEO_USER_PROMPT_TEMPLATE.format(caption=text)
         try:
             logging.info(
-                'Caption geo extraction requested asset_id=%s need_coords=%s need_time=%s',
+                "Caption geo extraction requested asset_id=%s need_coords=%s need_time=%s",
                 asset_id,
                 need_coordinates,
                 need_datetime,
@@ -5123,45 +5122,45 @@ class Bot:
                 system_prompt=CAPTION_GEO_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
                 schema=CAPTION_GEO_SCHEMA,
-                schema_name='caption_geo_v1',
+                schema_name="caption_geo_v1",
                 temperature=0.0,
             )
         except JobDelayed:
             raise
         except Exception:
-            logging.exception('Caption geo extraction failed for asset %s', asset_id)
+            logging.exception("Caption geo extraction failed for asset %s", asset_id)
             return None
         await self._record_openai_usage(
             CAPTION_GEO_MODEL,
             response,
             job=job,
-            supabase_meta={'asset_id': asset_id, 'stage': 'caption_geo'},
+            supabase_meta={"asset_id": asset_id, "stage": "caption_geo"},
         )
         if not response or not isinstance(response.content, dict):
-            logging.warning('Caption geo extraction returned empty payload for asset %s', asset_id)
+            logging.warning("Caption geo extraction returned empty payload for asset %s", asset_id)
             return None
-        lat = self._coerce_decimal(response.content.get('latitude'))
-        lon = self._coerce_decimal(response.content.get('longitude'))
+        lat = self._coerce_decimal(response.content.get("latitude"))
+        lon = self._coerce_decimal(response.content.get("longitude"))
         if lat is not None and not (-90.0 <= lat <= 90.0):
             lat = None
         if lon is not None and not (-180.0 <= lon <= 180.0):
             lon = None
-        captured_at = self._normalize_caption_geo_datetime(response.content.get('captured_at'))
+        captured_at = self._normalize_caption_geo_datetime(response.content.get("captured_at"))
         result: dict[str, Any] = {}
         if lat is not None and lon is not None:
-            result['latitude'] = lat
-            result['longitude'] = lon
+            result["latitude"] = lat
+            result["longitude"] = lon
         if captured_at:
-            result['captured_at'] = captured_at
+            result["captured_at"] = captured_at
         if not result:
-            logging.info('Caption geo extraction produced no usable data for asset %s', asset_id)
+            logging.info("Caption geo extraction produced no usable data for asset %s", asset_id)
             return None
         logging.info(
-            'Caption geo extraction succeeded asset_id=%s lat=%s lon=%s captured_at=%s',
+            "Caption geo extraction succeeded asset_id=%s lat=%s lon=%s captured_at=%s",
             asset_id,
-            result.get('latitude'),
-            result.get('longitude'),
-            result.get('captured_at'),
+            result.get("latitude"),
+            result.get("longitude"),
+            result.get("captured_at"),
         )
         return result
 
@@ -5284,7 +5283,9 @@ class Bot:
         )
         needs_datetime = gps_override.get("captured_at") is None and asset.shot_at_utc is None
         should_try_caption_geo = (
-            caption_has_content and (needs_coordinates or needs_datetime) and source_label != "mobile"
+            caption_has_content
+            and (needs_coordinates or needs_datetime)
+            and source_label != "mobile"
         )
         if should_try_caption_geo:
             caption_geo = await self._extract_caption_geo_metadata(
@@ -5300,7 +5301,10 @@ class Bot:
                 if (
                     lat_override is not None
                     and lon_override is not None
-                    and (gps_override.get("latitude") is None or gps_override.get("longitude") is None)
+                    and (
+                        gps_override.get("latitude") is None
+                        or gps_override.get("longitude") is None
+                    )
                 ):
                     gps_override.setdefault("latitude", lat_override)
                     gps_override.setdefault("longitude", lon_override)
@@ -5400,6 +5404,10 @@ class Bot:
             if incoming_metadata:
                 merged_metadata.update(incoming_metadata)
             categories_payload = payload.get("categories") or existing_categories
+            gps_metadata = merged_metadata.get("gps") if isinstance(merged_metadata, dict) else None
+            capture_override = payload.get("captured_at")
+            if capture_override is None and isinstance(gps_metadata, dict):
+                capture_override = gps_metadata.get("captured_at")
             result_id = self.data.save_asset(
                 payload["channel_id"],
                 payload["message_id"],
@@ -5454,7 +5462,45 @@ class Bot:
                     if payload.get("forward_from_chat") is not None
                     else asset.forward_from_chat
                 ),
+                shot_at_utc=payload.get("shot_at_utc"),
+                shot_doy=payload.get("shot_doy"),
+                photo_doy=payload.get("photo_doy"),
+                photo_wave=payload.get("photo_wave"),
+                sky_visible=payload.get("sky_visible"),
+                wave_score_0_10=payload.get("wave_score_0_10"),
+                wave_conf=payload.get("wave_conf"),
+                postcard_score=payload.get("postcard_score"),
+                captured_at=capture_override,
             )
+
+            duplicate_id: str | None = None
+            target_asset_id = result_id
+            if result_id != asset.id:
+                duplicate_id = result_id
+                propagate_kwargs: dict[str, Any] = {}
+                if payload.get("file_meta"):
+                    propagate_kwargs["file_meta"] = payload.get("file_meta")
+                if merged_metadata:
+                    propagate_kwargs["metadata"] = merged_metadata
+                for key in (
+                    "shot_at_utc",
+                    "shot_doy",
+                    "photo_doy",
+                    "photo_wave",
+                    "sky_visible",
+                    "wave_score_0_10",
+                    "wave_conf",
+                    "postcard_score",
+                ):
+                    value = payload.get(key)
+                    if value is not None:
+                        propagate_kwargs[key] = value
+                if capture_override:
+                    propagate_kwargs["captured_at"] = capture_override
+                if propagate_kwargs:
+                    self.data.update_asset(asset.id, **propagate_kwargs)
+                target_asset_id = asset.id
+
             update_kwargs: dict[str, Any] = {"local_path": None}
             latitude = payload.get("latitude")
             longitude = payload.get("longitude")
@@ -5469,8 +5515,10 @@ class Bot:
                 update_kwargs["exif_present"] = True
             elif gps_present:
                 update_kwargs["exif_present"] = True
-            self.data.update_asset(result_id, **update_kwargs)
-            return result_id
+            self.data.update_asset(target_asset_id, **update_kwargs)
+            if duplicate_id:
+                self.data.delete_assets([duplicate_id])
+            return target_asset_id
 
         telegram_adapter = _TelegramReuseAdapter(
             self,

@@ -115,7 +115,6 @@ class FlakyTelegram(TelegramStub):
         )
 
 
-
 class CaptionGeoOpenAIStub:
     def __init__(self, response: OpenAIResponse | None = None) -> None:
         self.response = response
@@ -125,6 +124,7 @@ class CaptionGeoOpenAIStub:
     async def generate_json(self, **kwargs: Any):  # type: ignore[override]
         self.calls.append(kwargs)
         return self.response
+
 
 def _setup_connection(
     *, asset_channel_id: int | None = None, recognition_channel_id: int | None = None
@@ -1186,7 +1186,6 @@ async def test_ingest_job_uses_stored_coordinates_when_result_missing_gps(
         reverse_calls.append((lat, lon))
         return {"city": "Москва", "country": "Россия"}
 
-
     async def fake_ingest_photo(**kwargs):
         callbacks: IngestionCallbacks | None = kwargs.get("callbacks")
         overrides: dict[str, Any] = kwargs.get("input_overrides") or {}
@@ -1226,7 +1225,6 @@ async def test_ingest_job_uses_stored_coordinates_when_result_missing_gps(
     assert updated_asset.city == "Москва"
     assert updated_asset.country == "Россия"
     assert reverse_calls == [(stored_lat, stored_lon)]
-
 
     bot.db.close()
 
@@ -1357,9 +1355,7 @@ async def test_ingest_job_extracts_geo_from_caption(
     expected_iso = capture_dt.isoformat()
     assert updated_asset.captured_at == expected_iso
     assert updated_asset.shot_at_utc == int(capture_dt.astimezone(UTC).timestamp())
-    assert reverse_calls == [
-        (pytest.approx(54.72, rel=1e-6), pytest.approx(20.51, rel=1e-6))
-    ]
+    assert reverse_calls == [(pytest.approx(54.72, rel=1e-6), pytest.approx(20.51, rel=1e-6))]
     assert bot.openai.calls, "caption geo extraction should call OpenAI"
 
     await bot.close()
@@ -1500,9 +1496,7 @@ async def test_ingest_job_skips_caption_geo_when_coordinates_present(
     assert updated_asset.latitude == pytest.approx(54.65, rel=1e-6)
     assert updated_asset.longitude == pytest.approx(20.35, rel=1e-6)
     assert updated_asset.captured_at == capture_iso
-    assert reverse_calls == [
-        (pytest.approx(54.65, rel=1e-6), pytest.approx(20.35, rel=1e-6))
-    ]
+    assert reverse_calls == [(pytest.approx(54.65, rel=1e-6), pytest.approx(20.35, rel=1e-6))]
     assert not stub.calls, "caption geo extraction should be skipped when data exists"
 
     await bot.close()
@@ -1769,7 +1763,6 @@ async def test_ingest_job_preserves_existing_exif_flag_on_parse_failure(
     def fake_extract_gps(self: Bot, image_source):
         extract_calls.append(str(image_source))
         return None
-
 
     async def fake_ingest_photo(**kwargs):
         callbacks: IngestionCallbacks | None = kwargs.get("callbacks")

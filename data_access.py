@@ -936,8 +936,8 @@ class DataAccess:
             fallback = DataAccess._make_json_safe(str(safe_payload))
             return json.dumps(fallback, ensure_ascii=False)
 
-    @staticmethod
-    def _extract_capture_datetime(exif: dict[str, Any] | None) -> str | None:
+    @classmethod
+    def _extract_capture_datetime(cls, exif: dict[str, Any] | None) -> str | None:
         if not exif:
             return None
         for key in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
@@ -952,12 +952,19 @@ class DataAccess:
                     dt = datetime.strptime(text, fmt)
                 except ValueError:
                     continue
-                return dt.replace(tzinfo=timezone.utc).isoformat()
-            return text
+                local_dt = dt.replace(tzinfo=cls._LOCAL_TIMEZONE)
+                return local_dt.isoformat()
+            try:
+                parsed = datetime.fromisoformat(text)
+            except ValueError:
+                return text
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=cls._LOCAL_TIMEZONE)
+            return parsed.astimezone(cls._LOCAL_TIMEZONE).isoformat()
         return None
 
-    @staticmethod
-    def _parse_datetime_string(value: str | None) -> datetime | None:
+    @classmethod
+    def _parse_datetime_string(cls, value: str | None) -> datetime | None:
         if not value:
             return None
         text = str(value).strip()
@@ -971,10 +978,10 @@ class DataAccess:
                     parsed = datetime.strptime(text, fmt)
                 except ValueError:
                     continue
-                return parsed.replace(tzinfo=timezone.utc)
+                return parsed.replace(tzinfo=cls._LOCAL_TIMEZONE)
             return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=cls._LOCAL_TIMEZONE)
         return parsed
 
     @classmethod
@@ -1009,7 +1016,7 @@ class DataAccess:
                 parsed_dt = None
             else:
                 if captured_at is None:
-                    captured_at = parsed_dt.isoformat()
+                    captured_at = parsed_dt.astimezone(cls._LOCAL_TIMEZONE).isoformat()
         if captured_at is None:
             captured_at = existing_captured_at
         if parsed_dt is None and captured_at:

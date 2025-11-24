@@ -5258,9 +5258,9 @@ class Bot:
         }
 
         stored_exif = asset.exif or base_metadata.get("exif")
-        if stored_exif:
-            overrides["exif"] = stored_exif
-
+        exif_override: dict[str, Any] = {}
+        if isinstance(stored_exif, dict):
+            exif_override = dict(stored_exif)
 
         gps_override: dict[str, Any] = {}
         metadata_gps = base_metadata.get("gps") if base_metadata else None
@@ -5276,6 +5276,7 @@ class Bot:
             gps_override.setdefault("longitude", longitude_value)
 
         caption_text = asset.caption or ""
+        caption_capture_dt: datetime | None = None
         caption_has_content = bool(str(caption_text).strip())
         source_label = str(asset.source or "telegram").strip().lower()
         needs_coordinates = (
@@ -5306,7 +5307,24 @@ class Bot:
                 capture_override = caption_geo.get("captured_at")
                 if capture_override and gps_override.get("captured_at") is None:
                     gps_override["captured_at"] = capture_override
+                if capture_override:
+                    normalized_capture = capture_override.replace("Z", "+00:00")
+                    with contextlib.suppress(ValueError):
+                        caption_capture_dt = datetime.fromisoformat(normalized_capture)
+                if caption_capture_dt is not None:
+                    capture_local = caption_capture_dt.astimezone(RUBRIC_JOBS_TZ)
+                    exif_text = capture_local.strftime("%Y:%m:%d %H:%M:%S")
+                    exif_override.setdefault("DateTimeOriginal", exif_text)
+                    exif_override.setdefault("DateTimeDigitized", exif_text)
+                    overrides.setdefault(
+                        "shot_at_utc", int(caption_capture_dt.astimezone(UTC).timestamp())
+                    )
+                    local_doy = capture_local.timetuple().tm_yday
+                    overrides.setdefault("shot_doy", local_doy)
+                    overrides.setdefault("photo_doy", local_doy)
 
+        if exif_override:
+            overrides["exif"] = exif_override
         if gps_override:
             overrides["gps"] = gps_override
 

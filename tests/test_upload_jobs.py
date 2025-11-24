@@ -1354,7 +1354,7 @@ async def test_ingest_job_extracts_geo_from_caption(
     assert updated_asset.latitude == pytest.approx(54.72, rel=1e-6)
     assert updated_asset.longitude == pytest.approx(20.51, rel=1e-6)
     capture_dt = datetime(2024, 5, 21, 18, 32, tzinfo=kaliningrad_tz)
-    expected_iso = capture_dt.astimezone(UTC).isoformat()
+    expected_iso = capture_dt.isoformat()
     assert updated_asset.captured_at == expected_iso
     assert updated_asset.shot_at_utc == int(capture_dt.astimezone(UTC).timestamp())
     assert reverse_calls == [

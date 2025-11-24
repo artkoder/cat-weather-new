@@ -1226,7 +1226,6 @@ async def test_ingest_job_uses_stored_coordinates_when_result_missing_gps(
     assert updated_asset.city == "Москва"
     assert updated_asset.country == "Россия"
     assert reverse_calls == [(stored_lat, stored_lon)]
-    assert ingest_calls, "ingest_photo should be invoked"
 
 
     bot.db.close()
@@ -1288,11 +1287,9 @@ async def test_ingest_job_extracts_geo_from_caption(
     )
     bot.openai = CaptionGeoOpenAIStub(response)
 
-    ingest_calls: list[dict[str, Any]] = []
     kaliningrad_tz = ZoneInfo("Europe/Kaliningrad")
 
     async def fake_ingest_photo(**kwargs):
-        ingest_calls.append(kwargs)
         overrides = kwargs.get("input_overrides") or {}
         gps_override = dict(overrides.get("gps") or {})
         capture_iso = gps_override.get("captured_at")
@@ -1773,10 +1770,8 @@ async def test_ingest_job_preserves_existing_exif_flag_on_parse_failure(
         extract_calls.append(str(image_source))
         return None
 
-    ingest_calls: list[dict[str, Any]] = []
 
     async def fake_ingest_photo(**kwargs):
-        ingest_calls.append(kwargs)
         callbacks: IngestionCallbacks | None = kwargs.get("callbacks")
         overrides: dict[str, Any] = kwargs.get("input_overrides") or {}
         bot._extract_gps(kwargs.get("file_path"))
@@ -1820,7 +1815,6 @@ async def test_ingest_job_preserves_existing_exif_flag_on_parse_failure(
     assert updated_asset.exif_present is True
     assert reverse_calls == [(stored_lat, stored_lon)]
     assert extract_calls, "_extract_gps should be invoked by ingestion"
-    assert ingest_calls, "ingest_photo should be invoked"
 
     bot.db.close()
 

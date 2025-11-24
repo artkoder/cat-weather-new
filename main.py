@@ -5043,127 +5043,127 @@ class Bot:
         return str(path)
 
 
-@staticmethod
-def _coerce_decimal(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if math.isnan(number) or math.isinf(number):
-        return None
-    return number
+    @staticmethod
+    def _coerce_decimal(value: Any) -> float | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return number
 
-def _should_extract_caption_geo(self, caption: str) -> bool:
-    text = caption.strip()
-    if not text:
-        return False
-    digit_count = sum(ch.isdigit() for ch in text)
-    return digit_count >= CAPTION_GEO_MIN_DIGITS
+    def _should_extract_caption_geo(self, caption: str) -> bool:
+        text = caption.strip()
+        if not text:
+            return False
+        digit_count = sum(ch.isdigit() for ch in text)
+        return digit_count >= CAPTION_GEO_MIN_DIGITS
 
-def _normalize_caption_geo_datetime(self, raw: Any) -> str | None:
-    if raw is None:
-        return None
-    text = str(raw).strip()
-    if not text:
-        return None
-    candidate = text
-    if candidate.endswith('Z'):
-        candidate = candidate[:-1] + '+00:00'
-    dt: datetime | None = None
-    try:
-        dt = datetime.fromisoformat(candidate)
-    except ValueError:
-        for fmt in (
-            '%d.%m.%Y %H:%M:%S',
-            '%d.%m.%Y %H:%M',
-            '%d-%m-%Y %H:%M:%S',
-            '%d-%m-%Y %H:%M',
-            '%Y-%m-%d %H:%M:%S',
-            '%Y-%m-%d %H:%M',
-        ):
-            try:
-                dt = datetime.strptime(candidate, fmt)
-            except ValueError:
-                continue
-            else:
-                break
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=RUBRIC_JOBS_TZ)
-    return dt.isoformat()
+    def _normalize_caption_geo_datetime(self, raw: Any) -> str | None:
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        if not text:
+            return None
+        candidate = text
+        if candidate.endswith('Z'):
+            candidate = candidate[:-1] + '+00:00'
+        dt: datetime | None = None
+        try:
+            dt = datetime.fromisoformat(candidate)
+        except ValueError:
+            for fmt in (
+                '%d.%m.%Y %H:%M:%S',
+                '%d.%m.%Y %H:%M',
+                '%d-%m-%Y %H:%M:%S',
+                '%d-%m-%Y %H:%M',
+                '%Y-%m-%d %H:%M:%S',
+                '%Y-%m-%d %H:%M',
+            ):
+                try:
+                    dt = datetime.strptime(candidate, fmt)
+                except ValueError:
+                    continue
+                else:
+                    break
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=RUBRIC_JOBS_TZ)
+        return dt.isoformat()
 
-async def _extract_caption_geo_metadata(
-    self,
-    *,
-    caption: str,
-    asset_id: str,
-    job: Job | None,
-    need_coordinates: bool,
-    need_datetime: bool,
-) -> dict[str, Any] | None:
-    if not self.openai or not getattr(self.openai, 'api_key', None):
-        return None
-    if not self._should_extract_caption_geo(caption):
-        return None
-    text = caption.strip()
-    if len(text) > CAPTION_GEO_MAX_INPUT_LEN:
-        text = text[:CAPTION_GEO_MAX_INPUT_LEN]
-    user_prompt = CAPTION_GEO_USER_PROMPT_TEMPLATE.format(caption=text)
-    try:
+    async def _extract_caption_geo_metadata(
+        self,
+        *,
+        caption: str,
+        asset_id: str,
+        job: Job | None,
+        need_coordinates: bool,
+        need_datetime: bool,
+    ) -> dict[str, Any] | None:
+        if not self.openai or not getattr(self.openai, 'api_key', None):
+            return None
+        if not self._should_extract_caption_geo(caption):
+            return None
+        text = caption.strip()
+        if len(text) > CAPTION_GEO_MAX_INPUT_LEN:
+            text = text[:CAPTION_GEO_MAX_INPUT_LEN]
+        user_prompt = CAPTION_GEO_USER_PROMPT_TEMPLATE.format(caption=text)
+        try:
+            logging.info(
+                'Caption geo extraction requested asset_id=%s need_coords=%s need_time=%s',
+                asset_id,
+                need_coordinates,
+                need_datetime,
+            )
+            self._enforce_openai_limit(job, CAPTION_GEO_MODEL)
+            response = await self.openai.generate_json(
+                model=CAPTION_GEO_MODEL,
+                system_prompt=CAPTION_GEO_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                schema=CAPTION_GEO_SCHEMA,
+                schema_name='caption_geo_v1',
+                temperature=0.0,
+            )
+        except JobDelayed:
+            raise
+        except Exception:
+            logging.exception('Caption geo extraction failed for asset %s', asset_id)
+            return None
+        await self._record_openai_usage(
+            CAPTION_GEO_MODEL,
+            response,
+            job=job,
+            supabase_meta={'asset_id': asset_id, 'stage': 'caption_geo'},
+        )
+        if not response or not isinstance(response.content, dict):
+            logging.warning('Caption geo extraction returned empty payload for asset %s', asset_id)
+            return None
+        lat = self._coerce_decimal(response.content.get('latitude'))
+        lon = self._coerce_decimal(response.content.get('longitude'))
+        if lat is not None and not (-90.0 <= lat <= 90.0):
+            lat = None
+        if lon is not None and not (-180.0 <= lon <= 180.0):
+            lon = None
+        captured_at = self._normalize_caption_geo_datetime(response.content.get('captured_at'))
+        result: dict[str, Any] = {}
+        if lat is not None and lon is not None:
+            result['latitude'] = lat
+            result['longitude'] = lon
+        if captured_at:
+            result['captured_at'] = captured_at
+        if not result:
+            logging.info('Caption geo extraction produced no usable data for asset %s', asset_id)
+            return None
         logging.info(
-            'Caption geo extraction requested asset_id=%s need_coords=%s need_time=%s',
+            'Caption geo extraction succeeded asset_id=%s lat=%s lon=%s captured_at=%s',
             asset_id,
-            need_coordinates,
-            need_datetime,
+            result.get('latitude'),
+            result.get('longitude'),
+            result.get('captured_at'),
         )
-        self._enforce_openai_limit(job, CAPTION_GEO_MODEL)
-        response = await self.openai.generate_json(
-            model=CAPTION_GEO_MODEL,
-            system_prompt=CAPTION_GEO_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-            schema=CAPTION_GEO_SCHEMA,
-            schema_name='caption_geo_v1',
-            temperature=0.0,
-        )
-    except JobDelayed:
-        raise
-    except Exception:
-        logging.exception('Caption geo extraction failed for asset %s', asset_id)
-        return None
-    await self._record_openai_usage(
-        CAPTION_GEO_MODEL,
-        response,
-        job=job,
-        supabase_meta={'asset_id': asset_id, 'stage': 'caption_geo'},
-    )
-    if not response or not isinstance(response.content, dict):
-        logging.warning('Caption geo extraction returned empty payload for asset %s', asset_id)
-        return None
-    lat = self._coerce_decimal(response.content.get('latitude'))
-    lon = self._coerce_decimal(response.content.get('longitude'))
-    if lat is not None and not (-90.0 <= lat <= 90.0):
-        lat = None
-    if lon is not None and not (-180.0 <= lon <= 180.0):
-        lon = None
-    captured_at = self._normalize_caption_geo_datetime(response.content.get('captured_at'))
-    result: dict[str, Any] = {}
-    if lat is not None and lon is not None:
-        result['latitude'] = lat
-        result['longitude'] = lon
-    if captured_at:
-        result['captured_at'] = captured_at
-    if not result:
-        logging.info('Caption geo extraction produced no usable data for asset %s', asset_id)
-        return None
-    logging.info(
-        'Caption geo extraction succeeded asset_id=%s lat=%s lon=%s captured_at=%s',
-        asset_id,
-        result.get('latitude'),
-        result.get('longitude'),
-        result.get('captured_at'),
-    )
-    return result
+        return result
 
     async def _job_ingest(self, job: Job) -> None:
         asset_id = job.payload.get("asset_id") if job.payload else None

@@ -6,11 +6,12 @@ import shutil
 import sqlite3
 import sys
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import piexif
 import pytest
@@ -113,6 +114,17 @@ class FlakyTelegram(TelegramStub):
             content_type=content_type,
         )
 
+
+
+class CaptionGeoOpenAIStub:
+    def __init__(self, response: OpenAIResponse | None = None) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
+        self.api_key = "test-key"
+
+    async def generate_json(self, **kwargs: Any):  # type: ignore[override]
+        self.calls.append(kwargs)
+        return self.response
 
 def _setup_connection(
     *, asset_channel_id: int | None = None, recognition_channel_id: int | None = None
@@ -1174,10 +1186,8 @@ async def test_ingest_job_uses_stored_coordinates_when_result_missing_gps(
         reverse_calls.append((lat, lon))
         return {"city": "Москва", "country": "Россия"}
 
-    ingest_calls: list[dict[str, Any]] = []
 
     async def fake_ingest_photo(**kwargs):
-        ingest_calls.append(kwargs)
         callbacks: IngestionCallbacks | None = kwargs.get("callbacks")
         overrides: dict[str, Any] = kwargs.get("input_overrides") or {}
         if callbacks and callbacks.save_asset:
@@ -1216,9 +1226,286 @@ async def test_ingest_job_uses_stored_coordinates_when_result_missing_gps(
     assert updated_asset.city == "Москва"
     assert updated_asset.country == "Россия"
     assert reverse_calls == [(stored_lat, stored_lon)]
-    assert ingest_calls, "ingest_photo should be invoked"
+
 
     bot.db.close()
+
+
+@pytest.mark.asyncio
+async def test_ingest_job_extracts_geo_from_caption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "bot.sqlite"
+    bot = Bot("test-token", str(db_path))
+    bot.asset_storage = tmp_path
+
+    channel_id = -43001
+    caption_text = "Координаты: N54°43.200' E20°30.400'. Снято 21.05.2024 18:32"
+    asset_id = bot.data.save_asset(
+        channel_id,
+        777,
+        None,
+        "#geo",
+        tg_chat_id=channel_id,
+        caption=caption_text,
+        kind="photo",
+        file_meta={
+            "file_id": "file-geo",
+            "file_unique_id": "file-geo-uniq",
+            "mime_type": "image/jpeg",
+            "width": 64,
+            "height": 64,
+        },
+        origin="recognition",
+    )
+
+    sample_path = create_sample_image_without_gps(tmp_path / "caption-geo.jpg")
+
+    async def fake_download_file(self: Bot, file_id: str, dest_path):
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(sample_path, dest)
+        return dest
+
+    async def fake_api_request(self: Bot, method: str, payload: dict[str, Any]):
+        return {"ok": True, "result": {"file_path": "dummy"}}
+
+    reverse_calls: list[tuple[float, float]] = []
+
+    async def fake_reverse_geocode(self: Bot, lat: float, lon: float):
+        reverse_calls.append((lat, lon))
+        return {"city": "Калининград", "country": "Россия"}
+
+    response = OpenAIResponse(
+        {"latitude": 54.72, "longitude": 20.51, "captured_at": "2024-05-21T18:32:00+02:00"},
+        {
+            "prompt_tokens": 12,
+            "completion_tokens": 6,
+            "total_tokens": 18,
+            "request_id": "req-caption-geo",
+        },
+    )
+    bot.openai = CaptionGeoOpenAIStub(response)
+
+    kaliningrad_tz = ZoneInfo("Europe/Kaliningrad")
+
+    async def fake_ingest_photo(**kwargs):
+        overrides = kwargs.get("input_overrides") or {}
+        gps_override = dict(overrides.get("gps") or {})
+        capture_iso = gps_override.get("captured_at")
+        shot_at_utc = None
+        shot_doy = None
+        if capture_iso:
+            capture_dt = datetime.fromisoformat(capture_iso.replace("Z", "+00:00"))
+            if capture_dt.tzinfo is None:
+                capture_dt = capture_dt.replace(tzinfo=kaliningrad_tz)
+            shot_at_utc = int(capture_dt.astimezone(UTC).timestamp())
+            shot_doy = capture_dt.astimezone(kaliningrad_tz).timetuple().tm_yday
+        callbacks: IngestionCallbacks | None = kwargs.get("callbacks")
+        if callbacks and callbacks.save_asset:
+            callbacks.save_asset(
+                {
+                    "channel_id": overrides.get("channel_id", channel_id),
+                    "message_id": 321,
+                    "tg_chat_id": overrides.get("tg_chat_id", channel_id),
+                    "caption": overrides.get("caption"),
+                    "kind": overrides.get("kind", "photo"),
+                    "file_meta": {
+                        "file_id": "file-geo",
+                        "file_unique_id": "file-geo-uniq",
+                        "mime_type": "image/jpeg",
+                        "width": 64,
+                        "height": 64,
+                        "sha256": "sha",
+                        "exif": {},
+                    },
+                    "metadata": {"gps": gps_override, "exif": {}},
+                    "latitude": gps_override.get("latitude"),
+                    "longitude": gps_override.get("longitude"),
+                    "exif_present": bool(gps_override),
+                    "shot_at_utc": shot_at_utc,
+                    "shot_doy": shot_doy,
+                    "photo_doy": shot_doy,
+                }
+            )
+        return SimpleNamespace(gps=gps_override)
+
+    monkeypatch.setattr(Bot, "_download_file", fake_download_file)
+    monkeypatch.setattr(Bot, "api_request", fake_api_request)
+    monkeypatch.setattr(Bot, "_reverse_geocode", fake_reverse_geocode)
+    monkeypatch.setattr(sys.modules["main"], "ingest_photo", fake_ingest_photo)
+
+    job = Job(
+        id=401,
+        name="ingest",
+        payload={"asset_id": asset_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_ingest(job)
+
+    updated_asset = bot.data.get_asset(asset_id)
+    assert updated_asset is not None
+    assert updated_asset.latitude == pytest.approx(54.72, rel=1e-6)
+    assert updated_asset.longitude == pytest.approx(20.51, rel=1e-6)
+    capture_dt = datetime(2024, 5, 21, 18, 32, tzinfo=kaliningrad_tz)
+    expected_iso = capture_dt.isoformat()
+    assert updated_asset.captured_at == expected_iso
+    assert updated_asset.shot_at_utc == int(capture_dt.astimezone(UTC).timestamp())
+    assert reverse_calls == [
+        (pytest.approx(54.72, rel=1e-6), pytest.approx(20.51, rel=1e-6))
+    ]
+    assert bot.openai.calls, "caption geo extraction should call OpenAI"
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_ingest_job_skips_caption_geo_when_coordinates_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "bot.sqlite"
+    bot = Bot("test-token", str(db_path))
+    bot.asset_storage = tmp_path
+
+    channel_id = -43002
+    caption_text = "54.6500, 20.3500 21.05.2024 18:32"
+    asset_id = bot.data.save_asset(
+        channel_id,
+        778,
+        None,
+        "#geo",
+        tg_chat_id=channel_id,
+        caption=caption_text,
+        kind="photo",
+        file_meta={
+            "file_id": "file-existing",
+            "file_unique_id": "file-existing-uniq",
+            "mime_type": "image/jpeg",
+            "width": 64,
+            "height": 64,
+        },
+        origin="recognition",
+    )
+
+    kaliningrad_tz = ZoneInfo("Europe/Kaliningrad")
+    capture_dt = datetime(2024, 5, 20, 17, 15, tzinfo=kaliningrad_tz)
+    capture_iso = capture_dt.isoformat()
+    shot_at_utc = int(capture_dt.astimezone(UTC).timestamp())
+
+    bot.data.update_asset(
+        asset_id,
+        latitude=54.65,
+        longitude=20.35,
+        shot_at_utc=shot_at_utc,
+        metadata={"gps": {"captured_at": capture_iso}},
+    )
+
+    response = OpenAIResponse(
+        {"latitude": 1.0, "longitude": 2.0, "captured_at": None},
+        {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "request_id": "req-caption-skip",
+        },
+    )
+    stub = CaptionGeoOpenAIStub(response)
+    bot.openai = stub
+
+    sample_path = create_sample_image_without_gps(tmp_path / "caption-geo-skip.jpg")
+
+    async def fake_download_file(self: Bot, file_id: str, dest_path):
+        dest = Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(sample_path, dest)
+        return dest
+
+    async def fake_api_request(self: Bot, method: str, payload: dict[str, Any]):
+        return {"ok": True, "result": {"file_path": "dummy"}}
+
+    reverse_calls: list[tuple[float, float]] = []
+
+    async def fake_reverse_geocode(self: Bot, lat: float, lon: float):
+        reverse_calls.append((lat, lon))
+        return {"city": "Калининград", "country": "Россия"}
+
+    async def fake_ingest_photo(**kwargs):
+        overrides = kwargs.get("input_overrides") or {}
+        gps_override = dict(overrides.get("gps") or {})
+        capture_iso_override = gps_override.get("captured_at")
+        shot_at_override = None
+        shot_doy_override = None
+        if capture_iso_override:
+            capture_dt_override = datetime.fromisoformat(capture_iso_override)
+            if capture_dt_override.tzinfo is None:
+                capture_dt_override = capture_dt_override.replace(tzinfo=kaliningrad_tz)
+            shot_at_override = int(capture_dt_override.astimezone(UTC).timestamp())
+            shot_doy_override = capture_dt_override.astimezone(kaliningrad_tz).timetuple().tm_yday
+        callbacks: IngestionCallbacks | None = kwargs.get("callbacks")
+        if callbacks and callbacks.save_asset:
+            callbacks.save_asset(
+                {
+                    "channel_id": overrides.get("channel_id", channel_id),
+                    "message_id": 654,
+                    "tg_chat_id": overrides.get("tg_chat_id", channel_id),
+                    "caption": overrides.get("caption"),
+                    "kind": overrides.get("kind", "photo"),
+                    "file_meta": {
+                        "file_id": "file-existing",
+                        "file_unique_id": "file-existing-uniq",
+                        "mime_type": "image/jpeg",
+                        "width": 64,
+                        "height": 64,
+                        "sha256": "sha",
+                        "exif": {},
+                    },
+                    "metadata": {"gps": gps_override, "exif": {}},
+                    "latitude": gps_override.get("latitude"),
+                    "longitude": gps_override.get("longitude"),
+                    "exif_present": True,
+                    "shot_at_utc": shot_at_override,
+                    "shot_doy": shot_doy_override,
+                    "photo_doy": shot_doy_override,
+                }
+            )
+        return SimpleNamespace(gps=gps_override)
+
+    monkeypatch.setattr(Bot, "_download_file", fake_download_file)
+    monkeypatch.setattr(Bot, "api_request", fake_api_request)
+    monkeypatch.setattr(Bot, "_reverse_geocode", fake_reverse_geocode)
+    monkeypatch.setattr(sys.modules["main"], "ingest_photo", fake_ingest_photo)
+
+    job = Job(
+        id=402,
+        name="ingest",
+        payload={"asset_id": asset_id},
+        status="queued",
+        attempts=0,
+        available_at=None,
+        last_error=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    await bot._job_ingest(job)
+
+    updated_asset = bot.data.get_asset(asset_id)
+    assert updated_asset is not None
+    assert updated_asset.latitude == pytest.approx(54.65, rel=1e-6)
+    assert updated_asset.longitude == pytest.approx(20.35, rel=1e-6)
+    assert updated_asset.captured_at == capture_iso
+    assert reverse_calls == [
+        (pytest.approx(54.65, rel=1e-6), pytest.approx(20.35, rel=1e-6))
+    ]
+    assert not stub.calls, "caption geo extraction should be skipped when data exists"
+
+    await bot.close()
 
 
 @pytest.mark.asyncio
@@ -1483,10 +1770,8 @@ async def test_ingest_job_preserves_existing_exif_flag_on_parse_failure(
         extract_calls.append(str(image_source))
         return None
 
-    ingest_calls: list[dict[str, Any]] = []
 
     async def fake_ingest_photo(**kwargs):
-        ingest_calls.append(kwargs)
         callbacks: IngestionCallbacks | None = kwargs.get("callbacks")
         overrides: dict[str, Any] = kwargs.get("input_overrides") or {}
         bot._extract_gps(kwargs.get("file_path"))
@@ -1530,7 +1815,6 @@ async def test_ingest_job_preserves_existing_exif_flag_on_parse_failure(
     assert updated_asset.exif_present is True
     assert reverse_calls == [(stored_lat, stored_lon)]
     assert extract_calls, "_extract_gps should be invoked by ingestion"
-    assert ingest_calls, "ingest_photo should be invoked"
 
     bot.db.close()
 

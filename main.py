@@ -135,6 +135,50 @@ except Exception:  # pragma: no cover - fallback to UTC+02:00 when tz database m
     RUBRIC_JOBS_TZ = timezone(timedelta(hours=2))
 
 
+CAPTION_GEO_SYSTEM_PROMPT = (
+    "Ты — ассистент проекта Котопогода. По тексту подписи к фотографии необходимо извлечь "
+    "координаты (широта и долгота) и дату/время съёмки. Текст может быть на русском или "
+    "английском языке, координаты могут быть записаны в десятичных градусах или в формате "
+    "градусы/минуты/секунды. Всегда возвращай координаты в виде десятичных градусов и дату/"
+    "время в ISO 8601. Если часовой пояс не указан, используй Europe/Kaliningrad (UTC+02:00). "
+    "Не придумывай значения, если их нет в подписи."
+)
+
+CAPTION_GEO_USER_PROMPT_TEMPLATE = (
+    "Определи координаты съёмки и время по следующему тексту подписи.\n"
+    "Координаты могут выглядеть как ‘54.71081 20.51234’, ‘N54°43.120' E20°30.990' или ‘широта 54, долгота 20’.\n"
+    "Дата и время могут быть записаны как ‘21.05.2024 18:32’, ‘2024-05-21 18:32 (UTC+2)’ или ‘21 мая в 18:32’.\n"
+    "Возвращай null для каждого поля, если подходящих данных нет.\n"
+    "Текст подписи:\n"
+    "-----\n"
+    "{caption}\n"
+    "-----"
+)
+
+CAPTION_GEO_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "latitude": {
+            "type": ["number", "null"],
+            "minimum": -90,
+            "maximum": 90,
+        },
+        "longitude": {
+            "type": ["number", "null"],
+            "minimum": -180,
+            "maximum": 180,
+        },
+        "captured_at": {"type": ["string", "null"]},
+    },
+    "required": ["latitude", "longitude", "captured_at"],
+    "additionalProperties": False,
+}
+
+CAPTION_GEO_MAX_INPUT_LEN = 2400
+CAPTION_GEO_MIN_DIGITS = 4
+CAPTION_GEO_MODEL = "gpt-4o"
+
+
 def sanitize_prompt_leaks(text: str) -> str:
     """Remove prompt/schema leaks if detected (defense-in-depth)."""
     m = PROMPT_LEAK_PATTERN.search(text)
@@ -4998,6 +5042,129 @@ class Bot:
             logging.exception("Failed to write asset file %s", path)
         return str(path)
 
+
+    @staticmethod
+    def _coerce_decimal(value: Any) -> float | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return number
+
+    def _should_extract_caption_geo(self, caption: str) -> bool:
+        text = caption.strip()
+        if not text:
+            return False
+        digit_count = sum(ch.isdigit() for ch in text)
+        return digit_count >= CAPTION_GEO_MIN_DIGITS
+
+    def _normalize_caption_geo_datetime(self, raw: Any) -> str | None:
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        if not text:
+            return None
+        candidate = text
+        if candidate.endswith('Z'):
+            candidate = candidate[:-1] + '+00:00'
+        dt: datetime | None = None
+        try:
+            dt = datetime.fromisoformat(candidate)
+        except ValueError:
+            for fmt in (
+                '%d.%m.%Y %H:%M:%S',
+                '%d.%m.%Y %H:%M',
+                '%d-%m-%Y %H:%M:%S',
+                '%d-%m-%Y %H:%M',
+                '%Y-%m-%d %H:%M:%S',
+                '%Y-%m-%d %H:%M',
+            ):
+                try:
+                    dt = datetime.strptime(candidate, fmt)
+                except ValueError:
+                    continue
+                else:
+                    break
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=RUBRIC_JOBS_TZ)
+        return dt.isoformat()
+
+    async def _extract_caption_geo_metadata(
+        self,
+        *,
+        caption: str,
+        asset_id: str,
+        job: Job | None,
+        need_coordinates: bool,
+        need_datetime: bool,
+    ) -> dict[str, Any] | None:
+        if not self.openai or not getattr(self.openai, 'api_key', None):
+            return None
+        if not self._should_extract_caption_geo(caption):
+            return None
+        text = caption.strip()
+        if len(text) > CAPTION_GEO_MAX_INPUT_LEN:
+            text = text[:CAPTION_GEO_MAX_INPUT_LEN]
+        user_prompt = CAPTION_GEO_USER_PROMPT_TEMPLATE.format(caption=text)
+        try:
+            logging.info(
+                'Caption geo extraction requested asset_id=%s need_coords=%s need_time=%s',
+                asset_id,
+                need_coordinates,
+                need_datetime,
+            )
+            self._enforce_openai_limit(job, CAPTION_GEO_MODEL)
+            response = await self.openai.generate_json(
+                model=CAPTION_GEO_MODEL,
+                system_prompt=CAPTION_GEO_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                schema=CAPTION_GEO_SCHEMA,
+                schema_name='caption_geo_v1',
+                temperature=0.0,
+            )
+        except JobDelayed:
+            raise
+        except Exception:
+            logging.exception('Caption geo extraction failed for asset %s', asset_id)
+            return None
+        await self._record_openai_usage(
+            CAPTION_GEO_MODEL,
+            response,
+            job=job,
+            supabase_meta={'asset_id': asset_id, 'stage': 'caption_geo'},
+        )
+        if not response or not isinstance(response.content, dict):
+            logging.warning('Caption geo extraction returned empty payload for asset %s', asset_id)
+            return None
+        lat = self._coerce_decimal(response.content.get('latitude'))
+        lon = self._coerce_decimal(response.content.get('longitude'))
+        if lat is not None and not (-90.0 <= lat <= 90.0):
+            lat = None
+        if lon is not None and not (-180.0 <= lon <= 180.0):
+            lon = None
+        captured_at = self._normalize_caption_geo_datetime(response.content.get('captured_at'))
+        result: dict[str, Any] = {}
+        if lat is not None and lon is not None:
+            result['latitude'] = lat
+            result['longitude'] = lon
+        if captured_at:
+            result['captured_at'] = captured_at
+        if not result:
+            logging.info('Caption geo extraction produced no usable data for asset %s', asset_id)
+            return None
+        logging.info(
+            'Caption geo extraction succeeded asset_id=%s lat=%s lon=%s captured_at=%s',
+            asset_id,
+            result.get('latitude'),
+            result.get('longitude'),
+            result.get('captured_at'),
+        )
+        return result
+
     async def _job_ingest(self, job: Job) -> None:
         asset_id = job.payload.get("asset_id") if job.payload else None
         if not asset_id:
@@ -5091,8 +5258,9 @@ class Bot:
         }
 
         stored_exif = asset.exif or base_metadata.get("exif")
-        if stored_exif:
-            overrides["exif"] = stored_exif
+        exif_override: dict[str, Any] = {}
+        if isinstance(stored_exif, dict):
+            exif_override = dict(stored_exif)
 
         gps_override: dict[str, Any] = {}
         metadata_gps = base_metadata.get("gps") if base_metadata else None
@@ -5106,6 +5274,57 @@ class Bot:
         longitude_value = stored_longitude
         if longitude_value is not None:
             gps_override.setdefault("longitude", longitude_value)
+
+        caption_text = asset.caption or ""
+        caption_capture_dt: datetime | None = None
+        caption_has_content = bool(str(caption_text).strip())
+        source_label = str(asset.source or "telegram").strip().lower()
+        needs_coordinates = (
+            gps_override.get("latitude") is None or gps_override.get("longitude") is None
+        )
+        needs_datetime = gps_override.get("captured_at") is None and asset.shot_at_utc is None
+        should_try_caption_geo = (
+            caption_has_content and (needs_coordinates or needs_datetime) and source_label != "mobile"
+        )
+        if should_try_caption_geo:
+            caption_geo = await self._extract_caption_geo_metadata(
+                caption=str(caption_text),
+                asset_id=str(asset_id),
+                job=job,
+                need_coordinates=needs_coordinates,
+                need_datetime=needs_datetime,
+            )
+            if caption_geo:
+                lat_override = caption_geo.get("latitude")
+                lon_override = caption_geo.get("longitude")
+                if (
+                    lat_override is not None
+                    and lon_override is not None
+                    and (gps_override.get("latitude") is None or gps_override.get("longitude") is None)
+                ):
+                    gps_override.setdefault("latitude", lat_override)
+                    gps_override.setdefault("longitude", lon_override)
+                capture_override = caption_geo.get("captured_at")
+                if capture_override and gps_override.get("captured_at") is None:
+                    gps_override["captured_at"] = capture_override
+                if capture_override:
+                    normalized_capture = capture_override.replace("Z", "+00:00")
+                    with contextlib.suppress(ValueError):
+                        caption_capture_dt = datetime.fromisoformat(normalized_capture)
+                if caption_capture_dt is not None:
+                    capture_local = caption_capture_dt.astimezone(RUBRIC_JOBS_TZ)
+                    exif_text = capture_local.strftime("%Y:%m:%d %H:%M:%S")
+                    exif_override.setdefault("DateTimeOriginal", exif_text)
+                    exif_override.setdefault("DateTimeDigitized", exif_text)
+                    overrides.setdefault(
+                        "shot_at_utc", int(caption_capture_dt.astimezone(UTC).timestamp())
+                    )
+                    local_doy = capture_local.timetuple().tm_yday
+                    overrides.setdefault("shot_doy", local_doy)
+                    overrides.setdefault("photo_doy", local_doy)
+
+        if exif_override:
+            overrides["exif"] = exif_override
         if gps_override:
             overrides["gps"] = gps_override
 

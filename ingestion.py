@@ -1489,11 +1489,7 @@ async def _ingest_photo_internal(
 
         create_asset_callback = callbacks.create_asset
 
-        if (
-            create_asset_callback
-            and inputs.upload_id is not None
-            and inputs.file_ref is not None
-        ):
+        if create_asset_callback and inputs.upload_id is not None and inputs.file_ref is not None:
             source_value = inputs.source if inputs.source in {"mobile", "telegram"} else "mobile"
 
             # Parse wave scores from vision payload if available

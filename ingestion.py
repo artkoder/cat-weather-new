@@ -309,6 +309,7 @@ class CreateAssetPayload(TypedDict, total=False):
     source: str
     shot_at_utc: int | None
     shot_doy: int | None
+    photo_doy: int | None
     captured_at: str | None
 
 
@@ -1486,9 +1487,13 @@ async def _ingest_photo_internal(
         wave_score_value: float | None = None
         wave_conf_value: float | None = None
 
-        should_create_asset = bool(callbacks.create_asset and inputs.upload_id and inputs.file_ref)
+        create_asset_callback = callbacks.create_asset
 
-        if should_create_asset:
+        if (
+            create_asset_callback
+            and inputs.upload_id is not None
+            and inputs.file_ref is not None
+        ):
             source_value = inputs.source if inputs.source in {"mobile", "telegram"} else "mobile"
 
             # Parse wave scores from vision payload if available
@@ -1504,7 +1509,7 @@ async def _ingest_photo_internal(
                         wave_conf_value,
                     )
 
-            asset_id = callbacks.create_asset(
+            asset_id = create_asset_callback(
                 {
                     "upload_id": inputs.upload_id,
                     "file_ref": inputs.file_ref,
@@ -1519,6 +1524,7 @@ async def _ingest_photo_internal(
                     "source": source_value,
                     "shot_at_utc": shot_at_utc_value,
                     "shot_doy": shot_doy_value,
+                    "photo_doy": shot_doy_value,
                     "captured_at": gps_payload.get("captured_at"),
                 }
             )

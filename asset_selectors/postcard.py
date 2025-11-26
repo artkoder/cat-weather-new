@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import logging
-import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Sequence
 
 try:  # pragma: no cover - fallback for limited environments
     from zoneinfo import ZoneInfo
@@ -46,6 +46,18 @@ class _Candidate:
     @property
     def effective_dt(self) -> datetime:
         return self.captured_dt or self.created_dt or _MIN_DATETIME
+
+
+def _time_random_choice(candidates: Sequence[_Candidate], moment: datetime) -> _Candidate:
+    if not candidates:
+        raise ValueError("Candidate pool must not be empty")
+    moment_aware = _ensure_aware(moment)
+    timestamp_key = f"{moment_aware.timestamp():.6f}"
+    iso_key = moment_aware.isoformat()
+    payload = f"{timestamp_key}-{iso_key}-{len(candidates)}".encode("utf-8")
+    digest = hashlib.sha256(payload).digest()
+    index = int.from_bytes(digest[:8], "big") % len(candidates)
+    return candidates[index]
 
 
 def select_postcard_asset(
@@ -165,8 +177,8 @@ def select_postcard_asset(
 
     if test:
         random_pool = season_candidates if season_candidates else working_set
-        best = random.choice(random_pool)
-        selection_notes.append("test_random_full_pool")
+        best = _time_random_choice(random_pool, now_utc)
+        selection_notes.append("test_time_random_pool")
     else:
         repeat_candidates.sort(key=_sort_key)
         best = repeat_candidates[0]

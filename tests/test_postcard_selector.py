@@ -231,14 +231,14 @@ def test_test_mode_randomizes_selection(data: DataAccess, monkeypatch: pytest.Mo
         last_used_at=now - timedelta(days=9),
     )
 
-    def fake_choice(items):
+    def fake_time_choice(items, _moment):
         assert len(items) == 2
         for candidate in items:
             if candidate.asset_id == "asset-random":
                 return candidate
         raise AssertionError("asset-random not found in candidates")
 
-    monkeypatch.setattr("asset_selectors.postcard.random.choice", fake_choice)
+    monkeypatch.setattr("asset_selectors.postcard._time_random_choice", fake_time_choice)
 
     asset = select_postcard_asset(data, now=now, test=True)
     assert asset is not None

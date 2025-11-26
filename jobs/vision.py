@@ -7,9 +7,10 @@ import logging
 import math
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 import psutil
 
@@ -23,6 +24,47 @@ if TYPE_CHECKING:
 POSTCARD_SCORE_MIN = 1
 POSTCARD_SCORE_MAX = 10
 POSTCARD_TAG_THRESHOLD = 6
+
+_LOCAL_TIMEZONE = ZoneInfo("Europe/Kaliningrad")
+_ISO_OFFSET_WITHOUT_COLON = re.compile(r"^(.*)([+-]\d{2})(\d{2})$")
+
+
+def _normalize_iso_offset(text: str) -> str:
+    match = _ISO_OFFSET_WITHOUT_COLON.match(text)
+    if match:
+        return f"{match.group(1)}{match.group(2)}:{match.group(3)}"
+    return text
+
+
+def _format_local_capture_from_iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    normalized = text
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    normalized = _normalize_iso_offset(normalized)
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    local_dt = parsed.astimezone(_LOCAL_TIMEZONE)
+    return local_dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_local_capture_from_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        timestamp = int(value)
+    except (TypeError, ValueError):
+        return None
+    dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    return dt.astimezone(_LOCAL_TIMEZONE).strftime("%Y-%m-%d %H:%M")
 
 
 def _extract_postcard_score(raw: Any) -> int | None:
@@ -517,6 +559,16 @@ async def run_vision(bot: Bot, job: Job) -> None:
             else:
                 capture_time_display = candidate
             break
+        if capture_time_display is None:
+            gps_meta = metadata_dict.get("gps")
+            if isinstance(gps_meta, dict):
+                capture_time_display = _format_local_capture_from_iso(
+                    gps_meta.get("captured_at")
+                )
+        if capture_time_display is None:
+            capture_time_display = _format_local_capture_from_iso(getattr(asset, "captured_at", None))
+        if capture_time_display is None:
+            capture_time_display = _format_local_capture_from_timestamp(getattr(asset, "shot_at_utc", None))
         exif_month = bot._extract_month_from_metadata(metadata_dict)
         if exif_month is None and local_path and os.path.exists(local_path):
             exif_month = bot._extract_exif_month(local_path)

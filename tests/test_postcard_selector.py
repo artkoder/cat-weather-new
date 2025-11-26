@@ -245,6 +245,56 @@ def test_test_mode_randomizes_selection(data: DataAccess, monkeypatch: pytest.Mo
     assert asset.id == "asset-random"
 
 
+def test_test_mode_random_pool_expands_when_only_one_fresh_candidate(
+    data: DataAccess, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tz = ZoneInfo("Europe/Kaliningrad")
+    now = datetime(2024, 10, 1, 9, 0, tzinfo=tz)
+    doy_now = now.timetuple().tm_yday
+
+    _add_asset(
+        data,
+        asset_id="asset-fresh",
+        score=10,
+        created_at=now - timedelta(days=1),
+        captured_at=now - timedelta(days=1),
+        photo_doy=doy_now,
+        last_used_at=now - timedelta(days=30),
+    )
+    _add_asset(
+        data,
+        asset_id="asset-stale-a",
+        score=10,
+        created_at=now - timedelta(days=5),
+        captured_at=now - timedelta(days=5),
+        photo_doy=doy_now,
+        last_used_at=now - timedelta(days=40),
+    )
+    _add_asset(
+        data,
+        asset_id="asset-stale-b",
+        score=10,
+        created_at=now - timedelta(days=6),
+        captured_at=now - timedelta(days=6),
+        photo_doy=doy_now,
+        last_used_at=now - timedelta(days=45),
+    )
+
+    def fake_time_choice(items, _moment):
+        ids = {candidate.asset_id for candidate in items}
+        assert ids == {"asset-fresh", "asset-stale-a", "asset-stale-b"}
+        for candidate in items:
+            if candidate.asset_id == "asset-stale-b":
+                return candidate
+        raise AssertionError("asset-stale-b not found in candidates")
+
+    monkeypatch.setattr("asset_selectors.postcard._time_random_choice", fake_time_choice)
+
+    asset = select_postcard_asset(data, now=now, test=True)
+    assert asset is not None
+    assert asset.id == "asset-stale-b"
+
+
 def test_returns_none_when_scores_below_threshold(data: DataAccess) -> None:
     tz = ZoneInfo("Europe/Kaliningrad")
     now = datetime(2024, 9, 5, 10, 0, tzinfo=tz)

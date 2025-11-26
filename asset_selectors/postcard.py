@@ -177,6 +177,9 @@ def select_postcard_asset(
 
     if test:
         random_pool = season_candidates if season_candidates else working_set
+        if not random_pool or (len(random_pool) < 2 and len(candidates) > len(random_pool)):
+            random_pool = candidates
+            selection_notes.append("test_random_full_pool")
         best = _time_random_choice(random_pool, now_utc)
         selection_notes.append("test_time_random_pool")
     else:

@@ -562,13 +562,15 @@ async def run_vision(bot: Bot, job: Job) -> None:
         if capture_time_display is None:
             gps_meta = metadata_dict.get("gps")
             if isinstance(gps_meta, dict):
-                capture_time_display = _format_local_capture_from_iso(
-                    gps_meta.get("captured_at")
-                )
+                capture_time_display = _format_local_capture_from_iso(gps_meta.get("captured_at"))
         if capture_time_display is None:
-            capture_time_display = _format_local_capture_from_iso(getattr(asset, "captured_at", None))
+            capture_time_display = _format_local_capture_from_iso(
+                getattr(asset, "captured_at", None)
+            )
         if capture_time_display is None:
-            capture_time_display = _format_local_capture_from_timestamp(getattr(asset, "shot_at_utc", None))
+            capture_time_display = _format_local_capture_from_timestamp(
+                getattr(asset, "shot_at_utc", None)
+            )
         exif_month = bot._extract_month_from_metadata(metadata_dict)
         if exif_month is None and local_path and os.path.exists(local_path):
             exif_month = bot._extract_exif_month(local_path)

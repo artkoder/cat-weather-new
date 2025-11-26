@@ -287,6 +287,8 @@ LOVE_COLLECTION_LINK = f'<a href="{LOVE_COLLECTION_URL}">📂 Полюбить 3
 LOVE_COLLECTION_LINK_MARKDOWN = f"[📂 Полюбить 39]({LOVE_COLLECTION_URL})"
 POSTCARD_DEFAULT_REGION_HASHTAG = "#КалининградскаяОбласть"
 POSTCARD_MIN_SCORE = 7
+# Keep in sync with the repeat guard window in asset_selectors.postcard.
+POSTCARD_RECENT_USAGE_WINDOW = timedelta(days=7)
 
 
 def build_rubric_link_block(rubric_code: str, *, parse_mode: str = "HTML") -> str:
@@ -14405,10 +14407,44 @@ class Bot:
         return True
 
     def _compute_postcard_inventory_stats(self) -> tuple[int, dict[int, int]]:
-        """Count postcard-ready assets grouped by postcard_score."""
+        """Count postcard-ready assets grouped by postcard_score excluding recent uses."""
+
+        def _normalize_last_used(raw: Any) -> datetime | None:
+            if raw is None:
+                return None
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="ignore")
+            if isinstance(raw, (int, float)):
+                try:
+                    return datetime.fromtimestamp(float(raw), tz=UTC)
+                except (OSError, OverflowError, ValueError):
+                    return None
+            if isinstance(raw, str):
+                text = raw.strip()
+                if not text:
+                    return None
+                normalized = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+                try:
+                    parsed = datetime.fromisoformat(normalized)
+                except ValueError:
+                    try:
+                        timestamp = float(text)
+                    except ValueError:
+                        return None
+                    try:
+                        return datetime.fromtimestamp(timestamp, tz=UTC)
+                    except (OSError, OverflowError, ValueError):
+                        return None
+                if parsed.tzinfo is None:
+                    return parsed.replace(tzinfo=UTC)
+                return parsed.astimezone(UTC)
+            return None
+
+        recent_cutoff = datetime.now(UTC) - POSTCARD_RECENT_USAGE_WINDOW
         query = (
-            "SELECT postcard_score AS score, COUNT(*) AS count FROM assets "
-            "WHERE postcard_score BETWEEN ? AND ? GROUP BY postcard_score"
+            "SELECT postcard_score AS score, "
+            "json_extract(payload_json, '$.last_used_at') AS last_used_at "
+            "FROM assets WHERE postcard_score BETWEEN ? AND ?"
         )
         rows = self.db.execute(query, (POSTCARD_MIN_SCORE, 10)).fetchall()
         score_counts: dict[int, int] = {score: 0 for score in range(POSTCARD_MIN_SCORE, 11)}
@@ -14416,14 +14452,16 @@ class Bot:
         for row in rows:
             try:
                 score = int(row["score"])
-                count = int(row["count"])
             except (TypeError, ValueError):
                 logging.debug("POSTCARD_INVENTORY skip_row row=%s", dict(row))
                 continue
             if score < POSTCARD_MIN_SCORE or score > 10:
                 continue
-            score_counts[score] = count
-            total_count += count
+            last_used = _normalize_last_used(row["last_used_at"]) if "last_used_at" in row.keys() else None
+            if last_used and last_used >= recent_cutoff:
+                continue
+            score_counts[score] = score_counts.get(score, 0) + 1
+            total_count += 1
         return total_count, score_counts
 
     async def _send_postcard_inventory_report(

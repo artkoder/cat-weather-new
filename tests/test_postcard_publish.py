@@ -477,6 +477,62 @@ async def test_postcard_publish_sends_inventory_report(
 
 
 @pytest.mark.asyncio
+async def test_postcard_prod_publish_decrements_inventory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_noop, raising=False)
+
+    bot = main_module.Bot("dummy", str(tmp_path / "postcard-prod-inventory.db"))
+    bot.supabase = DummySupabase()
+    bot.openai = DummyPostcardOpenAI("Это Гвардейск — туманный рассвет.")
+
+    rubric = bot.data.get_rubric_by_code("postcard")
+    assert rubric is not None
+    rubric_title = rubric.title or "Открыточный вид"
+    config = dict(rubric.config or {})
+    config.update(
+        {
+            "enabled": True,
+            "channel_id": -925001,
+            "test_channel_id": -925002,
+            "postcard_region_hashtag": "#КалининградскаяОбласть",
+            "postcard_stopwords": [],
+        }
+    )
+    bot.data.save_rubric_config("postcard", config)
+    _create_postcard_asset(bot)
+
+    send_calls: list[dict[str, Any]] = []
+    message_calls: list[dict[str, Any]] = []
+
+    async def capture_api_request(
+        self: main_module.Bot, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:  # type: ignore[override]
+        if method == "sendPhoto":
+            send_calls.append({"data": data, "files": files})
+            return {"ok": True, "result": {"message_id": 2025}}
+        if method == "sendMessage":
+            message_calls.append(data or {})
+            return {"ok": True, "result": {}}
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
+
+    result = await bot.publish_rubric("postcard", test=False, initiator_id=5555)
+
+    assert result is True
+    assert send_calls
+    assert message_calls
+    report_messages = [entry for entry in message_calls if "text" in entry]
+    assert report_messages
+    report_text = report_messages[-1]["text"]
+    assert f"🗂 Остатки фото «{rubric_title}»: 0" in report_text
+    assert "• 10/10: 0" in report_text
+
+    bot.db.close()
+
+
+@pytest.mark.asyncio
 async def test_postcard_publish_notifies_when_no_high_score_assets(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

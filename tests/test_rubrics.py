@@ -3154,8 +3154,7 @@ async def test_rubrics_overview_lists_configs(tmp_path):
     postcard_keyboard = (postcard_message.get("reply_markup") or {}).get("inline_keyboard", [])
     assert postcard_keyboard
     assert any(
-        btn.get("text") == "Остатки"
-        and btn.get("callback_data") == "rubric_inventory:postcard"
+        btn.get("text") == "Остатки" and btn.get("callback_data") == "rubric_inventory:postcard"
         for row in postcard_keyboard
         for btn in row
     )

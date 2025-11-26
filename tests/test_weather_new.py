@@ -338,7 +338,9 @@ async def test_job_vision_caption_uses_gps_capture_time_from_metadata(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_job_vision_caption_uses_asset_capture_time_when_metadata_missing(tmp_path, monkeypatch):
+async def test_job_vision_caption_uses_asset_capture_time_when_metadata_missing(
+    tmp_path, monkeypatch
+):
     capture_iso = "2024-08-13T18:40:00+02:00"
     calls, _, _ = await _run_vision_job_collect_calls(
         tmp_path,

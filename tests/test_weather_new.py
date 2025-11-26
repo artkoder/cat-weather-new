@@ -16,14 +16,14 @@ import piexif
 import pytest
 from PIL import Image
 
-LOCAL_TZ = ZoneInfo("Europe/Kaliningrad")
-
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import observability
 from data_access import DataAccess, create_device, insert_upload
 from ingestion import extract_image_metadata as _extract_image_metadata
 from main import Bot, Job
 from openai_client import OpenAIResponse
+
+LOCAL_TZ = ZoneInfo("Europe/Kaliningrad")
 
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "dummy")
 

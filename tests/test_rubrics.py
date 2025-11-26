@@ -3144,9 +3144,15 @@ async def test_rubrics_overview_lists_configs(tmp_path):
     postcard_message = next(
         payload
         for _, payload in message_calls
-        if payload and "postcard" in (payload.get("text", "") or "")
+        if payload
+        and any(
+            btn.get("callback_data") == "rubric_toggle:postcard"
+            for row in (payload.get("reply_markup", {}) or {}).get("inline_keyboard", [])
+            for btn in row
+        )
     )
-    postcard_keyboard = postcard_message["reply_markup"]["inline_keyboard"]
+    postcard_keyboard = (postcard_message.get("reply_markup") or {}).get("inline_keyboard", [])
+    assert postcard_keyboard
     assert any(
         btn.get("text") == "Остатки"
         and btn.get("callback_data") == "rubric_inventory:postcard"

@@ -468,7 +468,7 @@ async def test_postcard_publish_sends_inventory_report(
     assert message["chat_id"] == 4321
     text = message["text"]
     assert f"🗂 Остатки фото «{rubric_title}»: 1" in text
-    assert "Волнение (7–10)" in text
+    assert "Открыточность (7–10)" in text
     for score in range(POSTCARD_MIN_SCORE, 10):
         assert f"• {score}/10: 0 ⚠️ мало" in text
     assert "• 10/10: 1 ⚠️ мало" in text

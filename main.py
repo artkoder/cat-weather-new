@@ -8764,6 +8764,18 @@ class Bot:
                         ),
                     },
                 )
+        elif data.startswith("rubric_inventory:") and self.is_superadmin(user_id):
+            code = data.split(":", 1)[1] if ":" in data else ""
+            if code == "postcard":
+                rubric = self.data.get_rubric_by_code(code)
+                rubric_title = rubric.title if rubric else None
+                await self._send_postcard_inventory_report(
+                    is_prod=False,
+                    rubric_title=rubric_title,
+                    initiator_id=user_id,
+                )
+            else:
+                logging.info("RUBRIC_INVENTORY unknown_code code=%s user_id=%s", code, user_id)
         elif data.startswith("rubric_toggle:") and self.is_superadmin(user_id):
             code = data.split(":", 1)[1]
             self._clear_rubric_pending_run(user_id, code)
@@ -10567,6 +10579,15 @@ class Bot:
                         "text": "🧪 Тест",
                         "callback_data": f"rubric_publish_confirm:{rubric.code}:test",
                     },
+                ]
+            )
+        if rubric.code == "postcard":
+            keyboard_rows.append(
+                [
+                    {
+                        "text": "Остатки",
+                        "callback_data": f"rubric_inventory:{rubric.code}",
+                    }
                 ]
             )
         keyboard_rows.append(
@@ -14426,7 +14447,7 @@ class Bot:
             self._format_inventory_row(f"{score}/10", score_counts.get(score, 0))
             for score in range(POSTCARD_MIN_SCORE, 11)
         ]
-        sections = [("Волнение (7–10)", rows)]
+        sections = [("Открыточность (7–10)", rows)]
         title = rubric_title or "Открыточный вид"
         report_text = self._compose_inventory_report_text(
             rubric_title=title,

@@ -3141,10 +3141,80 @@ async def test_rubrics_overview_lists_configs(tmp_path):
     assert guess_message is not None
     assert "guess_arch" in guess_message.get("text", "")
 
+    postcard_message = next(
+        payload
+        for _, payload in message_calls
+        if payload and "postcard" in (payload.get("text", "") or "")
+    )
+    postcard_keyboard = postcard_message["reply_markup"]["inline_keyboard"]
+    assert any(
+        btn.get("text") == "Остатки"
+        and btn.get("callback_data") == "rubric_inventory:postcard"
+        for row in postcard_keyboard
+        for btn in row
+    )
+
     calls.clear()
     await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
     send_calls = [item for item in calls if item[0] == "sendMessage"]
     assert len(send_calls) == 5
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_postcard_inventory_button_sends_report(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+    message_counter = 0
+    sent_messages: list[dict[str, Any]] = []
+
+    async def fake_api(method, data=None, *, files=None):
+        nonlocal message_counter
+        if method == "sendMessage":
+            message_counter += 1
+            payload = dict(data or {})
+            sent_messages.append(payload)
+            chat_id = payload.get("chat_id") if isinstance(payload, dict) else None
+            return {
+                "ok": True,
+                "result": {"message_id": message_counter, "chat": {"id": chat_id}},
+            }
+        if method in {"editMessageText", "editMessageReplyMarkup"}:
+            return {
+                "ok": True,
+                "result": {
+                    "message_id": data.get("message_id") if isinstance(data, dict) else None,
+                    "chat": {"id": data.get("chat_id") if isinstance(data, dict) else None},
+                },
+            }
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore
+    await bot.start()
+
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+    await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
+
+    sent_messages.clear()
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "inv-1",
+                "from": {"id": 1},
+                "data": "rubric_inventory:postcard",
+                "message": {"chat": {"id": 1}, "message_id": 999},
+            }
+        }
+    )
+
+    assert sent_messages
+    report_message = next(
+        msg for msg in sent_messages if "🗂 Остатки фото" in (msg.get("text", "") or "")
+    )
+    assert report_message.get("chat_id") == 1
+    text = report_message.get("text", "")
+    assert "Открыточность (7–10)" in text
+
     await bot.close()
 
 

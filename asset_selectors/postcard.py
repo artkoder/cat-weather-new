@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Sequence
+from typing import Any
 
 try:  # pragma: no cover - fallback for limited environments
     from zoneinfo import ZoneInfo
@@ -54,7 +55,7 @@ def _time_random_choice(candidates: Sequence[_Candidate], moment: datetime) -> _
     moment_aware = _ensure_aware(moment)
     timestamp_key = f"{moment_aware.timestamp():.6f}"
     iso_key = moment_aware.isoformat()
-    payload = f"{timestamp_key}-{iso_key}-{len(candidates)}".encode("utf-8")
+    payload = f"{timestamp_key}-{iso_key}-{len(candidates)}".encode()
     digest = hashlib.sha256(payload).digest()
     index = int.from_bytes(digest[:8], "big") % len(candidates)
     return candidates[index]

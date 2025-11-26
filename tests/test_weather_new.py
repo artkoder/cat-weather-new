@@ -5,15 +5,18 @@ import os
 import sqlite3
 import sys
 import types
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import piexif
 import pytest
 from PIL import Image
+
+LOCAL_TZ = ZoneInfo("Europe/Kaliningrad")
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 import observability
@@ -36,6 +39,8 @@ async def _run_vision_job_collect_calls(
     metadata: dict[str, Any] | None = None,
     vision_overrides: dict[str, Any] | None = None,
     exif_month: int | None = None,
+    asset_captured_at: str | None = None,
+    asset_shot_at_utc: int | None = None,
 ):
     import main as main_module
 
@@ -174,6 +179,14 @@ async def _run_vision_job_collect_calls(
         origin="recognition",
     )
 
+    if asset_captured_at is not None or asset_shot_at_utc is not None:
+        update_kwargs: dict[str, Any] = {}
+        if asset_captured_at is not None:
+            update_kwargs["captured_at"] = asset_captured_at
+        if asset_shot_at_utc is not None:
+            update_kwargs["shot_at_utc"] = asset_shot_at_utc
+        bot.data.update_asset(asset_id, **update_kwargs)
+
     job = Job(
         id=1,
         name="vision",
@@ -305,6 +318,59 @@ async def test_job_vision_caption_includes_exif_address_for_nested_gps(tmp_path,
     assert caption is not None and "Адрес (EXIF)" in caption
     assert asset.latitude == pytest.approx(lat_value, rel=1e-6)
     assert asset.longitude == pytest.approx(lon_value, rel=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_job_vision_caption_uses_gps_capture_time_from_metadata(tmp_path, monkeypatch):
+    capture_iso = "2024-08-13T18:40:00+02:00"
+    metadata = {"gps": {"captured_at": capture_iso}}
+    calls, _, _ = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        metadata=metadata,
+    )
+    copy_calls = [call for call in calls if call["method"] == "copyMessage"]
+    assert copy_calls
+    caption = copy_calls[0]["data"].get("caption")
+    assert caption is not None
+    assert "Время съёмки: 2024-08-13 18:40" in caption
+
+
+@pytest.mark.asyncio
+async def test_job_vision_caption_uses_asset_capture_time_when_metadata_missing(tmp_path, monkeypatch):
+    capture_iso = "2024-08-13T18:40:00+02:00"
+    calls, _, _ = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        metadata=None,
+        asset_captured_at=capture_iso,
+    )
+    copy_calls = [call for call in calls if call["method"] == "copyMessage"]
+    assert copy_calls
+    caption = copy_calls[0]["data"].get("caption")
+    assert caption is not None
+    assert "Время съёмки: 2024-08-13 18:40" in caption
+
+
+@pytest.mark.asyncio
+async def test_job_vision_caption_uses_shot_timestamp_fallback(tmp_path, monkeypatch):
+    shot_dt = datetime(2024, 8, 10, 9, 0, tzinfo=timezone.utc)
+    shot_ts = int(shot_dt.timestamp())
+    calls, _, _ = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        metadata=None,
+        asset_shot_at_utc=shot_ts,
+    )
+    copy_calls = [call for call in calls if call["method"] == "copyMessage"]
+    assert copy_calls
+    caption = copy_calls[0]["data"].get("caption")
+    assert caption is not None
+    expected_line = shot_dt.astimezone(LOCAL_TZ).strftime("Время съёмки: %Y-%m-%d %H:%M")
+    assert expected_line in caption
 
 
 @pytest.mark.asyncio

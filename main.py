@@ -8778,6 +8778,58 @@ class Bot:
                 )
             else:
                 logging.info("RUBRIC_INVENTORY unknown_code code=%s user_id=%s", code, user_id)
+        elif data == "postcard_send_now" and self.is_superadmin(user_id):
+            try:
+                job_id = self.enqueue_rubric(
+                    "postcard",
+                    test=False,
+                    initiator_id=user_id,
+                )
+            except Exception as exc:  # noqa: PERF203 - user-facing feedback
+                logging.exception("POSTCARD_SEND_NOW enqueue_failed user_id=%s", user_id)
+                reason = str(exc).strip() or "неизвестная ошибка"
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Ошибка запуска рубрики",
+                        "show_alert": True,
+                    },
+                )
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": (
+                            "⚠️ Не удалось запустить внеочередную публикацию «Открыточный вид».\n"
+                            f"Причина: {reason}"
+                        ),
+                    },
+                )
+            else:
+                logging.info(
+                    "POSTCARD_SEND_NOW enqueued job_id=%s user_id=%s",
+                    job_id,
+                    user_id,
+                )
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Задача поставлена в очередь",
+                    },
+                )
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": (
+                            "✅ Внеочередная публикация «Открыточный вид» поставлена в очередь "
+                            f"(задача #{job_id})."
+                        ),
+                    },
+                )
+            return
         elif data.startswith("rubric_toggle:") and self.is_superadmin(user_id):
             code = data.split(":", 1)[1]
             self._clear_rubric_pending_run(user_id, code)
@@ -14492,12 +14544,23 @@ class Bot:
             total_count=total_count,
             sections=sections,
         )
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "Отправить сейчас",
+                        "callback_data": "postcard_send_now",
+                    }
+                ]
+            ]
+        }
         await self._send_inventory_report_message(
             rubric_code="postcard",
             report_text=report_text,
             total_count=total_count,
             is_prod=is_prod,
             initiator_id=initiator_id,
+            reply_markup=reply_markup,
         )
 
     async def _notify_postcard_no_inventory(
@@ -16114,6 +16177,7 @@ class Bot:
         total_count: int,
         is_prod: bool,
         initiator_id: int | None = None,
+        reply_markup: dict[str, Any] | None = None,
     ) -> None:
         target_ids = [initiator_id] if initiator_id else self.get_superadmin_ids()
         if not target_ids:
@@ -16126,12 +16190,15 @@ class Bot:
             return
         for target_id in target_ids:
             try:
+                payload = {
+                    "chat_id": target_id,
+                    "text": report_text,
+                }
+                if reply_markup:
+                    payload["reply_markup"] = reply_markup
                 await self.api_request(
                     "sendMessage",
-                    {
-                        "chat_id": target_id,
-                        "text": report_text,
-                    },
+                    payload,
                 )
                 logging.info(
                     "%s_INVENTORY_SENT prod=%d total=%d target_id=%s",

@@ -3219,6 +3219,85 @@ async def test_postcard_inventory_button_sends_report(tmp_path):
     assert report_message.get("chat_id") == 1
     text = report_message.get("text", "")
     assert "Открыточность (7–10)" in text
+    markup = report_message.get("reply_markup")
+    assert isinstance(markup, dict)
+    buttons = markup.get("inline_keyboard") or []
+    assert any(
+        btn.get("callback_data") == "postcard_send_now"
+        for row in buttons
+        for btn in row
+    )
+
+    await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_postcard_send_now_callback_enqueues_job(tmp_path):
+    bot = Bot("dummy", str(tmp_path / "db.sqlite"))
+
+    api_calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    async def fake_api(method, data=None, *, files=None):
+        api_calls.append((method, data))
+        if method == "sendMessage":
+            chat_id = data.get("chat_id") if isinstance(data, dict) else None
+            return {
+                "ok": True,
+                "result": {"message_id": len(api_calls), "chat": {"id": chat_id}},
+            }
+        if method == "answerCallbackQuery":
+            return {"ok": True, "result": {}}
+        return {"ok": True}
+
+    bot.api_request = fake_api  # type: ignore
+
+    # Register superadmin
+    await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
+    api_calls.clear()
+
+    enqueued: list[dict[str, Any]] = []
+
+    def fake_enqueue(
+        code, *, channel_id=None, test=False, initiator_id=None, instructions=None
+    ):
+        enqueued.append(
+            {
+                "code": code,
+                "channel_id": channel_id,
+                "test": test,
+                "initiator_id": initiator_id,
+                "instructions": instructions,
+            }
+        )
+        return 314
+
+    bot.enqueue_rubric = fake_enqueue  # type: ignore[assignment]
+
+    await bot.handle_update(
+        {
+            "callback_query": {
+                "id": "pc-now-1",
+                "from": {"id": 1},
+                "data": "postcard_send_now",
+                "message": {"chat": {"id": 1}, "message_id": 777},
+            }
+        }
+    )
+
+    assert enqueued == [
+        {
+            "code": "postcard",
+            "channel_id": None,
+            "test": False,
+            "initiator_id": 1,
+            "instructions": None,
+        }
+    ]
+    answer_payload = next(data for method, data in api_calls if method == "answerCallbackQuery")
+    assert answer_payload["text"] == "Задача поставлена в очередь"
+    send_payload = next(data for method, data in api_calls if method == "sendMessage")
+    assert "Открыточный вид" in (send_payload.get("text") or "")
+    assert "314" in (send_payload.get("text") or "")
 
     await bot.close()
 

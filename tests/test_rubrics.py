@@ -3158,6 +3158,11 @@ async def test_rubrics_overview_lists_configs(tmp_path):
         for row in postcard_keyboard
         for btn in row
     )
+    assert any(
+        btn.get("text") == "Отправить сейчас" and btn.get("callback_data") == "postcard_send_now"
+        for row in postcard_keyboard
+        for btn in row
+    )
 
     calls.clear()
     await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})

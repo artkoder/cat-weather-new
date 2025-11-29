@@ -60,14 +60,20 @@ def _add_asset(
     city: str | None = None,
     region: str | None = None,
     last_used_at: datetime | None = None,
+    last_used_history: list[datetime] | None = None,
+    tags: list[str] | None = None,
 ) -> None:
     payload: dict[str, object] = {}
     if city:
         payload["city"] = city
     if region:
         payload["region"] = region
-    if last_used_at:
+    if last_used_history:
+        payload["last_used_at"] = [_iso(moment) for moment in last_used_history]
+    elif last_used_at:
         payload["last_used_at"] = _iso(last_used_at)
+    if tags is not None:
+        payload["tags"] = tags
     data.conn.execute(
         """
         INSERT INTO assets (id, payload_json, created_at, source, postcard_score, captured_at, photo_doy)
@@ -342,3 +348,81 @@ def test_returns_none_when_scores_below_threshold(data: DataAccess) -> None:
 
     asset = select_postcard_asset(data, now=now)
     assert asset is None
+
+
+def test_tag_strict_window_skips_high_overlap(data: DataAccess) -> None:
+    tz = ZoneInfo("Europe/Kaliningrad")
+    now = datetime(2024, 7, 10, 12, 0, tzinfo=tz)
+    doy_now = now.timetuple().tm_yday
+
+    _add_asset(
+        data,
+        asset_id="asset-recent-tag",
+        score=10,
+        created_at=now - timedelta(days=2),
+        captured_at=now - timedelta(days=2),
+        photo_doy=doy_now,
+        last_used_history=[now - timedelta(days=1)],
+        tags=["sea", "sunset"],
+    )
+    _add_asset(
+        data,
+        asset_id="asset-high-overlap",
+        score=10,
+        created_at=now - timedelta(days=1),
+        captured_at=now - timedelta(days=1),
+        photo_doy=doy_now,
+        tags=["sea", "sunset", "pier"],
+    )
+    _add_asset(
+        data,
+        asset_id="asset-clear",
+        score=10,
+        created_at=now - timedelta(days=1),
+        captured_at=now - timedelta(days=1),
+        photo_doy=doy_now,
+        tags=["forest"],
+    )
+
+    asset = select_postcard_asset(data, now=now)
+    assert asset is not None
+    assert asset.id == "asset-clear"
+
+
+def test_tag_soft_window_downranks_candidates(data: DataAccess) -> None:
+    tz = ZoneInfo("Europe/Kaliningrad")
+    now = datetime(2024, 7, 20, 8, 0, tzinfo=tz)
+    doy_now = now.timetuple().tm_yday
+
+    _add_asset(
+        data,
+        asset_id="asset-soft-history",
+        score=10,
+        created_at=now - timedelta(days=10),
+        captured_at=now - timedelta(days=10),
+        photo_doy=doy_now,
+        last_used_history=[now - timedelta(days=5)],
+        tags=["cat", "museum"],
+    )
+    _add_asset(
+        data,
+        asset_id="asset-penalized",
+        score=10,
+        created_at=now - timedelta(days=1),
+        captured_at=now - timedelta(days=1),
+        photo_doy=doy_now,
+        tags=["cat", "river"],
+    )
+    _add_asset(
+        data,
+        asset_id="asset-clean",
+        score=10,
+        created_at=now - timedelta(days=2),
+        captured_at=now - timedelta(days=2),
+        photo_doy=doy_now,
+        tags=["garden"],
+    )
+
+    asset = select_postcard_asset(data, now=now)
+    assert asset is not None
+    assert asset.id == "asset-clean"

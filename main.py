@@ -10641,6 +10641,10 @@ class Bot:
                     {
                         "text": "Остатки",
                         "callback_data": f"rubric_inventory:{rubric.code}",
+                    },
+                    {
+                        "text": "Отправить сейчас",
+                        "callback_data": "postcard_send_now",
                     }
                 ]
             )

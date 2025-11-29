@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -21,6 +22,10 @@ _CANDIDATE_LIMIT = 200
 _FRESHNESS_WINDOW = timedelta(days=3)
 _SEASON_WINDOW_DAYS = 30
 _REPEAT_GUARD_WINDOW = timedelta(days=7)
+_TAG_STRICT_WINDOW = timedelta(days=3)
+_TAG_SOFT_WINDOW = timedelta(days=7)
+_TAG_STRICT_MAX_OVERLAP = 1
+_TAG_SOFT_MAX_OVERLAP = 0
 _DAYS_IN_YEAR = 366
 _MIN_DATETIME = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -40,6 +45,8 @@ class _Candidate:
     city: str | None
     region: str | None
     last_used_raw: str | None
+    tags: frozenset[str]
+    last_used_history: tuple[datetime, ...]
     captured_dt: datetime | None
     created_dt: datetime
     last_used_dt: datetime | None
@@ -104,6 +111,7 @@ def select_postcard_asset(
                 captured_at,
                 created_at,
                 photo_doy,
+                json_extract(payload_json, '$.tags') AS tags,
                 json_extract(payload_json, '$.last_used_at') AS last_used_at,
                 json_extract(payload_json, '$.city') AS city,
                 json_extract(payload_json, '$.region') AS region
@@ -198,6 +206,11 @@ def _select_candidate(
     repeat_threshold: datetime,
     test: bool,
 ) -> tuple[_Candidate | None, list[str]]:
+    strict_tag_cutoff = now_utc - _TAG_STRICT_WINDOW
+    soft_tag_cutoff = now_utc - _TAG_SOFT_WINDOW
+    strict_recent_tags = _collect_recent_tags(candidates, strict_tag_cutoff)
+    soft_recent_tags = _collect_recent_tags(candidates, soft_tag_cutoff)
+
     fresh_threshold = now_utc - _FRESHNESS_WINDOW
     fresh_candidates = [c for c in candidates if c.effective_dt >= fresh_threshold]
     logger.info(
@@ -245,16 +258,39 @@ def _select_candidate(
     if not non_recent:
         selection_notes.append("repeat_guard_fallback")
 
+    tag_penalties: dict[str, int] = {}
+    tag_filtered: list[_Candidate] = []
+    skipped_tag_overlap = 0
+    for candidate in repeat_candidates:
+        strict_overlap = len(candidate.tags & strict_recent_tags)
+        soft_overlap = len(candidate.tags & soft_recent_tags)
+        if strict_overlap > _TAG_STRICT_MAX_OVERLAP:
+            skipped_tag_overlap += 1
+            continue
+        penalty = max(soft_overlap - _TAG_SOFT_MAX_OVERLAP, 0)
+        if penalty:
+            tag_penalties[candidate.asset_id] = penalty
+        tag_filtered.append(candidate)
+
+    if skipped_tag_overlap:
+        selection_notes.append("tag_overlap_filter")
+
+    if not tag_filtered:
+        selection_notes.append("tag_overlap_exhausted")
+        return None, selection_notes
+
     if test:
-        random_pool = season_candidates if season_candidates else working_set
+        random_pool = tag_filtered if tag_filtered else season_candidates
         if not random_pool or (len(random_pool) < 2 and len(candidates) > len(random_pool)):
             random_pool = candidates
             selection_notes.append("test_random_full_pool")
         best = _time_random_choice(random_pool, now_utc)
         selection_notes.append("test_time_random_pool")
     else:
-        repeat_candidates.sort(key=_sort_key)
-        best = repeat_candidates[0]
+        tag_filtered.sort(key=lambda cand: _sort_key(cand, penalties=tag_penalties))
+        best = tag_filtered[0]
+        if tag_penalties.get(best.asset_id):
+            selection_notes.append("tag_penalty")
 
     return best, selection_notes
 
@@ -273,10 +309,12 @@ def _build_candidate(row: Any) -> _Candidate:
     photo_doy = _normalize_doy(row["photo_doy"])
     city = _normalize_optional_str(row["city"])
     region = _normalize_optional_str(row["region"])
+    tags = _parse_tags(row["tags"])
     last_used_raw = _to_str(row["last_used_at"])
+    last_used_history = _parse_last_used_history(row["last_used_at"])
     captured_dt = _parse_iso(captured_raw)
     created_dt = _parse_iso(created_raw) or _MIN_DATETIME
-    last_used_dt = _parse_iso(last_used_raw)
+    last_used_dt = _latest_dt(last_used_history) or _parse_iso(last_used_raw)
     return _Candidate(
         asset_id=asset_id,
         score=score,
@@ -286,6 +324,8 @@ def _build_candidate(row: Any) -> _Candidate:
         city=city,
         region=region,
         last_used_raw=last_used_raw,
+        tags=tags,
+        last_used_history=last_used_history,
         captured_dt=captured_dt,
         created_dt=created_dt,
         last_used_dt=last_used_dt,
@@ -300,10 +340,11 @@ def _matches_season(photo_doy: int | None, now_doy: int) -> bool:
     return min(delta, wrapped) <= _SEASON_WINDOW_DAYS
 
 
-def _sort_key(candidate: _Candidate) -> tuple[float, str]:
+def _sort_key(candidate: _Candidate, *, penalties: dict[str, int]) -> tuple[int, float, str]:
+    penalty = penalties.get(candidate.asset_id, 0)
     reference = candidate.effective_dt
     timestamp = reference.timestamp() if reference else float("-inf")
-    return (-timestamp, candidate.asset_id)
+    return (penalty, -timestamp, candidate.asset_id)
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -343,3 +384,63 @@ def _to_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _parse_tags(raw: Any) -> frozenset[str]:
+    if raw is None:
+        return frozenset()
+    parsed: Any = raw
+    if isinstance(raw, str):
+        raw_text = raw.strip()
+        if not raw_text:
+            return frozenset()
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:
+            parsed = raw_text
+    if isinstance(parsed, str):
+        return frozenset({parsed})
+    if isinstance(parsed, (list, tuple, set, frozenset)):
+        normalized = {_to_str(item) for item in parsed}
+        return frozenset(filter(None, normalized))
+    return frozenset()
+
+
+def _parse_last_used_history(raw: Any) -> tuple[datetime, ...]:
+    if raw is None:
+        return ()
+    parsed: Any = raw
+    if isinstance(raw, str):
+        raw_text = raw.strip()
+        if not raw_text:
+            return ()
+        try:
+            parsed = json.loads(raw_text)
+        except Exception:
+            parsed = raw_text
+    if isinstance(parsed, (list, tuple, set)):
+        history = [_parse_iso(_to_str(item)) for item in parsed]
+        return tuple(sorted(filter(None, history)))
+    single = _parse_iso(_to_str(parsed))
+    return (single,) if single else ()
+
+
+def _latest_dt(history: Sequence[datetime]) -> datetime | None:
+    if not history:
+        return None
+    try:
+        return max(history)
+    except Exception:
+        return None
+
+
+def _collect_recent_tags(candidates: Sequence[_Candidate], cutoff: datetime) -> set[str]:
+    recent_tags: set[str] = set()
+    for candidate in candidates:
+        if not candidate.tags:
+            continue
+        for moment in candidate.last_used_history:
+            if moment >= cutoff:
+                recent_tags.update(candidate.tags)
+                break
+    return recent_tags

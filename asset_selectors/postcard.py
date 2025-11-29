@@ -77,58 +77,127 @@ def select_postcard_asset(
     now_local = now_utc.astimezone(KALININGRAD_TZ)
     doy_now = now_local.timetuple().tm_yday
 
-    max_score_row = data.conn.execute(
+    score_rows = data.conn.execute(
         """
-        SELECT MAX(postcard_score) AS max_score
+        SELECT DISTINCT postcard_score AS score
         FROM assets
         WHERE postcard_score IS NOT NULL AND postcard_score >= ?
+        ORDER BY score DESC
         """,
         (_MIN_SCORE,),
-    ).fetchone()
-    max_score = (
-        int(max_score_row["max_score"])
-        if max_score_row and max_score_row["max_score"] is not None
-        else None
-    )
-    if max_score is None:
+    ).fetchall()
+    scores = [int(row["score"]) for row in score_rows if row["score"] is not None]
+    if not scores:
         logger.info("POSTCARD_RUBRIC score_pool empty threshold=%s", _MIN_SCORE)
         return None
 
-    rows = data.conn.execute(
-        """
-        SELECT
-            id,
-            postcard_score,
-            captured_at,
-            created_at,
-            photo_doy,
-            json_extract(payload_json, '$.last_used_at') AS last_used_at,
-            json_extract(payload_json, '$.city') AS city,
-            json_extract(payload_json, '$.region') AS region
-        FROM assets
-        WHERE postcard_score = ?
-        ORDER BY captured_at DESC, created_at DESC, id ASC
-        LIMIT ?
-        """,
-        (max_score, _CANDIDATE_LIMIT),
-    ).fetchall()
-    candidates = [_build_candidate(row) for row in rows]
-    if not candidates:
+    best: _Candidate | None = None
+    selection_notes: list[str] = []
+    repeat_threshold = now_utc - _REPEAT_GUARD_WINDOW
+
+    for score in scores:
+        rows = data.conn.execute(
+            """
+            SELECT
+                id,
+                postcard_score,
+                captured_at,
+                created_at,
+                photo_doy,
+                json_extract(payload_json, '$.last_used_at') AS last_used_at,
+                json_extract(payload_json, '$.city') AS city,
+                json_extract(payload_json, '$.region') AS region
+            FROM assets
+            WHERE postcard_score = ?
+            ORDER BY captured_at DESC, created_at DESC, id ASC
+            LIMIT ?
+            """,
+            (score, _CANDIDATE_LIMIT),
+        ).fetchall()
+        candidates = [_build_candidate(row) for row in rows]
+        if not candidates:
+            logger.info(
+                "POSTCARD_RUBRIC score_pool empty_rows current_score=%s threshold=%s",
+                score,
+                _MIN_SCORE,
+            )
+            continue
+
         logger.info(
-            "POSTCARD_RUBRIC score_pool empty_rows max_score=%s threshold=%s",
-            max_score,
+            "POSTCARD_RUBRIC score_pool threshold=%s current_score=%s candidate_count=%s limit=%s",
+            _MIN_SCORE,
+            score,
+            len(candidates),
+            _CANDIDATE_LIMIT,
+        )
+
+        chosen, notes = _select_candidate(
+            candidates=candidates,
+            now_utc=now_utc,
+            doy_now=doy_now,
+            repeat_threshold=repeat_threshold,
+            test=test,
+        )
+        if chosen:
+            best = chosen
+            selection_notes = notes
+            if score != scores[0]:
+                selection_notes.append("score_fallback")
+            break
+
+    if best is None:
+        logger.info(
+            "POSTCARD_RUBRIC selection_empty max_score=%s min_score=%s",
+            scores[0],
             _MIN_SCORE,
         )
         return None
 
+    selection_notes_str = ",".join(selection_notes) if selection_notes else "direct"
+
+    freshness_hours: float | None = None
+    try:
+        delta = now_utc - best.effective_dt
+        freshness_hours = max(delta.total_seconds() / 3600.0, 0.0)
+    except Exception:  # pragma: no cover - defensive against invalid datetimes
+        freshness_hours = None
+
+    season_match = _matches_season(best.photo_doy, doy_now)
+    is_fresh_choice = bool(best.effective_dt and best.effective_dt >= now_utc - _FRESHNESS_WINDOW)
+    captured_display = best.captured_raw or best.created_raw
+
     logger.info(
-        "POSTCARD_RUBRIC score_pool threshold=%s max_score=%s candidate_count=%s limit=%s",
-        _MIN_SCORE,
-        max_score,
-        len(candidates),
-        _CANDIDATE_LIMIT,
+        "POSTCARD_RUBRIC selection asset_id=%s score=%s captured_at=%s created_at=%s photo_doy=%s doy_now=%s city=%s region=%s "
+        "freshness_hours=%s reused_recently=%s season_match=%s fresh_window=%s notes=%s",
+        best.asset_id,
+        best.score,
+        captured_display,
+        best.created_raw,
+        best.photo_doy,
+        doy_now,
+        best.city or "",
+        best.region or "",
+        f"{freshness_hours:.2f}" if freshness_hours is not None else "unknown",
+        bool(best.last_used_dt and best.last_used_dt >= repeat_threshold),
+        season_match,
+        is_fresh_choice,
+        selection_notes_str,
     )
 
+    asset = data.get_asset(best.asset_id)
+    if asset is None:
+        logger.warning("POSTCARD_RUBRIC asset_missing asset_id=%s", best.asset_id)
+    return asset
+
+
+def _select_candidate(
+    *,
+    candidates: Sequence[_Candidate],
+    now_utc: datetime,
+    doy_now: int,
+    repeat_threshold: datetime,
+    test: bool,
+) -> tuple[_Candidate | None, list[str]]:
     fresh_threshold = now_utc - _FRESHNESS_WINDOW
     fresh_candidates = [c for c in candidates if c.effective_dt >= fresh_threshold]
     logger.info(
@@ -152,11 +221,9 @@ def select_postcard_asset(
         not in_season,
     )
 
-    repeat_threshold = now_utc - _REPEAT_GUARD_WINDOW
     non_recent = [
         c for c in season_candidates if not c.last_used_dt or c.last_used_dt < repeat_threshold
     ]
-    repeat_candidates = non_recent if non_recent else season_candidates
     logger.info(
         "POSTCARD_RUBRIC repeat_guard window_days=%s skipped=%s fallback=%s",
         _REPEAT_GUARD_WINDOW.days,
@@ -164,9 +231,11 @@ def select_postcard_asset(
         not non_recent,
     )
 
-    if not repeat_candidates:
-        logger.info("POSTCARD_RUBRIC selection_empty max_score=%s", max_score)
-        return None
+    if not non_recent and not test:
+        logger.info("POSTCARD_RUBRIC repeat_guard_exhausted retry_lower_score=True")
+        return None, ["repeat_guard_exhausted"]
+
+    repeat_candidates = non_recent if non_recent else season_candidates
 
     selection_notes: list[str] = []
     if not fresh_candidates:
@@ -187,42 +256,7 @@ def select_postcard_asset(
         repeat_candidates.sort(key=_sort_key)
         best = repeat_candidates[0]
 
-    selection_notes_str = ",".join(selection_notes) if selection_notes else "direct"
-
-    freshness_hours: float | None = None
-    try:
-        delta = now_utc - best.effective_dt
-        freshness_hours = max(delta.total_seconds() / 3600.0, 0.0)
-    except Exception:  # pragma: no cover - defensive against invalid datetimes
-        freshness_hours = None
-
-    recently_used = bool(best.last_used_dt and best.last_used_dt >= repeat_threshold)
-    season_match = _matches_season(best.photo_doy, doy_now)
-    is_fresh_choice = bool(best.effective_dt and best.effective_dt >= fresh_threshold)
-    captured_display = best.captured_raw or best.created_raw
-
-    logger.info(
-        "POSTCARD_RUBRIC selection asset_id=%s score=%s captured_at=%s created_at=%s photo_doy=%s doy_now=%s city=%s region=%s "
-        "freshness_hours=%s reused_recently=%s season_match=%s fresh_window=%s notes=%s",
-        best.asset_id,
-        best.score,
-        captured_display,
-        best.created_raw,
-        best.photo_doy,
-        doy_now,
-        best.city or "",
-        best.region or "",
-        f"{freshness_hours:.2f}" if freshness_hours is not None else "unknown",
-        recently_used,
-        season_match,
-        is_fresh_choice,
-        selection_notes_str,
-    )
-
-    asset = data.get_asset(best.asset_id)
-    if asset is None:
-        logger.warning("POSTCARD_RUBRIC asset_missing asset_id=%s", best.asset_id)
-    return asset
+    return best, selection_notes
 
 
 def _ensure_aware(moment: datetime) -> datetime:

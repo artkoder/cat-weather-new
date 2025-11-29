@@ -207,6 +207,37 @@ def test_repeat_guard_skips_recently_used_assets(data: DataAccess) -> None:
     assert asset.id == "asset-fresh"
 
 
+def test_repeat_guard_falls_back_to_lower_score_when_recent_high_score_used(
+    data: DataAccess,
+) -> None:
+    tz = ZoneInfo("Europe/Kaliningrad")
+    now = datetime(2024, 9, 15, 10, 0, tzinfo=tz)
+    doy_now = now.timetuple().tm_yday
+
+    _add_asset(
+        data,
+        asset_id="asset-recent-top",
+        score=10,
+        created_at=now - timedelta(days=2),
+        captured_at=now - timedelta(days=2),
+        photo_doy=doy_now,
+        last_used_at=now - timedelta(days=1),
+    )
+    _add_asset(
+        data,
+        asset_id="asset-lower-fresh",
+        score=8,
+        created_at=now - timedelta(days=1),
+        captured_at=now - timedelta(days=1),
+        photo_doy=doy_now,
+        last_used_at=None,
+    )
+
+    asset = select_postcard_asset(data, now=now)
+    assert asset is not None
+    assert asset.id == "asset-lower-fresh"
+
+
 def test_test_mode_randomizes_selection(data: DataAccess, monkeypatch: pytest.MonkeyPatch) -> None:
     tz = ZoneInfo("Europe/Kaliningrad")
     now = datetime(2024, 8, 25, 12, 0, tzinfo=tz)

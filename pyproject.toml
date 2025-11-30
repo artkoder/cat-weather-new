@@ -15,9 +15,11 @@ dependencies = [
     "exifread>=3.0.0",
     "pillow-heif>=0.16",
     "psutil>=5.9.8",
+    "psycopg2-binary>=2.9.9",
     "prometheus_client>=0.20.0",
     "qrcode[pil]>=7.4.2",
     "requests>=2.32.3",
+    "google-generativeai>=0.8.3",
     "schemathesis>=3.27.6",
 ]
 

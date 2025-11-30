@@ -1270,6 +1270,9 @@ class Bot:
         self._vision_semaphore = asyncio.Semaphore(VISION_CONCURRENCY)
         self._twogis_api_key = os.getenv("TWOGIS_API_KEY")
         self._twogis_backoff_seconds = 1.0
+        self._chat_state_lock = asyncio.Lock()
+        self._chat_states: dict[int, dict[str, Any]] = {}
+        self._chat_state_ttl = timedelta(minutes=10)
         self._shoreline_cache: dict[tuple[float, float], tuple[bool, datetime]] = {}
         self._shoreline_fail_cache: dict[tuple[float, float], datetime] = {}
         self._sea_publish_guard: dict[str, float] = {}
@@ -1324,9 +1327,59 @@ class Bot:
         self._backfill_waves_lock = asyncio.Lock()
         self._backfill_waves_running = False
 
+    async def _cleanup_chat_states(self) -> None:
+        now = datetime.utcnow()
+        async with self._chat_state_lock:
+            expired = [
+                chat for chat, payload in self._chat_states.items() if self._state_expired(payload, now)
+            ]
+            for chat in expired:
+                self._chat_states.pop(chat, None)
+
+    def _state_expired(self, payload: Mapping[str, Any], reference: datetime) -> bool:
+        expires_at = payload.get("expires_at")
+        return isinstance(expires_at, datetime) and expires_at <= reference
+
+    async def _set_chat_state(self, chat_id: int, state: str) -> None:
+        expires_at = datetime.utcnow() + self._chat_state_ttl
+        async with self._chat_state_lock:
+            self._chat_states[chat_id] = {"state": state, "expires_at": expires_at}
+
+    async def _get_chat_state(self, chat_id: int | None) -> str | None:
+        if chat_id is None:
+            return None
+        now = datetime.utcnow()
+        async with self._chat_state_lock:
+            payload = self._chat_states.get(chat_id)
+            if not payload:
+                return None
+            if self._state_expired(payload, now):
+                self._chat_states.pop(chat_id, None)
+                return None
+            state = payload.get("state")
+        return str(state) if state is not None else None
+
+    async def _clear_chat_state(self, chat_id: int | None) -> None:
+        if chat_id is None:
+            return
+        async with self._chat_state_lock:
+            self._chat_states.pop(chat_id, None)
+
     def _generate_pairing_code(self) -> str:
         length = self._pairing_rng.randint(6, 8)
         return "".join(self._pairing_rng.choice(_PAIRING_ALPHABET) for _ in range(length))
+
+    async def _handle_raw_answer_query(self, chat_id: int, query_text: str) -> None:
+        await self._run_raw_search(chat_id, query_text)
+
+    async def _run_raw_search(self, chat_id: int, query_text: str) -> None:
+        logging.info(
+            "RAW_ANSWER search requested chat_id=%s query_length=%d", chat_id, len(query_text)
+        )
+        await self.api_request(
+            "sendMessage",
+            {"chat_id": chat_id, "text": f"Raw search request: {query_text}"},
+        )
 
     def _get_active_pairing_token(self, user_id: int) -> tuple[str, datetime, str] | None:
         now = datetime.utcnow()
@@ -5889,6 +5942,36 @@ class Bot:
         user_id = message["from"]["id"]
         username = message["from"].get("username")
 
+        await self._cleanup_chat_states()
+        chat_state = await self._get_chat_state(chat_id)
+
+        if chat_state == "raw_answer_waiting_query":
+            query_text = text.strip()
+            if not query_text:
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": chat_id, "text": "Введите текстовый запрос для поиска."},
+                )
+                return
+            try:
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": chat_id, "text": "⏳ Обрабатываю запрос..."},
+                )
+                await self._handle_raw_answer_query(chat_id, query_text)
+            except Exception:
+                logging.exception("RAW_ANSWER search failed chat_id=%s", chat_id)
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": chat_id,
+                        "text": "Не удалось обработать запрос, попробуйте снова.",
+                    },
+                )
+            finally:
+                await self._clear_chat_state(chat_id)
+            return
+
         preview_state = self.pending_flowers_previews.get(user_id)
         if preview_state and preview_state.get("awaiting_instruction"):
             reply_to = message.get("reply_to_message") or {}
@@ -5999,6 +6082,25 @@ class Bot:
             return
 
         command = text.split(maxsplit=1)[0] if text else ""
+        if command == "/ask" or command.startswith("/ask@"):
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "sendMessage", {"chat_id": chat_id, "text": "Not authorized"}
+                )
+                return
+            keyboard = {
+                "inline_keyboard": [[{"text": "Raw answer", "callback_data": "ask:raw"}]],
+            }
+            await self._set_chat_state(chat_id, "waiting_raw_mode_choice")
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": "Выберите режим ответа или отмените запрос.",
+                    "reply_markup": keyboard,
+                },
+            )
+            return
         if command == "/privet" or command.startswith("/privet@"):
             await self.api_request(
                 "sendMessage",
@@ -8143,6 +8245,32 @@ class Bot:
     async def handle_callback(self, query: Any) -> None:
         user_id = query["from"]["id"]
         data = query["data"]
+        chat_id = (query.get("message") or {}).get("chat", {}).get("id")
+        await self._cleanup_chat_states()
+        if data == "ask:raw":
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Недостаточно прав",
+                        "show_alert": True,
+                    },
+                )
+                return
+            await self._set_chat_state(chat_id, "raw_answer_waiting_query")
+            await self.api_request(
+                "answerCallbackQuery",
+                {"callback_query_id": query["id"], "text": "Режим raw"},
+            )
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": "Отправьте текстовый запрос для сырого ответа.",
+                },
+            )
+            return
         if data == "pair:new":
             if not self.is_authorized(user_id):
                 await self.api_request(

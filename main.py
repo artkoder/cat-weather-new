@@ -1378,7 +1378,7 @@ class Bot:
             "RAW_ANSWER search requested chat_id=%s query_length=%d", chat_id, len(query_text)
         )
         try:
-            payload = run_rag_search(query_text)
+            payload = await asyncio.to_thread(run_rag_search, query_text)
         except RagSearchError as exc:
             logging.warning(
                 "RAW_ANSWER search failed due to configuration or validation chat_id=%s: %s",

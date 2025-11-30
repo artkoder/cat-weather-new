@@ -114,6 +114,7 @@ from supabase_client import SupabaseClient
 from utils_wave import wave_m_to_score
 from weather_migration import migrate_weather_publish_channels
 from db_utils import dump_database
+from rag_search import RagSearchError, build_raw_answer_document, run_rag_search
 
 if TYPE_CHECKING:
     from openai_client import OpenAIResponse
@@ -1376,9 +1377,47 @@ class Bot:
         logging.info(
             "RAW_ANSWER search requested chat_id=%s query_length=%d", chat_id, len(query_text)
         )
+        try:
+            payload = run_rag_search(query_text)
+        except RagSearchError as exc:
+            logging.warning(
+                "RAW_ANSWER search failed due to configuration or validation chat_id=%s: %s",
+                chat_id,
+                exc,
+            )
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": (
+                        "Не удалось выполнить поиск: отсутствует конфигурация или запрос пустой."
+                    ),
+                },
+            )
+            return
+        except Exception:
+            logging.exception("RAW_ANSWER search failed chat_id=%s", chat_id)
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": "Возникла ошибка при выполнении поиска, попробуйте снова позднее.",
+                },
+            )
+            return
+
+        filename, file_bytes = build_raw_answer_document(payload)
+        result_count = len(payload.get("results") or [])
+        caption_lines = [
+            "Сырые результаты поиска по вашему запросу.",
+            f"Найдено совпадений: {result_count}.",
+            "Файл содержит запрос, метаданные и строки match_chunks.",
+        ]
+        files = {"document": (filename, file_bytes)}
         await self.api_request(
-            "sendMessage",
-            {"chat_id": chat_id, "text": f"Raw search request: {query_text}"},
+            "sendDocument",
+            {"chat_id": chat_id, "caption": "\n".join(caption_lines)},
+            files=files,
         )
 
     def _get_active_pairing_token(self, user_id: int) -> tuple[str, datetime, str] | None:

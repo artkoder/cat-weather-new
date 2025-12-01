@@ -114,7 +114,7 @@ from supabase_client import SupabaseClient
 from utils_wave import wave_m_to_score
 from weather_migration import migrate_weather_publish_channels
 from db_utils import dump_database
-from rag_search import RagSearchError, build_raw_answer_document, run_rag_search
+from raw_answer_search import RawSearchError, build_raw_answer_file, search_raw_chunks
 
 if TYPE_CHECKING:
     from openai_client import OpenAIResponse
@@ -1378,8 +1378,8 @@ class Bot:
             "RAW_ANSWER search requested chat_id=%s query_length=%d", chat_id, len(query_text)
         )
         try:
-            payload = run_rag_search(query_text)
-        except RagSearchError as exc:
+            payload = search_raw_chunks(query_text, threshold=0.5, match_count=5)
+        except RawSearchError as exc:
             logging.warning(
                 "RAW_ANSWER search failed due to configuration or validation chat_id=%s: %s",
                 chat_id,
@@ -1406,7 +1406,7 @@ class Bot:
             )
             return
 
-        filename, file_bytes = build_raw_answer_document(payload)
+        filename, file_bytes = build_raw_answer_file(payload)
         result_count = len(payload.get("results") or [])
         caption_lines = [
             "Сырые результаты поиска по вашему запросу.",

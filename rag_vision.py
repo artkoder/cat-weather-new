@@ -40,30 +40,26 @@ async def _extract_boxes_with_gemini(
                 return []
 
             prompt = f"""
-You are a document comprehension assistant.
+You are a strict document analysis assistant.
+User query: "{user_query}"
 
-The user is searching for information about: "{user_query}".
+Task: Identify the EXACT lines of text on this page that directly answer the user's query.
 
-Look at this scanned document page and identify the specific text paragraphs or sentences 
-that directly answer or strongly relate to the user's request.
+CRITICAL INSTRUCTIONS:
+1. **Direct Answer Only:** If the page mentions the topic/names but does NOT contain the specific answer to the question, return {{ "boxes": [] }}. Do not guess.
+2. **Line-by-Line Highlighting:** Do NOT highlight entire paragraphs with a single box. You must return separate bounding boxes for EACH visual line of text.
+3. **Precision:** Boxes must tightly enclose the text.
 
-Return a JSON object with a list of bounding boxes under the key "boxes".
-Each bounding box should be in the format [ymin, xmin, ymax, xmax],
-where coordinates are normalized from 0 to 1000 (0 is top/left, 1000 is bottom/right).
+Output format:
+Return a JSON object with a key "boxes" containing a list of [ymin, xmin, ymax, xmax] (normalized 0-1000).
 
-Be precise: if only one sentence is relevant, highlight just that sentence,
-not the entire paragraph.
-
-Example output:
+Example of correct line separation:
 {{
   "boxes": [
-    [100, 200, 150, 800],
-    [300, 200, 350, 800]
+    [100, 50, 120, 900],  // Line 1
+    [125, 50, 145, 850]   // Line 2
   ]
 }}
-
-If the page does not contain relevant content, return:
-{{ "boxes": [] }}.
 """
             logging.info("DEBUG_GEMINI_PROMPT: %s", prompt)
             response = model.generate_content([image_part, prompt])

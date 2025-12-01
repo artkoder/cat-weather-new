@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import io
 import json
 import logging
-import os
-import tempfile
-from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Mapping, Sequence
 
 import google.generativeai as genai
 from PIL import Image, ImageDraw
@@ -94,97 +90,8 @@ If the page does not contain relevant content, return:
 async def extract_text_coordinates(
     image_bytes: bytes, query_text: str, client: OpenAIClient | None = None
 ) -> list[Mapping[str, float]]:
-    if client is None or not client.api_key:
-        logging.debug("RAW_ANSWER skipping vision: OpenAI client unavailable")
-        return await _extract_boxes_with_gemini(image_bytes, query_text)
-
-    fd, temp_name = tempfile.mkstemp(prefix="raw-scan-src-", suffix=".jpg")
-    os.close(fd)
-    temp_path = Path(temp_name)
-    try:
-        temp_path.write_bytes(image_bytes)
-    except Exception:
-        with contextlib.suppress(OSError):
-            temp_path.unlink()
-        logging.exception("RAW_ANSWER failed to persist temp image for vision")
-        return []
-
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "boxes": {
-                "type": "array",
-                "minItems": 0,
-                "maxItems": 4,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "x0": {"type": "number"},
-                        "y0": {"type": "number"},
-                        "x1": {"type": "number"},
-                        "y1": {"type": "number"},
-                        "confidence": {"type": ["number", "null"]},
-                        "reason": {"type": ["string", "null"]},
-                    },
-                    "required": ["x0", "y0", "x1", "y1"],
-                },
-            }
-        },
-        "required": ["boxes"],
-        "additionalProperties": False,
-    }
-
-    system_prompt = (
-        "Ты анализируешь скан страницы книги. Найди 1–4 наиболее релевантных фрагмента текста, "
-        "которые отвечают на запрос пользователя. Верни координаты прямоугольников в долях от ширины/высоты изображения."
-    )
-    query_line = query_text.strip() or ""
-    user_prompt = (
-        "Запрос пользователя: "
-        + (query_line or "(пусто)")
-        + "\n"
-        "Верни массив boxes. Каждая запись: x0,y0,x1,y1 в диапазоне 0..1, где (x0,y0) — левый верх. "
-        "x0<x1 и y0<y1. Добавь confidence 0..1, если уверенность известна."
-    )
-
-    try:
-        response = await client.classify_image(
-            model="gpt-4o-mini",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            image_path=temp_path,
-            schema=schema,
-            schema_name="raw_scan_boxes",
-        )
-    except Exception:
-        logging.exception("RAW_ANSWER vision request failed")
-        with contextlib.suppress(OSError):
-            temp_path.unlink()
-        return []
-    finally:
-        with contextlib.suppress(OSError):
-            temp_path.unlink()
-
-    if not response or not isinstance(response.content, Mapping):
-        return []
-
-    boxes_raw = response.content.get("boxes")
-    parsed: list[Mapping[str, float]] = []
-    if isinstance(boxes_raw, Sequence):
-        for item in boxes_raw:
-            if not isinstance(item, Mapping):
-                continue
-            try:
-                x0 = float(item.get("x0"))
-                y0 = float(item.get("y0"))
-                x1 = float(item.get("x1"))
-                y1 = float(item.get("y1"))
-            except (TypeError, ValueError):
-                continue
-            if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
-                continue
-            parsed.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
-    return parsed
+    logging.debug("RAW_ANSWER using Gemini highlight extraction")
+    return await _extract_boxes_with_gemini(image_bytes, query_text)
 
 
 def draw_highlight_overlay(

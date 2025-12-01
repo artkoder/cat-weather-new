@@ -1571,11 +1571,13 @@ class Bot:
             return
 
         results = payload.get("results") or []
-        unique_results = _collect_unique_pages_by_tg_msg_id(results)
+        unique_results = self._collect_unique_pages_by_tg_msg_id(results)
         found = False
+        query_text = str((payload.get("query") or {}).get("text") or "")
         for idx, row in enumerate(unique_results):
             if not isinstance(row, Mapping):
                 continue
+
             tg_msg_id = row.get("tg_msg_id")
             if tg_msg_id in (None, ""):
                 logging.debug(
@@ -1584,41 +1586,96 @@ class Bot:
                 continue
 
             try:
-                message_id: int | str = int(tg_msg_id)
+                message_id = int(tg_msg_id)
             except (TypeError, ValueError):
                 message_id = tg_msg_id
 
-            caption = self._build_raw_answer_caption(row)
-            image_bytes = await self._load_raw_answer_scan_bytes(
-                channel_id, message_id, row
+            logging.info(
+                "RAW_ANSWER processing scan #%s chat_id=%s from_channel=%s message_id=%s",
+                idx,
+                chat_id,
+                channel_id,
+                message_id,
             )
-            final_bytes: bytes | None = None
-            if image_bytes:
-                user_query = str((payload.get("query") or {}).get("text") or "")
-                boxes = await _get_text_boxes_for_page(image_bytes, user_query)
-                try:
-                    final_bytes = _highlight_image_bytes(image_bytes, boxes)
-                except Exception:
-                    logging.warning(
-                        "RAW_ANSWER failed to render highlight message_id=%s", message_id
-                    )
-                    final_bytes = image_bytes
 
-            if final_bytes:
-                files = {
-                    "photo": (
-                        f"scan_{message_id}.png",
-                        final_bytes,
-                        "image/png",
+            caption = self._build_raw_answer_caption(row)
+
+            try:
+                forwarded_resp = await self.api_request(
+                    "forwardMessage",
+                    {
+                        "chat_id": chat_id,
+                        "from_chat_id": channel_id,
+                        "message_id": message_id,
+                    },
+                )
+            except Exception:
+                logging.exception(
+                    "RAW_ANSWER failed to forward scan chat_id=%s message_id=%s",
+                    chat_id,
+                    message_id,
+                )
+                continue
+
+            result_payload = forwarded_resp.get("result") if isinstance(forwarded_resp, Mapping) else None
+            if not (forwarded_resp and forwarded_resp.get("ok") and isinstance(result_payload, Mapping)):
+                logging.error(
+                    "RAW_ANSWER forward unexpected response chat_id=%s payload=%s",
+                    chat_id,
+                    forwarded_resp,
+                )
+                continue
+
+            forwarded_msg_id = result_payload.get("message_id")
+            file_meta = self._collect_asset_metadata(result_payload).get("file_meta") or {}
+            file_id = file_meta.get("file_id")
+            final_bytes: bytes | None = None
+            highlighted = False
+
+            if file_id:
+                try:
+                    tmp_fd, tmp_name = tempfile.mkstemp(prefix="raw_scan_", suffix=".jpg")
+                    os.close(tmp_fd)
+                    downloaded_path = await self._download_file(file_id, tmp_name)
+                    if isinstance(downloaded_path, Path) and downloaded_path.exists():
+                        image_bytes = downloaded_path.read_bytes()
+                        with contextlib.suppress(OSError):
+                            downloaded_path.unlink()
+
+                        boxes = await self._get_text_boxes_for_page(image_bytes, query_text)
+                        if boxes:
+                            final_bytes = self._highlight_image_bytes(image_bytes, boxes)
+                            highlighted = final_bytes is not None
+                            logging.info(
+                                "RAW_ANSWER highlighted %s boxes for msg_id=%s", len(boxes), message_id
+                            )
+                        else:
+                            logging.info(
+                                "RAW_ANSWER no boxes returned for msg_id=%s query_len=%s",
+                                message_id,
+                                len(query_text),
+                            )
+                except Exception:
+                    logging.exception(
+                        "RAW_ANSWER failed to process scan chat_id=%s message_id=%s",
+                        chat_id,
+                        message_id,
                     )
+
+            if highlighted and final_bytes:
+                files = {
+                    "photo": (f"highlight_{message_id}.png", final_bytes, "image/png"),
                 }
                 payload_kwargs: dict[str, Any] = {"chat_id": chat_id}
                 if caption:
                     payload_kwargs["caption"] = caption
                 try:
-                    await self.api_request_multipart(
-                        "sendPhoto", payload_kwargs, files=files
-                    )
+                    await self.api_request_multipart("sendPhoto", payload_kwargs, files=files)
+                    if forwarded_msg_id is not None:
+                        await self.api_request(
+                            "deleteMessage",
+                            {"chat_id": chat_id, "message_id": forwarded_msg_id},
+                        )
                     found = True
                     continue
                 except Exception:
@@ -1628,28 +1685,17 @@ class Bot:
                         message_id,
                     )
 
-            try:
-                logging.info(
-                    "RAW_ANSWER sending scan chat_id=%s from_channel=%s message_id=%s",
-                    chat_id,
-                    channel_id,
-                    message_id,
-                )
-                await self.api_request(
-                    "copyMessage",
-                    {
-                        "chat_id": chat_id,
-                        "from_chat_id": channel_id,
-                        "message_id": message_id,
-                    },
-                )
-                found = True
-            except Exception:
-                logging.exception(
-                    "RAW_ANSWER failed to send scan chat_id=%s message_id=%s",
-                    chat_id,
-                    message_id,
-                )
+            if caption and forwarded_msg_id is not None:
+                with contextlib.suppress(Exception):
+                    await self.api_request(
+                        "editMessageCaption",
+                        {
+                            "chat_id": chat_id,
+                            "message_id": forwarded_msg_id,
+                            "caption": caption,
+                        },
+                    )
+            found = True
 
         if not found:
             logging.info("RAW_ANSWER scans not found for chat_id=%s", chat_id)
@@ -1661,64 +1707,164 @@ class Bot:
                 },
             )
 
-    def _build_raw_answer_caption(self, row: Mapping[str, Any]) -> str | None:
+    def _collect_unique_pages_by_tg_msg_id(
+        self, results: Sequence[Mapping[str, Any]]
+    ) -> list[Mapping[str, Any]]:
+        seen: set[str] = set()
+        unique: list[Mapping[str, Any]] = []
+        for row in results:
+            if not isinstance(row, Mapping):
+                continue
+            tg_msg_id = row.get("tg_msg_id")
+            if tg_msg_id is None:
+                continue
+            key = str(tg_msg_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(row)
+        return unique
+
+    def _build_raw_answer_caption(self, row: Mapping[str, Any]) -> str:
         parts: list[str] = []
-        page = row.get("book_page")
-        if page not in (None, ""):
-            parts.append(f"Страница {page}")
         title = row.get("book_title")
+        page = row.get("book_page")
+        chunk = row.get("chunk") or row.get("content")
         if title:
-            parts.append(str(title))
-        if not parts:
-            return None
-        return " — ".join(parts)
+            parts.append(f"Источник: {title}")
+        if page:
+            parts.append(f"Страница: {page}")
+        if chunk:
+            snippet = str(chunk)
+            if len(snippet) > 240:
+                snippet = snippet[:237].rstrip() + "…"
+            parts.append(snippet)
+        return "\n".join(parts)
 
-    async def _load_raw_answer_scan_bytes(
-        self, channel_id: str, message_id: int | str, row: Mapping[str, Any]
+    async def _get_text_boxes_for_page(
+        self, image_bytes: bytes, query_text: str
+    ) -> list[Mapping[str, float]]:
+        if not self.openai or not self.openai.api_key:
+            logging.debug("RAW_ANSWER skipping vision: OpenAI client unavailable")
+            return []
+
+        fd, temp_name = tempfile.mkstemp(prefix="raw-scan-src-", suffix=".jpg")
+        os.close(fd)
+        temp_path = Path(temp_name)
+        try:
+            temp_path.write_bytes(image_bytes)
+        except Exception:
+            with contextlib.suppress(OSError):
+                temp_path.unlink()
+            logging.exception("RAW_ANSWER failed to persist temp image for vision")
+            return []
+
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {
+                "boxes": {
+                    "type": "array",
+                    "minItems": 0,
+                    "maxItems": 4,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "x0": {"type": "number"},
+                            "y0": {"type": "number"},
+                            "x1": {"type": "number"},
+                            "y1": {"type": "number"},
+                            "confidence": {"type": ["number", "null"]},
+                            "reason": {"type": ["string", "null"]},
+                        },
+                        "required": ["x0", "y0", "x1", "y1"],
+                    },
+                }
+            },
+            "required": ["boxes"],
+            "additionalProperties": False,
+        }
+
+        system_prompt = (
+            "Ты анализируешь скан страницы книги. Найди 1–4 наиболее релевантных фрагмента текста, "
+            "которые отвечают на запрос пользователя. Верни координаты прямоугольников в долях от ширины/высоты изображения."
+        )
+        query_line = query_text.strip() or ""
+        user_prompt = (
+            "Запрос пользователя: "
+            + (query_line or "(пусто)")
+            + "\n"
+            "Верни массив boxes. Каждая запись: x0,y0,x1,y1 в диапазоне 0..1, где (x0,y0) — левый верх. "
+            "x0<x1 и y0<y1. Добавь confidence 0..1, если уверенность известна."
+        )
+
+        try:
+            response = await self.openai.classify_image(
+                model="gpt-4o-mini",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                image_path=temp_path,
+                schema=schema,
+                schema_name="raw_scan_boxes",
+            )
+        except Exception:
+            logging.exception("RAW_ANSWER vision request failed")
+            return []
+        finally:
+            with contextlib.suppress(OSError):
+                temp_path.unlink()
+
+        if not response or not isinstance(response.content, Mapping):
+            return []
+
+        boxes_raw = response.content.get("boxes")
+        parsed: list[Mapping[str, float]] = []
+        if isinstance(boxes_raw, Sequence):
+            for item in boxes_raw:
+                if not isinstance(item, Mapping):
+                    continue
+                try:
+                    x0 = float(item.get("x0"))
+                    y0 = float(item.get("y0"))
+                    x1 = float(item.get("x1"))
+                    y1 = float(item.get("y1"))
+                except (TypeError, ValueError):
+                    continue
+                if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
+                    continue
+                parsed.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
+        return parsed
+
+    def _highlight_image_bytes(
+        self, image_bytes: bytes, boxes: Sequence[Mapping[str, float]]
     ) -> bytes | None:
-        url = row.get("url")
-        if url:
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.get(str(url))
-                    response.raise_for_status()
-                    return response.content
-            except Exception:
-                logging.exception(
-                    "RAW_ANSWER failed to download scan from url message_id=%s url=%s",
-                    message_id,
-                    url,
-                )
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as image:
+                img = image.convert("RGBA")
+        except Exception:
+            logging.exception("RAW_ANSWER failed to open image for highlighting")
+            return None
 
-        file_id = row.get("file_id") or row.get("tg_file_id")
-        if file_id:
-            suffix = ""
+        overlay = Image.new("RGBA", img.size, (255, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        width, height = img.size
+        for box in boxes:
             try:
-                suffix = Path(str(file_id)).suffix
+                x0 = max(0, min(width, int(round(box.get("x0", 0) * width))))
+                y0 = max(0, min(height, int(round(box.get("y0", 0) * height))))
+                x1 = max(0, min(width, int(round(box.get("x1", 0) * width))))
+                y1 = max(0, min(height, int(round(box.get("y1", 0) * height))))
             except Exception:
-                suffix = ""
-            fd, tmp_path = tempfile.mkstemp(prefix="raw-scan-", suffix=suffix or ".tmp")
-            os.close(fd)
-            destination = Path(tmp_path)
-            try:
-                downloaded_path = await self._download_file(str(file_id), destination)
-                if isinstance(downloaded_path, (bytes, bytearray)):
-                    return bytes(downloaded_path)
-                if downloaded_path:
-                    path_obj = Path(downloaded_path)
-                    if path_obj.exists():
-                        return path_obj.read_bytes()
-            except Exception:
-                logging.exception(
-                    "RAW_ANSWER failed to download scan file message_id=%s file_id=%s",
-                    message_id,
-                    file_id,
-                )
-            finally:
-                with contextlib.suppress(OSError):
-                    Path(destination).unlink(missing_ok=True)
+                continue
+            if x0 >= x1 or y0 >= y1:
+                continue
+            draw.rectangle((x0, y0, x1, y1), outline=(255, 0, 0, 255), width=max(3, width // 200))
+            draw.rectangle((x0, y0, x1, y1), fill=(255, 0, 0, 60))
 
-        return None
+        composed = Image.alpha_composite(img, overlay).convert("RGB")
+        buffer = io.BytesIO()
+        composed.save(buffer, format="PNG")
+        buffer.seek(0)
+        return buffer.read()
 
     def _get_active_pairing_token(self, user_id: int) -> tuple[str, datetime, str] | None:
         now = datetime.utcnow()

@@ -1767,6 +1767,43 @@ class Bot:
         keyboard.append([{"text": "🔄 Новый код", "callback_data": "pair:new"}])
         return {"inline_keyboard": keyboard}
 
+    @staticmethod
+    def _build_raw_answer_keyboard() -> dict[str, Any]:
+        return {
+            "keyboard": [
+                [{"text": "Raw answer"}],
+                [{"text": "RA + сканы страниц"}],
+            ],
+            "resize_keyboard": True,
+            "is_persistent": True,
+            "input_field_placeholder": "Raw answer или RA + сканы страниц",
+        }
+
+    async def _activate_raw_mode(
+        self, chat_id: int, user_id: int, *, include_scans: bool
+    ) -> None:
+        state = "raw_answer_waiting_query_scans" if include_scans else "raw_answer_waiting_query"
+        await self._set_chat_state(chat_id, state)
+        logging.info(
+            "RAW_ANSWER mode selected chat_id=%s user_id=%s include_scans=%s",
+            chat_id,
+            user_id,
+            include_scans,
+        )
+        prompt = (
+            "Отправьте текстовый запрос для сырого ответа. "
+            "Найденные сканы страниц будут показаны дополнительно."
+            if include_scans
+            else "Отправьте текстовый запрос для сырого ответа."
+        )
+        await self.api_request(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": prompt,
+            },
+        )
+
     async def _send_mobile_pairing_card(
         self,
         user_id: int,
@@ -6059,6 +6096,17 @@ class Bot:
         await self._cleanup_chat_states()
         chat_state = await self._get_chat_state(chat_id)
 
+        raw_mode_choice = text.strip()
+        if raw_mode_choice in {"Raw answer", "RA + сканы страниц"}:
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "sendMessage", {"chat_id": chat_id, "text": "Not authorized"}
+                )
+                return
+            include_scans = raw_mode_choice == "RA + сканы страниц"
+            await self._activate_raw_mode(chat_id, user_id, include_scans=include_scans)
+            return
+
         if chat_state in {"raw_answer_waiting_query", "raw_answer_waiting_query_scans"}:
             query_text = text.strip()
             if not query_text:
@@ -6210,24 +6258,13 @@ class Bot:
                     "sendMessage", {"chat_id": chat_id, "text": "Not authorized"}
                 )
                 return
-            keyboard = {
-                "inline_keyboard": [
-                    [{"text": "Raw answer", "callback_data": "ask:raw"}],
-                    [
-                        {
-                            "text": "RA + сканы страниц",
-                            "callback_data": "ask:raw_scans",
-                        }
-                    ],
-                ],
-            }
             await self._set_chat_state(chat_id, "waiting_raw_mode_choice")
             await self.api_request(
                 "sendMessage",
                 {
                     "chat_id": chat_id,
                     "text": "Выберите режим ответа или отмените запрос.",
-                    "reply_markup": keyboard,
+                    "reply_markup": self._build_raw_answer_keyboard(),
                 },
             )
             return
@@ -8388,18 +8425,31 @@ class Bot:
                     },
                 )
                 return
-            await self._set_chat_state(chat_id, "raw_answer_waiting_query")
             await self.api_request(
                 "answerCallbackQuery",
                 {"callback_query_id": query["id"], "text": "Режим raw"},
             )
+            await self._activate_raw_mode(chat_id, user_id, include_scans=False)
+            return
+        if data == "ask:raw_scans":
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Недостаточно прав",
+                        "show_alert": True,
+                    },
+                )
+                return
             await self.api_request(
-                "sendMessage",
+                "answerCallbackQuery",
                 {
-                    "chat_id": chat_id,
-                    "text": "Отправьте текстовый запрос для сырого ответа.",
+                    "callback_query_id": query["id"],
+                    "text": "Режим raw + сканы",
                 },
             )
+            await self._activate_raw_mode(chat_id, user_id, include_scans=True)
             return
         if data == "ask:raw_scans":
             if not self.is_authorized(user_id):

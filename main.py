@@ -8451,6 +8451,39 @@ class Bot:
             )
             await self._activate_raw_mode(chat_id, user_id, include_scans=True)
             return
+        if data == "ask:raw_scans":
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Недостаточно прав",
+                        "show_alert": True,
+                    },
+                )
+                return
+            await self._set_chat_state(chat_id, "raw_answer_waiting_query_scans")
+            await self.api_request(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": query["id"],
+                    "text": "Режим raw + сканы",
+                },
+            )
+            logging.info(
+                "RAW_ANSWER scans mode selected chat_id=%s user_id=%s", chat_id, user_id
+            )
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": (
+                        "Отправьте текстовый запрос для сырого ответа. "
+                        "Найденные сканы страниц будут показаны дополнительно."
+                    ),
+                },
+            )
+            return
         if data == "pair:new":
             if not self.is_authorized(user_id):
                 await self.api_request(
@@ -14762,6 +14795,19 @@ class Bot:
             rubric.id,
             metadata,
         )
+
+        if is_prod:
+            try:
+                await self._cleanup_assets([asset])
+                logging.info(
+                    "POSTCARD_RUBRIC prod_cleanup_success asset_ids=%s",
+                    [asset.id],
+                )
+            except Exception:
+                logging.exception(
+                    "POSTCARD_RUBRIC prod_cleanup_failed asset_ids=%s",
+                    [asset.id],
+                )
 
         await self._send_postcard_inventory_report(
             is_prod=is_prod,

@@ -1214,6 +1214,7 @@ class Bot:
             self.db.execute(stmt)
         self.db.commit()
         self._pairing_rng = random.SystemRandom()
+        self._raw_answer_scans_channel_id = self._load_scans_channel_id()
         self.data = DataAccess(self.db)
         self._rubric_category_cache: dict[str, int] = {}
         self._ensure_default_rubrics()
@@ -1328,6 +1329,23 @@ class Bot:
         self._backfill_waves_lock = asyncio.Lock()
         self._backfill_waves_running = False
 
+    def _load_scans_channel_id(self) -> str | None:
+        channel_id = os.getenv("TG_SCANS_ID") or os.getenv("TG_SCANS_CHANNEL_ID")
+        if channel_id:
+            trimmed = channel_id.strip()
+            # allow operators to paste values wrapped in parentheses
+            trimmed = trimmed.strip("() ")
+            if trimmed.lower() in {"none", "null", ""}:
+                trimmed = ""
+            channel_id = trimmed or None
+
+        if channel_id:
+            logging.info("RAW_ANSWER scans channel configured: TG_SCANS_ID=%s", channel_id)
+        else:
+            logging.info("RAW_ANSWER scans channel is not configured")
+
+        return channel_id
+
     async def _cleanup_chat_states(self) -> None:
         now = datetime.utcnow()
         async with self._chat_state_lock:
@@ -1370,12 +1388,19 @@ class Bot:
         length = self._pairing_rng.randint(6, 8)
         return "".join(self._pairing_rng.choice(_PAIRING_ALPHABET) for _ in range(length))
 
-    async def _handle_raw_answer_query(self, chat_id: int, query_text: str) -> None:
-        await self._run_raw_search(chat_id, query_text)
+    async def _handle_raw_answer_query(
+        self, chat_id: int, query_text: str, *, include_scans: bool = False
+    ) -> None:
+        await self._run_raw_search(chat_id, query_text, include_scans=include_scans)
 
-    async def _run_raw_search(self, chat_id: int, query_text: str) -> None:
+    async def _run_raw_search(
+        self, chat_id: int, query_text: str, *, include_scans: bool = False
+    ) -> None:
         logging.info(
-            "RAW_ANSWER search requested chat_id=%s query_length=%d", chat_id, len(query_text)
+            "RAW_ANSWER search requested chat_id=%s query_length=%d include_scans=%s",
+            chat_id,
+            len(query_text),
+            include_scans,
         )
         try:
             payload = search_raw_chunks(query_text, threshold=0.5, match_count=5)
@@ -1419,6 +1444,75 @@ class Bot:
             {"chat_id": chat_id, "caption": "\n".join(caption_lines)},
             files=files,
         )
+
+        if include_scans:
+            await self._send_raw_answer_scans(chat_id, payload)
+
+    async def _send_raw_answer_scans(
+        self, chat_id: int, payload: Mapping[str, Any]
+    ) -> None:
+        channel_id = self._raw_answer_scans_channel_id or self._load_scans_channel_id()
+        self._raw_answer_scans_channel_id = channel_id
+        if not channel_id:
+            logging.warning("RAW_ANSWER scans skipped: TG_SCANS_ID is not set")
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": "Сканы страниц недоступны: переменная TG_SCANS_ID не задана.",
+                },
+            )
+            return
+
+        results = payload.get("results") or []
+        found = False
+        for idx, row in enumerate(results):
+            if not isinstance(row, Mapping):
+                continue
+            tg_msg_id = row.get("tg_msg_id")
+            if tg_msg_id in (None, ""):
+                logging.debug(
+                    "RAW_ANSWER scan missing tg_msg_id for result #%s", idx
+                )
+                continue
+
+            try:
+                message_id = int(tg_msg_id)
+            except (TypeError, ValueError):
+                message_id = tg_msg_id
+
+            found = True
+            try:
+                logging.info(
+                    "RAW_ANSWER sending scan chat_id=%s from_channel=%s message_id=%s",
+                    chat_id,
+                    channel_id,
+                    message_id,
+                )
+                await self.api_request(
+                    "copyMessage",
+                    {
+                        "chat_id": chat_id,
+                        "from_chat_id": channel_id,
+                        "message_id": message_id,
+                    },
+                )
+            except Exception:
+                logging.exception(
+                    "RAW_ANSWER failed to send scan chat_id=%s message_id=%s",
+                    chat_id,
+                    message_id,
+                )
+
+        if not found:
+            logging.info("RAW_ANSWER scans not found for chat_id=%s", chat_id)
+            await self.api_request(
+                "sendMessage",
+                {
+                    "chat_id": chat_id,
+                    "text": "Сканы страниц не найдены для результатов этого запроса.",
+                },
+            )
 
     def _get_active_pairing_token(self, user_id: int) -> tuple[str, datetime, str] | None:
         now = datetime.utcnow()
@@ -1691,6 +1785,43 @@ class Bot:
             keyboard.append(buttons)
         keyboard.append([{"text": "🔄 Новый код", "callback_data": "pair:new"}])
         return {"inline_keyboard": keyboard}
+
+    @staticmethod
+    def _build_raw_answer_keyboard() -> dict[str, Any]:
+        return {
+            "keyboard": [
+                [{"text": "Raw answer"}],
+                [{"text": "RA + сканы страниц"}],
+            ],
+            "resize_keyboard": True,
+            "is_persistent": True,
+            "input_field_placeholder": "Raw answer или RA + сканы страниц",
+        }
+
+    async def _activate_raw_mode(
+        self, chat_id: int, user_id: int, *, include_scans: bool
+    ) -> None:
+        state = "raw_answer_waiting_query_scans" if include_scans else "raw_answer_waiting_query"
+        await self._set_chat_state(chat_id, state)
+        logging.info(
+            "RAW_ANSWER mode selected chat_id=%s user_id=%s include_scans=%s",
+            chat_id,
+            user_id,
+            include_scans,
+        )
+        prompt = (
+            "Отправьте текстовый запрос для сырого ответа. "
+            "Найденные сканы страниц будут показаны дополнительно."
+            if include_scans
+            else "Отправьте текстовый запрос для сырого ответа."
+        )
+        await self.api_request(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": prompt,
+            },
+        )
 
     async def _send_mobile_pairing_card(
         self,
@@ -5984,7 +6115,18 @@ class Bot:
         await self._cleanup_chat_states()
         chat_state = await self._get_chat_state(chat_id)
 
-        if chat_state == "raw_answer_waiting_query":
+        raw_mode_choice = text.strip()
+        if raw_mode_choice in {"Raw answer", "RA + сканы страниц"}:
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "sendMessage", {"chat_id": chat_id, "text": "Not authorized"}
+                )
+                return
+            include_scans = raw_mode_choice == "RA + сканы страниц"
+            await self._activate_raw_mode(chat_id, user_id, include_scans=include_scans)
+            return
+
+        if chat_state in {"raw_answer_waiting_query", "raw_answer_waiting_query_scans"}:
             query_text = text.strip()
             if not query_text:
                 await self.api_request(
@@ -5992,12 +6134,20 @@ class Bot:
                     {"chat_id": chat_id, "text": "Введите текстовый запрос для поиска."},
                 )
                 return
+            include_scans = chat_state == "raw_answer_waiting_query_scans"
             try:
                 await self.api_request(
                     "sendMessage",
                     {"chat_id": chat_id, "text": "⏳ Обрабатываю запрос..."},
                 )
-                await self._handle_raw_answer_query(chat_id, query_text)
+                logging.info(
+                    "RAW_ANSWER received query chat_id=%s include_scans=%s",  # noqa: TRY400
+                    chat_id,
+                    include_scans,
+                )
+                await self._handle_raw_answer_query(
+                    chat_id, query_text, include_scans=include_scans
+                )
             except Exception:
                 logging.exception("RAW_ANSWER search failed chat_id=%s", chat_id)
                 await self.api_request(
@@ -6127,16 +6277,13 @@ class Bot:
                     "sendMessage", {"chat_id": chat_id, "text": "Not authorized"}
                 )
                 return
-            keyboard = {
-                "inline_keyboard": [[{"text": "Raw answer", "callback_data": "ask:raw"}]],
-            }
             await self._set_chat_state(chat_id, "waiting_raw_mode_choice")
             await self.api_request(
                 "sendMessage",
                 {
                     "chat_id": chat_id,
                     "text": "Выберите режим ответа или отмените запрос.",
-                    "reply_markup": keyboard,
+                    "reply_markup": self._build_raw_answer_keyboard(),
                 },
             )
             return
@@ -8297,18 +8444,31 @@ class Bot:
                     },
                 )
                 return
-            await self._set_chat_state(chat_id, "raw_answer_waiting_query")
             await self.api_request(
                 "answerCallbackQuery",
                 {"callback_query_id": query["id"], "text": "Режим raw"},
             )
+            await self._activate_raw_mode(chat_id, user_id, include_scans=False)
+            return
+        if data == "ask:raw_scans":
+            if not self.is_authorized(user_id):
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Недостаточно прав",
+                        "show_alert": True,
+                    },
+                )
+                return
             await self.api_request(
-                "sendMessage",
+                "answerCallbackQuery",
                 {
-                    "chat_id": chat_id,
-                    "text": "Отправьте текстовый запрос для сырого ответа.",
+                    "callback_query_id": query["id"],
+                    "text": "Режим raw + сканы",
                 },
             )
+            await self._activate_raw_mode(chat_id, user_id, include_scans=True)
             return
         if data == "pair:new":
             if not self.is_authorized(user_id):

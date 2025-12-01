@@ -155,10 +155,14 @@ def search_raw_chunks(
 
     db_url = get_db_url()
     embedding_vector = list(float(value) for value in embedding)
+    embedding_text = "[" + ",".join(str(value) for value in embedding_vector) + "]"
     try:
         with psycopg2.connect(db_url, cursor_factory=RealDictCursor) as conn:
             with conn.cursor() as cursor:
-                cursor.callproc("match_chunks", (embedding_vector, match_threshold, match_count))
+                cursor.execute(
+                    "SELECT * FROM match_chunks(%s::vector, %s, %s)",
+                    (embedding_text, match_threshold, match_count),
+                )
                 rows = cursor.fetchall()
                 return [dict(row) for row in rows] if rows else []
     except PsycopgError as exc:  # pragma: no cover - depends on external DB

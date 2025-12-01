@@ -17,6 +17,7 @@ import sqlite3
 import tempfile
 import time
 import unicodedata
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -33,6 +34,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import piexif
 from aiohttp import ClientSession, FormData, web
+import google.generativeai as genai
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 try:  # pragma: no cover - optional dependency fallback
@@ -49,6 +51,110 @@ try:  # pragma: no cover - optional dependency
     import exifread  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - fallback when exifread is unavailable
     exifread = None  # type: ignore[assignment]
+
+RAW_ANSWER_MAX_SCAN_PAGES = 5
+RAW_ANSWER_HIGHLIGHT_MODEL_ID = "gemini-2.5-flash-lite"
+_raw_answer_highlight_model: genai.GenerativeModel | None = None
+
+
+def _collect_unique_pages_by_tg_msg_id(
+    match_rows: Iterable[Mapping[str, Any]], max_pages: int = RAW_ANSWER_MAX_SCAN_PAGES
+) -> list[Mapping[str, Any]]:
+    pages: OrderedDict[str | int, Mapping[str, Any]] = OrderedDict()
+    for row in match_rows:
+        tg_msg_id = row.get("tg_msg_id") if isinstance(row, Mapping) else None
+        if tg_msg_id in (None, ""):
+            continue
+        if tg_msg_id not in pages:
+            pages[tg_msg_id] = row
+        if len(pages) >= max_pages:
+            break
+    return list(pages.values())
+
+
+def _highlight_image_bytes(image_bytes: bytes, boxes: Iterable[Sequence[int]]) -> bytes:
+    normalized_boxes = [
+        box for box in boxes if isinstance(box, Sequence) and len(box) == 4
+    ]
+    if not normalized_boxes:
+        return image_bytes
+
+    with Image.open(io.BytesIO(image_bytes)).convert("RGBA") as base:
+        w, h = base.size
+        overlay = Image.new("RGBA", base.size, (255, 255, 255, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        for ymin, xmin, ymax, xmax in normalized_boxes:
+            left = (xmin / 1000.0) * w
+            top = (ymin / 1000.0) * h
+            right = (xmax / 1000.0) * w
+            bottom = (ymax / 1000.0) * h
+            draw.rectangle([left, top, right, bottom], fill=(255, 255, 0, 100))
+
+        out = Image.alpha_composite(base, overlay).convert("RGB")
+        buffer = io.BytesIO()
+        out.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+
+def _get_raw_answer_highlight_model() -> genai.GenerativeModel:
+    global _raw_answer_highlight_model
+    if _raw_answer_highlight_model is None:
+        _raw_answer_highlight_model = genai.GenerativeModel(
+            RAW_ANSWER_HIGHLIGHT_MODEL_ID,
+            generation_config={"response_mime_type": "application/json"},
+        )
+    return _raw_answer_highlight_model
+
+
+async def _get_text_boxes_for_page(image_bytes: bytes, user_query: str) -> list[list[int]]:
+    def _generate() -> list[list[int]]:
+        try:
+            model = _get_raw_answer_highlight_model()
+            uploaded = genai.upload_file(
+                path=None, file=image_bytes, display_name="page_scan"
+            )
+            prompt = f"""
+You are a document comprehension assistant.
+
+The user is searching for information about: "{user_query}".
+
+Look at this scanned document page and identify the specific sentences or paragraphs
+that directly answer or strongly relate to the user's request.
+
+Return a JSON object with a list of bounding boxes under the key "boxes".
+Each bounding box should be in the format [ymin, xmin, ymax, xmax],
+where coordinates are normalized from 0 to 1000 (0 is top/left, 1000 is bottom/right).
+
+Be precise: if only one sentence is relevant, highlight just that sentence,
+not the entire paragraph.
+
+Example output:
+{{
+  "boxes": [
+    [100, 200, 150, 800],
+    [300, 200, 350, 800]
+  ]
+}}
+
+If the page does not contain relevant content, return:
+{{ "boxes": [] }}.
+"""
+            response = model.generate_content([uploaded, prompt])
+            data = json.loads(response.text)
+            boxes = data.get("boxes", []) if isinstance(data, dict) else []
+            if not isinstance(boxes, list):
+                return []
+            result: list[list[int]] = []
+            for box in boxes:
+                if isinstance(box, Sequence) and len(box) == 4:
+                    result.append([int(box[0]), int(box[1]), int(box[2]), int(box[3])])
+            return result
+        except Exception as exc:  # pragma: no cover - external dependency
+            logging.warning("Gemini highlight failed: %s", exc)
+            return []
+
+    return await asyncio.to_thread(_generate)
 
 from api.pairing import PairingTokenError, normalize_pairing_token
 from api.rate_limit import TokenBucketLimiter, create_rate_limit_middleware
@@ -1465,8 +1571,9 @@ class Bot:
             return
 
         results = payload.get("results") or []
+        unique_results = _collect_unique_pages_by_tg_msg_id(results)
         found = False
-        for idx, row in enumerate(results):
+        for idx, row in enumerate(unique_results):
             if not isinstance(row, Mapping):
                 continue
             tg_msg_id = row.get("tg_msg_id")
@@ -1477,11 +1584,50 @@ class Bot:
                 continue
 
             try:
-                message_id = int(tg_msg_id)
+                message_id: int | str = int(tg_msg_id)
             except (TypeError, ValueError):
                 message_id = tg_msg_id
 
-            found = True
+            caption = self._build_raw_answer_caption(row)
+            image_bytes = await self._load_raw_answer_scan_bytes(
+                channel_id, message_id, row
+            )
+            final_bytes: bytes | None = None
+            if image_bytes:
+                user_query = str((payload.get("query") or {}).get("text") or "")
+                boxes = await _get_text_boxes_for_page(image_bytes, user_query)
+                try:
+                    final_bytes = _highlight_image_bytes(image_bytes, boxes)
+                except Exception:
+                    logging.warning(
+                        "RAW_ANSWER failed to render highlight message_id=%s", message_id
+                    )
+                    final_bytes = image_bytes
+
+            if final_bytes:
+                files = {
+                    "photo": (
+                        f"scan_{message_id}.png",
+                        final_bytes,
+                        "image/png",
+                    )
+                }
+                payload_kwargs: dict[str, Any] = {"chat_id": chat_id}
+                if caption:
+                    payload_kwargs["caption"] = caption
+                try:
+                    await self.api_request_multipart(
+                        "sendPhoto", payload_kwargs, files=files
+                    )
+                    found = True
+                    continue
+                except Exception:
+                    logging.exception(
+                        "RAW_ANSWER failed to send highlighted scan chat_id=%s message_id=%s",
+                        chat_id,
+                        message_id,
+                    )
+
             try:
                 logging.info(
                     "RAW_ANSWER sending scan chat_id=%s from_channel=%s message_id=%s",
@@ -1497,6 +1643,7 @@ class Bot:
                         "message_id": message_id,
                     },
                 )
+                found = True
             except Exception:
                 logging.exception(
                     "RAW_ANSWER failed to send scan chat_id=%s message_id=%s",
@@ -1513,6 +1660,65 @@ class Bot:
                     "text": "Сканы страниц не найдены для результатов этого запроса.",
                 },
             )
+
+    def _build_raw_answer_caption(self, row: Mapping[str, Any]) -> str | None:
+        parts: list[str] = []
+        page = row.get("book_page")
+        if page not in (None, ""):
+            parts.append(f"Страница {page}")
+        title = row.get("book_title")
+        if title:
+            parts.append(str(title))
+        if not parts:
+            return None
+        return " — ".join(parts)
+
+    async def _load_raw_answer_scan_bytes(
+        self, channel_id: str, message_id: int | str, row: Mapping[str, Any]
+    ) -> bytes | None:
+        url = row.get("url")
+        if url:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(str(url))
+                    response.raise_for_status()
+                    return response.content
+            except Exception:
+                logging.exception(
+                    "RAW_ANSWER failed to download scan from url message_id=%s url=%s",
+                    message_id,
+                    url,
+                )
+
+        file_id = row.get("file_id") or row.get("tg_file_id")
+        if file_id:
+            suffix = ""
+            try:
+                suffix = Path(str(file_id)).suffix
+            except Exception:
+                suffix = ""
+            fd, tmp_path = tempfile.mkstemp(prefix="raw-scan-", suffix=suffix or ".tmp")
+            os.close(fd)
+            destination = Path(tmp_path)
+            try:
+                downloaded_path = await self._download_file(str(file_id), destination)
+                if isinstance(downloaded_path, (bytes, bytearray)):
+                    return bytes(downloaded_path)
+                if downloaded_path:
+                    path_obj = Path(downloaded_path)
+                    if path_obj.exists():
+                        return path_obj.read_bytes()
+            except Exception:
+                logging.exception(
+                    "RAW_ANSWER failed to download scan file message_id=%s file_id=%s",
+                    message_id,
+                    file_id,
+                )
+            finally:
+                with contextlib.suppress(OSError):
+                    Path(destination).unlink(missing_ok=True)
+
+        return None
 
     def _get_active_pairing_token(self, user_id: int) -> tuple[str, datetime, str] | None:
         now = datetime.utcnow()

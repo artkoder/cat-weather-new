@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
+from typing import TypedDict
 
 import google.generativeai as genai
 import psycopg2
@@ -19,6 +20,58 @@ EMBEDDING_MODEL = "text-embedding-004"
 class RagSearchError(RuntimeError):
     """Domain-specific error raised when RAG search fails."""
 
+
+class MatchChunkRow(TypedDict, total=False):
+    """Typed representation of a row returned by the ``match_chunks`` function."""
+
+    id: int
+    chunk: str
+    chunk_id: str
+    chunk_type: str | None
+    chunk_year_end: int | None
+    chunk_year_start: int | None
+    lang: str | None
+    relevance_score: float | None
+    similarity: float | None
+    score: float | None
+    match_score: float | None
+    topic: str | None
+    keywords: list[str] | None
+    persons: list[str] | None
+    locations: list[str] | None
+    orthography: str | None
+    book_id: int | str | None
+    media_ids: list[str] | None
+    media_internal_ids: list[str] | None
+    book_title: str | None
+    page_number: int | None
+    paragraph: str | None
+    url: str | None
+
+
+class RagSearchQuery(TypedDict):
+    """Search metadata for the executed query."""
+
+    text: str
+    embedding_model: str
+    match_count: int
+    executed_at: str
+
+
+class RagSearchMetadata(TypedDict, total=False):
+    """Metadata describing the search results."""
+
+    result_count: int
+    embedding_dimensions: int
+    threshold: float
+
+
+class RagSearchPayload(TypedDict):
+    """Structured payload containing raw RAG search output."""
+
+    query: RagSearchQuery
+    results: list[MatchChunkRow]
+    metadata: RagSearchMetadata
 
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
@@ -82,7 +135,7 @@ def search_raw_chunks(
     embedding: Iterable[float],
     match_threshold: float = 0.5,
     match_count: int = 5,
-) -> list[Mapping[str, Any]]:
+) -> list[MatchChunkRow]:
     """Search for raw chunks using the match_chunks stored procedure."""
 
     db_url = get_db_url()
@@ -117,7 +170,7 @@ def build_raw_answer_file(payload: Mapping[str, Any]) -> tuple[str, bytes]:
     return filename, buffer.read()
 
 
-def run_rag_search(query_text: str, match_count: int = 5) -> dict[str, Any]:
+def run_rag_search(query_text: str, match_count: int = 5) -> RagSearchPayload:
     """Execute the full RAG search flow and return metadata alongside matches."""
 
     configure_gemini()

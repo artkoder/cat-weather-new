@@ -178,6 +178,69 @@ async def test_postcard_publish_routes_to_prod_channel(
 
 
 @pytest.mark.asyncio
+async def test_postcard_prod_cleanup_removes_asset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(main_module.Bot, "_record_openai_usage", async_noop, raising=False)
+
+    bot = main_module.Bot("dummy", str(tmp_path / "postcard-cleanup.db"))
+    bot.supabase = DummySupabase()
+    bot.openai = DummyPostcardOpenAI("Морской берег и город в лучах заката.")
+
+    rubric = bot.data.get_rubric_by_code("postcard")
+    assert rubric is not None
+    config = dict(rubric.config or {})
+    config.update(
+        {
+            "enabled": True,
+            "channel_id": -940010,
+            "test_channel_id": -940011,
+            "postcard_region_hashtag": "#КалининградскаяОбласть",
+            "postcard_stopwords": [],
+        }
+    )
+    bot.data.save_rubric_config("postcard", config)
+
+    asset_id = _create_postcard_asset(bot)
+    asset_path = Path(bot.asset_storage) / f"{asset_id}.jpg"
+    assert asset_path.exists()
+
+    send_calls: list[dict[str, Any]] = []
+
+    async def capture_api_request(
+        self: main_module.Bot, method: str, data: Any = None, *, files: Any = None
+    ) -> dict[str, Any]:  # type: ignore[override]
+        if method == "sendPhoto":
+            send_calls.append(data or {})
+            return {"ok": True, "result": {"message_id": 77}}
+        return {"ok": True, "result": {"message_id": 1}}
+
+    delete_calls: list[str] = []
+
+    async def fake_delete_asset_message(self: main_module.Bot, asset: Any) -> None:  # type: ignore[override]
+        delete_calls.append(str(getattr(asset, "id", "")))
+
+    monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
+    monkeypatch.setattr(main_module.Bot, "_delete_asset_message", fake_delete_asset_message, raising=False)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        result = await bot.publish_rubric("postcard", test=False)
+
+    assert result is True
+    assert send_calls
+    assert bot.data.get_asset(asset_id) is None
+    assert bot.db.execute("SELECT 1 FROM assets WHERE id=?", (asset_id,)).fetchone() is None
+    assert not asset_path.exists()
+    assert delete_calls == [str(asset_id)]
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("POSTCARD_RUBRIC prod_cleanup_success" in msg for msg in messages)
+
+    bot.db.close()
+
+
+@pytest.mark.asyncio
 async def test_postcard_publish_routes_to_test_channel(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

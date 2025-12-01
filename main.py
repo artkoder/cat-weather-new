@@ -14782,6 +14782,19 @@ class Bot:
             metadata,
         )
 
+        if is_prod:
+            try:
+                await self._cleanup_assets([asset])
+                logging.info(
+                    "POSTCARD_RUBRIC prod_cleanup_success asset_ids=%s",
+                    [asset.id],
+                )
+            except Exception:
+                logging.exception(
+                    "POSTCARD_RUBRIC prod_cleanup_failed asset_ids=%s",
+                    [asset.id],
+                )
+
         await self._send_postcard_inventory_report(
             is_prod=is_prod,
             rubric_title=rubric_title,

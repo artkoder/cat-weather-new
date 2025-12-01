@@ -62,7 +62,9 @@ Example output:
 If the page does not contain relevant content, return:
 {{ "boxes": [] }}.
 """
+            logging.info("DEBUG_GEMINI_PROMPT: %s", prompt)
             response = model.generate_content([uploaded, prompt])
+            logging.info("DEBUG_GEMINI_RESPONSE: %s", response.text)
             data = json.loads(response.text)
             boxes = data.get("boxes", []) if isinstance(data, dict) else []
             if not isinstance(boxes, list):

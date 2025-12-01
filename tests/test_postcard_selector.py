@@ -213,6 +213,35 @@ def test_repeat_guard_skips_recently_used_assets(data: DataAccess) -> None:
     assert asset.id == "asset-fresh"
 
 
+def test_repeat_guard_broadens_to_out_of_season_assets(data: DataAccess) -> None:
+    tz = ZoneInfo("Europe/Kaliningrad")
+    now = datetime(2024, 3, 15, 9, 0, tzinfo=tz)
+    doy_now = now.timetuple().tm_yday
+    far_doy = ((doy_now + 200 - 1) % 366) + 1
+
+    _add_asset(
+        data,
+        asset_id="asset-in-season-recent",
+        score=10,
+        created_at=now - timedelta(days=1),
+        captured_at=now - timedelta(days=1),
+        photo_doy=doy_now,
+        last_used_at=now - timedelta(days=1),
+    )
+    _add_asset(
+        data,
+        asset_id="asset-out-of-season-available",
+        score=10,
+        created_at=now - timedelta(days=2),
+        captured_at=now - timedelta(days=2),
+        photo_doy=far_doy,
+    )
+
+    asset = select_postcard_asset(data, now=now)
+    assert asset is not None
+    assert asset.id == "asset-out-of-season-available"
+
+
 def test_repeat_guard_falls_back_to_lower_score_when_recent_high_score_used(
     data: DataAccess,
 ) -> None:

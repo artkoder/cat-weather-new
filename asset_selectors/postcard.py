@@ -244,12 +244,6 @@ def _select_candidate(
         not non_recent,
     )
 
-    if not non_recent and not test:
-        logger.info("POSTCARD_RUBRIC repeat_guard_exhausted retry_lower_score=True")
-        return None, ["repeat_guard_exhausted"]
-
-    repeat_candidates = non_recent if non_recent else season_candidates
-
     selection_notes: list[str] = []
     if not fresh_candidates:
         selection_notes.append("stale_pool")
@@ -257,6 +251,21 @@ def _select_candidate(
         selection_notes.append("season_fallback")
     if not non_recent:
         selection_notes.append("repeat_guard_fallback")
+
+    repeat_candidates = non_recent
+    if not non_recent:
+        expanded_non_recent = [
+            c for c in working_set if not c.last_used_dt or c.last_used_dt < repeat_threshold
+        ]
+        if expanded_non_recent:
+            repeat_candidates = expanded_non_recent
+            selection_notes.append("repeat_guard_broadened_pool")
+        elif not test:
+            logger.info("POSTCARD_RUBRIC repeat_guard_exhausted retry_lower_score=True")
+            selection_notes.append("repeat_guard_exhausted")
+            return None, selection_notes
+
+    repeat_candidates = repeat_candidates if repeat_candidates else season_candidates
 
     tag_penalties: dict[str, int] = {}
     tag_filtered: list[_Candidate] = []

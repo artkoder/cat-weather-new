@@ -73,23 +73,38 @@ class RagSearchPayload(TypedDict):
     results: list[MatchChunkRow]
     metadata: RagSearchMetadata
 
-def _require_env(name: str) -> str:
+def _require_env(name: str, *, hint: str | None = None) -> str:
     value = os.environ.get(name)
     if not value:
-        raise RagSearchError(f"Environment variable {name} is required for RAG search")
+        message = hint or f"Environment variable {name} is required for RAG search"
+        raise RagSearchError(message)
     return value
 
 
 def get_db_url() -> str:
     """Return the Postgres connection URL for the RAG database."""
 
-    return _require_env("SUPABASE_DB_URL")
+    rag_url = os.environ.get("SUPABASE_RAG_DB_URL")
+    if rag_url:
+        return rag_url
+
+    fallback = os.environ.get("SUPABASE_DB_URL")
+    if fallback:
+        return fallback
+
+    raise RagSearchError(
+        "Environment variable SUPABASE_RAG_DB_URL is required for RAG search; "
+        "legacy SUPABASE_DB_URL is only used as a fallback when present"
+    )
 
 
 def configure_gemini() -> str:
     """Configure Gemini client using the GOOGLE_API_KEY environment variable."""
 
-    api_key = _require_env("GOOGLE_API_KEY")
+    api_key = _require_env(
+        "GOOGLE_API_KEY",
+        hint="Environment variable GOOGLE_API_KEY is required for RAG search (/ask) embeddings",
+    )
     genai.configure(api_key=api_key)
     return api_key
 

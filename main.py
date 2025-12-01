@@ -17,7 +17,6 @@ import sqlite3
 import tempfile
 import time
 import unicodedata
-from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -34,7 +33,6 @@ from zoneinfo import ZoneInfo
 import httpx
 import piexif
 from aiohttp import ClientSession, FormData, web
-import google.generativeai as genai
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 try:  # pragma: no cover - optional dependency fallback
@@ -52,109 +50,6 @@ try:  # pragma: no cover - optional dependency
 except ModuleNotFoundError:  # pragma: no cover - fallback when exifread is unavailable
     exifread = None  # type: ignore[assignment]
 
-RAW_ANSWER_MAX_SCAN_PAGES = 5
-RAW_ANSWER_HIGHLIGHT_MODEL_ID = "gemini-2.5-flash-lite"
-_raw_answer_highlight_model: genai.GenerativeModel | None = None
-
-
-def _collect_unique_pages_by_tg_msg_id(
-    match_rows: Iterable[Mapping[str, Any]], max_pages: int = RAW_ANSWER_MAX_SCAN_PAGES
-) -> list[Mapping[str, Any]]:
-    pages: OrderedDict[str | int, Mapping[str, Any]] = OrderedDict()
-    for row in match_rows:
-        tg_msg_id = row.get("tg_msg_id") if isinstance(row, Mapping) else None
-        if tg_msg_id in (None, ""):
-            continue
-        if tg_msg_id not in pages:
-            pages[tg_msg_id] = row
-        if len(pages) >= max_pages:
-            break
-    return list(pages.values())
-
-
-def _highlight_image_bytes(image_bytes: bytes, boxes: Iterable[Sequence[int]]) -> bytes:
-    normalized_boxes = [
-        box for box in boxes if isinstance(box, Sequence) and len(box) == 4
-    ]
-    if not normalized_boxes:
-        return image_bytes
-
-    with Image.open(io.BytesIO(image_bytes)).convert("RGBA") as base:
-        w, h = base.size
-        overlay = Image.new("RGBA", base.size, (255, 255, 255, 0))
-        draw = ImageDraw.Draw(overlay)
-
-        for ymin, xmin, ymax, xmax in normalized_boxes:
-            left = (xmin / 1000.0) * w
-            top = (ymin / 1000.0) * h
-            right = (xmax / 1000.0) * w
-            bottom = (ymax / 1000.0) * h
-            draw.rectangle([left, top, right, bottom], fill=(255, 255, 0, 100))
-
-        out = Image.alpha_composite(base, overlay).convert("RGB")
-        buffer = io.BytesIO()
-        out.save(buffer, format="PNG")
-        return buffer.getvalue()
-
-
-def _get_raw_answer_highlight_model() -> genai.GenerativeModel:
-    global _raw_answer_highlight_model
-    if _raw_answer_highlight_model is None:
-        _raw_answer_highlight_model = genai.GenerativeModel(
-            RAW_ANSWER_HIGHLIGHT_MODEL_ID,
-            generation_config={"response_mime_type": "application/json"},
-        )
-    return _raw_answer_highlight_model
-
-
-async def _get_text_boxes_for_page(image_bytes: bytes, user_query: str) -> list[list[int]]:
-    def _generate() -> list[list[int]]:
-        try:
-            model = _get_raw_answer_highlight_model()
-            uploaded = genai.upload_file(
-                path=None, file=image_bytes, display_name="page_scan"
-            )
-            prompt = f"""
-You are a document comprehension assistant.
-
-The user is searching for information about: "{user_query}".
-
-Look at this scanned document page and identify the specific sentences or paragraphs
-that directly answer or strongly relate to the user's request.
-
-Return a JSON object with a list of bounding boxes under the key "boxes".
-Each bounding box should be in the format [ymin, xmin, ymax, xmax],
-where coordinates are normalized from 0 to 1000 (0 is top/left, 1000 is bottom/right).
-
-Be precise: if only one sentence is relevant, highlight just that sentence,
-not the entire paragraph.
-
-Example output:
-{{
-  "boxes": [
-    [100, 200, 150, 800],
-    [300, 200, 350, 800]
-  ]
-}}
-
-If the page does not contain relevant content, return:
-{{ "boxes": [] }}.
-"""
-            response = model.generate_content([uploaded, prompt])
-            data = json.loads(response.text)
-            boxes = data.get("boxes", []) if isinstance(data, dict) else []
-            if not isinstance(boxes, list):
-                return []
-            result: list[list[int]] = []
-            for box in boxes:
-                if isinstance(box, Sequence) and len(box) == 4:
-                    result.append([int(box[0]), int(box[1]), int(box[2]), int(box[3])])
-            return result
-        except Exception as exc:  # pragma: no cover - external dependency
-            logging.warning("Gemini highlight failed: %s", exc)
-            return []
-
-    return await asyncio.to_thread(_generate)
 
 from api.pairing import PairingTokenError, normalize_pairing_token
 from api.rate_limit import TokenBucketLimiter, create_rate_limit_middleware
@@ -220,7 +115,14 @@ from supabase_client import SupabaseClient
 from utils_wave import wave_m_to_score
 from weather_migration import migrate_weather_publish_channels
 from db_utils import dump_database
-from raw_answer_search import RawSearchError, build_raw_answer_file, search_raw_chunks
+from rag_vision import draw_highlight_overlay, extract_text_coordinates
+from raw_answer_search import (
+    RawSearchError,
+    build_raw_answer_file,
+    deduplicate_pages,
+    format_scan_caption,
+    search_raw_chunks,
+)
 
 if TYPE_CHECKING:
     from openai_client import OpenAIResponse
@@ -1571,7 +1473,7 @@ class Bot:
             return
 
         results = payload.get("results") or []
-        unique_results = self._collect_unique_pages_by_tg_msg_id(results)
+        unique_results = deduplicate_pages(results)
         found = False
         query_text = str((payload.get("query") or {}).get("text") or "")
         for idx, row in enumerate(unique_results):
@@ -1598,7 +1500,7 @@ class Bot:
                 message_id,
             )
 
-            caption = self._build_raw_answer_caption(row)
+            caption = format_scan_caption(row)
 
             try:
                 forwarded_resp = await self.api_request(
@@ -1642,9 +1544,11 @@ class Bot:
                         with contextlib.suppress(OSError):
                             downloaded_path.unlink()
 
-                        boxes = await self._get_text_boxes_for_page(image_bytes, query_text)
+                        boxes = await extract_text_coordinates(
+                            image_bytes, query_text, client=self.openai
+                        )
                         if boxes:
-                            final_bytes = self._highlight_image_bytes(image_bytes, boxes)
+                            final_bytes = draw_highlight_overlay(image_bytes, boxes)
                             highlighted = final_bytes is not None
                             logging.info(
                                 "RAW_ANSWER highlighted %s boxes for msg_id=%s", len(boxes), message_id
@@ -1707,164 +1611,6 @@ class Bot:
                 },
             )
 
-    def _collect_unique_pages_by_tg_msg_id(
-        self, results: Sequence[Mapping[str, Any]]
-    ) -> list[Mapping[str, Any]]:
-        seen: set[str] = set()
-        unique: list[Mapping[str, Any]] = []
-        for row in results:
-            if not isinstance(row, Mapping):
-                continue
-            tg_msg_id = row.get("tg_msg_id")
-            if tg_msg_id is None:
-                continue
-            key = str(tg_msg_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            unique.append(row)
-        return unique
-
-    def _build_raw_answer_caption(self, row: Mapping[str, Any]) -> str:
-        parts: list[str] = []
-        title = row.get("book_title")
-        page = row.get("book_page")
-        chunk = row.get("chunk") or row.get("content")
-        if title:
-            parts.append(f"Источник: {title}")
-        if page:
-            parts.append(f"Страница: {page}")
-        if chunk:
-            snippet = str(chunk)
-            if len(snippet) > 240:
-                snippet = snippet[:237].rstrip() + "…"
-            parts.append(snippet)
-        return "\n".join(parts)
-
-    async def _get_text_boxes_for_page(
-        self, image_bytes: bytes, query_text: str
-    ) -> list[Mapping[str, float]]:
-        if not self.openai or not self.openai.api_key:
-            logging.debug("RAW_ANSWER skipping vision: OpenAI client unavailable")
-            return []
-
-        fd, temp_name = tempfile.mkstemp(prefix="raw-scan-src-", suffix=".jpg")
-        os.close(fd)
-        temp_path = Path(temp_name)
-        try:
-            temp_path.write_bytes(image_bytes)
-        except Exception:
-            with contextlib.suppress(OSError):
-                temp_path.unlink()
-            logging.exception("RAW_ANSWER failed to persist temp image for vision")
-            return []
-
-        schema: dict[str, Any] = {
-            "type": "object",
-            "properties": {
-                "boxes": {
-                    "type": "array",
-                    "minItems": 0,
-                    "maxItems": 4,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "x0": {"type": "number"},
-                            "y0": {"type": "number"},
-                            "x1": {"type": "number"},
-                            "y1": {"type": "number"},
-                            "confidence": {"type": ["number", "null"]},
-                            "reason": {"type": ["string", "null"]},
-                        },
-                        "required": ["x0", "y0", "x1", "y1"],
-                    },
-                }
-            },
-            "required": ["boxes"],
-            "additionalProperties": False,
-        }
-
-        system_prompt = (
-            "Ты анализируешь скан страницы книги. Найди 1–4 наиболее релевантных фрагмента текста, "
-            "которые отвечают на запрос пользователя. Верни координаты прямоугольников в долях от ширины/высоты изображения."
-        )
-        query_line = query_text.strip() or ""
-        user_prompt = (
-            "Запрос пользователя: "
-            + (query_line or "(пусто)")
-            + "\n"
-            "Верни массив boxes. Каждая запись: x0,y0,x1,y1 в диапазоне 0..1, где (x0,y0) — левый верх. "
-            "x0<x1 и y0<y1. Добавь confidence 0..1, если уверенность известна."
-        )
-
-        try:
-            response = await self.openai.classify_image(
-                model="gpt-4o-mini",
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                image_path=temp_path,
-                schema=schema,
-                schema_name="raw_scan_boxes",
-            )
-        except Exception:
-            logging.exception("RAW_ANSWER vision request failed")
-            return []
-        finally:
-            with contextlib.suppress(OSError):
-                temp_path.unlink()
-
-        if not response or not isinstance(response.content, Mapping):
-            return []
-
-        boxes_raw = response.content.get("boxes")
-        parsed: list[Mapping[str, float]] = []
-        if isinstance(boxes_raw, Sequence):
-            for item in boxes_raw:
-                if not isinstance(item, Mapping):
-                    continue
-                try:
-                    x0 = float(item.get("x0"))
-                    y0 = float(item.get("y0"))
-                    x1 = float(item.get("x1"))
-                    y1 = float(item.get("y1"))
-                except (TypeError, ValueError):
-                    continue
-                if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
-                    continue
-                parsed.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
-        return parsed
-
-    def _highlight_image_bytes(
-        self, image_bytes: bytes, boxes: Sequence[Mapping[str, float]]
-    ) -> bytes | None:
-        try:
-            with Image.open(io.BytesIO(image_bytes)) as image:
-                img = image.convert("RGBA")
-        except Exception:
-            logging.exception("RAW_ANSWER failed to open image for highlighting")
-            return None
-
-        overlay = Image.new("RGBA", img.size, (255, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-        width, height = img.size
-        for box in boxes:
-            try:
-                x0 = max(0, min(width, int(round(box.get("x0", 0) * width))))
-                y0 = max(0, min(height, int(round(box.get("y0", 0) * height))))
-                x1 = max(0, min(width, int(round(box.get("x1", 0) * width))))
-                y1 = max(0, min(height, int(round(box.get("y1", 0) * height))))
-            except Exception:
-                continue
-            if x0 >= x1 or y0 >= y1:
-                continue
-            draw.rectangle((x0, y0, x1, y1), outline=(255, 0, 0, 255), width=max(3, width // 200))
-            draw.rectangle((x0, y0, x1, y1), fill=(255, 0, 0, 60))
-
-        composed = Image.alpha_composite(img, overlay).convert("RGB")
-        buffer = io.BytesIO()
-        composed.save(buffer, format="PNG")
-        buffer.seek(0)
-        return buffer.read()
 
     def _get_active_pairing_token(self, user_id: int) -> tuple[str, datetime, str] | None:
         now = datetime.utcnow()

@@ -31,13 +31,20 @@ async def _extract_boxes_with_gemini(
     def _generate() -> list[Mapping[str, float]]:
         try:
             model = get_highlight_model()
-            uploaded = genai.upload_file(path=None, file=image_bytes, display_name="page_scan")
+            try:
+                image_part = Image.open(io.BytesIO(image_bytes))
+            except Exception as img_exc:
+                logging.error(
+                    "Gemini highlight: Failed to create PIL Image from bytes: %s", img_exc
+                )
+                return []
+
             prompt = f"""
 You are a document comprehension assistant.
 
 The user is searching for information about: "{user_query}".
 
-Look at this scanned document page and identify the specific sentences or paragraphs
+Look at this scanned document page and identify the specific text paragraphs or sentences 
 that directly answer or strongly relate to the user's request.
 
 Return a JSON object with a list of bounding boxes under the key "boxes".
@@ -59,7 +66,7 @@ If the page does not contain relevant content, return:
 {{ "boxes": [] }}.
 """
             logging.info("DEBUG_GEMINI_PROMPT: %s", prompt)
-            response = model.generate_content([uploaded, prompt])
+            response = model.generate_content([image_part, prompt])
             logging.info("DEBUG_GEMINI_RESPONSE: %s", response.text)
             data = json.loads(response.text)
             boxes = data.get("boxes", []) if isinstance(data, dict) else []
@@ -81,7 +88,7 @@ If the page does not contain relevant content, return:
                 normalized.append({"x0": xmin, "y0": ymin, "x1": xmax, "y1": ymax})
             return normalized
         except Exception as exc:  # pragma: no cover - external dependency
-            logging.warning("Gemini highlight failed: %s", exc)
+            logging.exception("Gemini highlight failed: %s", exc)
             return []
 
     return await asyncio.to_thread(_generate)
@@ -104,7 +111,7 @@ def draw_highlight_overlay(
         logging.exception("RAW_ANSWER failed to open image for highlighting")
         return None
 
-    overlay = Image.new("RGBA", img.size, (255, 0, 0, 0))
+    overlay = Image.new("RGBA", img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
     width, height = img.size
     for box in boxes:
@@ -117,8 +124,7 @@ def draw_highlight_overlay(
             continue
         if x0 >= x1 or y0 >= y1:
             continue
-        draw.rectangle((x0, y0, x1, y1), outline=(255, 0, 0, 255), width=max(3, width // 200))
-        draw.rectangle((x0, y0, x1, y1), fill=(255, 0, 0, 60))
+        draw.rectangle((x0, y0, x1, y1), fill=(255, 255, 0, 100))
 
     composed = Image.alpha_composite(img, overlay).convert("RGB")
     buffer = io.BytesIO()

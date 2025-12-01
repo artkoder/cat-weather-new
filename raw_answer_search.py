@@ -20,7 +20,14 @@ def search_raw_chunks(query_text: str, threshold: float = 0.5, match_count: int 
     for row in results:
         score = None
         if isinstance(row, Mapping):
-            score = row.get("similarity") or row.get("score") or row.get("match_score")
+            if row.get("relevance_score") is not None:
+                score = row.get("relevance_score")
+            elif row.get("similarity") is not None:
+                score = row.get("similarity")
+            elif row.get("score") is not None:
+                score = row.get("score")
+            elif row.get("match_score") is not None:
+                score = row.get("match_score")
         if score is None or score >= threshold:
             filtered_results.append(row)
 

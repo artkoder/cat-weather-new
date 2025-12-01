@@ -277,11 +277,13 @@ The script saves a CSV file (defaults to `postcard_photos_dump.csv` in the curre
 | `MAX_IMAGE_SIDE` | – | Optional upper bound (pixels) for the longest photo side. Downscales recognition/preview copies while preserving the original upload. |
 | `PORT` | `8080` | HTTP port that `web.run_app` listens on. Must align with the port exposed by the hosting platform. |
 | `4O_API_KEY` | – | API key used by the recognition pipeline and rubric copy generators; related jobs are skipped automatically when missing. |
+| `GOOGLE_API_KEY` | – | API key for Gemini embeddings that power the `/ask` RAG endpoint. |
 | `OPENAI_DAILY_TOKEN_LIMIT`<br>`OPENAI_DAILY_TOKEN_LIMIT_GPT_4O` (`OPENAI_DAILY_TOKEN_LIMIT_4O` legacy)<br>`OPENAI_DAILY_TOKEN_LIMIT_GPT_4O_MINI` (`OPENAI_DAILY_TOKEN_LIMIT_4O_MINI` legacy) | – | Optional per-model daily token quotas that block new OpenAI jobs until the next UTC reset once exhausted. |
 | `LOG_LEVEL` | `INFO` | Structured log severity (`DEBUG`, `INFO`, `WARN`, `ERROR`). |
 | `LOG_FORMAT` | `json` | Switch to `pretty` locally for human-friendly logs. |
 | `ALLOWLIST_CIDR` | – | Comma-separated CIDR ranges allowed to call `/metrics` (and `/_admin` when present). Requests from outside the allow-list receive `403`. |
 | `RL_ATTACH_IP_PER_MIN`<br>`RL_ATTACH_USER_PER_MIN`<br>`RL_UPLOADS_PER_MIN`<br>`RL_UPLOAD_STATUS_PER_MIN`<br>`RL_HEALTH_PER_MIN`<br>`RL_METRICS_PER_MIN` | varies | Per-minute request ceilings enforced by the in-memory token bucket. Pair each limit with the corresponding `*_WINDOW_SEC` variable (defaults to 60 seconds) to tune the refill window. |
+| `SUPABASE_RAG_DB_URL` | – | Preferred Postgres connection string for `/ask` RAG search; falls back to `SUPABASE_DB_URL` when unset. |
 | `SUPABASE_URL`<br>`SUPABASE_KEY` (or `SUPABASE_ANON_KEY`) | – | Supabase credentials. When set, the bot mirrors OpenAI token usage into `rest/v1/token_usage` **and** powers the Supabase storage backend for mobile uploads via `SUPABASE_BUCKET`. Each request logs a `log_token_usage` entry regardless of success. |
 
 > ℹ️  Configure the Telegram channel for asset ingestion via the admin bot (for example `/set_weather_assets_channel`). The value is stored in the database (`asset_channel` table) and there is no environment variable override.
@@ -336,6 +338,11 @@ The bot targets Fly.io and exposes a single aiohttp application on port `8080`. 
    ```
 
 Provision Fly.io secrets (`TELEGRAM_BOT_TOKEN`, `WEBHOOK_URL`, `4O_API_KEY`, token limits) before the first deployment.
+
+For `/ask` to work in production, provision the RAG-specific secrets alongside the baseline bot tokens:
+- `SUPABASE_RAG_DB_URL` (preferred) or `SUPABASE_DB_URL` (fallback only) — Postgres connection string for the RAG chunks database.
+- `GOOGLE_API_KEY` — Gemini embeddings API key used to vectorize queries.
+- `SUPABASE_URL` and `SUPABASE_KEY` — still required when you rely on Supabase REST metrics or the Supabase storage backend elsewhere in the bot.
 
 ## Legacy
 Historical documentation for the weather scheduler, including sea temperature handling and template placeholders, now lives in `docs/weather.md`. Those features remain in the codebase for backward compatibility but are no longer part of the primary rubric workflow.

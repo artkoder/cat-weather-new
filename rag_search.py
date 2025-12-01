@@ -24,15 +24,15 @@ class RagSearchError(RuntimeError):
 class MatchChunkRow(TypedDict, total=False):
     """Typed representation of a row returned by the ``match_chunks`` function."""
 
-    id: int
-    chunk: str
-    chunk_id: str
+    id: int | None
+    book_id: int | str | None
+    chunk_id: str | None
+    content: str | None
+    chunk: str | None
+    similarity: float | None
     chunk_type: str | None
-    chunk_year_end: int | None
-    chunk_year_start: int | None
     lang: str | None
     relevance_score: float | None
-    similarity: float | None
     score: float | None
     match_score: float | None
     topic: str | None
@@ -40,11 +40,17 @@ class MatchChunkRow(TypedDict, total=False):
     persons: list[str] | None
     locations: list[str] | None
     orthography: str | None
-    book_id: int | str | None
+    chunk_year_start: int | None
+    chunk_year_end: int | None
     media_ids: list[str] | None
     media_internal_ids: list[str] | None
+    tg_msg_id: str | int | None
+    book_page: int | None
     book_title: str | None
-    page_number: int | None
+    book_authors: list[str] | str | None
+    book_year: int | None
+    book_isbn: str | None
+    source_link: str | None
     paragraph: str | None
     url: str | None
 

@@ -1544,9 +1544,7 @@ class Bot:
                         with contextlib.suppress(OSError):
                             downloaded_path.unlink()
 
-                        boxes = await extract_text_coordinates(
-                            image_bytes, query_text, client=self.openai
-                        )
+                        boxes = await extract_text_coordinates(image_bytes, query_text)
                         if boxes:
                             final_bytes = draw_highlight_overlay(image_bytes, boxes)
                             highlighted = final_bytes is not None

@@ -4,8 +4,9 @@ import asyncio
 import io
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import google.generativeai as genai
 from PIL import Image, ImageDraw
@@ -34,9 +35,7 @@ def get_highlight_model() -> genai.GenerativeModel:
     return _raw_answer_highlight_model
 
 
-async def _extract_boxes_with_gemini(
-    image_bytes: bytes, user_query: str
-) -> HighlightExtraction:
+async def _extract_boxes_with_gemini(image_bytes: bytes, user_query: str) -> HighlightExtraction:
     def _generate() -> HighlightExtraction:
         try:
             model = get_highlight_model()
@@ -49,16 +48,16 @@ async def _extract_boxes_with_gemini(
                 return HighlightExtraction(boxes=[], page_lines=[], answers=[])
 
             prompt = f"""
-You are a strict document analysis assistant.
+You are a document analysis assistant.
 User query: "{user_query}"
 
-Task: Identify the EXACT lines of text on this page that directly answer the user's query.
+Task: Identify lines that are relevant to the user's query or contain parts of the answer.
 
 Additionally, transcribe EVERY line of text on the page in reading order so that the operator can review the full content.
 For each transcribed line provide normalized vertical coordinates of the top and bottom of the text (y0 and y1 between 0 and 1, relative to the image height).
 
 CRITICAL INSTRUCTIONS:
-1. **Direct Answer Only:** If the page mentions the topic/names but does NOT contain the specific answer to the question, return {{ "items": [] }}. Do not guess.
+1. **Relevant Lines:** Identify lines that are relevant to the user's query or contain parts of the answer.
 2. **Line Numbers Only:** You must not return bounding boxes. Instead, provide the line numbers of the lines that contain the direct answer.
 3. **Per-Line Matches:** Each item should describe a single line or a tight group of adjacent lines that exactly answer the query.
 4. **Full Transcription:** Provide the complete text of the page, line by line, in a machine-readable format.
@@ -110,7 +109,9 @@ Each object MUST include:
             page_lines_raw = data.get("page_lines", []) if isinstance(data, dict) else []
             page_lines: list[Mapping[str, Any]] = []
             page_bottom_y: float | None = None
-            if isinstance(page_lines_raw, Sequence) and not isinstance(page_lines_raw, (str, bytes)):
+            if isinstance(page_lines_raw, Sequence) and not isinstance(
+                page_lines_raw, (str, bytes)
+            ):
                 for entry in page_lines_raw:
                     if entry is None:
                         continue
@@ -206,9 +207,7 @@ def build_answer_boxes(
     return boxes
 
 
-def draw_highlight_overlay(
-    image_bytes: bytes, boxes: Sequence[Mapping[str, Any]]
-) -> bytes | None:
+def draw_highlight_overlay(image_bytes: bytes, boxes: Sequence[Mapping[str, Any]]) -> bytes | None:
     try:
         with Image.open(io.BytesIO(image_bytes)) as image:
             img = image.convert("RGBA")

@@ -4,7 +4,7 @@ import asyncio
 import io
 import json
 import logging
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import google.generativeai as genai
 from PIL import Image, ImageDraw
@@ -27,8 +27,8 @@ def get_highlight_model() -> genai.GenerativeModel:
 
 async def _extract_boxes_with_gemini(
     image_bytes: bytes, user_query: str
-) -> list[Mapping[str, float]]:
-    def _generate() -> list[Mapping[str, float]]:
+) -> list[Mapping[str, Any]]:
+    def _generate() -> list[Mapping[str, Any]]:
         try:
             model = get_highlight_model()
             try:
@@ -46,30 +46,28 @@ User query: "{user_query}"
 Task: Identify the EXACT lines of text on this page that directly answer the user's query.
 
 CRITICAL INSTRUCTIONS:
-1. **Direct Answer Only:** If the page mentions the topic/names but does NOT contain the specific answer to the question, return {{ "boxes": [] }}. Do not guess.
+1. **Direct Answer Only:** If the page mentions the topic/names but does NOT contain the specific answer to the question, return {{ "items": [] }}. Do not guess.
 2. **Line-by-Line Highlighting:** Do NOT highlight entire paragraphs with a single box. You must return separate bounding boxes for EACH visual line of text.
 3. **Precision:** Boxes must tightly enclose the text.
 
 Output format:
-Return a JSON object with a key "boxes" containing a list of [ymin, xmin, ymax, xmax] (normalized 0-1000).
-
-Example of correct line separation:
-{{
-  "boxes": [
-    [100, 50, 120, 900],  // Line 1
-    [125, 50, 145, 850]   // Line 2
-  ]
-}}
+Return a JSON object with a key "items".
+Each item must have:
+- "box_2d": [ymin, xmin, ymax, xmax] (normalized 0-1000)
+- "content": "The exact text string contained in this box"
 """
             logging.info("DEBUG_GEMINI_PROMPT: %s", prompt)
             response = model.generate_content([image_part, prompt])
             logging.info("DEBUG_GEMINI_RESPONSE: %s", response.text)
             data = json.loads(response.text)
-            boxes = data.get("boxes", []) if isinstance(data, dict) else []
-            if not isinstance(boxes, list):
+            items = data.get("items", []) if isinstance(data, dict) else []
+            if not isinstance(items, list):
                 return []
-            normalized: list[Mapping[str, float]] = []
-            for box in boxes:
+            normalized: list[Mapping[str, Any]] = []
+            for item in items:
+                if not isinstance(item, Mapping):
+                    continue
+                box = item.get("box_2d")
                 if not (isinstance(box, Sequence) and len(box) == 4):
                     continue
                 try:
@@ -81,7 +79,18 @@ Example of correct line separation:
                     )
                 except (TypeError, ValueError):
                     continue
-                normalized.append({"x0": xmin, "y0": ymin, "x1": xmax, "y1": ymax})
+                content = item.get("content") or item.get("text") or ""
+                if not isinstance(content, str):
+                    content = ""
+                normalized.append(
+                    {
+                        "x0": xmin,
+                        "y0": ymin,
+                        "x1": xmax,
+                        "y1": ymax,
+                        "text": content.strip(),
+                    }
+                )
             return normalized
         except Exception as exc:  # pragma: no cover - external dependency
             logging.exception("Gemini highlight failed: %s", exc)
@@ -92,13 +101,13 @@ Example of correct line separation:
 
 async def extract_text_coordinates(
     image_bytes: bytes, query_text: str, client: OpenAIClient | None = None
-) -> list[Mapping[str, float]]:
+) -> list[Mapping[str, Any]]:
     logging.debug("RAW_ANSWER using Gemini highlight extraction")
     return await _extract_boxes_with_gemini(image_bytes, query_text)
 
 
 def draw_highlight_overlay(
-    image_bytes: bytes, boxes: Sequence[Mapping[str, float]]
+    image_bytes: bytes, boxes: Sequence[Mapping[str, Any]]
 ) -> bytes | None:
     try:
         with Image.open(io.BytesIO(image_bytes)) as image:

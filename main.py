@@ -1545,6 +1545,24 @@ class Bot:
                             downloaded_path.unlink()
 
                         boxes = await extract_text_coordinates(image_bytes, query_text)
+                        gemini_texts: list[str] = []
+                        for box in boxes:
+                            if not isinstance(box, Mapping):
+                                continue
+                            text_value = box.get("text")
+                            if text_value is None:
+                                continue
+                            text_str = str(text_value).strip()
+                            if text_str:
+                                gemini_texts.append(text_str)
+                        if gemini_texts:
+                            appendix = "\n\n🔍 Текст Gemini:\n- " + "\n- ".join(gemini_texts)
+                            combined_caption = (
+                                f"{caption}{appendix}" if caption else appendix.lstrip("\n")
+                            )
+                            if len(combined_caption) > 1024:
+                                combined_caption = f"{combined_caption[:1021]}..."
+                            caption = combined_caption
                         if boxes:
                             final_bytes = draw_highlight_overlay(image_bytes, boxes)
                             highlighted = final_bytes is not None

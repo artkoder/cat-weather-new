@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 
 from openai_client import OpenAIClient
 
-RAW_ANSWER_HIGHLIGHT_MODEL_ID = "gemini-2.5-pro"
+RAW_ANSWER_HIGHLIGHT_MODEL_ID = "gemini-2.5-flash-lite"
 _raw_answer_highlight_model: genai.GenerativeModel | None = None
 
 
@@ -47,14 +47,14 @@ Task: Identify the EXACT lines of text on this page that directly answer the use
 
 CRITICAL INSTRUCTIONS:
 1. **Direct Answer Only:** If the page mentions the topic/names but does NOT contain the specific answer to the question, return {{ "items": [] }}. Do not guess.
-2. **Line-by-Line Highlighting:** Do NOT highlight entire paragraphs with a single box. You must return separate bounding boxes for EACH visual line of text.
-3. **Precision:** Boxes must tightly enclose the text.
+2. **Line Numbers Only:** You must not return bounding boxes. Instead, provide the line numbers of the lines that contain the direct answer.
+3. **Per-Line Matches:** Each item should describe a single line or a tight group of adjacent lines that exactly answer the query.
 
 Output format:
 Return a JSON object with a key "items".
 Each item must have:
-- "box_2d": [ymin, xmin, ymax, xmax] (normalized 0-1000)
-- "content": "The exact text string contained in this box"
+- "line_numbers": [list of line numbers where the answer text appears]
+- "content": "The exact text string contained in these lines"
 """
             logging.info("DEBUG_GEMINI_PROMPT: %s", prompt)
             response = model.generate_content([image_part, prompt])
@@ -67,27 +67,21 @@ Each item must have:
             for item in items:
                 if not isinstance(item, Mapping):
                     continue
-                box = item.get("box_2d")
-                if not (isinstance(box, Sequence) and len(box) == 4):
+                raw_lines = item.get("line_numbers") or item.get("lines") or []
+                if not isinstance(raw_lines, Sequence):
                     continue
                 try:
-                    ymin, xmin, ymax, xmax = (
-                        float(box[0]) / 1000.0,
-                        float(box[1]) / 1000.0,
-                        float(box[2]) / 1000.0,
-                        float(box[3]) / 1000.0,
-                    )
+                    line_numbers = [int(num) for num in raw_lines if int(num) > 0]
                 except (TypeError, ValueError):
+                    continue
+                if not line_numbers:
                     continue
                 content = item.get("content") or item.get("text") or ""
                 if not isinstance(content, str):
                     content = ""
                 normalized.append(
                     {
-                        "x0": xmin,
-                        "y0": ymin,
-                        "x1": xmax,
-                        "y1": ymax,
+                        "line_numbers": line_numbers,
                         "text": content.strip(),
                     }
                 )

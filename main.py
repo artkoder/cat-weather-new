@@ -1456,6 +1456,38 @@ class Bot:
         if include_scans:
             await self._send_raw_answer_scans(chat_id, payload)
 
+    async def _send_scan_text_document(
+        self,
+        chat_id: int,
+        *,
+        page_lines: Sequence[str],
+        message_id: int | str,
+        book_title: str | None,
+        book_page: Any,
+    ) -> None:
+        if not page_lines:
+            return
+
+        try:
+            payload = {"lines": list(page_lines)}
+            buffer = io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+            caption_parts = ["Машиночитаемый текст страницы."]
+            if book_page not in (None, ""):
+                caption_parts.append(f"Страница: {book_page}")
+            if book_title:
+                caption_parts.append(f"Источник: {book_title}")
+            caption = " ".join(caption_parts)
+            filename = f"scan_{message_id}_lines.json"
+            await self.api_request_multipart(
+                "sendDocument",
+                {"chat_id": chat_id, "caption": caption},
+                files={"document": (filename, buffer, "application/json")},
+            )
+        except Exception:
+            logging.exception(
+                "RAW_ANSWER failed to send page text chat_id=%s message_id=%s", chat_id, message_id
+            )
+
     async def _send_raw_answer_scans(
         self, chat_id: int, payload: Mapping[str, Any]
     ) -> None:
@@ -1544,7 +1576,16 @@ class Bot:
                         with contextlib.suppress(OSError):
                             downloaded_path.unlink()
 
-                        boxes = await extract_text_coordinates(image_bytes, query_text)
+                        extraction = await extract_text_coordinates(image_bytes, query_text)
+                        boxes = extraction.boxes
+                        if extraction.page_lines:
+                            await self._send_scan_text_document(
+                                chat_id,
+                                page_lines=extraction.page_lines,
+                                message_id=message_id,
+                                book_title=row.get("book_title"),
+                                book_page=row.get("book_page"),
+                            )
                         gemini_texts: list[str] = []
                         line_numbers: set[int] = set()
                         has_coordinates = False

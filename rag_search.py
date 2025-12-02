@@ -42,15 +42,18 @@ class MatchChunkRow(TypedDict, total=False):
     orthography: str | None
     chunk_year_start: int | None
     chunk_year_end: int | None
-    media_ids: list[str] | None
+    media_ids: list[int] | None
     media_internal_ids: list[str] | None
     tg_msg_id: str | int | None
+    scan_page_ids: list[int] | None
+    scan_tg_msg_ids: list[int] | None
     book_page: int | None
     book_title: str | None
     book_authors: list[str] | str | None
     book_year: int | None
     book_isbn: str | None
     source_link: str | None
+    source_links: list[str] | None
     paragraph: str | None
     url: str | None
 
@@ -170,7 +173,56 @@ def search_raw_chunks(
                     (embedding_text, match_threshold, match_count),
                 )
                 rows = cursor.fetchall()
-                return [dict(row) for row in rows] if rows else []
+                if not rows:
+                    return []
+
+                results: list[MatchChunkRow] = []
+                for row in rows:
+                    item: MatchChunkRow = dict(row)
+
+                    if not item.get("source_link") and item.get("source_links"):
+                        source_links = item.get("source_links")
+                        if isinstance(source_links, list) and source_links:
+                            item["source_link"] = source_links[0]
+
+                    for list_field in [
+                        "scan_page_ids",
+                        "scan_tg_msg_ids",
+                        "media_ids",
+                        "media_internal_ids",
+                        "source_links",
+                    ]:
+                        if item.get(list_field) is None:
+                            item[list_field] = []
+
+                    if item.get("scan_page_ids"):
+                        item["scan_page_ids"] = [
+                            int(value) for value in item["scan_page_ids"] if value is not None
+                        ]
+
+                    if item.get("scan_tg_msg_ids"):
+                        item["scan_tg_msg_ids"] = [
+                            int(value) for value in item["scan_tg_msg_ids"] if value is not None
+                        ]
+
+                    if item.get("media_ids"):
+                        item["media_ids"] = [
+                            int(value) for value in item["media_ids"] if value is not None
+                        ]
+
+                    if item.get("media_internal_ids"):
+                        item["media_internal_ids"] = [
+                            str(value) for value in item["media_internal_ids"] if value is not None
+                        ]
+
+                    if item.get("source_links"):
+                        item["source_links"] = [
+                            str(value) for value in item["source_links"] if value is not None
+                        ]
+
+                    results.append(item)
+
+                return results
     except PsycopgError as exc:  # pragma: no cover - depends on external DB
         logging.error("Failed to call match_chunks via callproc: %s", exc)
         raise RagSearchError("Failed to search chunks") from exc

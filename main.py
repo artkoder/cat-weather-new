@@ -1541,6 +1541,44 @@ class Bot:
                 "RAW_ANSWER failed to send page text chat_id=%s message_id=%s", chat_id, message_id
             )
 
+    def _log_raw_answer_chunks(self, results: Sequence[Mapping[str, Any]] | Any) -> None:
+        blocks: list[str] = []
+
+        for idx, row in enumerate(results, start=1):
+            if not isinstance(row, Mapping):
+                continue
+
+            scan_pages = row.get("scan_page_ids")
+            scan_msg_ids = row.get("scan_tg_msg_ids") or []
+            if not scan_msg_ids and row.get("tg_msg_id") not in (None, ""):
+                scan_msg_ids = [row.get("tg_msg_id")]
+
+            source_links = row.get("source_links")
+            links: list[str] = []
+            if isinstance(source_links, Sequence) and not isinstance(source_links, (str, bytes)):
+                links = [str(link) for link in source_links if link not in (None, "")]
+            if row.get("source_link"):
+                fallback_link = str(row.get("source_link"))
+                if fallback_link not in links:
+                    links.append(fallback_link)
+
+            block_lines = [f"Чанк #{idx}"]
+            if scan_pages:
+                block_lines.append(f"Страницы: {scan_pages}")
+            block_lines.append(f"Сканы (msg_id): {scan_msg_ids if scan_msg_ids else '—'}")
+
+            if links:
+                formatted_links = "\n        ".join(links)
+                if len(links) > 1:
+                    block_lines.append(f"Ссылки:\n        {formatted_links}")
+                else:
+                    block_lines.append(f"Ссылки: {formatted_links}")
+
+            blocks.append("\n".join(block_lines))
+
+        if blocks:
+            logging.info("RAW_ANSWER детали чанков:\n%s", "\n\n".join(blocks))
+
     async def _send_raw_answer_scans(
         self, chat_id: int, payload: Mapping[str, Any]
     ) -> None:
@@ -1559,6 +1597,7 @@ class Bot:
                 return
 
             results = payload.get("results") or []
+            self._log_raw_answer_chunks(results)
             unique_results = deduplicate_pages(results)
             found = False
             query_text = str((payload.get("query") or {}).get("text") or "")

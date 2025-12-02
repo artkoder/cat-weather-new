@@ -45,12 +45,15 @@ class MatchChunkRow(TypedDict, total=False):
     media_ids: list[str] | None
     media_internal_ids: list[str] | None
     tg_msg_id: str | int | None
+    scan_page_ids: list[int] | None
+    scan_tg_msg_ids: list[int | str] | None
     book_page: int | None
     book_title: str | None
     book_authors: list[str] | str | None
     book_year: int | None
     book_isbn: str | None
     source_link: str | None
+    source_links: list[str] | None
     paragraph: str | None
     url: str | None
 

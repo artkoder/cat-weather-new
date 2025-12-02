@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from rag_search import RagSearchError, build_raw_answer_document, run_rag_search
 
@@ -46,15 +46,54 @@ RAW_ANSWER_MAX_SCAN_PAGES = 5
 def deduplicate_pages(
     match_rows: Iterable[Mapping[str, Any]], max_pages: int = RAW_ANSWER_MAX_SCAN_PAGES
 ) -> list[Mapping[str, Any]]:
-    pages: OrderedDict[str | int, Mapping[str, Any]] = OrderedDict()
+    pages: OrderedDict[str, Mapping[str, Any]] = OrderedDict()
+
+    def _as_sequence(value: Any) -> Sequence[Any] | None:
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return value
+        return None
+
+    def _normalize_int(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     for row in match_rows:
-        tg_msg_id = row.get("tg_msg_id") if isinstance(row, Mapping) else None
-        if tg_msg_id in (None, ""):
+        if not isinstance(row, Mapping):
             continue
-        if tg_msg_id not in pages:
-            pages[tg_msg_id] = row
-        if len(pages) >= max_pages:
-            break
+
+        scan_msg_ids = _as_sequence(row.get("scan_tg_msg_ids")) or []
+        scan_page_ids_raw = _as_sequence(row.get("scan_page_ids")) or []
+        scan_page_ids = [_normalize_int(item) for item in scan_page_ids_raw]
+
+        candidate_pairs: list[tuple[Any, int | None]] = []
+        if scan_msg_ids:
+            for idx, msg_id in enumerate(scan_msg_ids):
+                page_number = scan_page_ids[idx] if idx < len(scan_page_ids) else None
+                candidate_pairs.append((msg_id, page_number))
+        else:
+            tg_msg_id = row.get("tg_msg_id")
+            if tg_msg_id not in (None, ""):
+                page_number = scan_page_ids[0] if scan_page_ids else None
+                candidate_pairs.append((tg_msg_id, page_number))
+
+        for msg_id, page_number in candidate_pairs:
+            if msg_id in (None, ""):
+                continue
+            dedup_key = str(msg_id)
+            if dedup_key in pages:
+                continue
+
+            enriched_row = dict(row)
+            enriched_row["tg_msg_id"] = msg_id
+            if page_number is not None and enriched_row.get("book_page") in (None, ""):
+                enriched_row["book_page"] = page_number
+
+            pages[dedup_key] = enriched_row
+            if len(pages) >= max_pages:
+                return list(pages.values())
+
     return list(pages.values())
 
 

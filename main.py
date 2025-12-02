@@ -1546,28 +1546,51 @@ class Bot:
 
                         boxes = await extract_text_coordinates(image_bytes, query_text)
                         gemini_texts: list[str] = []
+                        line_numbers: set[int] = set()
+                        has_coordinates = False
                         for box in boxes:
                             if not isinstance(box, Mapping):
                                 continue
                             text_value = box.get("text")
-                            if text_value is None:
-                                continue
-                            text_str = str(text_value).strip()
-                            if text_str:
-                                gemini_texts.append(text_str)
-                        if gemini_texts:
-                            appendix = "\n\n🔍 Текст Gemini:\n- " + "\n- ".join(gemini_texts)
+                            if text_value is not None:
+                                text_str = str(text_value).strip()
+                                if text_str:
+                                    gemini_texts.append(text_str)
+                            raw_lines = box.get("line_numbers")
+                            if isinstance(raw_lines, Sequence):
+                                for num in raw_lines:
+                                    try:
+                                        line_num = int(num)
+                                    except (TypeError, ValueError):
+                                        continue
+                                    if line_num > 0:
+                                        line_numbers.add(line_num)
+                            if all(k in box for k in ("x0", "y0", "x1", "y1")):
+                                has_coordinates = True
+                        if gemini_texts or line_numbers:
+                            appendix_parts: list[str] = []
+                            if gemini_texts:
+                                appendix_parts.append("🔍 Текст Gemini:\n- " + "\n- ".join(gemini_texts))
+                            if line_numbers:
+                                ordered_lines = ", ".join(map(str, sorted(line_numbers)))
+                                appendix_parts.append(f"Номера строк: [{ordered_lines}]")
+                            appendix = "\n\n" + "\n".join(appendix_parts)
                             combined_caption = (
                                 f"{caption}{appendix}" if caption else appendix.lstrip("\n")
                             )
                             if len(combined_caption) > 1024:
                                 combined_caption = f"{combined_caption[:1021]}..."
                             caption = combined_caption
-                        if boxes:
+                        if has_coordinates:
                             final_bytes = draw_highlight_overlay(image_bytes, boxes)
                             highlighted = final_bytes is not None
                             logging.info(
                                 "RAW_ANSWER highlighted %s boxes for msg_id=%s", len(boxes), message_id
+                            )
+                        elif boxes:
+                            logging.info(
+                                "RAW_ANSWER boxes returned without coordinates for msg_id=%s",
+                                message_id,
                             )
                         else:
                             logging.info(

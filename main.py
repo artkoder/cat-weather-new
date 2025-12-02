@@ -1469,6 +1469,7 @@ class Bot:
         book_title: str | None,
         book_page: Any,
         answers: Sequence[str] | None = None,
+        page_bottom_y: float | None = None,
     ) -> None:
         if not page_lines:
             return
@@ -1516,6 +1517,8 @@ class Bot:
             payload: dict[str, Any] = {"lines": lines_payload}
             if answers_clean:
                 payload["answers"] = answers_clean
+            if page_bottom_y is not None:
+                payload["page_bottom_y"] = page_bottom_y
             buffer = io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
             caption = "\n".join(caption_lines)
             filename = f"scan_{message_id}_lines.json"
@@ -1532,213 +1535,235 @@ class Bot:
     async def _send_raw_answer_scans(
         self, chat_id: int, payload: Mapping[str, Any]
     ) -> None:
-        channel_id = self._raw_answer_scans_channel_id or self._load_scans_channel_id()
-        self._raw_answer_scans_channel_id = channel_id
-        if not channel_id:
-            logging.warning("RAW_ANSWER scans skipped: TG_SCANS_ID is not set")
-            await self.api_request(
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": "Сканы страниц недоступны: переменная TG_SCANS_ID не задана.",
-                },
-            )
-            return
-
-        results = payload.get("results") or []
-        unique_results = deduplicate_pages(results)
-        found = False
-        query_text = str((payload.get("query") or {}).get("text") or "")
-        for idx, row in enumerate(unique_results):
-            if not isinstance(row, Mapping):
-                continue
-
-            tg_msg_id = row.get("tg_msg_id")
-            if tg_msg_id in (None, ""):
-                logging.debug(
-                    "RAW_ANSWER scan missing tg_msg_id for result #%s", idx
-                )
-                continue
-
-            try:
-                message_id = int(tg_msg_id)
-            except (TypeError, ValueError):
-                message_id = tg_msg_id
-
-            logging.info(
-                "RAW_ANSWER processing scan #%s chat_id=%s from_channel=%s message_id=%s",
-                idx,
-                chat_id,
-                channel_id,
-                message_id,
-            )
-
-            caption = format_scan_caption(row)
-
-            try:
-                forwarded_resp = await self.api_request(
-                    "forwardMessage",
+        try:
+            channel_id = self._raw_answer_scans_channel_id or self._load_scans_channel_id()
+            self._raw_answer_scans_channel_id = channel_id
+            if not channel_id:
+                logging.warning("RAW_ANSWER scans skipped: TG_SCANS_ID is not set")
+                await self.api_request(
+                    "sendMessage",
                     {
                         "chat_id": chat_id,
-                        "from_chat_id": channel_id,
-                        "message_id": message_id,
+                        "text": "Сканы страниц недоступны: переменная TG_SCANS_ID не задана.",
                     },
                 )
-            except Exception:
-                logging.exception(
-                    "RAW_ANSWER failed to forward scan chat_id=%s message_id=%s",
+                return
+
+            results = payload.get("results") or []
+            unique_results = deduplicate_pages(results)
+            found = False
+            query_text = str((payload.get("query") or {}).get("text") or "")
+            for idx, row in enumerate(unique_results):
+                if not isinstance(row, Mapping):
+                    continue
+
+                tg_msg_id = row.get("tg_msg_id")
+                if tg_msg_id in (None, ""):
+                    logging.debug(
+                        "RAW_ANSWER scan missing tg_msg_id for result #%s", idx
+                    )
+                    continue
+
+                try:
+                    message_id = int(tg_msg_id)
+                except (TypeError, ValueError):
+                    message_id = tg_msg_id
+
+                logging.info(
+                    "RAW_ANSWER processing scan #%s chat_id=%s from_channel=%s message_id=%s",
+                    idx,
                     chat_id,
+                    channel_id,
                     message_id,
                 )
-                continue
 
-            result_payload = forwarded_resp.get("result") if isinstance(forwarded_resp, Mapping) else None
-            if not (forwarded_resp and forwarded_resp.get("ok") and isinstance(result_payload, Mapping)):
-                logging.error(
-                    "RAW_ANSWER forward unexpected response chat_id=%s payload=%s",
-                    chat_id,
-                    forwarded_resp,
-                )
-                continue
+                caption = format_scan_caption(row)
 
-            forwarded_msg_id = result_payload.get("message_id")
-            file_meta = self._collect_asset_metadata(result_payload).get("file_meta") or {}
-            file_id = file_meta.get("file_id")
-            final_bytes: bytes | None = None
-            highlighted = False
-
-            if file_id:
                 try:
-                    tmp_fd, tmp_name = tempfile.mkstemp(prefix="raw_scan_", suffix=".jpg")
-                    os.close(tmp_fd)
-                    downloaded_path = await self._download_file(file_id, tmp_name)
-                    if isinstance(downloaded_path, Path) and downloaded_path.exists():
-                        image_bytes = downloaded_path.read_bytes()
-                        with contextlib.suppress(OSError):
-                            downloaded_path.unlink()
-
-                        extraction = await extract_text_coordinates(image_bytes, query_text)
-                        boxes = extraction.boxes
-                        answer_boxes = build_answer_boxes(
-                            extraction.page_lines, extraction.answers
-                        )
-                        if answer_boxes:
-                            boxes = list(boxes) + answer_boxes
-                        if extraction.page_lines:
-                            await self._send_scan_text_document(
-                                chat_id,
-                                page_lines=extraction.page_lines,
-                                message_id=message_id,
-                                book_title=row.get("book_title"),
-                                book_page=row.get("book_page"),
-                                answers=extraction.answers,
-                            )
-                        gemini_texts: list[str] = []
-                        line_numbers: set[int] = set()
-                        has_coordinates = False
-                        for box in boxes:
-                            if not isinstance(box, Mapping):
-                                continue
-                            text_value = box.get("text")
-                            if text_value is not None:
-                                text_str = str(text_value).strip()
-                                if text_str:
-                                    gemini_texts.append(text_str)
-                            raw_lines = box.get("line_numbers")
-                            if isinstance(raw_lines, Sequence):
-                                for num in raw_lines:
-                                    try:
-                                        line_num = int(num)
-                                    except (TypeError, ValueError):
-                                        continue
-                                    if line_num > 0:
-                                        line_numbers.add(line_num)
-                            if all(k in box for k in ("x0", "y0", "x1", "y1")):
-                                has_coordinates = True
-                        if not has_coordinates and answer_boxes:
-                            has_coordinates = True
-                        if gemini_texts or line_numbers:
-                            appendix_parts: list[str] = []
-                            if gemini_texts:
-                                appendix_parts.append("🔍 Текст Gemini:\n- " + "\n- ".join(gemini_texts))
-                            if line_numbers:
-                                ordered_lines = ", ".join(map(str, sorted(line_numbers)))
-                                appendix_parts.append(f"Номера строк: [{ordered_lines}]")
-                            appendix = "\n\n" + "\n".join(appendix_parts)
-                            combined_caption = (
-                                f"{caption}{appendix}" if caption else appendix.lstrip("\n")
-                            )
-                            if len(combined_caption) > 1024:
-                                combined_caption = f"{combined_caption[:1021]}..."
-                            caption = combined_caption
-                        if has_coordinates:
-                            final_bytes = draw_highlight_overlay(image_bytes, boxes)
-                            highlighted = final_bytes is not None
-                            logging.info(
-                                "RAW_ANSWER highlighted %s boxes for msg_id=%s", len(boxes), message_id
-                            )
-                        elif boxes:
-                            logging.info(
-                                "RAW_ANSWER boxes returned without coordinates for msg_id=%s",
-                                message_id,
-                            )
-                        else:
-                            logging.info(
-                                "RAW_ANSWER no boxes returned for msg_id=%s query_len=%s",
-                                message_id,
-                                len(query_text),
-                            )
-                except Exception:
-                    logging.exception(
-                        "RAW_ANSWER failed to process scan chat_id=%s message_id=%s",
-                        chat_id,
-                        message_id,
-                    )
-
-            if highlighted and final_bytes:
-                files = {
-                    "photo": (f"highlight_{message_id}.png", final_bytes, "image/png"),
-                }
-                payload_kwargs: dict[str, Any] = {"chat_id": chat_id}
-                if caption:
-                    payload_kwargs["caption"] = caption
-                try:
-                    await self.api_request_multipart("sendPhoto", payload_kwargs, files=files)
-                    if forwarded_msg_id is not None:
-                        await self.api_request(
-                            "deleteMessage",
-                            {"chat_id": chat_id, "message_id": forwarded_msg_id},
-                        )
-                    found = True
-                    continue
-                except Exception:
-                    logging.exception(
-                        "RAW_ANSWER failed to send highlighted scan chat_id=%s message_id=%s",
-                        chat_id,
-                        message_id,
-                    )
-
-            if caption and forwarded_msg_id is not None:
-                with contextlib.suppress(Exception):
-                    await self.api_request(
-                        "editMessageCaption",
+                    forwarded_resp = await self.api_request(
+                        "forwardMessage",
                         {
                             "chat_id": chat_id,
-                            "message_id": forwarded_msg_id,
-                            "caption": caption,
+                            "from_chat_id": channel_id,
+                            "message_id": message_id,
                         },
                     )
-            found = True
+                except Exception:
+                    logging.exception(
+                        "RAW_ANSWER failed to forward scan chat_id=%s message_id=%s",
+                        chat_id,
+                        message_id,
+                    )
+                    continue
 
-        if not found:
-            logging.info("RAW_ANSWER scans not found for chat_id=%s", chat_id)
-            await self.api_request(
-                "sendMessage",
-                {
-                    "chat_id": chat_id,
-                    "text": "Сканы страниц не найдены для результатов этого запроса.",
-                },
-            )
+                result_payload = forwarded_resp.get("result") if isinstance(forwarded_resp, Mapping) else None
+                if not (forwarded_resp and forwarded_resp.get("ok") and isinstance(result_payload, Mapping)):
+                    logging.error(
+                        "RAW_ANSWER forward unexpected response chat_id=%s payload=%s",
+                        chat_id,
+                        forwarded_resp,
+                    )
+                    continue
+
+                forwarded_msg_id = result_payload.get("message_id")
+                file_meta = self._collect_asset_metadata(result_payload).get("file_meta") or {}
+                file_id = file_meta.get("file_id")
+                final_bytes: bytes | None = None
+                highlighted = False
+
+                if file_id:
+                    try:
+                        tmp_fd, tmp_name = tempfile.mkstemp(prefix="raw_scan_", suffix=".jpg")
+                        os.close(tmp_fd)
+                        downloaded_path = await self._download_file(file_id, tmp_name)
+                        if isinstance(downloaded_path, Path) and downloaded_path.exists():
+                            image_bytes = downloaded_path.read_bytes()
+                            with contextlib.suppress(OSError):
+                                downloaded_path.unlink()
+
+                            extraction = await extract_text_coordinates(image_bytes, query_text)
+                            boxes = extraction.boxes
+                            answer_boxes = build_answer_boxes(
+                                extraction.page_lines, extraction.answers
+                            )
+                            if not extraction.answers:
+                                logging.info(
+                                    "RAW_ANSWER scan skipped: no answers returned chat_id=%s message_id=%s",
+                                    chat_id,
+                                    message_id,
+                                )
+                                if forwarded_msg_id is not None:
+                                    with contextlib.suppress(Exception):
+                                        await self.api_request(
+                                            "deleteMessage",
+                                            {"chat_id": chat_id, "message_id": forwarded_msg_id},
+                                        )
+                                continue
+                            if answer_boxes:
+                                boxes = list(boxes) + answer_boxes
+                            if extraction.page_lines:
+                                await self._send_scan_text_document(
+                                    chat_id,
+                                    page_lines=extraction.page_lines,
+                                    message_id=message_id,
+                                    book_title=row.get("book_title"),
+                                    book_page=row.get("book_page"),
+                                    answers=extraction.answers,
+                                    page_bottom_y=extraction.page_bottom_y,
+                                )
+                            gemini_texts: list[str] = []
+                            line_numbers: set[int] = set()
+                            has_coordinates = False
+                            for box in boxes:
+                                if not isinstance(box, Mapping):
+                                    continue
+                                text_value = box.get("text")
+                                if text_value is not None:
+                                    text_str = str(text_value).strip()
+                                    if text_str:
+                                        gemini_texts.append(text_str)
+                                raw_lines = box.get("line_numbers")
+                                if isinstance(raw_lines, Sequence):
+                                    for num in raw_lines:
+                                        try:
+                                            line_num = int(num)
+                                        except (TypeError, ValueError):
+                                            continue
+                                        if line_num > 0:
+                                            line_numbers.add(line_num)
+                                if all(k in box for k in ("x0", "y0", "x1", "y1")):
+                                    has_coordinates = True
+                            if not has_coordinates and answer_boxes:
+                                has_coordinates = True
+                            if gemini_texts or line_numbers:
+                                appendix_parts: list[str] = []
+                                if gemini_texts:
+                                    appendix_parts.append("🔍 Текст Gemini:\n- " + "\n- ".join(gemini_texts))
+                                if line_numbers:
+                                    ordered_lines = ", ".join(map(str, sorted(line_numbers)))
+                                    appendix_parts.append(f"Номера строк: [{ordered_lines}]")
+                                appendix = "\n\n" + "\n".join(appendix_parts)
+                                combined_caption = (
+                                    f"{caption}{appendix}" if caption else appendix.lstrip("\n")
+                                )
+                                if len(combined_caption) > 1024:
+                                    combined_caption = f"{combined_caption[:1021]}..."
+                                caption = combined_caption
+                            if has_coordinates:
+                                final_bytes = draw_highlight_overlay(image_bytes, boxes)
+                                highlighted = final_bytes is not None
+                                logging.info(
+                                    "RAW_ANSWER highlighted %s boxes for msg_id=%s", len(boxes), message_id
+                                )
+                            elif boxes:
+                                logging.info(
+                                    "RAW_ANSWER boxes returned without coordinates for msg_id=%s",
+                                    message_id,
+                                )
+                            else:
+                                logging.info(
+                                    "RAW_ANSWER no boxes returned for msg_id=%s query_len=%s",
+                                    message_id,
+                                    len(query_text),
+                                )
+                    except Exception:
+                        logging.exception(
+                            "RAW_ANSWER failed to process scan chat_id=%s message_id=%s",
+                            chat_id,
+                            message_id,
+                        )
+
+                if highlighted and final_bytes:
+                    files = {
+                        "photo": (f"highlight_{message_id}.png", final_bytes, "image/png"),
+                    }
+                    payload_kwargs: dict[str, Any] = {"chat_id": chat_id}
+                    if caption:
+                        payload_kwargs["caption"] = caption
+                    try:
+                        await self.api_request_multipart("sendPhoto", payload_kwargs, files=files)
+                        if forwarded_msg_id is not None:
+                            await self.api_request(
+                                "deleteMessage",
+                                {"chat_id": chat_id, "message_id": forwarded_msg_id},
+                            )
+                        found = True
+                        continue
+                    except Exception:
+                        logging.exception(
+                            "RAW_ANSWER failed to send highlighted scan chat_id=%s message_id=%s",
+                            chat_id,
+                            message_id,
+                        )
+
+                if caption and forwarded_msg_id is not None:
+                    with contextlib.suppress(Exception):
+                        await self.api_request(
+                            "editMessageCaption",
+                            {
+                                "chat_id": chat_id,
+                                "message_id": forwarded_msg_id,
+                                "caption": caption,
+                            },
+                        )
+                found = True
+
+            if not found:
+                logging.info("RAW_ANSWER scans not found for chat_id=%s", chat_id)
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": chat_id,
+                        "text": "Сканы страниц не найдены для результатов этого запроса.",
+                    },
+                )
+
+
+        finally:
+            with contextlib.suppress(Exception):
+                await self.api_request(
+                    "sendMessage", {"chat_id": chat_id, "text": "готово"}
+                )
 
 
     def _get_active_pairing_token(self, user_id: int) -> tuple[str, datetime, str] | None:

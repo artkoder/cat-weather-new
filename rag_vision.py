@@ -144,6 +144,46 @@ async def extract_text_coordinates(
     return await _extract_boxes_with_gemini(image_bytes, query_text)
 
 
+def build_answer_boxes(
+    page_lines: Sequence[Mapping[str, Any]] | None,
+    answers: Sequence[str] | None,
+) -> list[Mapping[str, float]]:
+    if not page_lines or not answers:
+        return []
+
+    answers_normalized = {str(ans).strip().lower() for ans in answers if str(ans).strip()}
+    if not answers_normalized:
+        return []
+
+    def _normalize_coord(raw: Any) -> float | None:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if value > 1:
+            value /= 1000.0
+        if value < 0:
+            return None
+        return min(value, 1.0)
+
+    boxes: list[Mapping[str, float]] = []
+    for entry in page_lines:
+        if not isinstance(entry, Mapping):
+            continue
+        text = str(entry.get("text") or entry.get("line") or "").strip()
+        if not text or text.lower() not in answers_normalized:
+            continue
+        y0 = _normalize_coord(entry.get("y0") if "y0" in entry else entry.get("y_top"))
+        y1 = _normalize_coord(entry.get("y1") if "y1" in entry else entry.get("y_bottom"))
+        if y0 is None or y1 is None:
+            continue
+        if y0 >= y1:
+            continue
+        boxes.append({"x0": 0.0, "y0": y0, "x1": 1.0, "y1": y1})
+
+    return boxes
+
+
 def draw_highlight_overlay(
     image_bytes: bytes, boxes: Sequence[Mapping[str, Any]]
 ) -> bytes | None:

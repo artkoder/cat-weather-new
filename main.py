@@ -115,7 +115,11 @@ from supabase_client import SupabaseClient
 from utils_wave import wave_m_to_score
 from weather_migration import migrate_weather_publish_channels
 from db_utils import dump_database
-from rag_vision import draw_highlight_overlay, extract_text_coordinates
+from rag_vision import (
+    build_answer_boxes,
+    draw_highlight_overlay,
+    extract_text_coordinates,
+)
 from raw_answer_search import (
     RawSearchError,
     build_raw_answer_file,
@@ -1615,6 +1619,11 @@ class Bot:
 
                         extraction = await extract_text_coordinates(image_bytes, query_text)
                         boxes = extraction.boxes
+                        answer_boxes = build_answer_boxes(
+                            extraction.page_lines, extraction.answers
+                        )
+                        if answer_boxes:
+                            boxes = list(boxes) + answer_boxes
                         if extraction.page_lines:
                             await self._send_scan_text_document(
                                 chat_id,
@@ -1646,6 +1655,8 @@ class Bot:
                                         line_numbers.add(line_num)
                             if all(k in box for k in ("x0", "y0", "x1", "y1")):
                                 has_coordinates = True
+                        if not has_coordinates and answer_boxes:
+                            has_coordinates = True
                         if gemini_texts or line_numbers:
                             appendix_parts: list[str] = []
                             if gemini_texts:

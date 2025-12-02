@@ -21,6 +21,7 @@ class HighlightExtraction:
     boxes: list[Mapping[str, Any]]
     page_lines: list[Mapping[str, Any]]
     answers: list[str]
+    page_bottom_y: float | None
 
 
 def get_highlight_model() -> genai.GenerativeModel:
@@ -68,6 +69,9 @@ Return a JSON object with keys "items" and "page_lines".
 - "line_numbers": [list of line numbers where the answer text appears]
 - "content": "The exact text string contained in these lines"
 
+Also include "page_bottom_y": the Y coordinate (normalized 0-1, relative to image height) of the lowest text on the page (i.e.,
+the bottom of the final line).
+
 "page_lines" is an array of objects ordered from line 1 to the last line of the page.
 Each object MUST include:
 - "text": the line text string
@@ -105,6 +109,7 @@ Each object MUST include:
                 )
             page_lines_raw = data.get("page_lines", []) if isinstance(data, dict) else []
             page_lines: list[Mapping[str, Any]] = []
+            page_bottom_y: float | None = None
             if isinstance(page_lines_raw, Sequence) and not isinstance(page_lines_raw, (str, bytes)):
                 for entry in page_lines_raw:
                     if entry is None:
@@ -128,11 +133,28 @@ Each object MUST include:
                     except (TypeError, ValueError):
                         y1_val = None
                     page_lines.append({"text": text_value, "y0": y0_val, "y1": y1_val})
+                    if y1_val is not None:
+                        page_bottom_y = max(page_bottom_y or y1_val, y1_val)
+            if page_bottom_y is None and isinstance(data, dict):
+                try:
+                    page_bottom_y = float(data.get("page_bottom_y"))
+                except (TypeError, ValueError):
+                    page_bottom_y = None
             answers = [item.get("text", "") for item in normalized if item.get("text")]
-            return HighlightExtraction(boxes=normalized, page_lines=page_lines, answers=answers)
+            return HighlightExtraction(
+                boxes=normalized,
+                page_lines=page_lines,
+                answers=answers,
+                page_bottom_y=page_bottom_y,
+            )
         except Exception as exc:  # pragma: no cover - external dependency
             logging.exception("Gemini highlight failed: %s", exc)
-            return HighlightExtraction(boxes=[], page_lines=[], answers=[])
+            return HighlightExtraction(
+                boxes=[],
+                page_lines=[],
+                answers=[],
+                page_bottom_y=None,
+            )
 
     return await asyncio.to_thread(_generate)
 

@@ -1475,6 +1475,9 @@ class Bot:
             return
 
         try:
+            answers_clean = [str(ans).strip() for ans in (answers or []) if str(ans).strip()]
+            answers_normalized = {ans.lower() for ans in answers_clean}
+
             lines_payload: list[Mapping[str, Any]] = []
             for entry in page_lines:
                 if isinstance(entry, Mapping):
@@ -1487,6 +1490,7 @@ class Bot:
                     y1 = None
                 if not text_value:
                     continue
+
                 def _normalize(coord: Any) -> float | None:
                     try:
                         value = float(coord)
@@ -1494,11 +1498,17 @@ class Bot:
                         return None
                     return value
 
-                lines_payload.append({
-                    "text": text_value,
-                    "y_top": _normalize(y0),
-                    "y_bottom": _normalize(y1),
-                })
+                normalized_text = text_value.lower()
+                has_answer = 1 if normalized_text in answers_normalized else 0
+
+                lines_payload.append(
+                    {
+                        "text": text_value,
+                        "y_top": _normalize(y0),
+                        "y_bottom": _normalize(y1),
+                        "has_answer": has_answer,
+                    }
+                )
 
             if not lines_payload:
                 return
@@ -1509,7 +1519,6 @@ class Bot:
             if book_title:
                 caption_lines.append(f"Источник: {book_title}")
 
-            answers_clean = [str(ans).strip() for ans in (answers or []) if str(ans).strip()]
             if answers_clean:
                 caption_lines.append("Ответы:")
                 caption_lines.extend(f"- {ans}" for ans in answers_clean)
@@ -1626,6 +1635,16 @@ class Bot:
                             answer_boxes = build_answer_boxes(
                                 extraction.page_lines, extraction.answers
                             )
+                            if extraction.page_lines and channel_id:
+                                await self._send_scan_text_document(
+                                    channel_id,
+                                    page_lines=extraction.page_lines,
+                                    message_id=message_id,
+                                    book_title=row.get("book_title"),
+                                    book_page=row.get("book_page"),
+                                    answers=extraction.answers,
+                                    page_bottom_y=extraction.page_bottom_y,
+                                )
                             if not extraction.answers:
                                 logging.info(
                                     "RAW_ANSWER scan skipped: no answers returned chat_id=%s message_id=%s",

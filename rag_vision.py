@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 
 from openai_client import OpenAIClient
 
-RAW_ANSWER_HIGHLIGHT_MODEL_ID = "gemini-2.0-flash"
+RAW_ANSWER_HIGHLIGHT_MODEL_ID = "gemini-2.5-pro"
 _raw_answer_highlight_model: genai.GenerativeModel | None = None
 
 

@@ -19,7 +19,8 @@ _raw_answer_highlight_model: genai.GenerativeModel | None = None
 @dataclass
 class HighlightExtraction:
     boxes: list[Mapping[str, Any]]
-    page_lines: list[str]
+    page_lines: list[Mapping[str, Any]]
+    answers: list[str]
 
 
 def get_highlight_model() -> genai.GenerativeModel:
@@ -44,7 +45,7 @@ async def _extract_boxes_with_gemini(
                 logging.error(
                     "Gemini highlight: Failed to create PIL Image from bytes: %s", img_exc
                 )
-                return HighlightExtraction(boxes=[], page_lines=[])
+                return HighlightExtraction(boxes=[], page_lines=[], answers=[])
 
             prompt = f"""
 You are a strict document analysis assistant.
@@ -53,6 +54,7 @@ User query: "{user_query}"
 Task: Identify the EXACT lines of text on this page that directly answer the user's query.
 
 Additionally, transcribe EVERY line of text on the page in reading order so that the operator can review the full content.
+For each transcribed line provide normalized vertical coordinates of the top and bottom of the text (y0 and y1 between 0 and 1, relative to the image height).
 
 CRITICAL INSTRUCTIONS:
 1. **Direct Answer Only:** If the page mentions the topic/names but does NOT contain the specific answer to the question, return {{ "items": [] }}. Do not guess.
@@ -66,7 +68,11 @@ Return a JSON object with keys "items" and "page_lines".
 - "line_numbers": [list of line numbers where the answer text appears]
 - "content": "The exact text string contained in these lines"
 
-"page_lines" is an array of strings ordered from line 1 to the last line of the page.
+"page_lines" is an array of objects ordered from line 1 to the last line of the page.
+Each object MUST include:
+- "text": the line text string
+- "y0": top Y coordinate normalized to the image height (0-1)
+- "y1": bottom Y coordinate normalized to the image height (0-1)
 """
             logging.info("DEBUG_GEMINI_PROMPT: %s", prompt)
             response = model.generate_content([image_part, prompt])
@@ -98,18 +104,35 @@ Return a JSON object with keys "items" and "page_lines".
                     }
                 )
             page_lines_raw = data.get("page_lines", []) if isinstance(data, dict) else []
-            page_lines: list[str] = []
+            page_lines: list[Mapping[str, Any]] = []
             if isinstance(page_lines_raw, Sequence) and not isinstance(page_lines_raw, (str, bytes)):
                 for entry in page_lines_raw:
                     if entry is None:
                         continue
-                    text_value = str(entry).strip()
-                    if text_value:
-                        page_lines.append(text_value)
-            return HighlightExtraction(boxes=normalized, page_lines=page_lines)
+                    if isinstance(entry, Mapping):
+                        text_value = str(entry.get("text") or entry.get("line") or "").strip()
+                        y0_raw = entry.get("y0") if "y0" in entry else entry.get("y_top")
+                        y1_raw = entry.get("y1") if "y1" in entry else entry.get("y_bottom")
+                    else:
+                        text_value = str(entry).strip()
+                        y0_raw = None
+                        y1_raw = None
+                    if not text_value:
+                        continue
+                    try:
+                        y0_val = float(y0_raw) if y0_raw is not None else None
+                    except (TypeError, ValueError):
+                        y0_val = None
+                    try:
+                        y1_val = float(y1_raw) if y1_raw is not None else None
+                    except (TypeError, ValueError):
+                        y1_val = None
+                    page_lines.append({"text": text_value, "y0": y0_val, "y1": y1_val})
+            answers = [item.get("text", "") for item in normalized if item.get("text")]
+            return HighlightExtraction(boxes=normalized, page_lines=page_lines, answers=answers)
         except Exception as exc:  # pragma: no cover - external dependency
             logging.exception("Gemini highlight failed: %s", exc)
-            return HighlightExtraction(boxes=[], page_lines=[])
+            return HighlightExtraction(boxes=[], page_lines=[], answers=[])
 
     return await asyncio.to_thread(_generate)
 

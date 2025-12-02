@@ -1460,23 +1460,60 @@ class Bot:
         self,
         chat_id: int,
         *,
-        page_lines: Sequence[str],
+        page_lines: Sequence[Mapping[str, Any]],
         message_id: int | str,
         book_title: str | None,
         book_page: Any,
+        answers: Sequence[str] | None = None,
     ) -> None:
         if not page_lines:
             return
 
         try:
-            payload = {"lines": list(page_lines)}
-            buffer = io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
-            caption_parts = ["Машиночитаемый текст страницы."]
+            lines_payload: list[Mapping[str, Any]] = []
+            for entry in page_lines:
+                if isinstance(entry, Mapping):
+                    text_value = str(entry.get("text") or "").strip()
+                    y0 = entry.get("y0") if "y0" in entry else entry.get("y_top")
+                    y1 = entry.get("y1") if "y1" in entry else entry.get("y_bottom")
+                else:
+                    text_value = str(entry).strip()
+                    y0 = None
+                    y1 = None
+                if not text_value:
+                    continue
+                def _normalize(coord: Any) -> float | None:
+                    try:
+                        value = float(coord)
+                    except (TypeError, ValueError):
+                        return None
+                    return value
+
+                lines_payload.append({
+                    "text": text_value,
+                    "y_top": _normalize(y0),
+                    "y_bottom": _normalize(y1),
+                })
+
+            if not lines_payload:
+                return
+
+            caption_lines = ["Машиночитаемый текст страницы."]
             if book_page not in (None, ""):
-                caption_parts.append(f"Страница: {book_page}")
+                caption_lines.append(f"Страница: {book_page}")
             if book_title:
-                caption_parts.append(f"Источник: {book_title}")
-            caption = " ".join(caption_parts)
+                caption_lines.append(f"Источник: {book_title}")
+
+            answers_clean = [str(ans).strip() for ans in (answers or []) if str(ans).strip()]
+            if answers_clean:
+                caption_lines.append("Ответы:")
+                caption_lines.extend(f"- {ans}" for ans in answers_clean)
+
+            payload: dict[str, Any] = {"lines": lines_payload}
+            if answers_clean:
+                payload["answers"] = answers_clean
+            buffer = io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
+            caption = "\n".join(caption_lines)
             filename = f"scan_{message_id}_lines.json"
             await self.api_request_multipart(
                 "sendDocument",
@@ -1585,6 +1622,7 @@ class Bot:
                                 message_id=message_id,
                                 book_title=row.get("book_title"),
                                 book_page=row.get("book_page"),
+                                answers=extraction.answers,
                             )
                         gemini_texts: list[str] = []
                         line_numbers: set[int] = set()

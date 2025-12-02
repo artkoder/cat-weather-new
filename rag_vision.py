@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 import google.generativeai as genai
@@ -13,6 +14,12 @@ from openai_client import OpenAIClient
 
 RAW_ANSWER_HIGHLIGHT_MODEL_ID = "gemini-2.5-flash-lite"
 _raw_answer_highlight_model: genai.GenerativeModel | None = None
+
+
+@dataclass
+class HighlightExtraction:
+    boxes: list[Mapping[str, Any]]
+    page_lines: list[str]
 
 
 def get_highlight_model() -> genai.GenerativeModel:
@@ -27,8 +34,8 @@ def get_highlight_model() -> genai.GenerativeModel:
 
 async def _extract_boxes_with_gemini(
     image_bytes: bytes, user_query: str
-) -> list[Mapping[str, Any]]:
-    def _generate() -> list[Mapping[str, Any]]:
+) -> HighlightExtraction:
+    def _generate() -> HighlightExtraction:
         try:
             model = get_highlight_model()
             try:
@@ -37,7 +44,7 @@ async def _extract_boxes_with_gemini(
                 logging.error(
                     "Gemini highlight: Failed to create PIL Image from bytes: %s", img_exc
                 )
-                return []
+                return HighlightExtraction(boxes=[], page_lines=[])
 
             prompt = f"""
 You are a strict document analysis assistant.
@@ -45,16 +52,21 @@ User query: "{user_query}"
 
 Task: Identify the EXACT lines of text on this page that directly answer the user's query.
 
+Additionally, transcribe EVERY line of text on the page in reading order so that the operator can review the full content.
+
 CRITICAL INSTRUCTIONS:
 1. **Direct Answer Only:** If the page mentions the topic/names but does NOT contain the specific answer to the question, return {{ "items": [] }}. Do not guess.
 2. **Line Numbers Only:** You must not return bounding boxes. Instead, provide the line numbers of the lines that contain the direct answer.
 3. **Per-Line Matches:** Each item should describe a single line or a tight group of adjacent lines that exactly answer the query.
+4. **Full Transcription:** Provide the complete text of the page, line by line, in a machine-readable format.
 
 Output format:
-Return a JSON object with a key "items".
-Each item must have:
+Return a JSON object with keys "items" and "page_lines".
+"items" is a list of:
 - "line_numbers": [list of line numbers where the answer text appears]
 - "content": "The exact text string contained in these lines"
+
+"page_lines" is an array of strings ordered from line 1 to the last line of the page.
 """
             logging.info("DEBUG_GEMINI_PROMPT: %s", prompt)
             response = model.generate_content([image_part, prompt])
@@ -62,7 +74,7 @@ Each item must have:
             data = json.loads(response.text)
             items = data.get("items", []) if isinstance(data, dict) else []
             if not isinstance(items, list):
-                return []
+                items = []
             normalized: list[Mapping[str, Any]] = []
             for item in items:
                 if not isinstance(item, Mapping):
@@ -85,17 +97,26 @@ Each item must have:
                         "text": content.strip(),
                     }
                 )
-            return normalized
+            page_lines_raw = data.get("page_lines", []) if isinstance(data, dict) else []
+            page_lines: list[str] = []
+            if isinstance(page_lines_raw, Sequence) and not isinstance(page_lines_raw, (str, bytes)):
+                for entry in page_lines_raw:
+                    if entry is None:
+                        continue
+                    text_value = str(entry).strip()
+                    if text_value:
+                        page_lines.append(text_value)
+            return HighlightExtraction(boxes=normalized, page_lines=page_lines)
         except Exception as exc:  # pragma: no cover - external dependency
             logging.exception("Gemini highlight failed: %s", exc)
-            return []
+            return HighlightExtraction(boxes=[], page_lines=[])
 
     return await asyncio.to_thread(_generate)
 
 
 async def extract_text_coordinates(
     image_bytes: bytes, query_text: str, client: OpenAIClient | None = None
-) -> list[Mapping[str, Any]]:
+) -> HighlightExtraction:
     logging.debug("RAW_ANSWER using Gemini highlight extraction")
     return await _extract_boxes_with_gemini(image_bytes, query_text)
 

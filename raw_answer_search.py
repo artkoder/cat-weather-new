@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -8,6 +9,9 @@ from rag_search import RagSearchError, build_raw_answer_document, run_rag_search
 
 class RawSearchError(RuntimeError):
     """Domain-specific error raised when raw search fails."""
+
+
+logger = logging.getLogger(__name__)
 
 
 def search_raw_chunks(query_text: str, threshold: float = 0.5, match_count: int = 5) -> dict[str, Any]:
@@ -69,18 +73,58 @@ def deduplicate_pages(
         scan_page_ids_raw = _as_sequence(row.get("scan_page_ids")) or []
         scan_page_ids = [_normalize_int(item) for item in scan_page_ids_raw]
 
+        if scan_msg_ids:
+            if len({len(scan_msg_ids), len(scan_page_ids), len(ocr_msg_ids)}) != 1:
+                logger.warning(
+                    "Length mismatch between scan/page/ocr ids: scan=%s pages=%s ocr=%s",
+                    len(scan_msg_ids),
+                    len(scan_page_ids),
+                    len(ocr_msg_ids),
+                )
+
         candidate_pairs: list[tuple[Any, int | None, int | None]] = []
         if scan_msg_ids:
             for idx, msg_id in enumerate(scan_msg_ids):
                 page_number = scan_page_ids[idx] if idx < len(scan_page_ids) else None
-                ocr_msg_id = ocr_msg_ids[idx] if idx < len(ocr_msg_ids) else None
+                if idx >= len(ocr_msg_ids):
+                    logger.warning(
+                        "Skipping scan msg_id %s page %s: missing OCR id at index %s",
+                        msg_id,
+                        page_number,
+                        idx,
+                    )
+                    continue
+
+                ocr_msg_id = ocr_msg_ids[idx]
+                if ocr_msg_id is None:
+                    logger.warning(
+                        "Skipping scan msg_id %s page %s: invalid OCR id at index %s",
+                        msg_id,
+                        page_number,
+                        idx,
+                    )
+                    continue
                 candidate_pairs.append((msg_id, page_number, ocr_msg_id))
         else:
             tg_msg_id = row.get("tg_msg_id")
             if tg_msg_id not in (None, ""):
                 page_number = scan_page_ids[0] if scan_page_ids else None
-                ocr_msg_id = ocr_msg_ids[0] if ocr_msg_ids else None
-                candidate_pairs.append((tg_msg_id, page_number, ocr_msg_id))
+                if not ocr_msg_ids:
+                    logger.warning(
+                        "Skipping scan msg_id %s page %s: missing OCR id",
+                        tg_msg_id,
+                        page_number,
+                    )
+                else:
+                    ocr_msg_id = ocr_msg_ids[0]
+                    if ocr_msg_id is None:
+                        logger.warning(
+                            "Skipping scan msg_id %s page %s: invalid OCR id",
+                            tg_msg_id,
+                            page_number,
+                        )
+                    else:
+                        candidate_pairs.append((tg_msg_id, page_number, ocr_msg_id))
 
         for msg_id, page_number, ocr_msg_id in candidate_pairs:
             if msg_id in (None, ""):

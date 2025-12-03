@@ -117,8 +117,11 @@ from weather_migration import migrate_weather_publish_channels
 from db_utils import dump_database
 from rag_vision import (
     build_answer_boxes,
+    build_page_text,
     draw_highlight_overlay,
     extract_text_coordinates,
+    highlight_answer_on_page,
+    parse_ocr_words,
 )
 from raw_answer_search import (
     RawSearchError,
@@ -1669,48 +1672,118 @@ class Bot:
                             with contextlib.suppress(OSError):
                                 downloaded_path.unlink()
 
-                            extraction = await extract_text_coordinates(image_bytes, query_text)
-                            boxes = extraction.boxes
-                            answer_boxes = build_answer_boxes(
-                                extraction.page_lines, extraction.answers
-                            )
-                            if extraction.page_lines and channel_id:
+                            boxes: list[Mapping[str, Any]] = []
+                            answers: Sequence[str] | None = None
+                            page_lines: Sequence[Mapping[str, Any]] | None = None
+                            page_bottom_y: float | None = None
+                            spans: Sequence[tuple[int, int]] | None = None
+
+                            ocr_msg_id = row.get("ocr_tg_msg_id")
+                            chunk_text = str(row.get("chunk") or row.get("content") or "")
+                            if ocr_msg_id not in (None, ""):
+                                ocr_payload = await self._download_ocr_payload(
+                                    channel_id=channel_id,
+                                    message_id=ocr_msg_id,
+                                    target_chat_id=chat_id,
+                                )
+                                if ocr_payload:
+                                    words, page_size = parse_ocr_words(ocr_payload)
+                                    if words:
+                                        page_text = build_page_text(words)
+                                        highlight_result = await highlight_answer_on_page(
+                                            question=query_text,
+                                            chunk_text=chunk_text,
+                                            page_text=page_text,
+                                            words=words,
+                                            scan_image_bytes=image_bytes,
+                                            source_page_size=page_size,
+                                        )
+                                        if highlight_result:
+                                            boxes.extend(highlight_result.boxes)
+                                            spans = highlight_result.spans
+                                            page_lines = highlight_result.page_lines
+                                            answers = [
+                                                " ".join(
+                                                    w.text for w in words[start : end + 1] if w.text
+                                                )
+                                                for start, end in spans
+                                            ]
+                                            logging.info(
+                                                "RAW_ANSWER OCR spans=%s for msg_id=%s boxes=%s",
+                                                spans,
+                                                message_id,
+                                                len(highlight_result.boxes),
+                                            )
+                                    else:
+                                        logging.warning(
+                                            "RAW_ANSWER OCR payload missing words for message_id=%s", message_id
+                                        )
+                                else:
+                                    logging.warning(
+                                        "RAW_ANSWER failed to download OCR JSON for message_id=%s", message_id
+                                    )
+
+                            if not boxes:
+                                extraction = await extract_text_coordinates(image_bytes, query_text)
+                                boxes = extraction.boxes
+                                answer_boxes = build_answer_boxes(
+                                    extraction.page_lines, extraction.answers
+                                )
+                                if extraction.page_lines and channel_id:
+                                    await self._send_scan_text_document(
+                                        channel_id,
+                                        page_lines=extraction.page_lines,
+                                        message_id=message_id,
+                                        book_title=row.get("book_title"),
+                                        book_page=row.get("book_page"),
+                                        answers=extraction.answers,
+                                        page_bottom_y=extraction.page_bottom_y,
+                                    )
+                                if not extraction.answers:
+                                    logging.info(
+                                        "RAW_ANSWER scan skipped: no answers returned chat_id=%s message_id=%s",
+                                        chat_id,
+                                        message_id,
+                                    )
+                                    if forwarded_msg_id is not None:
+                                        with contextlib.suppress(Exception):
+                                            await self.api_request(
+                                                "deleteMessage",
+                                                {"chat_id": chat_id, "message_id": forwarded_msg_id},
+                                            )
+                                    continue
+                                if answer_boxes:
+                                    boxes = list(boxes) + answer_boxes
+                                page_lines = extraction.page_lines
+                                answers = extraction.answers
+                                page_bottom_y = extraction.page_bottom_y
+
+                            if page_lines and channel_id:
                                 await self._send_scan_text_document(
                                     channel_id,
-                                    page_lines=extraction.page_lines,
+                                    page_lines=page_lines,
                                     message_id=message_id,
                                     book_title=row.get("book_title"),
                                     book_page=row.get("book_page"),
-                                    answers=extraction.answers,
-                                    page_bottom_y=extraction.page_bottom_y,
+                                    answers=answers,
+                                    page_bottom_y=page_bottom_y,
                                 )
-                            if not extraction.answers:
-                                logging.info(
-                                    "RAW_ANSWER scan skipped: no answers returned chat_id=%s message_id=%s",
-                                    chat_id,
-                                    message_id,
-                                )
-                                if forwarded_msg_id is not None:
-                                    with contextlib.suppress(Exception):
-                                        await self.api_request(
-                                            "deleteMessage",
-                                            {"chat_id": chat_id, "message_id": forwarded_msg_id},
-                                        )
-                                continue
-                            if answer_boxes:
-                                boxes = list(boxes) + answer_boxes
-                            if extraction.page_lines:
+
+                            if page_lines:
                                 await self._send_scan_text_document(
                                     chat_id,
-                                    page_lines=extraction.page_lines,
+                                    page_lines=page_lines,
                                     message_id=message_id,
                                     book_title=row.get("book_title"),
                                     book_page=row.get("book_page"),
-                                    answers=extraction.answers,
-                                    page_bottom_y=extraction.page_bottom_y,
+                                    answers=answers,
+                                    page_bottom_y=page_bottom_y,
                                 )
+
                             gemini_texts: list[str] = []
                             line_numbers: set[int] = set()
+                            span_ranges: list[str] = []
+                            answer_snippets: list[str] = [ans for ans in (answers or []) if str(ans).strip()]
                             has_coordinates = False
                             for box in boxes:
                                 if not isinstance(box, Mapping):
@@ -1731,15 +1804,23 @@ class Bot:
                                             line_numbers.add(line_num)
                                 if all(k in box for k in ("x0", "y0", "x1", "y1")):
                                     has_coordinates = True
-                            if not has_coordinates and answer_boxes:
-                                has_coordinates = True
-                            if gemini_texts or line_numbers:
+                            if spans:
+                                span_ranges = [f"{start}-{end}" for start, end in spans]
+                                has_coordinates = has_coordinates or bool(boxes)
+                            if gemini_texts or line_numbers or span_ranges or answer_snippets:
                                 appendix_parts: list[str] = []
                                 if gemini_texts:
                                     appendix_parts.append("🔍 Текст Gemini:\n- " + "\n- ".join(gemini_texts))
                                 if line_numbers:
                                     ordered_lines = ", ".join(map(str, sorted(line_numbers)))
                                     appendix_parts.append(f"Номера строк: [{ordered_lines}]")
+                                if span_ranges:
+                                    appendix_parts.append(
+                                        "Диапазоны слов: [" + ", ".join(span_ranges) + "]"
+                                    )
+                                if answer_snippets:
+                                    appendix_parts.append("Ответ:")
+                                    appendix_parts.extend(f"- {ans}" for ans in answer_snippets)
                                 appendix = "\n\n" + "\n".join(appendix_parts)
                                 combined_caption = (
                                     f"{caption}{appendix}" if caption else appendix.lstrip("\n")
@@ -1747,7 +1828,7 @@ class Bot:
                                 if len(combined_caption) > 1024:
                                     combined_caption = f"{combined_caption[:1021]}..."
                                 caption = combined_caption
-                            if has_coordinates:
+                            if has_coordinates and boxes:
                                 final_bytes = draw_highlight_overlay(image_bytes, boxes)
                                 highlighted = final_bytes is not None
                                 logging.info(
@@ -1823,6 +1904,72 @@ class Bot:
                     "sendMessage", {"chat_id": chat_id, "text": "готово"}
                 )
 
+
+    async def _download_ocr_payload(
+        self,
+        *,
+        channel_id: int | str,
+        message_id: int | str,
+        target_chat_id: int,
+    ) -> Mapping[str, Any] | None:
+        tmp_fd, tmp_name = tempfile.mkstemp(prefix="raw_ocr_", suffix=".json")
+        os.close(tmp_fd)
+        copied_message_id: int | None = None
+        try:
+            copy_resp = await self.api_request(
+                "copyMessage",
+                {
+                    "chat_id": target_chat_id,
+                    "from_chat_id": channel_id,
+                    "message_id": message_id,
+                    "disable_notification": True,
+                },
+            )
+            result_payload = copy_resp.get("result") if isinstance(copy_resp, Mapping) else None
+            if not (copy_resp and copy_resp.get("ok") and isinstance(result_payload, Mapping)):
+                logging.warning(
+                    "RAW_ANSWER failed to copy OCR message chat_id=%s message_id=%s payload=%s",
+                    target_chat_id,
+                    message_id,
+                    copy_resp,
+                )
+                return None
+
+            copied_message_id = result_payload.get("message_id")
+            file_meta = self._collect_asset_metadata(result_payload).get("file_meta") or {}
+            file_id = file_meta.get("file_id")
+            if not file_id:
+                logging.warning(
+                    "RAW_ANSWER OCR message missing file_id chat_id=%s message_id=%s",
+                    target_chat_id,
+                    message_id,
+                )
+                return None
+
+            downloaded_path = await self._download_file(file_id, tmp_name)
+            if isinstance(downloaded_path, Path) and downloaded_path.exists():
+                try:
+                    return json.loads(downloaded_path.read_text(encoding="utf-8"))
+                except Exception:
+                    logging.exception(
+                        "RAW_ANSWER failed to parse OCR JSON chat_id=%s message_id=%s", target_chat_id, message_id
+                    )
+                    return None
+            return None
+        except Exception:
+            logging.exception(
+                "RAW_ANSWER failed to download OCR payload chat_id=%s message_id=%s", target_chat_id, message_id
+            )
+            return None
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                Path(tmp_name).unlink()
+            if copied_message_id is not None:
+                with contextlib.suppress(Exception):
+                    await self.api_request(
+                        "deleteMessage",
+                        {"chat_id": target_chat_id, "message_id": copied_message_id},
+                    )
 
     def _get_active_pairing_token(self, user_id: int) -> tuple[str, datetime, str] | None:
         now = datetime.utcnow()

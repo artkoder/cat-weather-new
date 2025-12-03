@@ -64,21 +64,25 @@ def deduplicate_pages(
             continue
 
         scan_msg_ids = _as_sequence(row.get("scan_tg_msg_ids")) or []
+        ocr_msg_ids_raw = _as_sequence(row.get("ocr_tg_msg_ids")) or []
+        ocr_msg_ids = [_normalize_int(item) for item in ocr_msg_ids_raw]
         scan_page_ids_raw = _as_sequence(row.get("scan_page_ids")) or []
         scan_page_ids = [_normalize_int(item) for item in scan_page_ids_raw]
 
-        candidate_pairs: list[tuple[Any, int | None]] = []
+        candidate_pairs: list[tuple[Any, int | None, int | None]] = []
         if scan_msg_ids:
             for idx, msg_id in enumerate(scan_msg_ids):
                 page_number = scan_page_ids[idx] if idx < len(scan_page_ids) else None
-                candidate_pairs.append((msg_id, page_number))
+                ocr_msg_id = ocr_msg_ids[idx] if idx < len(ocr_msg_ids) else None
+                candidate_pairs.append((msg_id, page_number, ocr_msg_id))
         else:
             tg_msg_id = row.get("tg_msg_id")
             if tg_msg_id not in (None, ""):
                 page_number = scan_page_ids[0] if scan_page_ids else None
-                candidate_pairs.append((tg_msg_id, page_number))
+                ocr_msg_id = ocr_msg_ids[0] if ocr_msg_ids else None
+                candidate_pairs.append((tg_msg_id, page_number, ocr_msg_id))
 
-        for msg_id, page_number in candidate_pairs:
+        for msg_id, page_number, ocr_msg_id in candidate_pairs:
             if msg_id in (None, ""):
                 continue
             dedup_key = str(msg_id)
@@ -87,6 +91,8 @@ def deduplicate_pages(
 
             enriched_row = dict(row)
             enriched_row["tg_msg_id"] = msg_id
+            if ocr_msg_id is not None:
+                enriched_row["ocr_tg_msg_id"] = ocr_msg_id
             if page_number is not None and enriched_row.get("book_page") in (None, ""):
                 enriched_row["book_page"] = page_number
 

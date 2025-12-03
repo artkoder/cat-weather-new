@@ -15063,7 +15063,7 @@ class Bot:
 
         marked_used = False
         if not test:
-            self.data.mark_assets_used([asset.id])
+            self.data.mark_assets_used([asset.id], rubric_code="postcard")
             marked_used = True
         logging.info(
             "POSTCARD_RUBRIC asset_usage asset_id=%s job_id=%s mode=%s marked_used=%s",
@@ -15116,6 +15116,10 @@ class Bot:
         """Count postcard-ready assets grouped by postcard_score excluding recent uses."""
 
         def _normalize_last_used(raw: Any) -> datetime | None:
+            if isinstance(raw, (list, tuple, set)):
+                parsed = [_normalize_last_used(item) for item in raw]
+                moments = [dt for dt in parsed if dt is not None]
+                return max(moments) if moments else None
             if raw is None:
                 return None
             if isinstance(raw, bytes):
@@ -15129,6 +15133,13 @@ class Bot:
                 text = raw.strip()
                 if not text:
                     return None
+                if text.startswith("[") and text.endswith("]"):
+                    try:
+                        parsed = json.loads(text)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        parsed = None
+                    if isinstance(parsed, (list, tuple, set)):
+                        return _normalize_last_used(parsed)
                 normalized = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
                 try:
                     parsed = datetime.fromisoformat(normalized)
@@ -15148,11 +15159,19 @@ class Bot:
 
         recent_cutoff = datetime.now(UTC) - POSTCARD_RECENT_USAGE_WINDOW
         query = (
-            "SELECT postcard_score AS score, "
-            "json_extract(payload_json, '$.last_used_at') AS last_used_at "
-            "FROM assets WHERE postcard_score BETWEEN ? AND ?"
+            "SELECT "
+            "    a.id, "
+            "    a.postcard_score AS score, "
+            "    json_extract(a.payload_json, '$.postcard_last_used_at') AS postcard_last_used_at, "
+            "    ( "
+            "        SELECT MAX(ph.published_at) "
+            "        FROM posts_history ph "
+            "        JOIN rubrics r ON r.id = ph.rubric_id "
+            "        WHERE ph.asset_id = a.id AND r.code = ? "
+            "    ) AS history_last_used_at "
+            "FROM assets a WHERE postcard_score BETWEEN ? AND ?"
         )
-        rows = self.db.execute(query, (POSTCARD_MIN_SCORE, 10)).fetchall()
+        rows = self.db.execute(query, ("postcard", POSTCARD_MIN_SCORE, 10)).fetchall()
         score_counts: dict[int, int] = {score: 0 for score in range(POSTCARD_MIN_SCORE, 11)}
         total_count = 0
         for row in rows:
@@ -15163,7 +15182,12 @@ class Bot:
                 continue
             if score < POSTCARD_MIN_SCORE or score > 10:
                 continue
-            last_used = _normalize_last_used(row["last_used_at"]) if "last_used_at" in row.keys() else None
+            last_used_raw = None
+            if "postcard_last_used_at" in row.keys():
+                last_used_raw = row["postcard_last_used_at"]
+            if not last_used_raw and "history_last_used_at" in row.keys():
+                last_used_raw = row["history_last_used_at"]
+            last_used = _normalize_last_used(last_used_raw)
             if last_used and last_used >= recent_cutoff:
                 continue
             score_counts[score] = score_counts.get(score, 0) + 1

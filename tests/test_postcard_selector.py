@@ -39,7 +39,32 @@ def data(tmp_path: Path) -> DataAccess:
             result_json TEXT,
             created_at TEXT NOT NULL
         );
+
+        CREATE TABLE rubrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE,
+            title TEXT,
+            description TEXT,
+            config TEXT,
+            created_at TEXT,
+            updated_at TEXT
+        );
+
+        CREATE TABLE posts_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            asset_id TEXT,
+            rubric_id INTEGER,
+            metadata TEXT,
+            published_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(rubric_id) REFERENCES rubrics(id)
+        );
         """
+    )
+    conn.execute(
+        "INSERT INTO rubrics (code, title, created_at, updated_at) VALUES ('postcard', 'Postcard', datetime('now'), datetime('now'))"
     )
     conn.commit()
     return DataAccess(conn)
@@ -69,9 +94,9 @@ def _add_asset(
     if region:
         payload["region"] = region
     if last_used_history:
-        payload["last_used_at"] = [_iso(moment) for moment in last_used_history]
+        payload["postcard_last_used_at"] = [_iso(moment) for moment in last_used_history]
     elif last_used_at:
-        payload["last_used_at"] = _iso(last_used_at)
+        payload["postcard_last_used_at"] = _iso(last_used_at)
     if tags is not None:
         payload["tags"] = tags
     data.conn.execute(

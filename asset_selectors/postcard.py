@@ -106,18 +106,24 @@ def select_postcard_asset(
         rows = data.conn.execute(
             """
             SELECT
-                id,
-                postcard_score,
-                captured_at,
-                created_at,
-                photo_doy,
-                json_extract(payload_json, '$.tags') AS tags,
-                json_extract(payload_json, '$.last_used_at') AS last_used_at,
-                json_extract(payload_json, '$.city') AS city,
-                json_extract(payload_json, '$.region') AS region
-            FROM assets
-            WHERE postcard_score = ?
-            ORDER BY captured_at DESC, created_at DESC, id ASC
+                a.id,
+                a.postcard_score,
+                a.captured_at,
+                a.created_at,
+                a.photo_doy,
+                json_extract(a.payload_json, '$.tags') AS tags,
+                json_extract(a.payload_json, '$.postcard_last_used_at') AS postcard_last_used_at,
+                (
+                    SELECT MAX(ph.published_at)
+                    FROM posts_history ph
+                    JOIN rubrics r ON r.id = ph.rubric_id
+                    WHERE ph.asset_id = a.id AND r.code = 'postcard'
+                ) AS postcard_history_last_used,
+                json_extract(a.payload_json, '$.city') AS city,
+                json_extract(a.payload_json, '$.region') AS region
+            FROM assets a
+            WHERE a.postcard_score = ?
+            ORDER BY a.captured_at DESC, a.created_at DESC, a.id ASC
             LIMIT ?
             """,
             (score, _CANDIDATE_LIMIT),
@@ -319,8 +325,13 @@ def _build_candidate(row: Any) -> _Candidate:
     city = _normalize_optional_str(row["city"])
     region = _normalize_optional_str(row["region"])
     tags = _parse_tags(row["tags"])
-    last_used_raw = _to_str(row["last_used_at"])
-    last_used_history = _parse_last_used_history(row["last_used_at"])
+    postcard_usage_raw = row["postcard_last_used_at"]
+    last_used_raw = _to_str(postcard_usage_raw) or _to_str(row["postcard_history_last_used"])
+    history_items = list(_parse_last_used_history(postcard_usage_raw))
+    history_dt = _parse_iso(_to_str(row["postcard_history_last_used"]))
+    if history_dt:
+        history_items.append(history_dt)
+    last_used_history = tuple(sorted(set(history_items)))
     captured_dt = _parse_iso(captured_raw)
     created_dt = _parse_iso(created_raw) or _MIN_DATETIME
     last_used_dt = _latest_dt(last_used_history) or _parse_iso(last_used_raw)

@@ -595,6 +595,37 @@ async def test_postcard_prod_publish_decrements_inventory(
     bot.db.close()
 
 
+def test_postcard_inventory_ignores_other_rubrics(tmp_path: Path) -> None:
+    bot = main_module.Bot("dummy", str(tmp_path / "postcard-cross-rubric.db"))
+
+    postcard_rubric = bot.data.get_rubric_by_code("postcard")
+    other_rubric = bot.data.get_rubric_by_code("flowers")
+    assert postcard_rubric is not None
+    assert other_rubric is not None
+
+    asset_id = _create_postcard_asset(bot)
+
+    total_before, score_counts_before = bot._compute_postcard_inventory_stats()
+    assert total_before == 1
+    assert score_counts_before.get(10, 0) == 1
+
+    bot.data.mark_assets_used([asset_id], rubric_code=other_rubric.code)
+    bot.data.record_post_history(1234, 2001, asset_id, other_rubric.id, {"rubric_code": other_rubric.code})
+
+    total_other_rubric, score_counts_other = bot._compute_postcard_inventory_stats()
+    assert total_other_rubric == 1
+    assert score_counts_other.get(10, 0) == 1
+
+    bot.data.mark_assets_used([asset_id], rubric_code="postcard")
+    bot.data.record_post_history(1234, 2002, asset_id, postcard_rubric.id, {"rubric_code": "postcard"})
+
+    total_after_postcard, score_counts_after = bot._compute_postcard_inventory_stats()
+    assert total_after_postcard == 0
+    assert score_counts_after.get(10, 0) == 0
+
+    bot.db.close()
+
+
 @pytest.mark.asyncio
 async def test_postcard_publish_notifies_when_no_high_score_assets(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

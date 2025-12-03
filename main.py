@@ -1680,6 +1680,9 @@ class Bot:
 
                             ocr_msg_id = row.get("ocr_tg_msg_id")
                             chunk_text = str(row.get("chunk") or row.get("content") or "")
+                            ocr_log_id = (
+                                ocr_msg_id if ocr_msg_id not in (None, "") else "<missing ocr_tg_msg_id>"
+                            )
                             if ocr_msg_id not in (None, ""):
                                 ocr_payload = await self._download_ocr_payload(
                                     channel_id=channel_id,
@@ -1709,19 +1712,26 @@ class Bot:
                                                 for start, end in spans
                                             ]
                                             logging.info(
-                                                "RAW_ANSWER OCR spans=%s for msg_id=%s boxes=%s",
+                                                "RAW_ANSWER OCR spans=%s for ocr_tg_msg_id=%s boxes=%s",
                                                 spans,
-                                                message_id,
+                                                ocr_log_id,
                                                 len(highlight_result.boxes),
                                             )
                                     else:
                                         logging.warning(
-                                            "RAW_ANSWER OCR payload missing words for message_id=%s", message_id
+                                            "RAW_ANSWER OCR payload missing words for ocr_tg_msg_id=%s",
+                                            ocr_log_id,
                                         )
                                 else:
                                     logging.warning(
-                                        "RAW_ANSWER failed to download OCR JSON for message_id=%s", message_id
+                                        "RAW_ANSWER failed to download OCR JSON for ocr_tg_msg_id=%s",
+                                        ocr_log_id,
                                     )
+                            else:
+                                logging.warning(
+                                    "RAW_ANSWER OCR processing skipped: missing ocr_tg_msg_id for scan message_id=%s",
+                                    message_id,
+                                )
 
                             if not boxes:
                                 extraction = await extract_text_coordinates(image_bytes, query_text)

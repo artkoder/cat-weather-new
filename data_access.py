@@ -2605,7 +2605,7 @@ class DataAccess:
             )
         return candidates
 
-    def mark_assets_used(self, asset_ids: Iterable[str | int]) -> None:
+    def mark_assets_used(self, asset_ids: Iterable[str | int], *, rubric_code: str | None = None) -> None:
 
         ids = [str(asset_id) for asset_id in asset_ids]
         if not ids:
@@ -2621,6 +2621,8 @@ class DataAccess:
         for row in rows:
             payload = self._decode_payload_blob(row["payload_json"])
             payload["last_used_at"] = now_iso
+            if rubric_code == "postcard":
+                payload["postcard_last_used_at"] = now_iso
             payload["updated_at"] = now_iso
             payload_json = self._encode_payload_blob(payload)
             self.conn.execute(

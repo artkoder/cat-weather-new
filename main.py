@@ -1690,6 +1690,46 @@ class Bot:
                                     target_chat_id=chat_id,
                                 )
                                 if ocr_payload:
+                                    page_label = str(
+                                        row.get("book_page")
+                                        or row.get("page")
+                                        or row.get("page_number")
+                                        or ocr_msg_id
+                                    )
+                                    ocr_filename = f"ocr_page_{page_label}.json"
+                                    try:
+                                        ocr_bytes = json.dumps(
+                                            ocr_payload, ensure_ascii=False
+                                        ).encode("utf-8")
+                                        ocr_send_resp = await self.api_request(
+                                            "sendDocument",
+                                            {"chat_id": chat_id},
+                                            files={"document": (ocr_filename, ocr_bytes)},
+                                        )
+                                        ocr_send_result = (
+                                            ocr_send_resp.get("result")
+                                            if isinstance(ocr_send_resp, Mapping)
+                                            else None
+                                        )
+                                        if ocr_send_resp and ocr_send_resp.get("ok") and isinstance(
+                                            ocr_send_result, Mapping
+                                        ):
+                                            logging.info(
+                                                "RAW_ANSWER sent OCR JSON message_id=%s for ocr_tg_msg_id=%s",
+                                                ocr_send_result.get("message_id"),
+                                                ocr_log_id,
+                                            )
+                                        else:
+                                            logging.warning(
+                                                "RAW_ANSWER failed to send OCR JSON for ocr_tg_msg_id=%s response=%s",
+                                                ocr_log_id,
+                                                ocr_send_resp,
+                                            )
+                                    except Exception:
+                                        logging.exception(
+                                            "RAW_ANSWER failed to send OCR JSON for ocr_tg_msg_id=%s",
+                                            ocr_log_id,
+                                        )
                                     words, page_size = parse_ocr_words(ocr_payload)
                                     if words:
                                         page_text = build_page_text(words)

@@ -25,6 +25,21 @@ class HighlightExtraction:
     page_bottom_y: float | None
 
 
+@dataclass
+class OCRWord:
+    index: int
+    text: str
+    bbox: tuple[float, float, float, float]
+    conf: float | None = None
+
+
+@dataclass
+class PageHighlightResult:
+    boxes: list[Mapping[str, float]]
+    spans: list[tuple[int, int]]
+    page_lines: list[Mapping[str, Any]]
+
+
 def get_highlight_model() -> genai.GenerativeModel:
     global _raw_answer_highlight_model
     if _raw_answer_highlight_model is None:
@@ -235,3 +250,275 @@ def draw_highlight_overlay(image_bytes: bytes, boxes: Sequence[Mapping[str, Any]
     composed.save(buffer, format="PNG")
     buffer.seek(0)
     return buffer.read()
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_ocr_words(payload: Mapping[str, Any]) -> tuple[list[OCRWord], tuple[int, int] | None]:
+    words_raw = payload.get("words")
+    if not isinstance(words_raw, Sequence) or isinstance(words_raw, (str, bytes)):
+        return [], None
+
+    def _extract_dim(*keys: str) -> int | None:
+        for key in keys:
+            if key in payload:
+                try:
+                    return int(payload[key])
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    width = _extract_dim("width", "page_width", "image_width")
+    height = _extract_dim("height", "page_height", "image_height")
+    page_size = (width, height) if width and height else None
+
+    words: list[OCRWord] = []
+    for idx, raw in enumerate(words_raw):
+        if not isinstance(raw, Mapping):
+            continue
+        text = str(raw.get("text") or "").strip()
+        bbox_raw = raw.get("bbox") or {}
+        if not isinstance(bbox_raw, Mapping):
+            continue
+        x = _safe_float(bbox_raw.get("x"))
+        y = _safe_float(bbox_raw.get("y"))
+        w = _safe_float(bbox_raw.get("w"))
+        h = _safe_float(bbox_raw.get("h"))
+        if None in (x, y, w, h):
+            continue
+        conf = _safe_float(raw.get("conf"))
+        words.append(OCRWord(index=idx, text=text, bbox=(x, y, w, h), conf=conf))
+
+    return words, page_size
+
+
+def _group_words_into_lines(words: Sequence[OCRWord], *, tolerance_factor: float = 1.25) -> list[list[OCRWord]]:
+    if not words:
+        return []
+
+    sorted_words = sorted(words, key=lambda w: (w.bbox[1] + w.bbox[3] / 2.0, w.bbox[0]))
+    lines: list[list[OCRWord]] = []
+    current_line: list[OCRWord] = []
+    current_center: float | None = None
+    current_height: float | None = None
+
+    for word in sorted_words:
+        center_y = word.bbox[1] + word.bbox[3] / 2.0
+        height = word.bbox[3]
+        if current_line:
+            assert current_center is not None and current_height is not None
+            threshold = max(current_height, height) * tolerance_factor
+            if abs(center_y - current_center) <= threshold:
+                current_line.append(word)
+                current_center = (
+                    (current_center * (len(current_line) - 1) + center_y) / len(current_line)
+                )
+                current_height = max(current_height, height)
+            else:
+                lines.append(current_line)
+                current_line = [word]
+                current_center = center_y
+                current_height = height
+        else:
+            current_line = [word]
+            current_center = center_y
+            current_height = height
+
+    if current_line:
+        lines.append(current_line)
+
+    return [sorted(line, key=lambda w: w.bbox[0]) for line in lines]
+
+
+def build_page_lines(
+    words: Sequence[OCRWord], *, page_width: float, page_height: float
+) -> list[Mapping[str, Any]]:
+    if not words or page_width <= 0 or page_height <= 0:
+        return []
+
+    lines: list[Mapping[str, Any]] = []
+    for line_words in _group_words_into_lines(words):
+        x1 = min(w.bbox[0] for w in line_words)
+        x2 = max(w.bbox[0] + w.bbox[2] for w in line_words)
+        y1 = min(w.bbox[1] for w in line_words)
+        y2 = max(w.bbox[1] + w.bbox[3] for w in line_words)
+        text_value = " ".join(w.text for w in line_words if w.text)
+        if not text_value:
+            continue
+        lines.append(
+            {
+                "text": text_value,
+                "y0": max(0.0, y1 / page_height),
+                "y1": min(1.0, y2 / page_height),
+            }
+        )
+
+    return lines
+
+
+def build_page_text(words: Sequence[OCRWord]) -> str:
+    if not words:
+        return ""
+
+    lines = _group_words_into_lines(words)
+    parts: list[str] = []
+    for line_words in lines:
+        line_text = " ".join(w.text for w in line_words if w.text)
+        if line_text:
+            parts.append(line_text)
+    return "\n".join(parts)
+
+
+def build_words_with_indices(words: Sequence[OCRWord]) -> str:
+    if not words:
+        return "WORDS:\n"
+    lines = ["WORDS:"] + [f"{word.index}: {word.text}" for word in words]
+    return "\n".join(lines)
+
+
+def _normalize_spans(spans: Any, total_words: int) -> list[tuple[int, int]]:
+    normalized: list[tuple[int, int]] = []
+    if not isinstance(spans, Sequence) or isinstance(spans, (str, bytes)):
+        return normalized
+    for raw in spans:
+        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+            continue
+        if len(raw) != 2:
+            continue
+        try:
+            start, end = int(raw[0]), int(raw[1])
+        except (TypeError, ValueError):
+            continue
+        if start < 0 or end < 0 or start >= total_words:
+            logging.warning("RAW_ANSWER span outside range: %s", raw)
+            continue
+        end = min(end, total_words - 1)
+        if start > end:
+            start, end = end, start
+        normalized.append((start, end))
+    return normalized
+
+
+def _build_span_boxes(
+    words: Sequence[OCRWord],
+    spans: Sequence[tuple[int, int]],
+    *,
+    page_width: float,
+    page_height: float,
+) -> list[Mapping[str, float]]:
+    if not words or not spans or page_width <= 0 or page_height <= 0:
+        return []
+
+    boxes: list[Mapping[str, float]] = []
+    word_map = {word.index: word for word in words}
+
+    for start, end in spans:
+        span_words = [word_map[idx] for idx in range(start, end + 1) if idx in word_map]
+        if not span_words:
+            continue
+        for line_words in _group_words_into_lines(span_words):
+            x1 = min(w.bbox[0] for w in line_words)
+            x2 = max(w.bbox[0] + w.bbox[2] for w in line_words)
+            y1 = min(w.bbox[1] for w in line_words)
+            y2 = max(w.bbox[1] + w.bbox[3] for w in line_words)
+            boxes.append(
+                {
+                    "x0": max(0.0, x1 / page_width),
+                    "y0": max(0.0, y1 / page_height),
+                    "x1": min(1.0, x2 / page_width),
+                    "y1": min(1.0, y2 / page_height),
+                }
+            )
+
+    return boxes
+
+
+async def highlight_answer_on_page(
+    *,
+    question: str,
+    chunk_text: str,
+    page_text: str,
+    words: Sequence[OCRWord],
+    scan_image_bytes: bytes,
+    source_page_size: tuple[int, int] | None = None,
+    model_client: genai.GenerativeModel | None = None,
+) -> PageHighlightResult | None:
+    if not words:
+        return None
+
+    def _generate() -> PageHighlightResult | None:
+        try:
+            model = model_client or get_highlight_model()
+            try:
+                image_part = Image.open(io.BytesIO(scan_image_bytes))
+            except Exception:
+                logging.exception("RAW_ANSWER failed to open image for Gemini highlighting")
+                return None
+
+            width, height = image_part.size
+            scaled_words = list(words)
+            if source_page_size and source_page_size[0] and source_page_size[1]:
+                scale_x = width / float(source_page_size[0])
+                scale_y = height / float(source_page_size[1])
+                scaled_words = [
+                    OCRWord(
+                        index=w.index,
+                        text=w.text,
+                        bbox=(
+                            w.bbox[0] * scale_x,
+                            w.bbox[1] * scale_y,
+                            w.bbox[2] * scale_x,
+                            w.bbox[3] * scale_y,
+                        ),
+                        conf=w.conf,
+                    )
+                    for w in words
+                ]
+
+            words_with_indices = build_words_with_indices(scaled_words)
+            prompt = f"""Вопрос пользователя:
+{question}
+
+Фрагмент текста книги, который мы уже считаем релевантным (chunk):
+{chunk_text}
+
+Текст страницы по OCR:
+{page_text}
+
+Ниже список слов этой страницы с индексами:
+{words_with_indices}
+
+Ты видишь и изображение страницы, и текст.
+Найди на странице (по изображению и тексту) слова, которые по смыслу лучше всего отвечают на вопрос.
+Используй список WORDS, чтобы указать, какие именно слова входят в ответ.
+
+Верни строго JSON без комментариев и дополнительного текста:
+{{"spans": [[start_idx, end_idx], ...]}}
+где start_idx и end_idx — целые индексы (0-based) слов из списка WORDS (включительно)."""
+
+            response = model.generate_content([image_part, prompt])
+            data = json.loads(response.text)
+            spans_raw = data.get("spans") if isinstance(data, Mapping) else None
+            spans = _normalize_spans(spans_raw, len(scaled_words))
+            if not spans:
+                logging.info("RAW_ANSWER Gemini returned no spans for highlighting")
+                return None
+
+            boxes = _build_span_boxes(
+                scaled_words,
+                spans,
+                page_width=width,
+                page_height=height,
+            )
+            page_lines = build_page_lines(scaled_words, page_width=width, page_height=height)
+            return PageHighlightResult(boxes=boxes, spans=spans, page_lines=page_lines)
+        except Exception:
+            logging.exception("RAW_ANSWER Gemini span extraction failed")
+            return None
+
+    return await asyncio.to_thread(_generate)

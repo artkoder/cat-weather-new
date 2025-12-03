@@ -47,6 +47,7 @@ class MatchChunkRow(TypedDict, total=False):
     tg_msg_id: str | int | None
     scan_page_ids: list[int] | None
     scan_tg_msg_ids: list[int] | None
+    ocr_tg_msg_ids: list[int] | None
     book_page: int | None
     book_title: str | None
     book_authors: list[str] | str | None
@@ -188,6 +189,7 @@ def search_raw_chunks(
                     for list_field in [
                         "scan_page_ids",
                         "scan_tg_msg_ids",
+                        "ocr_tg_msg_ids",
                         "media_ids",
                         "media_internal_ids",
                         "source_links",
@@ -203,6 +205,11 @@ def search_raw_chunks(
                     if item.get("scan_tg_msg_ids"):
                         item["scan_tg_msg_ids"] = [
                             int(value) for value in item["scan_tg_msg_ids"] if value is not None
+                        ]
+
+                    if item.get("ocr_tg_msg_ids"):
+                        item["ocr_tg_msg_ids"] = [
+                            int(value) for value in item["ocr_tg_msg_ids"] if value is not None
                         ]
 
                     if item.get("media_ids"):

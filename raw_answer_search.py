@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from typing import Any, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 from rag_search import RagSearchError, build_raw_answer_document, run_rag_search
 
@@ -14,7 +15,9 @@ class RawSearchError(RuntimeError):
 logger = logging.getLogger(__name__)
 
 
-def search_raw_chunks(query_text: str, threshold: float = 0.5, match_count: int = 5) -> dict[str, Any]:
+def search_raw_chunks(
+    query_text: str, threshold: float = 0.5, match_count: int = 5
+) -> dict[str, Any]:
     try:
         payload = run_rag_search(query_text, match_count=match_count)
     except RagSearchError as exc:
@@ -36,7 +39,11 @@ def search_raw_chunks(query_text: str, threshold: float = 0.5, match_count: int 
         if score is None or score >= threshold:
             filtered_results.append(row)
 
-    metadata = {**(payload.get("metadata") or {}), "threshold": threshold, "result_count": len(filtered_results)}
+    metadata = {
+        **(payload.get("metadata") or {}),
+        "threshold": threshold,
+        "result_count": len(filtered_results),
+    }
     return {**payload, "results": filtered_results, "metadata": metadata}
 
 

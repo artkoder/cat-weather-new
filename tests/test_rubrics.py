@@ -3227,11 +3227,7 @@ async def test_postcard_inventory_button_sends_report(tmp_path):
     markup = report_message.get("reply_markup")
     assert isinstance(markup, dict)
     buttons = markup.get("inline_keyboard") or []
-    assert any(
-        btn.get("callback_data") == "postcard_send_now"
-        for row in buttons
-        for btn in row
-    )
+    assert any(btn.get("callback_data") == "postcard_send_now" for row in buttons for btn in row)
 
     await bot.close()
 
@@ -3262,9 +3258,7 @@ async def test_postcard_send_now_callback_enqueues_job(tmp_path):
 
     enqueued: list[dict[str, Any]] = []
 
-    def fake_enqueue(
-        code, *, channel_id=None, test=False, initiator_id=None, instructions=None
-    ):
+    def fake_enqueue(code, *, channel_id=None, test=False, initiator_id=None, instructions=None):
         enqueued.append(
             {
                 "code": code,

@@ -16,6 +16,8 @@ from openai_client import OpenAIClient
 RAW_ANSWER_HIGHLIGHT_MODEL_ID = "gemini-2.5-flash-lite"
 _raw_answer_highlight_model: genai.GenerativeModel | None = None
 
+PADDING = 2
+
 
 @dataclass
 class HighlightExtraction:
@@ -241,6 +243,10 @@ def draw_highlight_overlay(image_bytes: bytes, boxes: Sequence[Mapping[str, Any]
             y1 = max(0, min(height, int(round(box.get("y1", 0) * height))))
         except Exception:
             continue
+        x0 = max(0, x0 - PADDING)
+        y0 = max(0, y0 - PADDING)
+        x1 = min(width, x1 + PADDING)
+        y1 = min(height, y1 + PADDING)
         if x0 >= x1 or y0 >= y1:
             continue
         draw.rectangle((x0, y0, x1, y1), fill=(255, 255, 0, 100))

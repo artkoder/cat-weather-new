@@ -1622,7 +1622,7 @@ class Bot:
             for idx, row in enumerate(results):
                 if not isinstance(row, Mapping):
                     continue
-                raw_id = row.get("chunk_id") if "chunk_id" in row else row.get("id")
+                raw_id = row.get("chunk_id") or row.get("id")
                 chunk_id = _normalize_chunk_id(raw_id, idx)
                 collision = seen_ids.get(chunk_id, 0)
                 seen_ids[chunk_id] = collision + 1

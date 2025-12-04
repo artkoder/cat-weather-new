@@ -5,10 +5,10 @@ import json
 import logging
 import os
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, TypedDict
+from typing import Any, Iterable, Mapping, Sequence
+from typing import TypedDict
 
 import google.generativeai as genai
 import psycopg2
@@ -16,7 +16,7 @@ from psycopg2 import Error as PsycopgError
 from psycopg2.extras import RealDictCursor
 
 EMBEDDING_MODEL = "text-embedding-004"
-GROUNDED_ANSWER_MODEL_ID = "gemini-2.5-flash-lite"
+GROUNDED_ANSWER_MODEL_ID = "gemini-1.5-flash"
 
 
 class RagSearchError(RuntimeError):
@@ -97,7 +97,6 @@ class RagSearchPayload(TypedDict):
     answer: RagAnswer
     metadata: RagSearchMetadata
 
-
 def _require_env(name: str, *, hint: str | None = None) -> str:
     value = os.environ.get(name)
     if not value:
@@ -150,11 +149,11 @@ def _coerce_embedding_values(raw: Any) -> Sequence[float]:
 def _extract_embedding(response: Any) -> Sequence[float]:
     embedding = None
     if hasattr(response, "embedding"):
-        embedding = response.embedding
+        embedding = getattr(response, "embedding")
     if embedding is None and isinstance(response, Mapping):
         embedding = response.get("embedding")
     if embedding is None and hasattr(response, "embeddings"):
-        embedding = response.embeddings
+        embedding = getattr(response, "embeddings")
     if embedding is None and isinstance(response, Mapping):
         embedding = response.get("embeddings")
     if embedding is None:
@@ -303,9 +302,7 @@ Return STRICTLY JSON with the following structure:
 Do not add any additional keys or text outside of JSON.
 """
 
-    context_json = json.dumps(
-        {"query": query_text, "chunks": chunk_payload}, ensure_ascii=False, indent=2
-    )
+    context_json = json.dumps({"query": query_text, "chunks": chunk_payload}, ensure_ascii=False, indent=2)
 
     response = llm_client.generate_content([prompt, context_json])
     response_text = getattr(response, "text", None) or ""
@@ -347,9 +344,7 @@ def build_raw_answer_file(payload: Mapping[str, Any]) -> tuple[str, bytes]:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     filename = f"rag_raw_answer_{timestamp}.json"
     buffer = io.BytesIO()
-    buffer.write(
-        json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default).encode("utf-8")
-    )
+    buffer.write(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default).encode("utf-8"))
     buffer.seek(0)
     return filename, buffer.read()
 
@@ -363,9 +358,7 @@ def run_rag_search(query_text: str, match_count: int = 5) -> RagSearchPayload:
     llm_client = genai.GenerativeModel(
         GROUNDED_ANSWER_MODEL_ID, generation_config={"response_mime_type": "application/json"}
     )
-    grounded_answer = generate_grounded_answer(
-        query_text, results, llm_client, chunk_limit=match_count
-    )
+    grounded_answer = generate_grounded_answer(query_text, results, llm_client, chunk_limit=match_count)
     executed_at = datetime.now(timezone.utc).isoformat()
     return {
         "query": {
@@ -388,3 +381,4 @@ def build_raw_answer_document(payload: Mapping[str, Any]) -> tuple[str, bytes]:
     """Backward compatible alias for build_raw_answer_file."""
 
     return build_raw_answer_file(payload)
+

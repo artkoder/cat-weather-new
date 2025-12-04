@@ -1371,7 +1371,9 @@ class Bot:
         now = datetime.utcnow()
         async with self._chat_state_lock:
             expired = [
-                chat for chat, payload in self._chat_states.items() if self._state_expired(payload, now)
+                chat
+                for chat, payload in self._chat_states.items()
+                if self._state_expired(payload, now)
             ]
             for chat in expired:
                 self._chat_states.pop(chat, None)
@@ -1620,9 +1622,7 @@ class Bot:
         if blocks:
             logging.info("RAW_ANSWER детали чанков:\n%s", "\n\n".join(blocks))
 
-    async def _send_raw_answer_scans(
-        self, chat_id: int, payload: Mapping[str, Any]
-    ) -> None:
+    async def _send_raw_answer_scans(self, chat_id: int, payload: Mapping[str, Any]) -> None:
         try:
             channel_id = self._raw_answer_scans_channel_id or self._load_scans_channel_id()
             self._raw_answer_scans_channel_id = channel_id
@@ -1640,9 +1640,7 @@ class Bot:
             results = payload.get("results") or []
             answer_payload = payload.get("answer") if isinstance(payload, Mapping) else None
             citations = (
-                answer_payload.get("citations")
-                if isinstance(answer_payload, Mapping)
-                else []
+                answer_payload.get("citations") if isinstance(answer_payload, Mapping) else []
             )
 
             def _normalize_chunk_id(value: Any, index: int) -> str:
@@ -1708,9 +1706,7 @@ class Bot:
                     continue
 
                 if tg_msg_id in (None, ""):
-                    logging.debug(
-                        "RAW_ANSWER scan missing tg_msg_id for grouped page #%s", idx
-                    )
+                    logging.debug("RAW_ANSWER scan missing tg_msg_id for grouped page #%s", idx)
                     continue
 
                 try:
@@ -1745,8 +1741,14 @@ class Bot:
                     )
                     continue
 
-                result_payload = forwarded_resp.get("result") if isinstance(forwarded_resp, Mapping) else None
-                if not (forwarded_resp and forwarded_resp.get("ok") and isinstance(result_payload, Mapping)):
+                result_payload = (
+                    forwarded_resp.get("result") if isinstance(forwarded_resp, Mapping) else None
+                )
+                if not (
+                    forwarded_resp
+                    and forwarded_resp.get("ok")
+                    and isinstance(result_payload, Mapping)
+                ):
                     logging.error(
                         "RAW_ANSWER forward unexpected response chat_id=%s payload=%s",
                         chat_id,
@@ -1777,7 +1779,9 @@ class Bot:
                             spans: Sequence[tuple[int, int]] | None = None
 
                             ocr_log_id = (
-                                ocr_msg_id if ocr_msg_id not in (None, "") else "<missing ocr_tg_msg_id>"
+                                ocr_msg_id
+                                if ocr_msg_id not in (None, "")
+                                else "<missing ocr_tg_msg_id>"
                             )
                             if ocr_msg_id not in (None, ""):
                                 ocr_result = await self._download_ocr_payload(
@@ -1818,8 +1822,10 @@ class Bot:
                                             if isinstance(ocr_send_resp, Mapping)
                                             else None
                                         )
-                                        if ocr_send_resp and ocr_send_resp.get("ok") and isinstance(
-                                            ocr_send_result, Mapping
+                                        if (
+                                            ocr_send_resp
+                                            and ocr_send_resp.get("ok")
+                                            and isinstance(ocr_send_result, Mapping)
                                         ):
                                             logging.info(
                                                 "RAW_ANSWER sent OCR JSON message_id=%s for ocr_tg_msg_id=%s",
@@ -1940,8 +1946,12 @@ class Bot:
                                     page_bottom_y=page_bottom_y,
                                 )
 
-                            span_ranges: list[str] = [f"{start}-{end}" for start, end in spans or []]
-                            answer_snippets: list[str] = [ans for ans in (answers or []) if str(ans).strip()]
+                            span_ranges: list[str] = [
+                                f"{start}-{end}" for start, end in spans or []
+                            ]
+                            answer_snippets: list[str] = [
+                                ans for ans in (answers or []) if str(ans).strip()
+                            ]
                             quote_lines = [f"- {quote}" for quote in page_quotes]
                             has_coordinates = bool(boxes)
 
@@ -1968,7 +1978,9 @@ class Bot:
                                 final_bytes = draw_highlight_overlay(image_bytes, boxes)
                                 highlighted = final_bytes is not None
                                 logging.info(
-                                    "RAW_ANSWER highlighted %s boxes for msg_id=%s", len(boxes), message_id
+                                    "RAW_ANSWER highlighted %s boxes for msg_id=%s",
+                                    len(boxes),
+                                    message_id,
                                 )
                             elif boxes:
                                 logging.info(
@@ -2033,13 +2045,9 @@ class Bot:
                     },
                 )
 
-
         finally:
             with contextlib.suppress(Exception):
-                await self.api_request(
-                    "sendMessage", {"chat_id": chat_id, "text": "готово"}
-                )
-
+                await self.api_request("sendMessage", {"chat_id": chat_id, "text": "готово"})
 
     async def _download_ocr_payload(
         self,
@@ -2079,11 +2087,11 @@ class Bot:
                     last_error = "copy_failed"
                     continue
 
-                result_payload = forward_resp.get("result") if isinstance(forward_resp, Mapping) else None
+                result_payload = (
+                    forward_resp.get("result") if isinstance(forward_resp, Mapping) else None
+                )
                 if not (
-                    forward_resp
-                    and forward_resp.get("ok")
-                    and isinstance(result_payload, Mapping)
+                    forward_resp and forward_resp.get("ok") and isinstance(result_payload, Mapping)
                 ):
                     logging.warning(
                         "RAW_ANSWER forwardMessage unexpected response at %s chat_id=%s message_id=%s payload=%s",
@@ -2128,7 +2136,11 @@ class Bot:
                                 raw_bytes=raw_bytes,
                                 error=None,
                                 stage="text_payload",
-                                copied_message_id=copied_message_id if isinstance(copied_message_id, int) else None,
+                                copied_message_id=(
+                                    copied_message_id
+                                    if isinstance(copied_message_id, int)
+                                    else None
+                                ),
                             )
 
                     logging.warning(
@@ -2167,7 +2179,9 @@ class Bot:
                         raw_bytes=raw_bytes,
                         error="parse_error",
                         stage="parse_error",
-                        copied_message_id=copied_message_id if isinstance(copied_message_id, int) else None,
+                        copied_message_id=(
+                            copied_message_id if isinstance(copied_message_id, int) else None
+                        ),
                     )
 
                 return OcrDownloadResult(
@@ -2175,7 +2189,9 @@ class Bot:
                     raw_bytes=raw_bytes,
                     error=None,
                     stage="success",
-                    copied_message_id=copied_message_id if isinstance(copied_message_id, int) else None,
+                    copied_message_id=(
+                        copied_message_id if isinstance(copied_message_id, int) else None
+                    ),
                 )
 
             return OcrDownloadResult(
@@ -2492,9 +2508,7 @@ class Bot:
             "input_field_placeholder": "Raw answer или RA + сканы страниц",
         }
 
-    async def _activate_raw_mode(
-        self, chat_id: int, user_id: int, *, include_scans: bool
-    ) -> None:
+    async def _activate_raw_mode(self, chat_id: int, user_id: int, *, include_scans: bool) -> None:
         state = "raw_answer_waiting_query_scans" if include_scans else "raw_answer_waiting_query"
         await self._set_chat_state(chat_id, state)
         logging.info(
@@ -11666,7 +11680,7 @@ class Bot:
                     {
                         "text": "Отправить сейчас",
                         "callback_data": "postcard_send_now",
-                    }
+                    },
                 ]
             )
         keyboard_rows.append(

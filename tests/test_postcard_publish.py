@@ -221,7 +221,9 @@ async def test_postcard_prod_cleanup_removes_asset(
         delete_calls.append(str(getattr(asset, "id", "")))
 
     monkeypatch.setattr(main_module.Bot, "api_request", capture_api_request, raising=False)
-    monkeypatch.setattr(main_module.Bot, "_delete_asset_message", fake_delete_asset_message, raising=False)
+    monkeypatch.setattr(
+        main_module.Bot, "_delete_asset_message", fake_delete_asset_message, raising=False
+    )
 
     caplog.clear()
     with caplog.at_level(logging.INFO):
@@ -610,14 +612,18 @@ def test_postcard_inventory_ignores_other_rubrics(tmp_path: Path) -> None:
     assert score_counts_before.get(10, 0) == 1
 
     bot.data.mark_assets_used([asset_id], rubric_code=other_rubric.code)
-    bot.data.record_post_history(1234, 2001, asset_id, other_rubric.id, {"rubric_code": other_rubric.code})
+    bot.data.record_post_history(
+        1234, 2001, asset_id, other_rubric.id, {"rubric_code": other_rubric.code}
+    )
 
     total_other_rubric, score_counts_other = bot._compute_postcard_inventory_stats()
     assert total_other_rubric == 1
     assert score_counts_other.get(10, 0) == 1
 
     bot.data.mark_assets_used([asset_id], rubric_code="postcard")
-    bot.data.record_post_history(1234, 2002, asset_id, postcard_rubric.id, {"rubric_code": "postcard"})
+    bot.data.record_post_history(
+        1234, 2002, asset_id, postcard_rubric.id, {"rubric_code": "postcard"}
+    )
 
     total_after_postcard, score_counts_after = bot._compute_postcard_inventory_stats()
     assert total_after_postcard == 0

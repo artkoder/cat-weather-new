@@ -2605,7 +2605,9 @@ class DataAccess:
             )
         return candidates
 
-    def mark_assets_used(self, asset_ids: Iterable[str | int], *, rubric_code: str | None = None) -> None:
+    def mark_assets_used(
+        self, asset_ids: Iterable[str | int], *, rubric_code: str | None = None
+    ) -> None:
 
         ids = [str(asset_id) for asset_id in asset_ids]
         if not ids:

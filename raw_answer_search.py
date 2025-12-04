@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 from collections import OrderedDict
 from typing import Any, Iterable, Mapping, Sequence
@@ -153,12 +154,12 @@ def format_scan_caption(row: Mapping[str, Any]) -> str:
     page = row.get("book_page")
     chunk = row.get("chunk") or row.get("content")
     if title:
-        parts.append(f"Источник: {title}")
+        parts.append(f"<b>Источник:</b> {html.escape(str(title))}")
     if page:
-        parts.append(f"Страница: {page}")
+        parts.append(f"<b>Страница:</b> {html.escape(str(page))}")
     if chunk:
         snippet = str(chunk)
         if len(snippet) > 240:
             snippet = snippet[:237].rstrip() + "…"
-        parts.append(snippet)
+        parts.append(html.escape(snippet))
     return "\n".join(parts)

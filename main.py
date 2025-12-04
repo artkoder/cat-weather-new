@@ -1843,21 +1843,29 @@ class Bot:
 
                             span_ranges: list[str] = [f"{start}-{end}" for start, end in spans or []]
                             answer_snippets: list[str] = [ans for ans in (answers or []) if str(ans).strip()]
-                            quote_lines = [f"> {quote}" for quote in page_quotes]
+                            quote_lines = [
+                                f"<blockquote>{html.escape(quote)}</blockquote>"
+                                for quote in page_quotes
+                            ]
                             has_coordinates = bool(boxes)
 
                             if quote_lines or span_ranges or answer_snippets:
                                 appendix_parts: list[str] = []
                                 if quote_lines:
-                                    appendix_parts.append("Цитаты:")
+                                    appendix_parts.append("<b>Цитаты:</b>")
                                     appendix_parts.extend(quote_lines)
                                 if span_ranges:
+                                    escaped_ranges = ", ".join(
+                                        html.escape(span_range) for span_range in span_ranges
+                                    )
                                     appendix_parts.append(
-                                        "Диапазоны слов: [" + ", ".join(span_ranges) + "]"
+                                        f"<b>Диапазоны слов:</b> [{escaped_ranges}]"
                                     )
                                 if answer_snippets:
-                                    appendix_parts.append("Ответ:")
-                                    appendix_parts.extend(f"- {ans}" for ans in answer_snippets)
+                                    appendix_parts.append("<b>Ответ:</b>")
+                                    appendix_parts.extend(
+                                        f"• {html.escape(str(ans))}" for ans in answer_snippets
+                                    )
                                 appendix = "\n\n" + "\n".join(appendix_parts)
                                 combined_caption = (
                                     f"{caption}{appendix}" if caption else appendix.lstrip("\n")
@@ -1893,7 +1901,10 @@ class Bot:
                     files = {
                         "photo": (f"highlight_{message_id}.png", final_bytes, "image/png"),
                     }
-                    payload_kwargs: dict[str, Any] = {"chat_id": chat_id}
+                    payload_kwargs: dict[str, Any] = {
+                        "chat_id": chat_id,
+                        "parse_mode": "HTML",
+                    }
                     if caption:
                         payload_kwargs["caption"] = caption
                     try:
@@ -1920,6 +1931,7 @@ class Bot:
                                 "chat_id": chat_id,
                                 "message_id": forwarded_msg_id,
                                 "caption": caption,
+                                "parse_mode": "HTML",
                             },
                         )
                 found = True

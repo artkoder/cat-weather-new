@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import gc
 import html
+from html.parser import HTMLParser
 import io
 import json
 import logging
@@ -191,6 +192,103 @@ CAPTION_GEO_SCHEMA = {
 CAPTION_GEO_MAX_INPUT_LEN = 2400
 CAPTION_GEO_MIN_DIGITS = 4
 CAPTION_GEO_MODEL = "gpt-4o"
+
+
+class _HtmlCaptionTruncator(HTMLParser):
+    def __init__(self, max_length: int) -> None:
+        super().__init__()
+        self._remaining = max_length
+        self._output: list[str] = []
+        self._open_tags: list[str] = []
+        self._truncated = False
+        self._close_stack: list[str] | None = None
+
+    def _truncate(self) -> None:
+        if not self._truncated:
+            self._truncated = True
+            self._close_stack = list(self._open_tags)
+
+    def _append_text(self, text: str, *, display_len: int | None = None) -> None:
+        if self._truncated:
+            return
+
+        effective_len = display_len if display_len is not None else len(text)
+        if effective_len <= 0:
+            return
+
+        if self._remaining <= 0:
+            self._truncate()
+            return
+
+        if effective_len <= self._remaining:
+            self._output.append(text)
+            self._remaining -= effective_len
+            return
+
+        ellipsis = "..." if self._remaining >= 3 else ""
+        take_len = max(self._remaining - len(ellipsis), 0)
+        if take_len > 0:
+            self._output.append(text[:take_len])
+        if ellipsis:
+            self._output.append(ellipsis)
+        self._remaining = 0
+        self._truncate()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._truncated:
+            return
+        attrs_text = "".join(
+            f" {name}" if value is None else f" {name}=\"{html.escape(value, quote=True)}\""
+            for name, value in attrs
+        )
+        self._output.append(f"<{tag}{attrs_text}>")
+        if tag.lower() not in {"br", "hr", "img", "input", "meta", "link"}:
+            self._open_tags.append(tag)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._truncated:
+            return
+        attrs_text = "".join(
+            f" {name}" if value is None else f" {name}=\"{html.escape(value, quote=True)}\""
+            for name, value in attrs
+        )
+        self._output.append(f"<{tag}{attrs_text} />")
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._truncated:
+            return
+        lower_tag = tag.lower()
+        while self._open_tags and self._open_tags[-1].lower() != lower_tag:
+            self._open_tags.pop()
+        if self._open_tags and self._open_tags[-1].lower() == lower_tag:
+            self._open_tags.pop()
+        self._output.append(f"</{tag}>")
+
+    def handle_data(self, data: str) -> None:
+        self._append_text(data)
+
+    def handle_entityref(self, name: str) -> None:
+        entity_text = f"&{name};"
+        self._append_text(entity_text, display_len=len(html.unescape(entity_text)))
+
+    def handle_charref(self, name: str) -> None:
+        char_text = f"&#{name};"
+        self._append_text(char_text, display_len=len(html.unescape(char_text)))
+
+    def get_truncated(self) -> str:
+        close_stack = self._close_stack if self._close_stack is not None else list(self._open_tags)
+        for tag in reversed(close_stack):
+            self._output.append(f"</{tag}>")
+        return "".join(self._output)
+
+
+def truncate_html_caption(text: str, max_length: int = 1024) -> str:
+    if len(text) <= max_length:
+        return text
+    parser = _HtmlCaptionTruncator(max_length)
+    parser.feed(text)
+    parser.close()
+    return parser.get_truncated()
 
 
 def sanitize_prompt_leaks(text: str) -> str:
@@ -1871,7 +1969,7 @@ class Bot:
                                     f"{caption}{appendix}" if caption else appendix.lstrip("\n")
                                 )
                                 if len(combined_caption) > 1024:
-                                    combined_caption = f"{combined_caption[:1021]}..."
+                                    combined_caption = truncate_html_caption(combined_caption, 1024)
                                 caption = combined_caption
                             if has_coordinates and boxes:
                                 final_bytes = draw_highlight_overlay(image_bytes, boxes)
@@ -1907,6 +2005,11 @@ class Bot:
                     }
                     if caption:
                         payload_kwargs["caption"] = caption
+                        logging.info(
+                            "RAW_ANSWER sending highlighted scan message_id=%s caption_len=%s",
+                            message_id,
+                            len(caption),
+                        )
                     try:
                         await self.api_request_multipart("sendPhoto", payload_kwargs, files=files)
                         if forwarded_msg_id is not None:
@@ -1924,6 +2027,11 @@ class Bot:
                         )
 
                 if caption and forwarded_msg_id is not None:
+                    logging.info(
+                        "RAW_ANSWER editing caption for forwarded scan message_id=%s caption_len=%s",
+                        forwarded_msg_id,
+                        len(caption),
+                    )
                     with contextlib.suppress(Exception):
                         await self.api_request(
                             "editMessageCaption",

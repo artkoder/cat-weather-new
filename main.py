@@ -125,6 +125,7 @@ from raw_answer_search import (
     build_raw_answer_file,
     deduplicate_pages,
     format_scan_caption,
+    RAW_ANSWER_MAX_SCAN_PAGES,
     search_raw_chunks,
 )
 

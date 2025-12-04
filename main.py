@@ -1841,6 +1841,23 @@ class Bot:
 
                                 if ocr_result.payload:
                                     words, page_size = parse_ocr_words(ocr_result.payload)
+
+                                    if not page_size and image_bytes:
+                                        try:
+                                            with Image.open(io.BytesIO(image_bytes)) as img:
+                                                page_size = img.size
+                                                logging.info(
+                                                    "RAW_ANSWER inferred page_size=%sx%s from image for ocr_tg_msg_id=%s",
+                                                    img.width,
+                                                    img.height,
+                                                    ocr_log_id,
+                                                )
+                                        except Exception:
+                                            logging.exception(
+                                                "RAW_ANSWER failed to infer page_size from image bytes for ocr_tg_msg_id=%s",
+                                                ocr_log_id,
+                                            )
+
                                     if words and page_size:
                                         highlight_result = await locate_citations_on_page(
                                             page_quotes,

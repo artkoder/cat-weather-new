@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+from collections import OrderedDict
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
@@ -15,6 +16,7 @@ from psycopg2 import Error as PsycopgError
 from psycopg2.extras import RealDictCursor
 
 EMBEDDING_MODEL = "text-embedding-004"
+GROUNDED_ANSWER_MODEL_ID = "gemini-1.5-flash"
 
 
 class RagSearchError(RuntimeError):
@@ -76,11 +78,23 @@ class RagSearchMetadata(TypedDict, total=False):
     threshold: float
 
 
+class RagCitation(TypedDict):
+    quote: str
+    chunk_id: str
+
+
+class RagAnswer(TypedDict, total=False):
+    answer_text: str
+    citations: list[RagCitation]
+
+
 class RagSearchPayload(TypedDict):
     """Structured payload containing raw RAG search output."""
 
     query: RagSearchQuery
     results: list[MatchChunkRow]
+    raw_chunks: list[MatchChunkRow]
+    answer: RagAnswer
     metadata: RagSearchMetadata
 
 def _require_env(name: str, *, hint: str | None = None) -> str:
@@ -235,6 +249,87 @@ def search_raw_chunks(
         raise RagSearchError("Failed to search chunks") from exc
 
 
+def _normalize_chunk_id(value: str | int | None, index: int) -> str:
+    base_id = str(value) if value not in (None, "") else f"chunk-{index + 1}"
+    return base_id
+
+
+def generate_grounded_answer(
+    query_text: str, chunks: Sequence[MatchChunkRow], llm_client: Any, *, chunk_limit: int = 5
+) -> RagAnswer:
+    """Generate an answer grounded in the provided chunks using Gemini."""
+
+    if llm_client is None or not hasattr(llm_client, "generate_content"):
+        raise RagSearchError("A valid llm_client with generate_content is required")
+
+    chunk_payload: OrderedDict[str, Mapping[str, Any]] = OrderedDict()
+    seen_ids: dict[str, int] = {}
+    for idx, chunk in enumerate(chunks[:chunk_limit]):
+        if not isinstance(chunk, Mapping):
+            continue
+
+        chunk_id = _normalize_chunk_id(chunk.get("chunk_id") or chunk.get("id"), idx)
+        collision_count = seen_ids.get(chunk_id, 0)
+        seen_ids[chunk_id] = collision_count + 1
+        unique_id = chunk_id if collision_count == 0 else f"{chunk_id}-{collision_count}"
+
+        raw_content = chunk.get("chunk") or chunk.get("content") or ""
+        content = raw_content if isinstance(raw_content, str) else str(raw_content)
+        chunk_payload[unique_id] = {
+            "content": content,
+            "title": chunk.get("book_title"),
+            "authors": chunk.get("book_authors"),
+            "year": chunk.get("book_year") or chunk.get("chunk_year_start"),
+            "source_link": chunk.get("source_link"),
+            "chunk_type": chunk.get("chunk_type"),
+            "topic": chunk.get("topic"),
+        }
+
+    if not chunk_payload:
+        return {"answer_text": "", "citations": []}
+
+    prompt = """
+You are a question-answering assistant. Use ONLY the provided chunks to answer the user's query.
+
+Return STRICTLY JSON with the following structure:
+{
+  "answer_text": "Grounded answer using the chunks",
+  "citations": [
+    {"quote": "direct quote from a chunk", "chunk_id": "<chunk id from the input>"}
+  ]
+}
+
+Do not add any additional keys or text outside of JSON.
+"""
+
+    context_json = json.dumps({"query": query_text, "chunks": chunk_payload}, ensure_ascii=False, indent=2)
+
+    response = llm_client.generate_content([prompt, context_json])
+    response_text = getattr(response, "text", None) or ""
+    try:
+        parsed = json.loads(response_text)
+    except json.JSONDecodeError as exc:  # pragma: no cover - relies on external service
+        logging.error("Failed to parse grounded answer JSON: %s", exc)
+        raise RagSearchError("LLM response was not valid JSON") from exc
+
+    answer_text = parsed.get("answer_text") if isinstance(parsed, Mapping) else None
+    if not isinstance(answer_text, str):
+        answer_text = ""
+
+    raw_citations = parsed.get("citations") if isinstance(parsed, Mapping) else []
+    citations: list[RagCitation] = []
+    if isinstance(raw_citations, Sequence):
+        for item in raw_citations:
+            if not isinstance(item, Mapping):
+                continue
+            quote = item.get("quote")
+            chunk_id = item.get("chunk_id")
+            if isinstance(quote, str) and isinstance(chunk_id, str):
+                citations.append({"quote": quote, "chunk_id": chunk_id})
+
+    return {"answer_text": answer_text, "citations": citations}
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, (datetime,)):
         return value.isoformat()
@@ -260,6 +355,10 @@ def run_rag_search(query_text: str, match_count: int = 5) -> RagSearchPayload:
     configure_gemini()
     embedding = embed_query(query_text)
     results = search_raw_chunks(embedding, match_count=match_count)
+    llm_client = genai.GenerativeModel(
+        GROUNDED_ANSWER_MODEL_ID, generation_config={"response_mime_type": "application/json"}
+    )
+    grounded_answer = generate_grounded_answer(query_text, results, llm_client, chunk_limit=match_count)
     executed_at = datetime.now(timezone.utc).isoformat()
     return {
         "query": {
@@ -269,6 +368,8 @@ def run_rag_search(query_text: str, match_count: int = 5) -> RagSearchPayload:
             "executed_at": executed_at,
         },
         "results": results,
+        "raw_chunks": results,
+        "answer": grounded_answer,
         "metadata": {
             "result_count": len(results),
             "embedding_dimensions": len(embedding),

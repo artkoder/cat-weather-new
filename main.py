@@ -1952,18 +1952,26 @@ class Bot:
                                 if quote_lines:
                                     appendix_parts.append("<b>Цитаты:</b>")
                                     appendix_parts.extend(quote_lines)
+
+                                spoiler_lines: list[str] = []
                                 if span_ranges:
                                     escaped_ranges = ", ".join(
                                         html.escape(span_range) for span_range in span_ranges
                                     )
-                                    appendix_parts.append(
+                                    spoiler_lines.append(
                                         f"<b>Диапазоны слов:</b> [{escaped_ranges}]"
                                     )
                                 if answer_snippets:
-                                    appendix_parts.append("<b>Ответ:</b>")
-                                    appendix_parts.extend(
+                                    spoiler_lines.append("<b>Блоки слов на скане:</b>")
+                                    spoiler_lines.extend(
                                         f"• {html.escape(str(ans))}" for ans in answer_snippets
                                     )
+
+                                if spoiler_lines:
+                                    appendix_parts.append("<tg-spoiler><blockquote>")
+                                    appendix_parts.extend(spoiler_lines)
+                                    appendix_parts.append("</blockquote></tg-spoiler>")
+
                                 appendix = "\n\n" + "\n".join(appendix_parts)
                                 combined_caption = (
                                     f"{caption}{appendix}" if caption else appendix.lstrip("\n")
@@ -2082,7 +2090,7 @@ class Bot:
             for copy_chat_id, attempt_label in copy_targets:
                 try:
                     forward_resp = await self.api_request(
-                        "forwardMessage",
+                        "copyMessage",
                         {
                             "chat_id": copy_chat_id,
                             "from_chat_id": channel_id,
@@ -2092,7 +2100,7 @@ class Bot:
                     )
                 except Exception:
                     logging.exception(
-                        "RAW_ANSWER forwardMessage failed at %s target_chat_id=%s message_id=%s",
+                        "RAW_ANSWER copyMessage failed at %s target_chat_id=%s message_id=%s",
                         attempt_label,
                         copy_chat_id,
                         message_id,
@@ -2107,7 +2115,7 @@ class Bot:
                     and isinstance(result_payload, Mapping)
                 ):
                     logging.warning(
-                        "RAW_ANSWER forwardMessage unexpected response at %s chat_id=%s message_id=%s payload=%s",
+                        "RAW_ANSWER copyMessage unexpected response at %s chat_id=%s message_id=%s payload=%s",
                         attempt_label,
                         copy_chat_id,
                         message_id,
@@ -2117,7 +2125,7 @@ class Bot:
                     continue
 
                 logging.debug(
-                    "RAW_ANSWER OCR forwardMessage result at %s chat_id=%s message_id=%s payload=%s",
+                    "RAW_ANSWER OCR copyMessage result at %s chat_id=%s message_id=%s payload=%s",
                     attempt_label,
                     copy_chat_id,
                     message_id,
@@ -15573,6 +15581,7 @@ class Bot:
             "        FROM posts_history ph "
             "        JOIN rubrics r ON r.id = ph.rubric_id "
             "        WHERE ph.asset_id = a.id AND r.code = ? "
+            "          AND COALESCE(json_extract(ph.metadata, '$.test'), 0) != 1 "
             "    ) AS history_last_used_at "
             "FROM assets a WHERE postcard_score BETWEEN ? AND ?"
         )

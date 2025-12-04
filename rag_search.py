@@ -16,7 +16,7 @@ from psycopg2 import Error as PsycopgError
 from psycopg2.extras import RealDictCursor
 
 EMBEDDING_MODEL = "text-embedding-004"
-GROUNDED_ANSWER_MODEL_ID = "gemini-1.5-flash"
+GROUNDED_ANSWER_MODEL_ID = "gemini-2.5-flash-lite"
 
 
 class RagSearchError(RuntimeError):

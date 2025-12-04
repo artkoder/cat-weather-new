@@ -1502,87 +1502,6 @@ class Bot:
         if include_scans:
             await self._send_raw_answer_scans(chat_id, payload)
 
-    async def _send_scan_text_document(
-        self,
-        chat_id: int,
-        *,
-        page_lines: Sequence[Mapping[str, Any]],
-        message_id: int | str,
-        book_title: str | None,
-        book_page: Any,
-        answers: Sequence[str] | None = None,
-        page_bottom_y: float | None = None,
-    ) -> None:
-        if not page_lines:
-            return
-
-        try:
-            answers_clean = [str(ans).strip() for ans in (answers or []) if str(ans).strip()]
-            answers_normalized = {ans.lower() for ans in answers_clean}
-
-            lines_payload: list[Mapping[str, Any]] = []
-            for entry in page_lines:
-                if isinstance(entry, Mapping):
-                    text_value = str(entry.get("text") or "").strip()
-                    y0 = entry.get("y0") if "y0" in entry else entry.get("y_top")
-                    y1 = entry.get("y1") if "y1" in entry else entry.get("y_bottom")
-                else:
-                    text_value = str(entry).strip()
-                    y0 = None
-                    y1 = None
-                if not text_value:
-                    continue
-
-                def _normalize(coord: Any) -> float | None:
-                    try:
-                        value = float(coord)
-                    except (TypeError, ValueError):
-                        return None
-                    return value
-
-                normalized_text = text_value.lower()
-                has_answer = 1 if normalized_text in answers_normalized else 0
-
-                lines_payload.append(
-                    {
-                        "text": text_value,
-                        "y_top": _normalize(y0),
-                        "y_bottom": _normalize(y1),
-                        "has_answer": has_answer,
-                    }
-                )
-
-            if not lines_payload:
-                return
-
-            caption_lines = ["Машиночитаемый текст страницы."]
-            if book_page not in (None, ""):
-                caption_lines.append(f"Страница: {book_page}")
-            if book_title:
-                caption_lines.append(f"Источник: {book_title}")
-
-            if answers_clean:
-                caption_lines.append("Ответы:")
-                caption_lines.extend(f"- {ans}" for ans in answers_clean)
-
-            payload: dict[str, Any] = {"lines": lines_payload}
-            if answers_clean:
-                payload["answers"] = answers_clean
-            if page_bottom_y is not None:
-                payload["page_bottom_y"] = page_bottom_y
-            buffer = io.BytesIO(json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
-            caption = "\n".join(caption_lines)
-            filename = f"scan_{message_id}_lines.json"
-            await self.api_request_multipart(
-                "sendDocument",
-                {"chat_id": chat_id, "caption": caption},
-                files={"document": (filename, buffer, "application/json")},
-            )
-        except Exception:
-            logging.exception(
-                "RAW_ANSWER failed to send page text chat_id=%s message_id=%s", chat_id, message_id
-            )
-
     def _log_raw_answer_chunks(self, results: Sequence[Mapping[str, Any]] | Any) -> None:
         blocks: list[str] = []
 
@@ -1922,45 +1841,9 @@ class Bot:
                                         )
                                 continue
 
-                            if page_lines:
-                                try:
-                                    page_bottom_y = max(
-                                        (
-                                            float(entry.get("y1"))
-                                            for entry in page_lines
-                                            if isinstance(entry, Mapping)
-                                            and entry.get("y1") is not None
-                                        ),
-                                        default=None,
-                                    )
-                                except Exception:
-                                    page_bottom_y = None
-
-                            if page_lines and channel_id:
-                                await self._send_scan_text_document(
-                                    channel_id,
-                                    page_lines=page_lines,
-                                    message_id=message_id,
-                                    book_title=row.get("book_title"),
-                                    book_page=row.get("book_page"),
-                                    answers=answers,
-                                    page_bottom_y=page_bottom_y,
-                                )
-
-                            if page_lines:
-                                await self._send_scan_text_document(
-                                    chat_id,
-                                    page_lines=page_lines,
-                                    message_id=message_id,
-                                    book_title=row.get("book_title"),
-                                    book_page=row.get("book_page"),
-                                    answers=answers,
-                                    page_bottom_y=page_bottom_y,
-                                )
-
                             span_ranges: list[str] = [f"{start}-{end}" for start, end in spans or []]
                             answer_snippets: list[str] = [ans for ans in (answers or []) if str(ans).strip()]
-                            quote_lines = [f"- {quote}" for quote in page_quotes]
+                            quote_lines = [f"> {quote}" for quote in page_quotes]
                             has_coordinates = bool(boxes)
 
                             if quote_lines or span_ranges or answer_snippets:

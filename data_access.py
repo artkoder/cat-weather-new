@@ -954,8 +954,9 @@ class DataAccess:
                     dt = datetime.strptime(text, fmt)
                 except ValueError:
                     continue
-                local_dt = dt.replace(tzinfo=cls._LOCAL_TIMEZONE)
-                return local_dt.isoformat()
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=cls._LOCAL_TIMEZONE)
+                return dt.isoformat()
             try:
                 parsed = datetime.fromisoformat(text)
             except ValueError:
@@ -2605,7 +2606,9 @@ class DataAccess:
             )
         return candidates
 
-    def mark_assets_used(self, asset_ids: Iterable[str | int], *, rubric_code: str | None = None) -> None:
+    def mark_assets_used(
+        self, asset_ids: Iterable[str | int], *, rubric_code: str | None = None
+    ) -> None:
 
         ids = [str(asset_id) for asset_id in asset_ids]
         if not ids:

@@ -41,9 +41,7 @@ class PageHighlightResult:
     boxes: list[Mapping[str, float]]
     spans: list[tuple[int, int]]
     page_lines: list[Mapping[str, Any]]
-    quote_index_to_boxes: dict[int, list[Mapping[str, float]]] = field(
-        default_factory=dict
-    )
+    quote_index_to_boxes: dict[int, list[Mapping[str, float]]] = field(default_factory=dict)
 
 
 def get_highlight_model() -> genai.GenerativeModel:
@@ -275,7 +273,11 @@ def _normalize_word_token(text: str) -> str:
 def _tokenize_quote(text: str) -> list[str]:
     if not text:
         return []
-    return [_normalize_word_token(match.group(0)) for match in _WORD_TOKEN_RE.finditer(text) if _normalize_word_token(match.group(0))]
+    return [
+        _normalize_word_token(match.group(0))
+        for match in _WORD_TOKEN_RE.finditer(text)
+        if _normalize_word_token(match.group(0))
+    ]
 
 
 def _find_quote_span(tokens: Sequence[str], quote_tokens: Sequence[str]) -> tuple[int, int] | None:
@@ -373,9 +375,7 @@ Return STRICT JSON with a top-level "matches" array. Each item must be an object
             spans_by_quote: dict[int, list[tuple[int, int]]] = {}
             total_words = len(ocr_words)
 
-            if isinstance(matches_raw, Sequence) and not isinstance(
-                matches_raw, (str, bytes)
-            ):
+            if isinstance(matches_raw, Sequence) and not isinstance(matches_raw, (str, bytes)):
                 # Case 1: matches are objects with quote_index
                 for entry in matches_raw:
                     quote_index: int | None = None
@@ -385,14 +385,8 @@ Return STRICT JSON with a top-level "matches" array. Each item must be an object
                             quote_index = int(entry.get("quote_index"))
                         except (TypeError, ValueError):
                             quote_index = None
-                        spans_raw = (
-                            entry.get("spans")
-                            if "spans" in entry
-                            else entry.get("indices")
-                        )
-                    elif isinstance(entry, Sequence) and not isinstance(
-                        entry, (str, bytes)
-                    ):
+                        spans_raw = entry.get("spans") if "spans" in entry else entry.get("indices")
+                    elif isinstance(entry, Sequence) and not isinstance(entry, (str, bytes)):
                         if len(entry) == 2 and isinstance(entry[0], int):
                             quote_index = entry[0]
                             spans_raw = entry[1]
@@ -494,7 +488,9 @@ def parse_ocr_words(payload: Mapping[str, Any]) -> tuple[list[OCRWord], tuple[in
     return words, page_size
 
 
-def _group_words_into_lines(words: Sequence[OCRWord], *, tolerance_factor: float = 1.25) -> list[list[OCRWord]]:
+def _group_words_into_lines(
+    words: Sequence[OCRWord], *, tolerance_factor: float = 1.25
+) -> list[list[OCRWord]]:
     if not words:
         return []
 
@@ -512,8 +508,8 @@ def _group_words_into_lines(words: Sequence[OCRWord], *, tolerance_factor: float
             threshold = max(current_height, height) * tolerance_factor
             if abs(center_y - current_center) <= threshold:
                 current_line.append(word)
-                current_center = (
-                    (current_center * (len(current_line) - 1) + center_y) / len(current_line)
+                current_center = (current_center * (len(current_line) - 1) + center_y) / len(
+                    current_line
                 )
                 current_height = max(current_height, height)
             else:
@@ -540,8 +536,6 @@ def build_page_lines(
 
     lines: list[Mapping[str, Any]] = []
     for line_words in _group_words_into_lines(words):
-        x1 = min(w.bbox[0] for w in line_words)
-        x2 = max(w.bbox[0] + w.bbox[2] for w in line_words)
         y1 = min(w.bbox[1] for w in line_words)
         y2 = max(w.bbox[1] + w.bbox[3] for w in line_words)
         text_value = " ".join(w.text for w in line_words if w.text)

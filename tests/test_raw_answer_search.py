@@ -37,7 +37,9 @@ def test_deduplicate_pages_ocr_alignment(caplog):
     assert [result["ocr_tg_msg_id"] for result in results] == [21, 22, 41, 61]
     assert [result.get("book_page") for result in results] == [1, 2, 3, 5]
 
-    warning_messages = [record.message for record in caplog.records if record.levelno == logging.WARNING]
+    warning_messages = [
+        record.message for record in caplog.records if record.levelno == logging.WARNING
+    ]
     assert any("Length mismatch" in message for message in warning_messages)
     assert any("missing OCR id at index 1" in message for message in warning_messages)
     assert any("missing OCR id" in message for message in warning_messages)

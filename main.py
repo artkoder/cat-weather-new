@@ -2081,18 +2081,18 @@ class Bot:
         os.close(tmp_fd)
         cleanup_message_ids: list[tuple[int | str, int]] = []
         fallback_chat_id = self._raw_answer_scans_channel_id
-        copy_targets: list[tuple[int | str, str]] = [(target_chat_id, "primary")]
+        forward_targets: list[tuple[int | str, str]] = [(target_chat_id, "primary")]
         if fallback_chat_id and str(fallback_chat_id) != str(target_chat_id):
-            copy_targets.append((fallback_chat_id, "fallback"))
+            forward_targets.append((fallback_chat_id, "fallback"))
 
         last_error: str | None = None
         try:
-            for copy_chat_id, attempt_label in copy_targets:
+            for forward_chat_id, attempt_label in forward_targets:
                 try:
                     forward_resp = await self.api_request(
-                        "copyMessage",
+                        "forwardMessage",
                         {
-                            "chat_id": copy_chat_id,
+                            "chat_id": forward_chat_id,
                             "from_chat_id": channel_id,
                             "message_id": message_id,
                             "disable_notification": True,
@@ -2100,12 +2100,12 @@ class Bot:
                     )
                 except Exception:
                     logging.exception(
-                        "RAW_ANSWER copyMessage failed at %s target_chat_id=%s message_id=%s",
+                        "RAW_ANSWER forwardMessage failed at %s target_chat_id=%s message_id=%s",
                         attempt_label,
-                        copy_chat_id,
+                        forward_chat_id,
                         message_id,
                     )
-                    last_error = "copy_failed"
+                    last_error = "forward_failed"
                     continue
 
                 result_payload = forward_resp.get("result") if isinstance(forward_resp, Mapping) else None
@@ -2115,26 +2115,26 @@ class Bot:
                     and isinstance(result_payload, Mapping)
                 ):
                     logging.warning(
-                        "RAW_ANSWER copyMessage unexpected response at %s chat_id=%s message_id=%s payload=%s",
+                        "RAW_ANSWER forwardMessage unexpected response at %s chat_id=%s message_id=%s payload=%s",
                         attempt_label,
-                        copy_chat_id,
+                        forward_chat_id,
                         message_id,
                         forward_resp,
                     )
-                    last_error = "copy_failed"
+                    last_error = "forward_failed"
                     continue
 
                 logging.debug(
-                    "RAW_ANSWER OCR copyMessage result at %s chat_id=%s message_id=%s payload=%s",
+                    "RAW_ANSWER OCR forwardMessage result at %s chat_id=%s message_id=%s payload=%s",
                     attempt_label,
-                    copy_chat_id,
+                    forward_chat_id,
                     message_id,
                     result_payload,
                 )
 
                 copied_message_id = result_payload.get("message_id")
                 if isinstance(copied_message_id, int):
-                    cleanup_message_ids.append((copy_chat_id, copied_message_id))
+                    cleanup_message_ids.append((forward_chat_id, copied_message_id))
 
                 file_meta = self._collect_asset_metadata(result_payload).get("file_meta") or {}
                 file_id = file_meta.get("file_id")
@@ -2148,7 +2148,7 @@ class Bot:
                                 "RAW_ANSWER OCR message %s text content is not valid JSON at %s chat_id=%s",
                                 message_id,
                                 attempt_label,
-                                copy_chat_id,
+                                forward_chat_id,
                             )
                         else:
                             raw_bytes = text_content.encode("utf-8")
@@ -2163,7 +2163,7 @@ class Bot:
                     logging.warning(
                         "RAW_ANSWER OCR message missing file_id at %s chat_id=%s message_id=%s",
                         attempt_label,
-                        copy_chat_id,
+                        forward_chat_id,
                         message_id,
                     )
                     last_error = "missing_file_id"
@@ -2174,7 +2174,7 @@ class Bot:
                     logging.error(
                         "RAW_ANSWER HTTP download error for OCR file at %s chat_id=%s message_id=%s file_id=%s",
                         attempt_label,
-                        copy_chat_id,
+                        forward_chat_id,
                         message_id,
                         file_id,
                     )
@@ -2188,7 +2188,7 @@ class Bot:
                     logging.exception(
                         "RAW_ANSWER failed to parse OCR JSON at %s chat_id=%s message_id=%s",
                         attempt_label,
-                        copy_chat_id,
+                        forward_chat_id,
                         message_id,
                     )
                     return OcrDownloadResult(
@@ -2210,8 +2210,8 @@ class Bot:
             return OcrDownloadResult(
                 payload=None,
                 raw_bytes=None,
-                error=last_error or "copy_failed",
-                stage=last_error or "copy_failed",
+                error=last_error or "forward_failed",
+                stage=last_error or "forward_failed",
                 copied_message_id=None,
             )
         except Exception:

@@ -117,7 +117,7 @@ from weather_migration import migrate_weather_publish_channels
 from db_utils import dump_database
 from rag_vision import (
     draw_highlight_overlay,
-    locate_quotes_in_ocr,
+    locate_citations_on_page,
     parse_ocr_words,
 )
 from raw_answer_search import (
@@ -1809,9 +1809,9 @@ class Bot:
                                 if ocr_result.payload:
                                     words, page_size = parse_ocr_words(ocr_result.payload)
                                     if words and page_size:
-                                        highlight_result = locate_quotes_in_ocr(
-                                            words,
+                                        highlight_result = await locate_citations_on_page(
                                             page_quotes,
+                                            words,
                                             page_size=page_size,
                                         )
                                         if highlight_result:

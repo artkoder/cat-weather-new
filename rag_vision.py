@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import google.generativeai as genai
@@ -41,6 +41,9 @@ class PageHighlightResult:
     boxes: list[Mapping[str, float]]
     spans: list[tuple[int, int]]
     page_lines: list[Mapping[str, Any]]
+    quote_index_to_boxes: dict[int, list[Mapping[str, float]]] = field(
+        default_factory=dict
+    )
 
 
 def get_highlight_model() -> genai.GenerativeModel:
@@ -319,7 +322,131 @@ def locate_quotes_in_ocr(
     if not spans and not boxes and not page_lines:
         return None
 
-    return PageHighlightResult(boxes=boxes, spans=spans, page_lines=page_lines)
+    return PageHighlightResult(
+        boxes=boxes,
+        spans=spans,
+        page_lines=page_lines,
+        quote_index_to_boxes={},
+    )
+
+
+async def locate_citations_on_page(
+    quotes: Sequence[str],
+    ocr_words: Sequence[OCRWord],
+    *,
+    page_size: tuple[int, int] | None = None,
+    llm_client: genai.GenerativeModel | None = None,
+) -> PageHighlightResult | None:
+    if not quotes or not ocr_words:
+        return None
+
+    def _generate() -> PageHighlightResult | None:
+        try:
+            model = llm_client or get_highlight_model()
+            quotes_list = [f"{idx}: {quote}" for idx, quote in enumerate(quotes)]
+            quotes_block = "\n".join(quotes_list) if quotes_list else ""
+            words_listing = build_words_with_indices(ocr_words)
+            page_text = build_page_text(ocr_words)
+            prompt = f"""
+You are given OCR output for a scanned page.
+
+QUOTES (each item is quote_index: text):
+{quotes_block}
+
+PAGE TEXT (reading order):
+{page_text}
+
+WORDS (use 0-based inclusive indices to mark spans):
+{words_listing}
+
+Return STRICT JSON with a top-level "matches" array. Each item must be an object:
+{{"quote_index": <int>, "spans": [[start_idx, end_idx], ...]}}
+
+- Use the WORDS list for indices.
+- start_idx and end_idx are inclusive and must reference existing indices.
+- If a quote is not present, return an empty spans list for that quote.
+"""
+            response = model.generate_content(prompt)
+            data = json.loads(response.text)
+            matches_raw = data.get("matches") if isinstance(data, Mapping) else None
+
+            spans_by_quote: dict[int, list[tuple[int, int]]] = {}
+            total_words = len(ocr_words)
+
+            if isinstance(matches_raw, Sequence) and not isinstance(
+                matches_raw, (str, bytes)
+            ):
+                # Case 1: matches are objects with quote_index
+                for entry in matches_raw:
+                    quote_index: int | None = None
+                    spans_raw: Any = None
+                    if isinstance(entry, Mapping):
+                        try:
+                            quote_index = int(entry.get("quote_index"))
+                        except (TypeError, ValueError):
+                            quote_index = None
+                        spans_raw = (
+                            entry.get("spans")
+                            if "spans" in entry
+                            else entry.get("indices")
+                        )
+                    elif isinstance(entry, Sequence) and not isinstance(
+                        entry, (str, bytes)
+                    ):
+                        if len(entry) == 2 and isinstance(entry[0], int):
+                            quote_index = entry[0]
+                            spans_raw = entry[1]
+                    if quote_index is None or quote_index < 0:
+                        continue
+                    spans = _normalize_spans(spans_raw, total_words)
+                    if spans:
+                        spans_by_quote.setdefault(quote_index, []).extend(spans)
+
+                # Case 2: ordered list matching quotes
+                if not spans_by_quote and len(matches_raw) == len(quotes):
+                    for idx, entry in enumerate(matches_raw):
+                        spans = _normalize_spans(entry, total_words)
+                        if spans:
+                            spans_by_quote[idx] = spans
+
+            if not spans_by_quote:
+                logging.info("RAW_ANSWER Gemini returned no citation matches")
+                return None
+
+            all_spans: list[tuple[int, int]] = []
+            boxes: list[Mapping[str, float]] = []
+            quote_index_to_boxes: dict[int, list[Mapping[str, float]]] = {}
+            page_lines: list[Mapping[str, Any]] = []
+            for spans in spans_by_quote.values():
+                for span in spans:
+                    if span not in all_spans:
+                        all_spans.append(span)
+            if page_size and page_size[0] and page_size[1]:
+                page_lines = build_page_lines(
+                    ocr_words, page_width=page_size[0], page_height=page_size[1]
+                )
+                for quote_index, spans in spans_by_quote.items():
+                    quote_boxes = _build_span_boxes(
+                        ocr_words,
+                        spans,
+                        page_width=page_size[0],
+                        page_height=page_size[1],
+                    )
+                    if quote_boxes:
+                        quote_index_to_boxes[quote_index] = quote_boxes
+                        boxes.extend(quote_boxes)
+
+            return PageHighlightResult(
+                boxes=boxes,
+                spans=all_spans,
+                page_lines=page_lines,
+                quote_index_to_boxes=quote_index_to_boxes,
+            )
+        except Exception:  # pragma: no cover - external dependency
+            logging.exception("RAW_ANSWER citation locating failed")
+            return None
+
+    return await asyncio.to_thread(_generate)
 
 
 def _safe_float(value: Any) -> float | None:
@@ -586,7 +713,12 @@ async def highlight_answer_on_page(
                 page_height=height,
             )
             page_lines = build_page_lines(scaled_words, page_width=width, page_height=height)
-            return PageHighlightResult(boxes=boxes, spans=spans, page_lines=page_lines)
+            return PageHighlightResult(
+                boxes=boxes,
+                spans=spans,
+                page_lines=page_lines,
+                quote_index_to_boxes={},
+            )
         except Exception:
             logging.exception("RAW_ANSWER Gemini span extraction failed")
             return None

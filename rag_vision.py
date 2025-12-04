@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -256,6 +257,69 @@ def draw_highlight_overlay(image_bytes: bytes, boxes: Sequence[Mapping[str, Any]
     composed.save(buffer, format="PNG")
     buffer.seek(0)
     return buffer.read()
+
+
+_WORD_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _normalize_word_token(text: str) -> str:
+    if not text:
+        return ""
+    token = "".join(_WORD_TOKEN_RE.findall(text)).strip().lower()
+    return token or text.strip().lower()
+
+
+def _tokenize_quote(text: str) -> list[str]:
+    if not text:
+        return []
+    return [_normalize_word_token(match.group(0)) for match in _WORD_TOKEN_RE.finditer(text) if _normalize_word_token(match.group(0))]
+
+
+def _find_quote_span(tokens: Sequence[str], quote_tokens: Sequence[str]) -> tuple[int, int] | None:
+    if not tokens or not quote_tokens:
+        return None
+    max_start = len(tokens) - len(quote_tokens)
+    for start in range(max_start + 1):
+        window = tokens[start : start + len(quote_tokens)]
+        if window == list(quote_tokens):
+            return start, start + len(quote_tokens) - 1
+    return None
+
+
+def locate_quotes_in_ocr(
+    words: Sequence[OCRWord],
+    quotes: Sequence[str],
+    *,
+    page_size: tuple[int, int] | None = None,
+) -> PageHighlightResult | None:
+    if not words:
+        return None
+
+    tokens = [_normalize_word_token(word.text) for word in words]
+    normalized_quotes = [_tokenize_quote(quote) for quote in quotes if isinstance(quote, str)]
+    spans: list[tuple[int, int]] = []
+    for quote_tokens in normalized_quotes:
+        span = _find_quote_span(tokens, quote_tokens)
+        if span and span not in spans:
+            spans.append(span)
+
+    page_width = page_size[0] if page_size else 0
+    page_height = page_size[1] if page_size else 0
+    page_lines: list[Mapping[str, Any]] = []
+    boxes: list[Mapping[str, float]] = []
+    if page_width and page_height:
+        page_lines = build_page_lines(words, page_width=page_width, page_height=page_height)
+        boxes = _build_span_boxes(
+            words,
+            spans,
+            page_width=page_width,
+            page_height=page_height,
+        )
+
+    if not spans and not boxes and not page_lines:
+        return None
+
+    return PageHighlightResult(boxes=boxes, spans=spans, page_lines=page_lines)
 
 
 def _safe_float(value: Any) -> float | None:

@@ -411,7 +411,6 @@ Return STRICT JSON with a top-level "matches" array. Each item must be an object
 
             if not spans_by_quote:
                 logging.info("RAW_ANSWER Gemini returned no citation matches")
-                return None
 
             all_spans: list[tuple[int, int]] = []
             boxes: list[Mapping[str, float]] = []

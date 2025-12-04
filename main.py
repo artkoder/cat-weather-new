@@ -1452,6 +1452,38 @@ class Bot:
             )
             return
 
+        answer_payload = payload.get("answer") if isinstance(payload, Mapping) else None
+        answer_text = ""
+        citations: list[Mapping[str, Any]] = []
+        if isinstance(answer_payload, Mapping):
+            raw_answer_text = answer_payload.get("answer_text")
+            if isinstance(raw_answer_text, str):
+                answer_text = raw_answer_text
+            raw_citations = answer_payload.get("citations")
+            if isinstance(raw_citations, Sequence):
+                citations = [c for c in raw_citations if isinstance(c, Mapping)]
+
+        payload["raw_answer_summary"] = {"answer_text": answer_text, "citations": citations}
+
+        message_lines: list[str] = []
+        if answer_text:
+            message_lines.append(answer_text)
+
+        if citations:
+            message_lines.append("Цитаты:")
+            for idx, citation in enumerate(citations, start=1):
+                quote = citation.get("quote") if isinstance(citation, Mapping) else None
+                chunk_id = citation.get("chunk_id") if isinstance(citation, Mapping) else None
+                quote_text = str(quote) if quote not in (None, "") else "—"
+                chunk_label = f" (chunk_id: {chunk_id})" if chunk_id not in (None, "") else ""
+                message_lines.append(f"{idx}. {quote_text}{chunk_label}")
+
+        if message_lines:
+            await self.api_request(
+                "sendMessage",
+                {"chat_id": chat_id, "text": "\n".join(message_lines)},
+            )
+
         filename, file_bytes = build_raw_answer_file(payload)
         result_count = len(payload.get("results") or [])
         caption_lines = [

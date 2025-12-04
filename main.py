@@ -220,6 +220,15 @@ class LoggingMetricsEmitter:
         logging.debug("METRIC timer %s=%.3fms", name, value)
 
 
+@dataclass
+class OcrDownloadResult:
+    payload: Mapping[str, Any] | None
+    raw_bytes: bytes | None
+    error: str | None
+    stage: str
+    copied_message_id: int | None
+
+
 def _read_version_from_changelog() -> str:
     changelog_path = Path(__file__).resolve().parent / "CHANGELOG.md"
     try:
@@ -1684,23 +1693,34 @@ class Bot:
                                 ocr_msg_id if ocr_msg_id not in (None, "") else "<missing ocr_tg_msg_id>"
                             )
                             if ocr_msg_id not in (None, ""):
-                                ocr_payload = await self._download_ocr_payload(
+                                ocr_result = await self._download_ocr_payload(
                                     channel_id=channel_id,
                                     message_id=ocr_msg_id,
                                     target_chat_id=chat_id,
                                 )
-                                if ocr_payload:
-                                    page_label = str(
-                                        row.get("book_page")
-                                        or row.get("page")
-                                        or row.get("page_number")
-                                        or ocr_msg_id
-                                    )
-                                    ocr_filename = f"ocr_page_{page_label}.json"
+                                page_label = str(
+                                    row.get("book_page")
+                                    or row.get("page")
+                                    or row.get("page_number")
+                                    or ocr_msg_id
+                                )
+                                ocr_filename = f"ocr_page_{page_label}.json"
+                                ocr_bytes: bytes | None = None
+                                if ocr_result.payload is not None:
                                     try:
                                         ocr_bytes = json.dumps(
-                                            ocr_payload, ensure_ascii=False
+                                            ocr_result.payload, ensure_ascii=False
                                         ).encode("utf-8")
+                                    except Exception:
+                                        logging.exception(
+                                            "RAW_ANSWER failed to serialize OCR JSON for ocr_tg_msg_id=%s",
+                                            ocr_log_id,
+                                        )
+                                if ocr_bytes is None and ocr_result.raw_bytes:
+                                    ocr_bytes = ocr_result.raw_bytes
+
+                                if ocr_bytes:
+                                    try:
                                         ocr_send_resp = await self.api_request(
                                             "sendDocument",
                                             {"chat_id": chat_id},
@@ -1730,7 +1750,9 @@ class Bot:
                                             "RAW_ANSWER failed to send OCR JSON for ocr_tg_msg_id=%s",
                                             ocr_log_id,
                                         )
-                                    words, page_size = parse_ocr_words(ocr_payload)
+
+                                if ocr_result.payload:
+                                    words, page_size = parse_ocr_words(ocr_result.payload)
                                     if words:
                                         page_text = build_page_text(words)
                                         highlight_result = await highlight_answer_on_page(
@@ -1759,13 +1781,21 @@ class Bot:
                                             )
                                     else:
                                         logging.warning(
-                                            "RAW_ANSWER OCR payload missing words for ocr_tg_msg_id=%s",
+                                            "RAW_ANSWER skipping OCR highlight for ocr_tg_msg_id=%s: stage=%s",
                                             ocr_log_id,
+                                            ocr_result.stage,
                                         )
+                                elif not ocr_bytes:
+                                    logging.warning(
+                                        "RAW_ANSWER skipping OCR page for ocr_tg_msg_id=%s: stage=%s",
+                                        ocr_log_id,
+                                        ocr_result.stage,
+                                    )
                                 else:
                                     logging.warning(
-                                        "RAW_ANSWER failed to download OCR JSON for ocr_tg_msg_id=%s",
+                                        "RAW_ANSWER skipping OCR highlight for ocr_tg_msg_id=%s: stage=%s",
                                         ocr_log_id,
+                                        ocr_result.stage,
                                     )
                             else:
                                 logging.warning(
@@ -1961,64 +1991,132 @@ class Bot:
         channel_id: int | str,
         message_id: int | str,
         target_chat_id: int,
-    ) -> Mapping[str, Any] | None:
+    ) -> OcrDownloadResult:
         tmp_fd, tmp_name = tempfile.mkstemp(prefix="raw_ocr_", suffix=".json")
         os.close(tmp_fd)
-        copied_message_id: int | None = None
+        cleanup_message_ids: list[tuple[int | str, int]] = []
+        fallback_chat_id = self._raw_answer_scans_channel_id
+        copy_targets: list[tuple[int | str, str]] = [(target_chat_id, "primary")]
+        if fallback_chat_id and str(fallback_chat_id) != str(target_chat_id):
+            copy_targets.append((fallback_chat_id, "fallback"))
+
+        last_error: str | None = None
         try:
-            copy_resp = await self.api_request(
-                "copyMessage",
-                {
-                    "chat_id": target_chat_id,
-                    "from_chat_id": channel_id,
-                    "message_id": message_id,
-                    "disable_notification": True,
-                },
-            )
-            result_payload = copy_resp.get("result") if isinstance(copy_resp, Mapping) else None
-            if not (copy_resp and copy_resp.get("ok") and isinstance(result_payload, Mapping)):
-                logging.warning(
-                    "RAW_ANSWER failed to copy OCR message chat_id=%s message_id=%s payload=%s",
-                    target_chat_id,
-                    message_id,
-                    copy_resp,
-                )
-                return None
-
-            copied_message_id = result_payload.get("message_id")
-            file_meta = self._collect_asset_metadata(result_payload).get("file_meta") or {}
-            file_id = file_meta.get("file_id")
-            if not file_id:
-                logging.warning(
-                    "RAW_ANSWER OCR message missing file_id chat_id=%s message_id=%s",
-                    target_chat_id,
-                    message_id,
-                )
-                return None
-
-            downloaded_path = await self._download_file(file_id, tmp_name)
-            if isinstance(downloaded_path, Path) and downloaded_path.exists():
+            for copy_chat_id, attempt_label in copy_targets:
                 try:
-                    return json.loads(downloaded_path.read_text(encoding="utf-8"))
+                    copy_resp = await self.api_request(
+                        "copyMessage",
+                        {
+                            "chat_id": copy_chat_id,
+                            "from_chat_id": channel_id,
+                            "message_id": message_id,
+                            "disable_notification": True,
+                        },
+                    )
                 except Exception:
                     logging.exception(
-                        "RAW_ANSWER failed to parse OCR JSON chat_id=%s message_id=%s", target_chat_id, message_id
+                        "RAW_ANSWER copyMessage failed at %s target_chat_id=%s message_id=%s",
+                        attempt_label,
+                        copy_chat_id,
+                        message_id,
                     )
-                    return None
-            return None
+                    last_error = "copy_failed"
+                    continue
+
+                result_payload = copy_resp.get("result") if isinstance(copy_resp, Mapping) else None
+                if not (copy_resp and copy_resp.get("ok") and isinstance(result_payload, Mapping)):
+                    logging.warning(
+                        "RAW_ANSWER copyMessage unexpected response at %s chat_id=%s message_id=%s payload=%s",
+                        attempt_label,
+                        copy_chat_id,
+                        message_id,
+                        copy_resp,
+                    )
+                    last_error = "copy_failed"
+                    continue
+
+                copied_message_id = result_payload.get("message_id")
+                if isinstance(copied_message_id, int):
+                    cleanup_message_ids.append((copy_chat_id, copied_message_id))
+
+                file_meta = self._collect_asset_metadata(result_payload).get("file_meta") or {}
+                file_id = file_meta.get("file_id")
+                if not file_id:
+                    logging.warning(
+                        "RAW_ANSWER OCR message missing file_id at %s chat_id=%s message_id=%s",
+                        attempt_label,
+                        copy_chat_id,
+                        message_id,
+                    )
+                    last_error = "missing_file_id"
+                    continue
+
+                downloaded_path = await self._download_file(file_id, tmp_name)
+                if not (isinstance(downloaded_path, Path) and downloaded_path.exists()):
+                    logging.error(
+                        "RAW_ANSWER HTTP download error for OCR file at %s chat_id=%s message_id=%s file_id=%s",
+                        attempt_label,
+                        copy_chat_id,
+                        message_id,
+                        file_id,
+                    )
+                    last_error = "download_failed"
+                    continue
+
+                raw_bytes = downloaded_path.read_bytes()
+                try:
+                    payload = json.loads(raw_bytes.decode("utf-8"))
+                except Exception:
+                    logging.exception(
+                        "RAW_ANSWER failed to parse OCR JSON at %s chat_id=%s message_id=%s",
+                        attempt_label,
+                        copy_chat_id,
+                        message_id,
+                    )
+                    return OcrDownloadResult(
+                        payload=None,
+                        raw_bytes=raw_bytes,
+                        error="parse_error",
+                        stage="parse_error",
+                        copied_message_id=copied_message_id if isinstance(copied_message_id, int) else None,
+                    )
+
+                return OcrDownloadResult(
+                    payload=payload,
+                    raw_bytes=raw_bytes,
+                    error=None,
+                    stage="success",
+                    copied_message_id=copied_message_id if isinstance(copied_message_id, int) else None,
+                )
+
+            return OcrDownloadResult(
+                payload=None,
+                raw_bytes=None,
+                error=last_error or "copy_failed",
+                stage=last_error or "copy_failed",
+                copied_message_id=None,
+            )
         except Exception:
             logging.exception(
-                "RAW_ANSWER failed to download OCR payload chat_id=%s message_id=%s", target_chat_id, message_id
+                "RAW_ANSWER failed to download OCR payload chat_id=%s message_id=%s",
+                target_chat_id,
+                message_id,
             )
-            return None
+            return OcrDownloadResult(
+                payload=None,
+                raw_bytes=None,
+                error="unexpected_error",
+                stage="unexpected_error",
+                copied_message_id=None,
+            )
         finally:
             with contextlib.suppress(FileNotFoundError):
                 Path(tmp_name).unlink()
-            if copied_message_id is not None:
+            for cleanup_chat_id, copied_message_id in cleanup_message_ids:
                 with contextlib.suppress(Exception):
                     await self.api_request(
                         "deleteMessage",
-                        {"chat_id": target_chat_id, "message_id": copied_message_id},
+                        {"chat_id": cleanup_chat_id, "message_id": copied_message_id},
                     )
 
     def _get_active_pairing_token(self, user_id: int) -> tuple[str, datetime, str] | None:

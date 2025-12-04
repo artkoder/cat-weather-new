@@ -16,7 +16,7 @@ async def test_download_ocr_payload_success(monkeypatch, tmp_path):
 
     async def fake_api_request(method, data, files=None):
         calls.append((method, data))
-        if method == "copyMessage":
+        if method == "forwardMessage":
             return {"ok": True, "result": {"message_id": 111}}
         return {"ok": True, "result": {}}
 
@@ -34,7 +34,7 @@ async def test_download_ocr_payload_success(monkeypatch, tmp_path):
     assert result.payload == {"foo": "bar"}
     assert result.error is None
     assert result.stage == "success"
-    assert any(call[0] == "copyMessage" for call in calls)
+    assert any(call[0] == "forwardMessage" for call in calls)
     await bot.close()
 
 
@@ -46,7 +46,7 @@ async def test_download_ocr_payload_fallback_copy(monkeypatch, tmp_path):
 
     async def fake_api_request(method, data, files=None):
         calls.append((method, data))
-        if method == "copyMessage":
+        if method == "forwardMessage":
             if str(data.get("chat_id")) != str(bot._raw_answer_scans_channel_id):
                 return {"ok": False, "result": {}}
             return {"ok": True, "result": {"message_id": 777}}
@@ -66,7 +66,11 @@ async def test_download_ocr_payload_fallback_copy(monkeypatch, tmp_path):
     assert result.payload == {"page": 1}
     assert result.error is None
     assert result.stage == "success"
-    assert any(call[1].get("chat_id") == bot._raw_answer_scans_channel_id for call in calls if call[0] == "copyMessage")
+    assert any(
+        call[1].get("chat_id") == bot._raw_answer_scans_channel_id
+        for call in calls
+        if call[0] == "forwardMessage"
+    )
     await bot.close()
 
 
@@ -75,7 +79,7 @@ async def test_download_ocr_payload_parse_error(monkeypatch, tmp_path):
     bot = Bot("dummy", str(tmp_path / "db.sqlite"))
 
     async def fake_api_request(method, data, files=None):
-        if method == "copyMessage":
+        if method == "forwardMessage":
             return {"ok": True, "result": {"message_id": 333}}
         return {"ok": True, "result": {}}
 

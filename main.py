@@ -116,11 +116,8 @@ from utils_wave import wave_m_to_score
 from weather_migration import migrate_weather_publish_channels
 from db_utils import dump_database
 from rag_vision import (
-    build_answer_boxes,
-    build_page_text,
     draw_highlight_overlay,
-    extract_text_coordinates,
-    highlight_answer_on_page,
+    locate_quotes_in_ocr,
     parse_ocr_words,
 )
 from raw_answer_search import (
@@ -1609,18 +1606,78 @@ class Bot:
                 return
 
             results = payload.get("results") or []
+            answer_payload = payload.get("answer") if isinstance(payload, Mapping) else None
+            citations = (
+                answer_payload.get("citations")
+                if isinstance(answer_payload, Mapping)
+                else []
+            )
+
+            def _normalize_chunk_id(value: Any, index: int) -> str:
+                base_id = str(value) if value not in (None, "") else f"chunk-{index + 1}"
+                return base_id
+
+            chunk_rows: dict[str, Mapping[str, Any]] = {}
+            seen_ids: dict[str, int] = {}
+            for idx, row in enumerate(results):
+                if not isinstance(row, Mapping):
+                    continue
+                raw_id = row.get("chunk_id") if "chunk_id" in row else row.get("id")
+                chunk_id = _normalize_chunk_id(raw_id, idx)
+                collision = seen_ids.get(chunk_id, 0)
+                seen_ids[chunk_id] = collision + 1
+                unique_id = chunk_id if collision == 0 else f"{chunk_id}-{collision}"
+                chunk_rows[unique_id] = row
+
+            max_page_groups = max(RAW_ANSWER_MAX_SCAN_PAGES, len(citations) or 1)
+            page_groups: dict[tuple[Any, Any], dict[str, Any]] = {}
+            if isinstance(citations, Sequence):
+                for citation in citations:
+                    if not isinstance(citation, Mapping):
+                        continue
+                    quote = citation.get("quote")
+                    chunk_id = citation.get("chunk_id")
+                    if not isinstance(quote, str) or not isinstance(chunk_id, str):
+                        continue
+                    chunk_row = chunk_rows.get(chunk_id)
+                    if not chunk_row:
+                        continue
+                    for page_row in deduplicate_pages([chunk_row], max_pages=max_page_groups):
+                        tg_msg_id = page_row.get("tg_msg_id")
+                        ocr_msg_id = page_row.get("ocr_tg_msg_id")
+                        if tg_msg_id in (None, "") or ocr_msg_id in (None, ""):
+                            continue
+                        key = (tg_msg_id, ocr_msg_id)
+                        if key not in page_groups:
+                            page_groups[key] = {"row": page_row, "quotes": []}
+                        page_groups[key]["quotes"].append(quote)
+
             self._log_raw_answer_chunks(results)
-            unique_results = deduplicate_pages(results)
+            if not page_groups:
+                logging.info("RAW_ANSWER scans not found for chat_id=%s", chat_id)
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": chat_id,
+                        "text": "Сканы страниц не найдены для результатов этого запроса.",
+                    },
+                )
+                return
             found = False
             query_text = str((payload.get("query") or {}).get("text") or "")
-            for idx, row in enumerate(unique_results):
+            for idx, ((tg_msg_id, ocr_msg_id), group) in enumerate(page_groups.items()):
+                row = group.get("row") if isinstance(group, Mapping) else None
+                page_quotes = (
+                    [str(q).strip() for q in group.get("quotes", []) if str(q).strip()]
+                    if isinstance(group, Mapping)
+                    else []
+                )
                 if not isinstance(row, Mapping):
                     continue
 
-                tg_msg_id = row.get("tg_msg_id")
                 if tg_msg_id in (None, ""):
                     logging.debug(
-                        "RAW_ANSWER scan missing tg_msg_id for result #%s", idx
+                        "RAW_ANSWER scan missing tg_msg_id for grouped page #%s", idx
                     )
                     continue
 
@@ -1630,7 +1687,7 @@ class Bot:
                     message_id = tg_msg_id
 
                 logging.info(
-                    "RAW_ANSWER processing scan #%s chat_id=%s from_channel=%s message_id=%s",
+                    "RAW_ANSWER processing grouped scan #%s chat_id=%s from_channel=%s message_id=%s",
                     idx,
                     chat_id,
                     channel_id,
@@ -1687,8 +1744,6 @@ class Bot:
                             page_bottom_y: float | None = None
                             spans: Sequence[tuple[int, int]] | None = None
 
-                            ocr_msg_id = row.get("ocr_tg_msg_id")
-                            chunk_text = str(row.get("chunk") or row.get("content") or "")
                             ocr_log_id = (
                                 ocr_msg_id if ocr_msg_id not in (None, "") else "<missing ocr_tg_msg_id>"
                             )
@@ -1753,18 +1808,14 @@ class Bot:
 
                                 if ocr_result.payload:
                                     words, page_size = parse_ocr_words(ocr_result.payload)
-                                    if words:
-                                        page_text = build_page_text(words)
-                                        highlight_result = await highlight_answer_on_page(
-                                            question=query_text,
-                                            chunk_text=chunk_text,
-                                            page_text=page_text,
-                                            words=words,
-                                            scan_image_bytes=image_bytes,
-                                            source_page_size=page_size,
+                                    if words and page_size:
+                                        highlight_result = locate_quotes_in_ocr(
+                                            words,
+                                            page_quotes,
+                                            page_size=page_size,
                                         )
                                         if highlight_result:
-                                            boxes.extend(highlight_result.boxes)
+                                            boxes = highlight_result.boxes
                                             spans = highlight_result.spans
                                             page_lines = highlight_result.page_lines
                                             answers = [
@@ -1779,6 +1830,8 @@ class Bot:
                                                 ocr_log_id,
                                                 len(highlight_result.boxes),
                                             )
+                                        if page_lines is None:
+                                            page_lines = []
                                     else:
                                         logging.warning(
                                             "RAW_ANSWER skipping OCR highlight for ocr_tg_msg_id=%s: stage=%s",
@@ -1803,40 +1856,35 @@ class Bot:
                                     message_id,
                                 )
 
-                            if not boxes:
-                                extraction = await extract_text_coordinates(image_bytes, query_text)
-                                boxes = extraction.boxes
-                                answer_boxes = build_answer_boxes(
-                                    extraction.page_lines, extraction.answers
+                            page_lines = page_lines or []
+                            answers = answers or []
+                            if not page_lines and not boxes:
+                                logging.info(
+                                    "RAW_ANSWER skipping scan chat_id=%s message_id=%s: no OCR content",
+                                    chat_id,
+                                    message_id,
                                 )
-                                if extraction.page_lines and channel_id:
-                                    await self._send_scan_text_document(
-                                        channel_id,
-                                        page_lines=extraction.page_lines,
-                                        message_id=message_id,
-                                        book_title=row.get("book_title"),
-                                        book_page=row.get("book_page"),
-                                        answers=extraction.answers,
-                                        page_bottom_y=extraction.page_bottom_y,
+                                if forwarded_msg_id is not None:
+                                    with contextlib.suppress(Exception):
+                                        await self.api_request(
+                                            "deleteMessage",
+                                            {"chat_id": chat_id, "message_id": forwarded_msg_id},
+                                        )
+                                continue
+
+                            if page_lines:
+                                try:
+                                    page_bottom_y = max(
+                                        (
+                                            float(entry.get("y1"))
+                                            for entry in page_lines
+                                            if isinstance(entry, Mapping)
+                                            and entry.get("y1") is not None
+                                        ),
+                                        default=None,
                                     )
-                                if not extraction.answers:
-                                    logging.info(
-                                        "RAW_ANSWER scan skipped: no answers returned chat_id=%s message_id=%s",
-                                        chat_id,
-                                        message_id,
-                                    )
-                                    if forwarded_msg_id is not None:
-                                        with contextlib.suppress(Exception):
-                                            await self.api_request(
-                                                "deleteMessage",
-                                                {"chat_id": chat_id, "message_id": forwarded_msg_id},
-                                            )
-                                    continue
-                                if answer_boxes:
-                                    boxes = list(boxes) + answer_boxes
-                                page_lines = extraction.page_lines
-                                answers = extraction.answers
-                                page_bottom_y = extraction.page_bottom_y
+                                except Exception:
+                                    page_bottom_y = None
 
                             if page_lines and channel_id:
                                 await self._send_scan_text_document(
@@ -1860,40 +1908,16 @@ class Bot:
                                     page_bottom_y=page_bottom_y,
                                 )
 
-                            gemini_texts: list[str] = []
-                            line_numbers: set[int] = set()
-                            span_ranges: list[str] = []
+                            span_ranges: list[str] = [f"{start}-{end}" for start, end in spans or []]
                             answer_snippets: list[str] = [ans for ans in (answers or []) if str(ans).strip()]
-                            has_coordinates = False
-                            for box in boxes:
-                                if not isinstance(box, Mapping):
-                                    continue
-                                text_value = box.get("text")
-                                if text_value is not None:
-                                    text_str = str(text_value).strip()
-                                    if text_str:
-                                        gemini_texts.append(text_str)
-                                raw_lines = box.get("line_numbers")
-                                if isinstance(raw_lines, Sequence):
-                                    for num in raw_lines:
-                                        try:
-                                            line_num = int(num)
-                                        except (TypeError, ValueError):
-                                            continue
-                                        if line_num > 0:
-                                            line_numbers.add(line_num)
-                                if all(k in box for k in ("x0", "y0", "x1", "y1")):
-                                    has_coordinates = True
-                            if spans:
-                                span_ranges = [f"{start}-{end}" for start, end in spans]
-                                has_coordinates = has_coordinates or bool(boxes)
-                            if gemini_texts or line_numbers or span_ranges or answer_snippets:
+                            quote_lines = [f"- {quote}" for quote in page_quotes]
+                            has_coordinates = bool(boxes)
+
+                            if quote_lines or span_ranges or answer_snippets:
                                 appendix_parts: list[str] = []
-                                if gemini_texts:
-                                    appendix_parts.append("🔍 Текст Gemini:\n- " + "\n- ".join(gemini_texts))
-                                if line_numbers:
-                                    ordered_lines = ", ".join(map(str, sorted(line_numbers)))
-                                    appendix_parts.append(f"Номера строк: [{ordered_lines}]")
+                                if quote_lines:
+                                    appendix_parts.append("Цитаты:")
+                                    appendix_parts.extend(quote_lines)
                                 if span_ranges:
                                     appendix_parts.append(
                                         "Диапазоны слов: [" + ", ".join(span_ranges) + "]"

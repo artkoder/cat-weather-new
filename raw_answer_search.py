@@ -149,17 +149,23 @@ def deduplicate_pages(
 
 
 def format_scan_caption(row: Mapping[str, Any]) -> str:
+    def _first_value(keys: Sequence[str]) -> str | None:
+        for key in keys:
+            value = row.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return None
+
     parts: list[str] = []
-    title = row.get("book_title")
-    page = row.get("book_page")
-    chunk = row.get("chunk") or row.get("content")
+    title = _first_value(["book_title", "title", "source"])
+    author = _first_value(["book_author", "author", "authors"])
+    isbn = _first_value(["book_isbn", "isbn"])
+
     if title:
-        parts.append(f"<b>Источник:</b> {html.escape(str(title))}")
-    if page:
-        parts.append(f"<b>Страница:</b> {html.escape(str(page))}")
-    if chunk:
-        snippet = str(chunk)
-        if len(snippet) > 240:
-            snippet = snippet[:237].rstrip() + "…"
-        parts.append(html.escape(snippet))
+        parts.append(f"<b>Источник:</b> {html.escape(title)}")
+    if author:
+        parts.append(f"<b>Автор:</b> {html.escape(author)}")
+    if isbn:
+        parts.append(f"<b>ISBN:</b> {html.escape(isbn)}")
+
     return "\n".join(parts)

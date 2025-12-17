@@ -15942,12 +15942,13 @@ class Bot:
             item: dict[str, Any] = {"type": "photo", "media": f"attach://{attach_name}"}
             if idx == 0:
                 item["caption"] = caption
+                item["parse_mode"] = "HTML"
             media.append(item)
 
         if len(media) == 1:
             response = await self.api_request(
                 "sendPhoto",
-                {"chat_id": channel_id, "caption": caption},
+                {"chat_id": channel_id, "caption": caption, "parse_mode": "HTML"},
                 files={"photo": files["file0"]},
             )
         else:

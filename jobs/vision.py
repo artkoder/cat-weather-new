@@ -24,6 +24,19 @@ if TYPE_CHECKING:
 POSTCARD_SCORE_MIN = 1
 POSTCARD_SCORE_MAX = 10
 POSTCARD_TAG_THRESHOLD = 6
+NEW_YEAR_TAG = "new_year"
+NEW_YEAR_KEYWORDS = [
+    "ёлк",
+    "елк",
+    "гирлян",
+    "рождествен",
+    "christmas",
+    "xmas",
+    "new year",
+    "holiday light",
+    "wreath",
+    "ornament",
+]
 
 _LOCAL_TIMEZONE = ZoneInfo("Europe/Kaliningrad")
 _ISO_OFFSET_WITHOUT_COLON = re.compile(r"^(.*)([+-]\d{2})(\d{2})$")
@@ -80,6 +93,18 @@ def _extract_postcard_score(raw: Any) -> int | None:
         clamped,
     )
     return clamped
+
+
+def _contains_new_year_signal(*values: str | None) -> bool:
+    for value in values:
+        if not value:
+            continue
+        normalized = str(value).strip().lower()
+        if not normalized:
+            continue
+        if any(keyword in normalized for keyword in NEW_YEAR_KEYWORDS):
+            return True
+    return False
 
 
 async def handle_vision(bot: Bot, job: Job) -> None:
@@ -258,12 +283,13 @@ async def run_vision(bot: Bot, job: Job) -> None:
             "weather_image описывает нюансы погоды и выбирается из sunny, partly_cloudy, overcast, rain, snow, fog, night. "
             "season_guess — spring, summer, autumn, winter или null. arch_style либо null, либо объект с label (название стиля на английском) и confidence (0..1). "
             "В objects перечисляй заметные элементы, цветы называй видами. В tags используй английские слова в нижнем регистре и обязательно включай погодный тег. "
+            "Отмечай новогодние атрибуты (ёлка, гирлянды, рождественский декор) и добавляй тег new_year, если они заметны. "
             "Поле safety содержит nsfw:boolean и reason:string, где reason всегда непустая строка на русском. "
             "Дополнительно определи, есть ли море, океан, пляж или береговая линия — поле is_sea. "
             "Если is_sea=true, оцени sea_wave_score по шкале 0..10 (0 — гладь, 10 — шквал), укажи photo_sky одной из категорий sunny/partly_cloudy/mostly_cloudy/overcast/night/unknown и выставь is_sunset=true, когда заметен закат. "
             "Если моря нет, sea_wave_score ставь null, но всё равно классифицируй photo_sky по видимому небу. "
             "Обязательно укажи sky_visible=true, если на фото видно небо (даже частично), иначе sky_visible=false. Если небо не видно или неясно, ставь photo_sky=unknown. "
-            "Поле postcard_score обязательно: верни целое число 1–10, которое отражает «открыточность» кадра (1 — совсем не открытка, 10 — почти идеальная открытка). "
+            "Поле postcard_score обязательно: верни целое число 1–10, которое отражает «открыточность» кадра (1 — совсем не открытка, 10 — почти идеальная открытка). Значение используется для сортировки кадров внутри рубрик, оцени его осторожно и в реальном масштабе 1–10. "
             "Шкала ориентиров: 1–2 — бытовой кадр без композиции, 3–4 — есть вид, но композиция средняя и заметен визуальный шум, 5–6 — приятный кадр без эффекта «вау», "
             "7–8 — заметно красивый вид с хорошей композицией и читаемой глубиной, 9–10 — очень красивый кадр, который хочется сохранить и показывать другим. "
             "Примеры: 2/10 — случайный двор у подъезда без света, 5/10 — аккуратная набережная с ровным светом, 8/10 — выразительный город у воды при хорошем освещении, "
@@ -519,6 +545,25 @@ async def run_vision(bot: Bot, job: Job) -> None:
                     continue
                 seen_tags.add(text)
                 tags.append(text)
+        new_year_aliases = {
+            NEW_YEAR_TAG,
+            "newyear",
+            "new_years",
+            "holiday_lights",
+            "christmas",
+            "christmas_tree",
+            "xmas",
+            "новыйгод",
+            "новый_год",
+        }
+        has_new_year_signal = any(tag in new_year_aliases for tag in tags)
+        if not has_new_year_signal:
+            has_new_year_signal = _contains_new_year_signal(
+                caption,
+                *objects,
+                *landmarks,
+                *tags,
+            )
         if weather_image and weather_image not in tags:
             tags.append(weather_image)
         if architecture_close_up and "architecture_close_up" not in tags:
@@ -528,6 +573,8 @@ async def run_vision(bot: Bot, job: Job) -> None:
         if postcard_score_value is not None and postcard_score_value >= POSTCARD_TAG_THRESHOLD:
             if "postcard" not in tags:
                 tags.append("postcard")
+        if has_new_year_signal and NEW_YEAR_TAG not in tags:
+            tags.append(NEW_YEAR_TAG)
         await bot._maybe_append_marine_tag(asset, tags)
         metadata_dict = asset.metadata if isinstance(asset.metadata, dict) else {}
         capture_time_display: str | None = None
@@ -1183,6 +1230,7 @@ async def run_vision(bot: Bot, job: Job) -> None:
             "vision_confidence": location_confidence,
             "vision_flower_varieties": flower_varieties,
             "vision_caption": caption_text,
+            "payload_tags": tags,
             "local_path": None,
         }
         if postcard_score_value is not None:

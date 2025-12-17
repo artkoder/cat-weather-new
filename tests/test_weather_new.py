@@ -22,6 +22,7 @@ from data_access import DataAccess, create_device, insert_upload
 from ingestion import extract_image_metadata as _extract_image_metadata
 from main import Bot, Job
 from openai_client import OpenAIResponse
+from jobs.vision import NEW_YEAR_TAG
 
 LOCAL_TZ = ZoneInfo("Europe/Kaliningrad")
 
@@ -252,6 +253,30 @@ async def test_job_vision_adds_postcard_score_and_caption(tmp_path, monkeypatch)
     assert asset.postcard_score == 8
     assert asset.vision_results is not None
     assert "postcard" in asset.vision_results.get("tags", [])
+
+
+@pytest.mark.asyncio
+async def test_job_vision_adds_new_year_tag(tmp_path, monkeypatch):
+    calls, asset, _ = await _run_vision_job_collect_calls(
+        tmp_path,
+        monkeypatch,
+        flag_enabled=False,
+        vision_overrides={
+            "objects": ["Christmas tree", "cat"],
+            "caption": "кот у ёлки и гирлянды",
+            "tags": ["animals", "snow", "pet"],
+        },
+    )
+
+    copy_calls = [call for call in calls if call["method"] == "copyMessage"]
+    assert copy_calls
+    caption = copy_calls[0]["data"].get("caption") or ""
+    assert "new_year" in caption
+
+    assert asset.vision_results is not None
+    assert NEW_YEAR_TAG in asset.vision_results.get("tags", [])
+    payload_tags = asset.payload.get("tags")
+    assert isinstance(payload_tags, list) and NEW_YEAR_TAG in payload_tags
 
 
 @pytest.mark.asyncio

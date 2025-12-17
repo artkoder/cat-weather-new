@@ -15963,11 +15963,17 @@ class Bot:
             metadata,
         )
 
-        try:
-            await self._cleanup_assets(cleanup_assets)
-        except Exception:
-            logging.exception(
-                "NEW_YEAR_RUBRIC cleanup_failed asset_ids=%s",
+        if is_prod:
+            try:
+                await self._cleanup_assets(cleanup_assets)
+            except Exception:
+                logging.exception(
+                    "NEW_YEAR_RUBRIC cleanup_failed asset_ids=%s",
+                    [asset.id for asset in cleanup_assets],
+                )
+        else:
+            logging.info(
+                "NEW_YEAR_RUBRIC cleanup_skip reason=test_mode asset_ids=%s",
                 [asset.id for asset in cleanup_assets],
             )
 

@@ -15925,7 +15925,6 @@ class Bot:
         caption_parts = [emoji_prefix, intro_paragraph]
         if fact_sentence:
             caption_parts.append(fact_sentence)
-        caption_parts.append("🎄 Новогоднее настроение")
         if instructions:
             caption_parts.append(str(instructions).strip())
         if unique_hashtags:

@@ -15686,7 +15686,23 @@ class Bot:
                 -(item[1].timestamp() if item[1] else float("-inf")),
             ),
         )
-        return [asset for _, _, asset in sorted_candidates[:target_limit]]
+        if not sorted_candidates:
+            return []
+
+        selection_limit = min(target_limit, len(sorted_candidates))
+        weighted_pool = list(sorted_candidates)
+        weights = [max(0.1, float(score)) ** 2 for score, *_ in weighted_pool]
+        selected: list[Asset] = []
+
+        for _ in range(selection_limit):
+            if not weighted_pool:
+                break
+            index = random.choices(range(len(weighted_pool)), weights=weights, k=1)[0]
+            _score, _ref, asset = weighted_pool.pop(index)
+            weights.pop(index)
+            selected.append(asset)
+
+        return selected
 
     async def _publish_new_year(
         self,
@@ -15713,6 +15729,16 @@ class Bot:
         asset_cfg = config.get("assets") or {}
         min_count = self._parse_positive_int(asset_cfg.get("min")) or 1
         max_count = self._parse_positive_int(asset_cfg.get("max")) or max(min_count, 4)
+        min_count_clamped = max(1, min(min_count, 4))
+        max_count_clamped = max(min_count_clamped, min(max_count, 4))
+        selection_limit = random.randint(min_count_clamped, max_count_clamped)
+        logging.info(
+            "NEW_YEAR_RUBRIC selection_window job_id=%s min=%s max=%s chosen=%s",
+            job_id or "-",
+            min_count_clamped,
+            max_count_clamped,
+            selection_limit,
+        )
 
         now_kaliningrad = datetime.now(RUBRIC_JOBS_TZ)
         today_kaliningrad = now_kaliningrad.date()
@@ -15744,17 +15770,26 @@ class Bot:
             days_left = _days_until(target_new_year)
             return f"До Нового года осталось {days_left} дней"
 
-        assets = self._select_new_year_assets(limit=max_count, test=test)
-        if len(assets) < min_count:
+        assets = self._select_new_year_assets(limit=selection_limit, test=test)
+        logging.info(
+            "NEW_YEAR_RUBRIC selection_result job_id=%s selected=%s requested=%s min_required=%s",
+            job_id or "-",
+            len(assets),
+            selection_limit,
+            min_count_clamped,
+        )
+        if len(assets) < min_count_clamped:
             logging.info(
-                "NEW_YEAR_RUBRIC insufficient_assets job_id=%s found=%s min=%s",
+                "NEW_YEAR_RUBRIC insufficient_assets job_id=%s found=%s min=%s requested=%s",
                 job_id or "-",
                 len(assets),
-                min_count,
+                min_count_clamped,
+                selection_limit,
             )
             await self._notify_new_year_no_inventory(
                 rubric_title=rubric_title,
                 initiator_id=initiator_id,
+                requested_count=selection_limit,
             )
             return initiator_id is not None
 
@@ -15776,6 +15811,7 @@ class Bot:
             await self._notify_new_year_no_inventory(
                 rubric_title=rubric_title,
                 initiator_id=initiator_id,
+                requested_count=selection_limit,
             )
             return initiator_id is not None
 
@@ -16611,15 +16647,24 @@ class Bot:
         *,
         rubric_title: str | None,
         initiator_id: int | None = None,
+        requested_count: int | None = None,
     ) -> None:
         title = rubric_title or "Новогоднее настроение"
+        count_hint = ""
+        if requested_count is not None:
+            count_hint = f", запросили {requested_count} кадр" + (
+                "ов" if requested_count != 1 else ""
+            )
         message_text = (
             f"⚠️ Рубрика «{title}» пропущена — нет подходящих фотографий (открыточность "
-            "1–10 баллов)."
+            f"1–10 баллов{count_hint})."
         )
         target_ids = [initiator_id] if initiator_id else self.get_superadmin_ids()
         if not target_ids:
-            logging.info("NEW_YEAR_RUBRIC skip_notify recipients=0 score_range=1-10")
+            logging.info(
+                "NEW_YEAR_RUBRIC skip_notify recipients=0 score_range=1-10 requested=%s",
+                requested_count,
+            )
             return
         for target_id in target_ids:
             try:
@@ -16628,8 +16673,9 @@ class Bot:
                     {"chat_id": target_id, "text": message_text},
                 )
                 logging.info(
-                    "NEW_YEAR_RUBRIC skip_notify_sent target_id=%s score_range=1-10",
+                    "NEW_YEAR_RUBRIC skip_notify_sent target_id=%s score_range=1-10 requested=%s",
                     target_id,
+                    requested_count,
                 )
             except Exception as exc:
                 logging.error(

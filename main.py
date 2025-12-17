@@ -15624,6 +15624,36 @@ class Bot:
         min_count = self._parse_positive_int(asset_cfg.get("min")) or 1
         max_count = self._parse_positive_int(asset_cfg.get("max")) or max(min_count, 4)
 
+        now_kaliningrad = datetime.now(RUBRIC_JOBS_TZ)
+        today_kaliningrad = now_kaliningrad.date()
+
+        def _days_until(target: date) -> int:
+            return (target - today_kaliningrad).days
+
+        def _build_intro_paragraph() -> str:
+            current_year = today_kaliningrad.year
+            if today_kaliningrad.month == 1:
+                if today_kaliningrad.day <= 6:
+                    days_left = _days_until(date(current_year, 1, 7))
+                    return f"До Рождества осталось {days_left} дней"
+                if today_kaliningrad.day == 7:
+                    return "С Рождеством!"
+                if 8 <= today_kaliningrad.day <= 13:
+                    days_left = _days_until(date(current_year, 1, 14))
+                    return f"До Старого Нового года осталось {days_left} дней"
+                if today_kaliningrad.day >= 14:
+                    return random.choice(
+                        [
+                            "Праздники позади — самое время подводить итоги и делиться тёплыми историями.",
+                            "Салюты отгремели, гирлянды мерцают — вспоминаем, как встретили зиму.",
+                            "Собираем воспоминания о длинных выходных и греемся новыми планами.",
+                        ]
+                    )
+
+            target_new_year = date(current_year + 1, 1, 1)
+            days_left = _days_until(target_new_year)
+            return f"До Нового года осталось {days_left} дней"
+
         assets = self._select_new_year_assets(limit=max_count, test=test)
         if len(assets) < min_count:
             logging.info(
@@ -15675,7 +15705,7 @@ class Bot:
             seen.add(normalized)
             unique_hashtags.append(normalized)
 
-        caption_parts = ["🎄 Новогоднее настроение"]
+        caption_parts = [_build_intro_paragraph(), "🎄 Новогоднее настроение"]
         if instructions:
             caption_parts.append(str(instructions).strip())
         if unique_hashtags:

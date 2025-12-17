@@ -193,6 +193,18 @@ CAPTION_GEO_MAX_INPUT_LEN = 2400
 CAPTION_GEO_MIN_DIGITS = 4
 CAPTION_GEO_MODEL = "gpt-4o"
 
+NEW_YEAR_EMOJI_POOL = [
+    "🎉",
+    "✨",
+    "🎄",
+    "❄️",
+    "🧦",
+    "🎁",
+    "🥂",
+    "⛄️",
+    "🕯️",
+]
+
 
 class _HtmlCaptionTruncator(HTMLParser):
     def __init__(self, max_length: int) -> None:
@@ -1350,6 +1362,7 @@ class Bot:
         self._raw_answer_scans_channel_id = self._load_scans_channel_id()
         self.data = DataAccess(self.db)
         self._rubric_category_cache: dict[str, int] = {}
+        self._last_new_year_emojis: tuple[str, ...] | None = None
         self._ensure_default_rubrics()
         if migrate_weather_publish_channels(self.db, tz_offset=TZ_OFFSET):
             self.db.commit()
@@ -4449,6 +4462,25 @@ class Bot:
             if final_fact:
                 return final_fact
         return raw_text
+
+    def _choose_new_year_emojis(
+        self, emoji_pool: Iterable[str] | None = None
+    ) -> tuple[str, ...]:
+        pool = [str(emoji).strip() for emoji in emoji_pool or [] if str(emoji).strip()]
+        if len(pool) < 3:
+            pool = list(NEW_YEAR_EMOJI_POOL)
+        else:
+            pool = list(dict.fromkeys(pool))
+            if len(pool) < 3:
+                pool = list(NEW_YEAR_EMOJI_POOL)
+        selection = tuple(random.sample(pool, k=3))
+        if self._last_new_year_emojis:
+            attempts = 0
+            while selection == self._last_new_year_emojis and attempts < 5:
+                selection = tuple(random.sample(pool, k=3))
+                attempts += 1
+        self._last_new_year_emojis = selection
+        return selection
 
     def _is_storm_persisting(
         self,
@@ -15855,8 +15887,17 @@ class Bot:
             logging.info("NEW_YEAR_RUBRIC facts skip reason=disabled")
             fact_info = {"reason": "disabled"}
 
+        emoji_pool_config = config.get("emoji_pool") or config.get("emojis")
+        if isinstance(emoji_pool_config, str):
+            emoji_pool = [part for part in emoji_pool_config.split() if part.strip()]
+        elif isinstance(emoji_pool_config, Iterable):
+            emoji_pool = [str(part) for part in emoji_pool_config]
+        else:
+            emoji_pool = None
+
+        emoji_prefix = "".join(self._choose_new_year_emojis(emoji_pool))
         intro_paragraph = _build_intro_paragraph()
-        caption_parts = [intro_paragraph]
+        caption_parts = [emoji_prefix, intro_paragraph]
         if fact_sentence:
             caption_parts.append(fact_sentence)
         caption_parts.append("🎄 Новогоднее настроение")

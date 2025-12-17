@@ -75,7 +75,7 @@ from data_access import (
     revoke_device,
     rotate_device_secret,
 )
-from facts.loader import Fact, load_baltic_facts
+from facts.loader import Fact, load_baltic_facts, load_new_year_traditions
 from flowers_patterns import (
     FlowerKnowledgeBase,
     FlowerPattern,
@@ -4359,6 +4359,96 @@ class Bot:
             preview,
         )
         return selected.text, selected.id, info
+
+    def _prepare_new_year_fact(
+        self,
+        *,
+        enable_facts: bool,
+        now: datetime,
+        rng: random.Random | None = None,
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
+        if not enable_facts:
+            logging.info("NEW_YEAR_RUBRIC facts skip reason=disabled")
+            return None, None, {"reason": "disabled"}
+        facts = load_new_year_traditions()
+        if not facts:
+            logging.warning("NEW_YEAR_RUBRIC facts skip reason=no_facts")
+            return None, None, {"reason": "empty"}
+        selected, info = self._select_baltic_fact(facts, now=now, rng=rng)
+        if selected is None:
+            logging.info(
+                "NEW_YEAR_RUBRIC facts choose_failed window_days=%s candidates=%s",
+                info.get("window_days"),
+                len(info.get("candidates") or []),
+            )
+            return None, None, info
+        preview = selected.text.replace("\n", " ")[:80]
+        logging.info(
+            'NEW_YEAR_RUBRIC facts choose window_days=%s candidates=%s chosen={id:%s, preview:"%s"} reason="lowest uses_count, rnd"',
+            info.get("window_days"),
+            len(info.get("candidates") or []),
+            selected.id,
+            preview,
+        )
+        return selected.text, selected.id, info
+
+    async def _rewrite_new_year_fact(
+        self,
+        source_text: str,
+        *,
+        job: Job | None = None,
+    ) -> str | None:
+        raw_text = str(source_text or "").strip()
+        if not raw_text:
+            return None
+        sanitized_source, _removed = sanitize_sea_intro(raw_text)
+        base_text = sanitized_source or raw_text
+        if not self.openai or not self.openai.api_key:
+            return raw_text
+        schema = {
+            "type": "object",
+            "properties": {"fact": {"type": "string"}},
+            "required": ["fact"],
+        }
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                temperature = self._creative_temperature()
+                logging.info(
+                    "NEW_YEAR_RUBRIC facts rewrite attempt=%s/%s temp=%.2f", attempt, attempts, temperature
+                )
+                self._enforce_openai_limit(job, "gpt-4o-mini")
+                response = await self.openai.generate_json(
+                    model="gpt-4o-mini",
+                    system_prompt=(
+                        "Ты лаконичный редактор телеграм-канала о зимних праздниках. "
+                        "Пиши бережно и по-русски."
+                    ),
+                    user_prompt=(
+                        "Перефразируй факт о новогодней традиции в одно-два предложения. "
+                        "Начни в духе «Сегодня расскажу о традиции…» или эквивалентной подводкой. "
+                        "Без эмодзи, хэштегов, ссылок, вопросов и восклицаний. Сохрани смысл текста.\n\n"
+                        f"Текст: {base_text}"
+                    ),
+                    schema=schema,
+                    temperature=temperature,
+                    top_p=0.9,
+                )
+            except Exception:
+                logging.exception(
+                    "NEW_YEAR_RUBRIC facts rewrite_failed attempt=%s/%s", attempt, attempts
+                )
+                response = None
+            if response:
+                await self._record_openai_usage("gpt-4o-mini", response, job=job)
+            if not response or not isinstance(response.content, dict):
+                continue
+            fact_value = str(response.content.get("fact") or "").strip()
+            sanitized_fact, _ = sanitize_sea_intro(fact_value)
+            final_fact = sanitized_fact or fact_value
+            if final_fact:
+                return final_fact
+        return raw_text
 
     def _is_storm_persisting(
         self,
@@ -15611,6 +15701,7 @@ class Bot:
     ) -> bool:
         job_id = getattr(job, "id", None) if job else None
         config = rubric.config or {}
+        enable_facts = bool(config.get("enable_facts", True))
         is_prod = not test
         rubric_title = rubric.title or "Новогоднее настроение"
         logging.info(
@@ -15704,8 +15795,34 @@ class Bot:
                 continue
             seen.add(normalized)
             unique_hashtags.append(normalized)
+        fact_sentence: str | None = None
+        fact_id: str | None = None
+        fact_info: dict[str, Any] | None = None
+        if enable_facts:
+            fact_sentence_value, fact_id_value, fact_info = self._prepare_new_year_fact(
+                enable_facts=enable_facts,
+                now=now_kaliningrad,
+            )
+            fact_sentence = fact_sentence_value.strip() if fact_sentence_value else None
+            fact_id = fact_id_value
+            if fact_sentence:
+                try:
+                    rewritten = await self._rewrite_new_year_fact(
+                        fact_sentence, job=job
+                    )
+                    fact_sentence = rewritten or fact_sentence
+                except Exception:
+                    logging.exception("NEW_YEAR_RUBRIC facts rewrite_unhandled")
+                    fact_sentence = fact_sentence_value
+        else:
+            logging.info("NEW_YEAR_RUBRIC facts skip reason=disabled")
+            fact_info = {"reason": "disabled"}
 
-        caption_parts = [_build_intro_paragraph(), "🎄 Новогоднее настроение"]
+        intro_paragraph = _build_intro_paragraph()
+        caption_parts = [intro_paragraph]
+        if fact_sentence:
+            caption_parts.append(fact_sentence)
+        caption_parts.append("🎄 Новогоднее настроение")
         if instructions:
             caption_parts.append(str(instructions).strip())
         if unique_hashtags:
@@ -15756,6 +15873,9 @@ class Bot:
             "asset_ids": [asset.id for asset, *_ in prepared_items],
             "test": test,
             "caption": caption,
+            "fact_id": fact_id,
+            "fact_text": fact_sentence,
+            "facts_info": fact_info,
         }
         self.data.record_post_history(
             channel_id,

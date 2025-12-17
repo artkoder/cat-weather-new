@@ -1106,6 +1106,19 @@ DEFAULT_RUBRIC_PRESETS: dict[str, dict[str, Any]] = {
             "postcard_stopwords": [],
         },
     },
+    "new_year": {
+        "title": "Новогоднее настроение",
+        "config": {
+            "enabled": False,
+            "channel_id": None,
+            "test_channel_id": None,
+            "tz": TZ_OFFSET,
+            "days": ["sat", "sun"],
+            "schedules": [],
+            "assets": {"min": 1, "max": 4},
+            "tag": "new_year",
+        },
+    },
 }
 
 
@@ -9826,6 +9839,14 @@ class Bot:
                     rubric_title=rubric_title,
                     initiator_id=user_id,
                 )
+            elif code == "new_year":
+                rubric = self.data.get_rubric_by_code(code)
+                rubric_title = rubric.title if rubric else None
+                await self._send_new_year_inventory_report(
+                    is_prod=False,
+                    rubric_title=rubric_title,
+                    initiator_id=user_id,
+                )
             else:
                 logging.info("RUBRIC_INVENTORY unknown_code code=%s user_id=%s", code, user_id)
         elif data == "postcard_send_now" and self.is_superadmin(user_id):
@@ -9875,6 +9896,58 @@ class Bot:
                         "chat_id": user_id,
                         "text": (
                             "✅ Внеочередная публикация «Открыточный вид» поставлена в очередь "
+                            f"(задача #{job_id})."
+                        ),
+                    },
+                )
+            return
+        elif data == "new_year_send_now" and self.is_superadmin(user_id):
+            try:
+                job_id = self.enqueue_rubric(
+                    "new_year",
+                    test=False,
+                    initiator_id=user_id,
+                )
+            except Exception as exc:  # noqa: PERF203 - user-facing feedback
+                logging.exception("NEW_YEAR_SEND_NOW enqueue_failed user_id=%s", user_id)
+                reason = str(exc).strip() or "неизвестная ошибка"
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Ошибка запуска рубрики",
+                        "show_alert": True,
+                    },
+                )
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": (
+                            "⚠️ Не удалось запустить внеочередную публикацию «Новогоднее настроение».\n"
+                            f"Причина: {reason}"
+                        ),
+                    },
+                )
+            else:
+                logging.info(
+                    "NEW_YEAR_SEND_NOW enqueued job_id=%s user_id=%s",
+                    job_id,
+                    user_id,
+                )
+                await self.api_request(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": query["id"],
+                        "text": "Задача поставлена в очередь",
+                    },
+                )
+                await self.api_request(
+                    "sendMessage",
+                    {
+                        "chat_id": user_id,
+                        "text": (
+                            "✅ Внеочередная публикация «Новогоднее настроение» поставлена в очередь "
                             f"(задача #{job_id})."
                         ),
                     },
@@ -11685,7 +11758,7 @@ class Bot:
                     },
                 ]
             )
-        if rubric.code == "postcard":
+        if rubric.code in {"postcard", "new_year"}:
             keyboard_rows.append(
                 [
                     {
@@ -11694,7 +11767,7 @@ class Bot:
                     },
                     {
                         "text": "Отправить сейчас",
-                        "callback_data": "postcard_send_now",
+                        "callback_data": f"{rubric.code}_send_now",
                     }
                 ]
             )
@@ -15243,6 +15316,266 @@ class Bot:
         await self._cleanup_assets(assets, extra_paths=overlay_paths)
         return True
 
+    async def _prepare_new_year_photo_upload(
+        self,
+        asset: Asset,
+        source_path: str,
+    ) -> tuple[bytes, str, str] | None:
+        temp_path: Path | None = None
+        try:
+            send_path, cleanup_path, filename, content_type, *_ = self._prepare_photo_for_upload(
+                source_path
+            )
+            temp_path = cleanup_path
+            return send_path.read_bytes(), filename, content_type
+        except FileNotFoundError:
+            logging.error("NEW_YEAR_RUBRIC source_missing asset_id=%s", asset.id)
+            return None
+        except Exception:
+            logging.exception("NEW_YEAR_RUBRIC prepare_upload_failed asset_id=%s", asset.id)
+            return None
+        finally:
+            if temp_path is not None:
+                self._remove_file(str(temp_path))
+
+    def _select_new_year_assets(self, *, limit: int, test: bool) -> list[Asset]:
+        target_limit = max(1, min(limit, 4))
+        rows = self.db.execute(
+            """
+            SELECT
+                a.id,
+                a.postcard_score AS score,
+                a.captured_at,
+                a.created_at,
+                json_extract(a.payload_json, '$.tags') AS tags,
+                json_extract(a.payload_json, '$.postcard_last_used_at') AS postcard_last_used_at,
+                (
+                    SELECT MAX(ph.published_at)
+                    FROM posts_history ph
+                    JOIN rubrics r ON r.id = ph.rubric_id
+                    WHERE ph.asset_id = a.id AND r.code = 'new_year'
+                      AND COALESCE(json_extract(ph.metadata, '$.test'), 0) != 1
+                ) AS history_last_used_at
+            FROM assets a
+            WHERE a.postcard_score BETWEEN ? AND ?
+            """,
+            (POSTCARD_MIN_SCORE, 10),
+        ).fetchall()
+
+        def _normalize_tags(raw: Any) -> set[str]:
+            tags: set[str] = set()
+            values = Asset._ensure_list(raw)
+            for value in values:
+                text = str(value or "").strip().lower()
+                if not text:
+                    continue
+                tags.add(text.replace(" ", "_"))
+            return tags
+
+        def _parse_dt(raw: Any) -> datetime | None:
+            if raw is None:
+                return None
+            text = str(raw).strip()
+            if not text:
+                return None
+            try:
+                parsed = datetime.fromisoformat(text)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed
+
+        tag_hints = {
+            "new_year",
+            "newyear",
+            "новыйгод",
+            "новогодний",
+            "новогоднее",
+            "christmas",
+            "xmas",
+            "holiday_lights",
+        }
+
+        candidates: list[tuple[int, datetime | None, Asset]] = []
+        for row in rows:
+            tags = _normalize_tags(row["tags"])
+            if not tags.intersection(tag_hints):
+                continue
+            if not test and row["history_last_used_at"]:
+                continue
+            asset = self.data.get_asset(row["id"])
+            if not asset:
+                continue
+            score = Asset._normalize_postcard_score(row["score"])
+            if score is None:
+                continue
+            captured = _parse_dt(row["captured_at"]) or _parse_dt(asset.captured_at)
+            created = _parse_dt(row["created_at"]) or _parse_dt(asset.created_at)
+            reference = captured or created
+            candidates.append((score, reference, asset))
+
+        sorted_candidates = sorted(
+            candidates,
+            key=lambda item: (
+                -item[0],
+                -(item[1].timestamp() if item[1] else float("-inf")),
+            ),
+        )
+        return [asset for _, _, asset in sorted_candidates[:target_limit]]
+
+    async def _publish_new_year(
+        self,
+        rubric: Rubric,
+        channel_id: int,
+        *,
+        test: bool = False,
+        job: Job | None = None,
+        initiator_id: int | None = None,
+        instructions: str | None = None,
+    ) -> bool:
+        job_id = getattr(job, "id", None) if job else None
+        config = rubric.config or {}
+        is_prod = not test
+        rubric_title = rubric.title or "Новогоднее настроение"
+        logging.info(
+            "NEW_YEAR_RUBRIC publish_start job_id=%s test=%d channel_id=%s instructions=%s",
+            job_id or "-",
+            int(test),
+            channel_id,
+            bool(instructions),
+        )
+        asset_cfg = config.get("assets") or {}
+        min_count = self._parse_positive_int(asset_cfg.get("min")) or 1
+        max_count = self._parse_positive_int(asset_cfg.get("max")) or max(min_count, 4)
+
+        assets = self._select_new_year_assets(limit=max_count, test=test)
+        if len(assets) < min_count:
+            logging.info(
+                "NEW_YEAR_RUBRIC insufficient_assets job_id=%s found=%s min=%s",
+                job_id or "-",
+                len(assets),
+                min_count,
+            )
+            await self._notify_new_year_no_inventory(
+                rubric_title=rubric_title,
+                initiator_id=initiator_id,
+            )
+            return initiator_id is not None
+
+        prepared_items: list[tuple[Asset, bytes, str, str]] = []
+        cleanup_assets: list[Asset] = []
+        for asset in assets:
+            source_path, should_cleanup = await self._ensure_asset_source(asset)
+            if not source_path:
+                logging.warning("NEW_YEAR_RUBRIC missing_source asset_id=%s", asset.id)
+                continue
+            prepared = await self._prepare_new_year_photo_upload(asset, source_path)
+            if not prepared:
+                continue
+            file_bytes, filename, content_type = prepared
+            prepared_items.append((asset, file_bytes, filename, content_type))
+            if should_cleanup:
+                cleanup_assets.append(asset)
+        if not prepared_items:
+            await self._notify_new_year_no_inventory(
+                rubric_title=rubric_title,
+                initiator_id=initiator_id,
+            )
+            return initiator_id is not None
+
+        hashtags: list[str] = []
+        for asset, *_ in prepared_items:
+            if asset.hashtags:
+                hashtags.extend(
+                    tag for tag in asset.hashtags.split() if isinstance(tag, str) and tag.strip()
+                )
+        hashtags.append("#новыйгод")
+        unique_hashtags = []
+        seen = set()
+        for tag in hashtags:
+            normalized = tag.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_hashtags.append(normalized)
+
+        caption_parts = ["🎄 Новогоднее настроение"]
+        if instructions:
+            caption_parts.append(str(instructions).strip())
+        if unique_hashtags:
+            caption_parts.append(" ".join(unique_hashtags))
+        caption = "\n\n".join(part for part in caption_parts if part)
+
+        files: dict[str, tuple[str, bytes, str]] = {}
+        media: list[dict[str, Any]] = []
+        for idx, (asset, file_bytes, filename, content_type) in enumerate(prepared_items):
+            attach_name = f"file{idx}"
+            files[attach_name] = (filename, file_bytes, content_type)
+            item: dict[str, Any] = {"type": "photo", "media": f"attach://{attach_name}"}
+            if idx == 0:
+                item["caption"] = caption
+            media.append(item)
+
+        if len(media) == 1:
+            response = await self.api_request(
+                "sendPhoto",
+                {"chat_id": channel_id, "caption": caption},
+                files={"photo": files["file0"]},
+            )
+        else:
+            media[0]["caption"] = caption
+            response = await self.api_request(
+                "sendMediaGroup",
+                {"chat_id": channel_id, "media": media},
+                files=files,
+            )
+        if not response.get("ok"):
+            logging.error("NEW_YEAR_RUBRIC publish_failed response=%s", response)
+            return False
+
+        result_payload = response.get("result")
+        message_id: int
+        if isinstance(result_payload, list) and result_payload:
+            message_id = int(result_payload[0].get("message_id") or 0)
+        elif isinstance(result_payload, dict):
+            message_id = int(result_payload.get("message_id") or 0)
+        else:
+            message_id = 0
+
+        if is_prod:
+            self.data.mark_assets_used([asset.id for asset, *_ in prepared_items], rubric_code="new_year")
+
+        metadata = {
+            "rubric_code": rubric.code,
+            "asset_ids": [asset.id for asset, *_ in prepared_items],
+            "test": test,
+            "caption": caption,
+        }
+        self.data.record_post_history(
+            channel_id,
+            message_id,
+            prepared_items[0][0].id,
+            rubric.id,
+            metadata,
+        )
+
+        try:
+            await self._cleanup_assets(cleanup_assets)
+        except Exception:
+            logging.exception(
+                "NEW_YEAR_RUBRIC cleanup_failed asset_ids=%s",
+                [asset.id for asset in cleanup_assets],
+            )
+
+        await self._send_new_year_inventory_report(
+            is_prod=is_prod,
+            rubric_title=rubric_title,
+            initiator_id=initiator_id,
+        )
+
+        return True
+
     def _prepare_postcard_photo_upload(
         self,
         asset: Asset,
@@ -15735,6 +16068,248 @@ class Bot:
             except Exception as exc:
                 logging.error(
                     "POSTCARD_RUBRIC skip_notify_failed target_id=%s err=%s",
+                    target_id,
+                    str(exc)[:200],
+                )
+
+    def _compute_new_year_inventory_stats(
+        self,
+    ) -> tuple[int, dict[int, int], dict[str, int]]:
+        def _normalize_last_used(raw: Any) -> datetime | None:
+            if isinstance(raw, (list, tuple, set)):
+                parsed = [_normalize_last_used(item) for item in raw]
+                moments = [dt for dt in parsed if dt is not None]
+                return max(moments) if moments else None
+            if raw is None:
+                return None
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="ignore")
+            if isinstance(raw, (int, float)):
+                try:
+                    return datetime.fromtimestamp(float(raw), tz=UTC)
+                except (OSError, OverflowError, ValueError):
+                    return None
+            if isinstance(raw, str):
+                text = raw.strip()
+                if not text:
+                    return None
+                if text.startswith("[") and text.endswith("]"):
+                    try:
+                        parsed = json.loads(text)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        parsed = None
+                    if isinstance(parsed, (list, tuple, set)):
+                        return _normalize_last_used(parsed)
+                normalized = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
+                try:
+                    parsed = datetime.fromisoformat(normalized)
+                except ValueError:
+                    try:
+                        timestamp = float(text)
+                    except ValueError:
+                        return None
+                    try:
+                        return datetime.fromtimestamp(timestamp, tz=UTC)
+                    except (OSError, OverflowError, ValueError):
+                        return None
+                if parsed.tzinfo is None:
+                    return parsed.replace(tzinfo=UTC)
+                return parsed.astimezone(UTC)
+            return None
+
+        def _normalize_tags(raw: Any) -> set[str]:
+            tags: set[str] = set()
+            values = Asset._ensure_list(raw)
+            for value in values:
+                text = str(value or "").strip().lower()
+                if not text:
+                    continue
+                tags.add(text.replace(" ", "_"))
+            return tags
+
+        recent_cutoff = datetime.now(UTC) - POSTCARD_RECENT_USAGE_WINDOW
+        rows = self.db.execute(
+            """
+            SELECT
+                a.id,
+                a.postcard_score AS score,
+                json_extract(a.payload_json, '$.tags') AS tags,
+                json_extract(a.payload_json, '$.postcard_last_used_at') AS postcard_last_used_at,
+                (
+                    SELECT MAX(ph.published_at)
+                    FROM posts_history ph
+                    JOIN rubrics r ON r.id = ph.rubric_id
+                    WHERE ph.asset_id = a.id AND r.code = 'new_year'
+                      AND COALESCE(json_extract(ph.metadata, '$.test'), 0) != 1
+                ) AS history_last_used_at
+            FROM assets a WHERE postcard_score BETWEEN ? AND ?
+            """,
+            (POSTCARD_MIN_SCORE, 10),
+        ).fetchall()
+
+        tag_hints = {
+            "new_year",
+            "newyear",
+            "новыйгод",
+            "новогодний",
+            "новогоднее",
+            "christmas",
+            "xmas",
+            "holiday_lights",
+        }
+
+        score_counts: dict[int, int] = {score: 0 for score in range(POSTCARD_MIN_SCORE, 11)}
+        total_count = 0
+        skip_counts: dict[str, int] = {
+            "recent": 0,
+            "invalid_score": 0,
+            "tag": 0,
+            "other": 0,
+        }
+        for row in rows:
+            try:
+                score = int(row["score"])
+            except (TypeError, ValueError):
+                logging.debug("NEW_YEAR_INVENTORY skip_row row=%s", dict(row))
+                skip_counts["invalid_score"] += 1
+                continue
+            if score < POSTCARD_MIN_SCORE or score > 10:
+                skip_counts["invalid_score"] += 1
+                continue
+            tags = _normalize_tags(row["tags"])
+            if not tags.intersection(tag_hints):
+                skip_counts["tag"] += 1
+                continue
+            last_used_raw = row["postcard_last_used_at"] or row["history_last_used_at"]
+            last_used = _normalize_last_used(last_used_raw)
+            if last_used and last_used >= recent_cutoff:
+                skip_counts["recent"] += 1
+                continue
+            score_counts[score] = score_counts.get(score, 0) + 1
+            total_count += 1
+
+        raw_count = len(rows)
+        skip_counts["other"] = max(
+            raw_count - total_count - skip_counts["recent"] - skip_counts["invalid_score"] - skip_counts["tag"],
+            0,
+        )
+        return total_count, score_counts, skip_counts
+
+    async def _send_new_year_inventory_report(
+        self,
+        *,
+        is_prod: bool,
+        rubric_title: str | None = None,
+        initiator_id: int | None = None,
+    ) -> None:
+        total_count, score_counts, skip_counts = self._compute_new_year_inventory_stats()
+
+        logging.info("NEW_YEAR_INVENTORY_COUNTS raw=%s", dict(score_counts))
+        logging.info(
+            "NEW_YEAR_INVENTORY_REPORT prod=%d total=%d min_score=%s",
+            int(is_prod),
+            total_count,
+            POSTCARD_MIN_SCORE,
+        )
+
+        rows = [
+            self._format_inventory_row(f"{score}/10", score_counts.get(score, 0))
+            for score in range(POSTCARD_MIN_SCORE, 11)
+        ]
+        sections: list[tuple[str, Sequence[str]]] = [("Открыточность (7–10)", rows)]
+        filtered_rows: list[str] = []
+        if skip_counts.get("recent"):
+            filtered_rows.append(
+                self._format_inventory_row(
+                    "Недавние (скрыты окном повторов)",
+                    skip_counts["recent"],
+                    warning_threshold=None,
+                    warn_marker="",
+                )
+            )
+        if skip_counts.get("invalid_score"):
+            filtered_rows.append(
+                self._format_inventory_row(
+                    "Низкий/невалидный postcard_score",
+                    skip_counts["invalid_score"],
+                    warning_threshold=None,
+                    warn_marker="",
+                )
+            )
+        if skip_counts.get("tag"):
+            filtered_rows.append(
+                self._format_inventory_row(
+                    "Без новогоднего оформления",
+                    skip_counts["tag"],
+                    warning_threshold=None,
+                    warn_marker="",
+                )
+            )
+        if skip_counts.get("other"):
+            filtered_rows.append(
+                self._format_inventory_row(
+                    "Прочие пропуски",
+                    skip_counts["other"],
+                    warning_threshold=None,
+                    warn_marker="",
+                )
+            )
+        if filtered_rows:
+            sections.append(("⚠️ мало — скрыто фильтрами", filtered_rows))
+        title = rubric_title or "Новогоднее настроение"
+        report_text = self._compose_inventory_report_text(
+            rubric_title=title,
+            total_count=total_count,
+            sections=sections,
+        )
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "Отправить сейчас",
+                        "callback_data": "new_year_send_now",
+                    }
+                ]
+            ]
+        }
+        await self._send_inventory_report_message(
+            rubric_code="new_year",
+            report_text=report_text,
+            total_count=total_count,
+            is_prod=is_prod,
+            initiator_id=initiator_id,
+            reply_markup=reply_markup,
+        )
+
+    async def _notify_new_year_no_inventory(
+        self,
+        *,
+        rubric_title: str | None,
+        initiator_id: int | None = None,
+    ) -> None:
+        title = rubric_title or "Новогоднее настроение"
+        message_text = (
+            f"⚠️ Рубрика «{title}» пропущена — нет подходящих фотографий (открыточность "
+            f"{POSTCARD_MIN_SCORE}–10 баллов)."
+        )
+        target_ids = [initiator_id] if initiator_id else self.get_superadmin_ids()
+        if not target_ids:
+            logging.info("NEW_YEAR_RUBRIC skip_notify recipients=0 min_score=%s", POSTCARD_MIN_SCORE)
+            return
+        for target_id in target_ids:
+            try:
+                await self.api_request(
+                    "sendMessage",
+                    {"chat_id": target_id, "text": message_text},
+                )
+                logging.info(
+                    "NEW_YEAR_RUBRIC skip_notify_sent target_id=%s min_score=%s",
+                    target_id,
+                    POSTCARD_MIN_SCORE,
+                )
+            except Exception as exc:
+                logging.error(
+                    "NEW_YEAR_RUBRIC skip_notify_failed target_id=%s err=%s",
                     target_id,
                     str(exc)[:200],
                 )

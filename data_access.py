@@ -1545,6 +1545,7 @@ class DataAccess:
         forward_from_user: int | None = None,
         forward_from_chat: int | None = None,
         metadata: dict[str, Any] | None = None,
+        payload_tags: list[str] | None = None,
         recognized_message_id: int | None = None,
         vision_results: dict[str, Any] | None = None,
         latitude: float | None = None,
@@ -1654,6 +1655,19 @@ class DataAccess:
             merged.update(metadata)
             cleaned = self._prepare_metadata(merged)
             payload_updates["metadata"] = cleaned
+        if payload_tags is not None:
+            normalized_tags: list[str] = []
+            seen_tags: set[str] = set()
+            for tag in Asset._ensure_list(payload_tags):
+                text = str(tag or "").strip()
+                if not text:
+                    continue
+                lowered = text.lower()
+                if lowered in seen_tags:
+                    continue
+                seen_tags.add(lowered)
+                normalized_tags.append(lowered)
+            payload_updates["tags"] = normalized_tags
         if recognized_message_id is not None:
             payload_updates["recognized_message_id"] = recognized_message_id
         if rubric_id is not None:

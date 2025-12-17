@@ -15785,6 +15785,8 @@ class Bot:
                 hashtags.extend(
                     tag for tag in asset.hashtags.split() if isinstance(tag, str) and tag.strip()
                 )
+        tag_year = today_kaliningrad.year + int(today_kaliningrad.month == 12)
+        hashtags.append(f"#новыйгод{tag_year}")
         hashtags.append("#новыйгод")
         unique_hashtags = []
         seen = set()
@@ -17663,6 +17665,11 @@ class Bot:
             seen_tags.add(key)
             final_hashtags.append(normalized)
 
+        caption_text = main_plain or fallback_caption_plain
+        if not caption_text:
+            caption_text = fallback_caption_plain
+        caption_text = _ensure_paragraph_break(caption_text.strip())
+
         append_tag("#море")
         append_tag("#БалтийскоеМоре")
         if place_hashtag:
@@ -17673,11 +17680,7 @@ class Bot:
         active_hashtags = list(final_hashtags)
 
         link_block = build_rubric_link_block("sea")
-
-        caption_text = main_plain or fallback_caption_plain
-        if not caption_text:
-            caption_text = fallback_caption_plain
-        caption_text = _ensure_paragraph_break(caption_text.strip())
+        include_link_block = bool(link_block)
 
         def _trim_plain_to_html_limit(value: str, html_limit: int) -> str:
             if html_limit <= 0:
@@ -17696,33 +17699,20 @@ class Bot:
                     high = mid - 1
             return best
 
-        def compose_caption(
-            caption_plain: str,
-            include_link: bool,
-            hashtags: list[str],
-        ) -> tuple[str, list[str]]:
-            caption_html = html.escape(caption_plain) if caption_plain else ""
-            hashtags_line = " ".join(hashtags)
-            hashtags_html = html.escape(hashtags_line) if hashtags_line else ""
-            composed: list[str] = []
-            if caption_html:
-                composed.append(caption_html)
-            if include_link and link_block:
-                composed.append(link_block)
-            if hashtags_html:
-                composed.append(hashtags_html)
-            full = "\n\n".join(composed)
-            return full, composed
-
-        include_link_block = bool(link_block)
         caption_plain_final = caption_text
-        full_caption, caption_segments = compose_caption(
-            caption_text,
-            include_link_block,
-            active_hashtags,
-        )
-        caption_segments = [segment for segment in caption_segments if segment]
-        full_caption = "\n\n".join(caption_segments)
+        caption_parts: list[str] = []
+        main_segment = html.escape(caption_text) if caption_text else ""
+        if main_segment:
+            caption_parts.append(main_segment)
+        if link_block:
+            caption_parts.append(link_block)
+        hashtags_line = " ".join(active_hashtags)
+        hashtags_segment = html.escape(hashtags_line) if hashtags_line else ""
+        if hashtags_segment:
+            caption_parts.append(hashtags_segment)
+
+        caption_parts = [segment for segment in caption_parts if segment]
+        full_caption = "\n\n".join(caption_parts)
         logging.info("SEA_RUBRIC caption_length=%s", len(full_caption))
 
         CAP_LIMIT = 990
@@ -17735,22 +17725,22 @@ class Bot:
             should_trim = overflow >= TRIM_OVERFLOW_THRESHOLD
             if should_trim:
                 reserved = 0
-                for segment in caption_segments[1:]:
+                for segment in caption_parts[1:]:
                     reserved += len("\n\n") + len(segment)
                 available_html = CAP_LIMIT - reserved
                 if available_html < 0:
                     available_html = 0
-                if caption_segments and caption_text:
+                if caption_parts and caption_text:
                     trimmed_plain = _trim_plain_to_html_limit(caption_text, available_html)
                     if trimmed_plain:
                         trimmed_plain = _ensure_paragraph_break(trimmed_plain)
                     caption_plain_final = trimmed_plain if trimmed_plain else ""
-                    caption_segments[0] = html.escape(trimmed_plain) if trimmed_plain else ""
-                caption_segments = [segment for segment in caption_segments if segment]
-                full_caption = "\n\n".join(caption_segments)
+                    caption_parts[0] = html.escape(trimmed_plain) if trimmed_plain else ""
+                caption_parts = [segment for segment in caption_parts if segment]
+                full_caption = "\n\n".join(caption_parts)
                 if len(full_caption) > CAP_LIMIT:
                     full_caption = full_caption[:CAP_LIMIT].rstrip()
-                    caption_segments = [
+                    caption_parts = [
                         segment for segment in full_caption.split("\n\n") if segment
                     ]
                 logging.warning(

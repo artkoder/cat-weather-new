@@ -17,6 +17,24 @@ from data_access import Asset, DataAccess
 
 logger = logging.getLogger(__name__)
 
+_FORBIDDEN_NEW_YEAR_TAGS = frozenset(
+    {
+        "new_year",
+        "newyear",
+        "new-year",
+        "christmas",
+        "xmas",
+        "новыйгод",
+        "новый год",
+        "новый_год",
+        "новый-год",
+        "новогодний",
+        "новогодняя",
+        "новогодние",
+        "рождество",
+        "рождественский",
+    }
+)
 _MIN_SCORE = 7
 _CANDIDATE_LIMIT = 200
 _FRESHNESS_WINDOW = timedelta(days=3)
@@ -104,7 +122,7 @@ def select_postcard_asset(
 
     for score in scores:
         rows = data.conn.execute(
-            """
+            f"""
             SELECT
                 a.id,
                 a.postcard_score,
@@ -112,6 +130,7 @@ def select_postcard_asset(
                 a.created_at,
                 a.photo_doy,
                 json_extract(a.payload_json, '$.tags') AS tags,
+                json_extract(a.payload_json, '$.metadata.tags') AS metadata_tags,
                 json_extract(a.payload_json, '$.postcard_last_used_at') AS postcard_last_used_at,
                 (
                     SELECT MAX(ph.published_at)
@@ -123,12 +142,32 @@ def select_postcard_asset(
                 json_extract(a.payload_json, '$.region') AS region
             FROM assets a
             WHERE a.postcard_score = ?
+              AND NOT EXISTS (
+                  SELECT 1
+                    FROM (
+                        SELECT json_extract(a.payload_json, '$.tags') AS tags_json
+                        UNION ALL
+                        SELECT json_extract(a.payload_json, '$.metadata.tags')
+                    ) AS tag_sources
+                   CROSS JOIN json_each(COALESCE(tag_sources.tags_json, '[]')) AS je
+                   WHERE lower(CAST(je.value AS TEXT)) IN (
+                       {','.join('?' for _ in _FORBIDDEN_NEW_YEAR_TAGS)}
+                   )
+              )
             ORDER BY a.captured_at DESC, a.created_at DESC, a.id ASC
             LIMIT ?
             """,
-            (score, _CANDIDATE_LIMIT),
+            (score, *sorted(_FORBIDDEN_NEW_YEAR_TAGS), _CANDIDATE_LIMIT),
         ).fetchall()
-        candidates = [_build_candidate(row) for row in rows]
+        candidates: list[_Candidate] = []
+        for row in rows:
+            candidate = _build_candidate(row)
+            if candidate:
+                candidates.append(candidate)
+            else:
+                logger.info(
+                    "POSTCARD_RUBRIC candidate_filtered forbidden_tags asset_id=%s", row["id"]
+                )
         if not candidates:
             logger.info(
                 "POSTCARD_RUBRIC score_pool empty_rows current_score=%s threshold=%s",
@@ -316,7 +355,7 @@ def _ensure_aware(moment: datetime) -> datetime:
     return moment.astimezone(timezone.utc)
 
 
-def _build_candidate(row: Any) -> _Candidate:
+def _build_candidate(row: Any) -> _Candidate | None:
     asset_id = str(row["id"])
     score = int(row["postcard_score"])
     captured_raw = _to_str(row["captured_at"])
@@ -325,6 +364,10 @@ def _build_candidate(row: Any) -> _Candidate:
     city = _normalize_optional_str(row["city"])
     region = _normalize_optional_str(row["region"])
     tags = _parse_tags(row["tags"])
+    metadata_tags = _parse_tags(row["metadata_tags"])
+    merged_tags = tags | metadata_tags
+    if _contains_forbidden_tags(merged_tags):
+        return None
     postcard_usage_raw = row["postcard_last_used_at"]
     last_used_raw = _to_str(postcard_usage_raw) or _to_str(row["postcard_history_last_used"])
     history_items = list(_parse_last_used_history(postcard_usage_raw))
@@ -344,7 +387,7 @@ def _build_candidate(row: Any) -> _Candidate:
         city=city,
         region=region,
         last_used_raw=last_used_raw,
-        tags=tags,
+        tags=merged_tags,
         last_used_history=last_used_history,
         captured_dt=captured_dt,
         created_dt=created_dt,
@@ -365,6 +408,13 @@ def _sort_key(candidate: _Candidate, *, penalties: dict[str, int]) -> tuple[int,
     reference = candidate.effective_dt
     timestamp = reference.timestamp() if reference else float("-inf")
     return (penalty, -timestamp, candidate.asset_id)
+
+
+def _contains_forbidden_tags(tags: frozenset[str]) -> bool:
+    if not tags:
+        return False
+    lowered = {tag.lower() for tag in tags}
+    return bool(lowered & _FORBIDDEN_NEW_YEAR_TAGS)
 
 
 def _parse_iso(value: str | None) -> datetime | None:

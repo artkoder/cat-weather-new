@@ -15622,9 +15622,8 @@ class Bot:
                       AND COALESCE(json_extract(ph.metadata, '$.test'), 0) != 1
                 ) AS history_last_used_at
             FROM assets a
-            WHERE a.postcard_score BETWEEN ? AND ?
+            WHERE a.postcard_score BETWEEN 1 AND 10
             """,
-            (POSTCARD_MIN_SCORE, 10),
         ).fetchall()
 
         def _normalize_tags(raw: Any) -> set[str]:
@@ -16467,9 +16466,8 @@ class Bot:
                     WHERE ph.asset_id = a.id AND r.code = 'new_year'
                       AND COALESCE(json_extract(ph.metadata, '$.test'), 0) != 1
                 ) AS history_last_used_at
-            FROM assets a WHERE postcard_score BETWEEN ? AND ?
+            FROM assets a WHERE postcard_score BETWEEN 1 AND 10
             """,
-            (POSTCARD_MIN_SCORE, 10),
         ).fetchall()
 
         tag_hints = {
@@ -16483,7 +16481,7 @@ class Bot:
             "holiday_lights",
         }
 
-        score_counts: dict[int, int] = {score: 0 for score in range(POSTCARD_MIN_SCORE, 11)}
+        score_counts: dict[int, int] = {score: 0 for score in range(1, 11)}
         total_count = 0
         skip_counts: dict[str, int] = {
             "recent": 0,
@@ -16498,7 +16496,7 @@ class Bot:
                 logging.debug("NEW_YEAR_INVENTORY skip_row row=%s", dict(row))
                 skip_counts["invalid_score"] += 1
                 continue
-            if score < POSTCARD_MIN_SCORE or score > 10:
+            if score < 1 or score > 10:
                 skip_counts["invalid_score"] += 1
                 continue
             tags = _normalize_tags(row["tags"])
@@ -16531,17 +16529,17 @@ class Bot:
 
         logging.info("NEW_YEAR_INVENTORY_COUNTS raw=%s", dict(score_counts))
         logging.info(
-            "NEW_YEAR_INVENTORY_REPORT prod=%d total=%d min_score=%s",
+            "NEW_YEAR_INVENTORY_REPORT prod=%d total=%d score_range=%s",
             int(is_prod),
             total_count,
-            POSTCARD_MIN_SCORE,
+            "1-10",
         )
 
         rows = [
             self._format_inventory_row(f"{score}/10", score_counts.get(score, 0))
-            for score in range(POSTCARD_MIN_SCORE, 11)
+            for score in range(1, 11)
         ]
-        sections: list[tuple[str, Sequence[str]]] = [("Открыточность (7–10)", rows)]
+        sections: list[tuple[str, Sequence[str]]] = [("Открыточность (1–10)", rows)]
         filtered_rows: list[str] = []
         if skip_counts.get("recent"):
             filtered_rows.append(
@@ -16615,11 +16613,11 @@ class Bot:
         title = rubric_title or "Новогоднее настроение"
         message_text = (
             f"⚠️ Рубрика «{title}» пропущена — нет подходящих фотографий (открыточность "
-            f"{POSTCARD_MIN_SCORE}–10 баллов)."
+            "1–10 баллов)."
         )
         target_ids = [initiator_id] if initiator_id else self.get_superadmin_ids()
         if not target_ids:
-            logging.info("NEW_YEAR_RUBRIC skip_notify recipients=0 min_score=%s", POSTCARD_MIN_SCORE)
+            logging.info("NEW_YEAR_RUBRIC skip_notify recipients=0 score_range=1-10")
             return
         for target_id in target_ids:
             try:
@@ -16628,9 +16626,8 @@ class Bot:
                     {"chat_id": target_id, "text": message_text},
                 )
                 logging.info(
-                    "NEW_YEAR_RUBRIC skip_notify_sent target_id=%s min_score=%s",
+                    "NEW_YEAR_RUBRIC skip_notify_sent target_id=%s score_range=1-10",
                     target_id,
-                    POSTCARD_MIN_SCORE,
                 )
             except Exception as exc:
                 logging.error(

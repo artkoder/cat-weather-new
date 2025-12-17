@@ -10435,6 +10435,52 @@ class Bot:
             if state and state.get("mode") == "schedule_wizard":
                 state["step"] = "main"
                 await self._edit_rubric_input_message(user_id)
+        elif data == "rubric_sched_months" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                state["step"] = "months"
+                await self._edit_rubric_input_message(user_id)
+        elif data.startswith("rubric_sched_month:") and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                try:
+                    month = int(data.split(":", 1)[1])
+                except ValueError:
+                    month = 1
+                schedule = state.setdefault("schedule", {})
+                months = schedule.get("months")
+                if not isinstance(months, list):
+                    months = list(months) if isinstance(months, tuple) else []
+                normalized_months: list[int] = []
+                for item in months:
+                    try:
+                        normalized_months.append(int(item))
+                    except (TypeError, ValueError):
+                        continue
+                months = normalized_months
+                if month in months:
+                    months.remove(month)
+                else:
+                    months.append(month)
+                schedule["months"] = months
+                await self._edit_rubric_input_message(user_id)
+        elif data == "rubric_sched_months_all" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                schedule = state.setdefault("schedule", {})
+                schedule["months"] = list(range(1, 13))
+                await self._edit_rubric_input_message(user_id)
+        elif data == "rubric_sched_months_clear" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                schedule = state.setdefault("schedule", {})
+                schedule["months"] = []
+                await self._edit_rubric_input_message(user_id)
+        elif data == "rubric_sched_months_done" and self.is_superadmin(user_id):
+            state = self.pending.get(user_id, {}).get("rubric_input")
+            if state and state.get("mode") == "schedule_wizard":
+                state["step"] = "main"
+                await self._edit_rubric_input_message(user_id)
         elif data == "rubric_sched_toggle_enabled" and self.is_superadmin(user_id):
             state = self.pending.get(user_id, {}).get("rubric_input")
             if state and state.get("mode") == "schedule_wizard":
@@ -10459,6 +10505,8 @@ class Bot:
                 schedule_data = dict(state.get("schedule") or {})
                 if isinstance(schedule_data.get("days"), tuple):
                     schedule_data["days"] = list(schedule_data["days"])
+                if isinstance(schedule_data.get("months"), tuple):
+                    schedule_data["months"] = list(schedule_data["months"])
                 action = state.get("action")
                 message_obj = state.get("message")
                 try:
@@ -10595,6 +10643,16 @@ class Bot:
                     continue
                 tz_value = schedule.get("tz") or config.get("tz") or TZ_OFFSET
                 days = schedule.get("days") or config.get("days")
+                months = schedule.get("months") if schedule.get("months") is not None else config.get("months")
+                allowed_months = self._normalize_months(months)
+                if allowed_months:
+                    tzinfo = self._parse_tz_offset(tz_value)
+                    reference_now = now
+                    if reference_now.tzinfo is None:
+                        reference_now = reference_now.replace(tzinfo=UTC)
+                    local_now = reference_now.astimezone(tzinfo)
+                    if local_now.month not in allowed_months:
+                        continue
                 if slot_channel_id:
                     key = schedule.get("key") or f"{slot_channel_id}:{idx}:{time_str}"
                 else:
@@ -11074,21 +11132,24 @@ class Bot:
         fallback_channel: int | None,
         fallback_tz: str | None,
         fallback_days: Any,
+        fallback_months: Any,
     ) -> str:
         time_str = schedule.get("time") or "—"
         tz_value = schedule.get("tz") or fallback_tz or TZ_OFFSET
         schedule_channel = schedule.get("channel_id") or fallback_channel
         enabled = schedule.get("enabled", True)
         days = schedule.get("days") if schedule.get("days") is not None else fallback_days
-        if isinstance(days, (list, tuple)):
-            days_repr = ",".join(str(d) for d in days)
-        else:
-            days_repr = str(days) if days else "—"
+        days_repr = self._format_weekdays(days)
+        months = schedule.get("months") if schedule.get("months") is not None else fallback_months
+        months_repr = self._format_months(months)
         channel_repr = str(schedule_channel) if schedule_channel is not None else "—"
         flag = "✅" if enabled else "❌"
         key = schedule.get("key")
         suffix = f" key={key}" if key else ""
-        return f"#{index + 1}: {time_str} (tz {tz_value}) → {channel_repr}, дни: {days_repr} {flag}{suffix}"
+        return (
+            f"#{index + 1}: {time_str} (tz {tz_value}) → {channel_repr}, "
+            f"дни: {days_repr}, месяцы: {months_repr} {flag}{suffix}"
+        )
 
     def _get_channel_title(self, chat_id: int | None) -> str:
         if chat_id is None:
@@ -11123,12 +11184,49 @@ class Bot:
         }
         return mapping.get(day, day)
 
+    @staticmethod
+    def _month_label(month: int | str) -> str:
+        mapping = {
+            1: "Янв",
+            2: "Фев",
+            3: "Мар",
+            4: "Апр",
+            5: "Май",
+            6: "Июн",
+            7: "Июл",
+            8: "Авг",
+            9: "Сен",
+            10: "Окт",
+            11: "Ноя",
+            12: "Дек",
+        }
+        try:
+            idx = int(month)
+        except (TypeError, ValueError):
+            return str(month)
+        return mapping.get(idx, str(month))
+
     def _format_weekdays(self, days: Iterable[str] | str | None) -> str:
         if not days:
             return "—"
         if isinstance(days, str):
             return days
         labels = [self._weekday_label(day) for day in days]
+        return ", ".join(labels) if labels else "—"
+
+    def _format_months(self, months: Iterable[int] | int | str | None) -> str:
+        if months is None:
+            return "—"
+        if isinstance(months, (int, str)):
+            try:
+                months_iter: list[int] | list[str] = [int(months)]
+            except (TypeError, ValueError):
+                months_iter = [months]
+        else:
+            months_iter = list(months)
+            if not months_iter:
+                return "Все"
+        labels = [self._month_label(month) for month in months_iter]
         return ", ".join(labels) if labels else "—"
 
     def _get_rubric_input_message_target(self, state: dict[str, Any]) -> tuple[int, int] | None:
@@ -11458,6 +11556,39 @@ class Bot:
         )
         return {"inline_keyboard": rows}
 
+    def _build_months_keyboard(self, schedule: dict[str, Any]) -> dict[str, Any]:
+        current = schedule.get("months")
+        if not isinstance(current, list):
+            current = list(current) if isinstance(current, tuple) else []
+        normalized_current: set[int] = set()
+        for item in current:
+            try:
+                normalized_current.add(int(item))
+            except (TypeError, ValueError):
+                continue
+        rows: list[list[dict[str, Any]]] = []
+        for start in range(1, 13, 4):
+            row: list[dict[str, Any]] = []
+            for month in range(start, min(start + 4, 13)):
+                label = self._month_label(month)
+                if month in normalized_current:
+                    label = f"✅ {label}"
+                row.append(
+                    {
+                        "text": label,
+                        "callback_data": f"rubric_sched_month:{month}",
+                    }
+                )
+            rows.append(row)
+        rows.append(
+            [
+                {"text": "Все", "callback_data": "rubric_sched_months_all"},
+                {"text": "Очистить", "callback_data": "rubric_sched_months_clear"},
+                {"text": "Готово", "callback_data": "rubric_sched_months_done"},
+            ]
+        )
+        return {"inline_keyboard": rows}
+
     def _render_schedule_wizard(self, state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         code = state.get("code") or ""
         schedule = state.setdefault("schedule", {})
@@ -11468,10 +11599,18 @@ class Bot:
             schedule["days"] = (
                 list(fallback_days) if isinstance(fallback_days, (list, tuple)) else fallback_days
             )
+        if schedule.get("months") is None and config.get("months") is not None:
+            fallback_months = config.get("months")
+            schedule["months"] = (
+                list(fallback_months)
+                if isinstance(fallback_months, (list, tuple))
+                else fallback_months
+            )
         lines = [f"Настройка расписания для {code}"]
         time_value = schedule.get("time") or "--:--"
         lines.append(f"Время: {time_value} (TZ {schedule.get('tz')})")
         lines.append(f"Дни: {self._format_weekdays(schedule.get('days'))}")
+        lines.append(f"Месяцы: {self._format_months(schedule.get('months'))}")
         channel_id = schedule.get("channel_id")
         if channel_id is None and config.get("channel_id") is not None:
             channel_text = f"{self._get_channel_title(config.get('channel_id'))} (по умолчанию)"
@@ -11490,6 +11629,9 @@ class Bot:
         elif step == "days":
             lines.append("Выберите дни недели")
             keyboard = self._build_days_keyboard(schedule)
+        elif step == "months":
+            lines.append("Выберите месяцы отправки")
+            keyboard = self._build_months_keyboard(schedule)
         else:
             keyboard_rows: list[list[dict[str, Any]]] = [
                 [
@@ -11502,6 +11644,12 @@ class Bot:
                     {
                         "text": f"📅 Дни: {self._format_weekdays(schedule.get('days'))}",
                         "callback_data": "rubric_sched_days",
+                    }
+                ],
+                [
+                    {
+                        "text": f"📆 Месяцы: {self._format_months(schedule.get('months'))}",
+                        "callback_data": "rubric_sched_months",
                     }
                 ],
                 [
@@ -11688,6 +11836,12 @@ class Bot:
             if days_default
             else "Дни по умолчанию: —"
         )
+        months_default = config.get("months")
+        months_line = (
+            f"Месяцы по умолчанию: {self._format_months(months_default)}"
+            if months_default is not None
+            else "Месяцы по умолчанию: —"
+        )
         weather_city_line: str | None = None
         if rubric.code == "flowers":
             city_name = config.get("weather_city")
@@ -11706,7 +11860,7 @@ class Bot:
         ]
         if weather_city_line:
             lines.append(weather_city_line)
-        lines.extend([tz_line, days_line, "Расписания:"])
+        lines.extend([tz_line, days_line, months_line, "Расписания:"])
         schedules = config.get("schedules", [])
         if schedules:
             for idx, schedule in enumerate(schedules):
@@ -11717,6 +11871,7 @@ class Bot:
                         fallback_channel=channel,
                         fallback_tz=tz_value,
                         fallback_days=days_default,
+                        fallback_months=months_default,
                     )
                 )
         else:
@@ -12028,6 +12183,26 @@ class Bot:
                 if key in mapping:
                     result.add(mapping[key])
         return result
+
+    @staticmethod
+    def _normalize_months(raw_months: Any) -> set[int]:
+        if not raw_months:
+            return set()
+        if isinstance(raw_months, (int, str)):
+            items = [raw_months]
+        elif isinstance(raw_months, Iterable):
+            items = list(raw_months)
+        else:
+            return set()
+        normalized: set[int] = set()
+        for item in items:
+            try:
+                month = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= month <= 12:
+                normalized.add(month)
+        return normalized
 
     async def _ensure_asset_source(self, asset: Asset) -> tuple[str | None, bool]:
         """Provide a local path for an asset and flag whether it should be removed."""

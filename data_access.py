@@ -3308,6 +3308,22 @@ class DataAccess:
             prepared["days"] = list(days)
         elif days is None:
             prepared.pop("days", None)
+        months = prepared.get("months")
+        if isinstance(months, set):
+            prepared["months"] = sorted(months)
+        elif isinstance(months, tuple):
+            prepared["months"] = list(months)
+        elif isinstance(months, list):
+            normalized_months: list[int] = []
+            for item in months:
+                try:
+                    month = int(item)
+                except (TypeError, ValueError):
+                    continue
+                normalized_months.append(month)
+            prepared["months"] = normalized_months
+        elif months is None:
+            prepared.pop("months", None)
         channel_id = prepared.get("channel_id")
         if channel_id in {"", None}:
             prepared.pop("channel_id", None)

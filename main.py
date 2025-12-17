@@ -15847,12 +15847,28 @@ class Bot:
             )
             return initiator_id is not None
 
+        place_hashtag: str | None = None
+        for asset, *_ in prepared_items:
+            if place_hashtag:
+                break
+            if asset.latitude is None or asset.longitude is None:
+                continue
+            geo_data = await self._reverse_geocode(asset.latitude, asset.longitude)
+            if geo_data and geo_data.get("city"):
+                city_name = str(geo_data["city"]).strip()
+                if city_name:
+                    sanitized_city = re.sub(r"\s+", "", city_name)
+                    if sanitized_city:
+                        place_hashtag = f"#{sanitized_city}"
+
         hashtags: list[str] = []
         for asset, *_ in prepared_items:
             if asset.hashtags:
                 hashtags.extend(
                     tag for tag in asset.hashtags.split() if isinstance(tag, str) and tag.strip()
                 )
+        if place_hashtag:
+            hashtags.append(place_hashtag)
         tag_year = today_kaliningrad.year + int(today_kaliningrad.month == 12)
         hashtags.append(f"#новыйгод{tag_year}")
         hashtags.append("#новыйгод")
@@ -15896,6 +15912,7 @@ class Bot:
             emoji_pool = None
 
         emoji_prefix = "".join(self._choose_new_year_emojis(emoji_pool))
+        link_block = build_rubric_link_block("sea") or LOVE_COLLECTION_LINK
         intro_paragraph = _build_intro_paragraph()
         caption_parts = [emoji_prefix, intro_paragraph]
         if fact_sentence:
@@ -15905,6 +15922,8 @@ class Bot:
             caption_parts.append(str(instructions).strip())
         if unique_hashtags:
             caption_parts.append(" ".join(unique_hashtags))
+        if link_block:
+            caption_parts.append(link_block)
         caption = "\n\n".join(part for part in caption_parts if part)
 
         files: dict[str, tuple[str, bytes, str]] = {}

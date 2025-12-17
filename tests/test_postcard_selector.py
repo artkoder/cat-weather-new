@@ -87,6 +87,7 @@ def _add_asset(
     last_used_at: datetime | None = None,
     last_used_history: list[datetime] | None = None,
     tags: list[str] | None = None,
+    metadata_tags: list[str] | None = None,
 ) -> None:
     payload: dict[str, object] = {}
     if city:
@@ -99,6 +100,8 @@ def _add_asset(
         payload["postcard_last_used_at"] = _iso(last_used_at)
     if tags is not None:
         payload["tags"] = tags
+    if metadata_tags is not None:
+        payload["metadata"] = {"tags": metadata_tags}
     data.conn.execute(
         """
         INSERT INTO assets (id, payload_json, created_at, source, postcard_score, captured_at, photo_doy)
@@ -441,6 +444,64 @@ def test_tag_strict_window_skips_high_overlap(data: DataAccess) -> None:
     asset = select_postcard_asset(data, now=now)
     assert asset is not None
     assert asset.id == "asset-clear"
+
+
+def test_filters_new_year_tags_from_payload(data: DataAccess) -> None:
+    tz = ZoneInfo("Europe/Kaliningrad")
+    now = datetime(2024, 7, 20, 12, 0, tzinfo=tz)
+    doy_now = now.timetuple().tm_yday
+
+    _add_asset(
+        data,
+        asset_id="asset-banned",
+        score=10,
+        created_at=now - timedelta(days=1),
+        captured_at=now - timedelta(days=1),
+        photo_doy=doy_now,
+        tags=["sun", "new_year"],
+    )
+    _add_asset(
+        data,
+        asset_id="asset-ok",
+        score=10,
+        created_at=now - timedelta(days=2),
+        captured_at=now - timedelta(days=2),
+        photo_doy=doy_now,
+        tags=["sunset", "sea"],
+    )
+
+    asset = select_postcard_asset(data, now=now)
+    assert asset is not None
+    assert asset.id == "asset-ok"
+
+
+def test_filters_new_year_tags_from_metadata(data: DataAccess) -> None:
+    tz = ZoneInfo("Europe/Kaliningrad")
+    now = datetime(2024, 7, 21, 11, 0, tzinfo=tz)
+    doy_now = now.timetuple().tm_yday
+
+    _add_asset(
+        data,
+        asset_id="asset-meta",
+        score=10,
+        created_at=now - timedelta(days=1),
+        captured_at=now - timedelta(days=1),
+        photo_doy=doy_now,
+        metadata_tags=["Christmas", "winter"],
+    )
+    _add_asset(
+        data,
+        asset_id="asset-valid",
+        score=10,
+        created_at=now - timedelta(days=3),
+        captured_at=now - timedelta(days=3),
+        photo_doy=doy_now,
+        tags=["forest"],
+    )
+
+    asset = select_postcard_asset(data, now=now)
+    assert asset is not None
+    assert asset.id == "asset-valid"
 
 
 def test_tag_soft_window_downranks_candidates(data: DataAccess) -> None:

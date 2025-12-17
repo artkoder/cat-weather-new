@@ -15791,12 +15791,12 @@ class Bot:
             if today_kaliningrad.month == 1:
                 if today_kaliningrad.day <= 6:
                     days_left = _days_until(date(current_year, 1, 7))
-                    return f"До Рождества осталось {days_left} дней"
+                    return f"До Рождества осталось {days_left} дней!"
                 if today_kaliningrad.day == 7:
                     return "С Рождеством!"
                 if 8 <= today_kaliningrad.day <= 13:
                     days_left = _days_until(date(current_year, 1, 14))
-                    return f"До Старого Нового года осталось {days_left} дней"
+                    return f"До Старого Нового года осталось {days_left} дней!"
                 if today_kaliningrad.day >= 14:
                     return random.choice(
                         [
@@ -15808,7 +15808,7 @@ class Bot:
 
             target_new_year = date(current_year + 1, 1, 1)
             days_left = _days_until(target_new_year)
-            return f"До Нового года осталось {days_left} дней"
+            return f"До Нового года осталось {days_left} дней!"
 
         assets = self._select_new_year_assets(limit=selection_limit, test=test)
         logging.info(

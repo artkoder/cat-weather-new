@@ -4435,11 +4435,12 @@ class Bot:
                     model="gpt-4o-mini",
                     system_prompt=(
                         "Ты лаконичный редактор телеграм-канала о зимних праздниках. "
-                        "Пиши бережно и по-русски."
+                        "Пиши бережно и по-русски, подчёркивая новогодний или рождественский контекст."
                     ),
                     user_prompt=(
                         "Перефразируй факт о новогодней традиции в одно-два предложения. "
                         "Начни в духе «Сегодня расскажу о традиции…» или эквивалентной подводкой. "
+                        "Ясно обозначь, что это новогодняя или рождественская традиция; если это неочевидно, добавь упоминание зимы или праздников. "
                         "Без эмодзи, хэштегов, ссылок, вопросов и восклицаний. Сохрани смысл текста.\n\n"
                         f"Текст: {base_text}"
                     ),
@@ -4454,14 +4455,21 @@ class Bot:
                 response = None
             if response:
                 await self._record_openai_usage("gpt-4o-mini", response, job=job)
-            if not response or not isinstance(response.content, dict):
+            if not response:
+                logging.warning("NEW_YEAR_RUBRIC facts empty_response attempt=%s", attempt)
+                continue
+            if not isinstance(response.content, dict):
+                logging.warning(
+                    "NEW_YEAR_RUBRIC facts invalid_content attempt=%s type=%s", attempt, type(response.content)
+                )
                 continue
             fact_value = str(response.content.get("fact") or "").strip()
             sanitized_fact, _ = sanitize_sea_intro(fact_value)
             final_fact = sanitized_fact or fact_value
             if final_fact:
                 return final_fact
-        return raw_text
+        logging.warning("NEW_YEAR_RUBRIC facts using_fallback")
+        return base_text
 
     def _choose_new_year_emojis(
         self, emoji_pool: Iterable[str] | None = None

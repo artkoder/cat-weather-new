@@ -15525,7 +15525,9 @@ class Bot:
         )
         return True
 
-    def _compute_postcard_inventory_stats(self) -> tuple[int, dict[int, int]]:
+    def _compute_postcard_inventory_stats(
+        self,
+    ) -> tuple[int, dict[int, int], dict[str, int]]:
         """Count postcard-ready assets grouped by postcard_score excluding recent uses."""
 
         def _normalize_last_used(raw: Any) -> datetime | None:
@@ -15588,13 +15590,16 @@ class Bot:
         rows = self.db.execute(query, ("postcard", POSTCARD_MIN_SCORE, 10)).fetchall()
         score_counts: dict[int, int] = {score: 0 for score in range(POSTCARD_MIN_SCORE, 11)}
         total_count = 0
+        skip_counts: dict[str, int] = {"recent": 0, "invalid_score": 0, "other": 0}
         for row in rows:
             try:
                 score = int(row["score"])
             except (TypeError, ValueError):
                 logging.debug("POSTCARD_INVENTORY skip_row row=%s", dict(row))
+                skip_counts["invalid_score"] += 1
                 continue
             if score < POSTCARD_MIN_SCORE or score > 10:
+                skip_counts["invalid_score"] += 1
                 continue
             last_used_raw = None
             if "postcard_last_used_at" in row.keys():
@@ -15603,10 +15608,13 @@ class Bot:
                 last_used_raw = row["history_last_used_at"]
             last_used = _normalize_last_used(last_used_raw)
             if last_used and last_used >= recent_cutoff:
+                skip_counts["recent"] += 1
                 continue
             score_counts[score] = score_counts.get(score, 0) + 1
             total_count += 1
-        return total_count, score_counts
+        raw_count = len(rows)
+        skip_counts["other"] = max(raw_count - total_count - skip_counts["recent"] - skip_counts["invalid_score"], 0)
+        return total_count, score_counts, skip_counts
 
     async def _send_postcard_inventory_report(
         self,
@@ -15615,7 +15623,7 @@ class Bot:
         rubric_title: str | None = None,
         initiator_id: int | None = None,
     ) -> None:
-        total_count, score_counts = self._compute_postcard_inventory_stats()
+        total_count, score_counts, skip_counts = self._compute_postcard_inventory_stats()
 
         logging.info("POSTCARD_INVENTORY_COUNTS raw=%s", dict(score_counts))
         logging.info(
@@ -15624,12 +15632,49 @@ class Bot:
             total_count,
             POSTCARD_MIN_SCORE,
         )
+        logging.info(
+            "POSTCARD_INVENTORY_SKIPS recent=%d invalid_score=%d other=%d raw=%d",
+            skip_counts.get("recent", 0),
+            skip_counts.get("invalid_score", 0),
+            skip_counts.get("other", 0),
+            total_count + sum(skip_counts.values()),
+        )
 
         rows = [
             self._format_inventory_row(f"{score}/10", score_counts.get(score, 0))
             for score in range(POSTCARD_MIN_SCORE, 11)
         ]
         sections = [("Открыточность (7–10)", rows)]
+        filtered_rows = []
+        if skip_counts.get("recent"):
+            filtered_rows.append(
+                self._format_inventory_row(
+                    "Недавние (скрыты окном повторов)",
+                    skip_counts["recent"],
+                    warning_threshold=None,
+                    warn_marker="",
+                )
+            )
+        if skip_counts.get("invalid_score"):
+            filtered_rows.append(
+                self._format_inventory_row(
+                    "Низкий/невалидный postcard_score",
+                    skip_counts["invalid_score"],
+                    warning_threshold=None,
+                    warn_marker="",
+                )
+            )
+        if skip_counts.get("other"):
+            filtered_rows.append(
+                self._format_inventory_row(
+                    "Прочие пропуски",
+                    skip_counts["other"],
+                    warning_threshold=None,
+                    warn_marker="",
+                )
+            )
+        if filtered_rows:
+            sections.append(("⚠️ мало — скрыто фильтрами", filtered_rows))
         title = rubric_title or "Открыточный вид"
         report_text = self._compose_inventory_report_text(
             rubric_title=title,

@@ -15817,6 +15817,49 @@ class Bot:
             selection_limit,
             min_count_clamped,
         )
+
+        def _normalize_tags(raw: Any) -> set[str]:
+            tags: set[str] = set()
+            values = Asset._ensure_list(raw)
+            for value in values:
+                text = str(value or "").strip().lower()
+                if not text:
+                    continue
+                tags.add(text.replace(" ", "_"))
+            return tags
+
+        tag_hints = {
+            "new_year",
+            "newyear",
+            "новыйгод",
+            "новогодний",
+            "новогоднее",
+            "christmas",
+            "xmas",
+            "holiday_lights",
+        }
+
+        filtered_assets: list[Asset] = []
+        hidden_by_tag_count = 0
+        for asset in assets:
+            tags = _normalize_tags((asset.payload or {}).get("tags"))
+            if not tags.intersection(tag_hints):
+                hidden_by_tag_count += 1
+                logging.info(
+                    "NEW_YEAR_RUBRIC skip_missing_new_year_tag asset_id=%s tags=%s",
+                    asset.id,
+                    sorted(tags),
+                )
+                continue
+            filtered_assets.append(asset)
+
+        assets = filtered_assets
+        logging.info(
+            "NEW_YEAR_RUBRIC filtered_assets job_id=%s kept=%s skipped_tag=%s",
+            job_id or "-",
+            len(assets),
+            hidden_by_tag_count,
+        )
         if len(assets) < min_count_clamped:
             logging.info(
                 "NEW_YEAR_RUBRIC insufficient_assets job_id=%s found=%s min=%s requested=%s",
@@ -16007,6 +16050,7 @@ class Bot:
             is_prod=is_prod,
             rubric_title=rubric_title,
             initiator_id=initiator_id,
+            hidden_without_tag=hidden_by_tag_count if hidden_by_tag_count else None,
         )
 
         return True
@@ -16574,6 +16618,7 @@ class Bot:
         is_prod: bool,
         rubric_title: str | None = None,
         initiator_id: int | None = None,
+        hidden_without_tag: int | None = None,
     ) -> None:
         total_count, score_counts, skip_counts = self._compute_new_year_inventory_stats()
 
@@ -16584,6 +16629,8 @@ class Bot:
             total_count,
             "1-10",
         )
+        if hidden_without_tag is not None:
+            logging.info("NEW_YEAR_INVENTORY_REPORT tag_filtered=%s", hidden_without_tag)
 
         rows = [
             self._format_inventory_row(f"{score}/10", score_counts.get(score, 0))
@@ -16605,6 +16652,15 @@ class Bot:
                 self._format_inventory_row(
                     "Без новогоднего оформления",
                     skip_counts["tag"],
+                    warning_threshold=None,
+                    warn_marker="",
+                )
+            )
+        if hidden_without_tag:
+            filtered_rows.append(
+                self._format_inventory_row(
+                    "Скрыто из-за отсутствия тега «new_year»",
+                    hidden_without_tag,
                     warning_threshold=None,
                     warn_marker="",
                 )

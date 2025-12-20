@@ -3099,7 +3099,13 @@ async def test_rubrics_overview_lists_configs(tmp_path):
 
     await bot.handle_update({"message": {"text": "/start", "from": {"id": 1}}})
     rubrics = bot.data.list_rubrics()
-    assert {r.code for r in rubrics} == {"flowers", "guess_arch", "postcard", "sea"}
+    assert {r.code for r in rubrics} == {
+        "flowers",
+        "guess_arch",
+        "new_year",
+        "postcard",
+        "sea",
+    }
     bot.data.upsert_rubric(
         "flowers",
         "Flowers",
@@ -3118,7 +3124,7 @@ async def test_rubrics_overview_lists_configs(tmp_path):
     calls.clear()
     await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
     message_calls = [item for item in calls if item[0] in ("sendMessage", "editMessageText")]
-    assert len(message_calls) == 5
+    assert len(message_calls) == 6
     dashboard_method, dashboard_data = message_calls[0]
     assert dashboard_method in ("sendMessage", "editMessageText")
     assert dashboard_data is not None
@@ -3167,7 +3173,7 @@ async def test_rubrics_overview_lists_configs(tmp_path):
     calls.clear()
     await bot.handle_update({"message": {"text": "/rubrics", "from": {"id": 1}}})
     send_calls = [item for item in calls if item[0] == "sendMessage"]
-    assert len(send_calls) == 5
+    assert len(send_calls) == 6
     await bot.close()
 
 

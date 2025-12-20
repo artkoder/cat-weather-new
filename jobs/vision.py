@@ -926,6 +926,8 @@ async def run_vision(bot: Bot, job: Job) -> None:
                 "⚠️ Чувствительный контент: " + (safety_reason or "потенциально NSFW")
             )
 
+        caption_lines.append(f"Asset ID: {asset_id}")
+
         attribution_line = "Адрес: OSM/Nominatim"
         if attribution_line not in caption_lines:
             caption_lines.append(attribution_line)

@@ -15653,7 +15653,6 @@ class Bot:
                 a.captured_at,
                 a.created_at,
                 json_extract(a.payload_json, '$.tags') AS tags,
-                json_extract(a.payload_json, '$.postcard_last_used_at') AS postcard_last_used_at,
                 (
                     SELECT MAX(ph.published_at)
                     FROM posts_history ph
@@ -16511,48 +16510,6 @@ class Bot:
     def _compute_new_year_inventory_stats(
         self,
     ) -> tuple[int, dict[int, int], dict[str, int]]:
-        def _normalize_last_used(raw: Any) -> datetime | None:
-            if isinstance(raw, (list, tuple, set)):
-                parsed = [_normalize_last_used(item) for item in raw]
-                moments = [dt for dt in parsed if dt is not None]
-                return max(moments) if moments else None
-            if raw is None:
-                return None
-            if isinstance(raw, bytes):
-                raw = raw.decode("utf-8", errors="ignore")
-            if isinstance(raw, (int, float)):
-                try:
-                    return datetime.fromtimestamp(float(raw), tz=UTC)
-                except (OSError, OverflowError, ValueError):
-                    return None
-            if isinstance(raw, str):
-                text = raw.strip()
-                if not text:
-                    return None
-                if text.startswith("[") and text.endswith("]"):
-                    try:
-                        parsed = json.loads(text)
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        parsed = None
-                    if isinstance(parsed, (list, tuple, set)):
-                        return _normalize_last_used(parsed)
-                normalized = text[:-1] + "+00:00" if text.endswith(("Z", "z")) else text
-                try:
-                    parsed = datetime.fromisoformat(normalized)
-                except ValueError:
-                    try:
-                        timestamp = float(text)
-                    except ValueError:
-                        return None
-                    try:
-                        return datetime.fromtimestamp(timestamp, tz=UTC)
-                    except (OSError, OverflowError, ValueError):
-                        return None
-                if parsed.tzinfo is None:
-                    return parsed.replace(tzinfo=UTC)
-                return parsed.astimezone(UTC)
-            return None
-
         def _normalize_tags(raw: Any) -> set[str]:
             tags: set[str] = set()
             values = Asset._ensure_list(raw)
@@ -16563,21 +16520,12 @@ class Bot:
                 tags.add(text.replace(" ", "_"))
             return tags
 
-        recent_cutoff = datetime.now(UTC) - POSTCARD_RECENT_USAGE_WINDOW
         rows = self.db.execute(
             """
             SELECT
                 a.id,
                 a.postcard_score AS score,
-                json_extract(a.payload_json, '$.tags') AS tags,
-                json_extract(a.payload_json, '$.postcard_last_used_at') AS postcard_last_used_at,
-                (
-                    SELECT MAX(ph.published_at)
-                    FROM posts_history ph
-                    JOIN rubrics r ON r.id = ph.rubric_id
-                    WHERE ph.asset_id = a.id AND r.code = 'new_year'
-                      AND COALESCE(json_extract(ph.metadata, '$.test'), 0) != 1
-                ) AS history_last_used_at
+                json_extract(a.payload_json, '$.tags') AS tags
             FROM assets a WHERE postcard_score BETWEEN 1 AND 10
             """,
         ).fetchall()
@@ -16595,12 +16543,7 @@ class Bot:
 
         score_counts: dict[int, int] = {score: 0 for score in range(1, 11)}
         total_count = 0
-        skip_counts: dict[str, int] = {
-            "recent": 0,
-            "invalid_score": 0,
-            "tag": 0,
-            "other": 0,
-        }
+        skip_counts: dict[str, int] = {"invalid_score": 0, "tag": 0, "other": 0}
         for row in rows:
             try:
                 score = int(row["score"])
@@ -16615,17 +16558,12 @@ class Bot:
             if not tags.intersection(tag_hints):
                 skip_counts["tag"] += 1
                 continue
-            last_used_raw = row["postcard_last_used_at"] or row["history_last_used_at"]
-            last_used = _normalize_last_used(last_used_raw)
-            if last_used and last_used >= recent_cutoff:
-                skip_counts["recent"] += 1
-                continue
             score_counts[score] = score_counts.get(score, 0) + 1
             total_count += 1
 
         raw_count = len(rows)
         skip_counts["other"] = max(
-            raw_count - total_count - skip_counts["recent"] - skip_counts["invalid_score"] - skip_counts["tag"],
+            raw_count - total_count - skip_counts["invalid_score"] - skip_counts["tag"],
             0,
         )
         return total_count, score_counts, skip_counts
@@ -16653,15 +16591,6 @@ class Bot:
         ]
         sections: list[tuple[str, Sequence[str]]] = [("Открыточность (1–10)", rows)]
         filtered_rows: list[str] = []
-        if skip_counts.get("recent"):
-            filtered_rows.append(
-                self._format_inventory_row(
-                    "Недавние (скрыты окном повторов)",
-                    skip_counts["recent"],
-                    warning_threshold=None,
-                    warn_marker="",
-                )
-            )
         if skip_counts.get("invalid_score"):
             filtered_rows.append(
                 self._format_inventory_row(
